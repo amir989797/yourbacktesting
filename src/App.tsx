@@ -28,7 +28,7 @@ export default function App() {
   const loadMarketData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const klineResult = await fetchKlines(selectedPair.symbol, timeframe, 500);
+      const klineResult = await fetchKlines(selectedPair.symbol, timeframe, 5000);
       setCandles(klineResult.candles);
       setDataSource(klineResult.source);
     } catch (err) {

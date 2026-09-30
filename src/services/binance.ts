@@ -32,53 +32,94 @@ export const POPULAR_PAIRS: CryptoPair[] = [
   { symbol: 'FETUSDT', baseAsset: 'FET', quoteAsset: 'USDT', name: 'Artificial Superintelligence', category: 'AI & Tech' },
 ];
 
+async function fetchBatch(
+  baseUrl: string,
+  symbol: string,
+  interval: string,
+  batchLimit: number,
+  endTime?: number
+): Promise<CandleData[]> {
+  let url = `${baseUrl}/api/v3/klines?symbol=${symbol.toUpperCase()}&interval=${interval}&limit=${batchLimit}`;
+  if (endTime !== undefined) {
+    url += `&endTime=${endTime}`;
+  }
+
+  const response = await fetch(url, {
+    headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(4500),
+  });
+
+  if (!response.ok) return [];
+
+  const rawData = await response.json();
+  if (!Array.isArray(rawData)) return [];
+
+  return rawData.map((item: (string | number)[]) => ({
+    time: Math.floor(Number(item[0]) / 1000), // Unix seconds for lightweight-charts
+    open: parseFloat(String(item[1])),
+    high: parseFloat(String(item[2])),
+    low: parseFloat(String(item[3])),
+    close: parseFloat(String(item[4])),
+    volume: parseFloat(String(item[5])),
+    quoteVolume: parseFloat(String(item[7])),
+    trades: Number(item[8]),
+  }));
+}
+
 /**
- * Fetch klines (candlesticks) from Binance with multiple fallback endpoints
+ * Fetch up to 5,000 klines (candlesticks) from Binance using backward pagination
  */
 export async function fetchKlines(
   symbol: string,
   interval: string,
-  limit: number = 500
+  limit: number = 5000
 ): Promise<{ candles: CandleData[]; source: 'live' | 'fallback' }> {
   for (const baseUrl of BINANCE_REST_ENDPOINTS) {
     try {
-      const url = `${baseUrl}/api/v3/klines?symbol=${symbol.toUpperCase()}&interval=${interval}&limit=${limit}`;
-      const response = await fetch(url, {
-        headers: { Accept: 'application/json' },
-        signal: AbortSignal.timeout(3500),
-      });
+      const allCandles: CandleData[] = [];
+      let currentEndTime: number | undefined = undefined;
+      const batchSize = 1000;
+      const numBatches = Math.ceil(limit / batchSize);
 
-      if (!response.ok) {
-        continue;
+      for (let b = 0; b < numBatches; b++) {
+        const remaining = limit - allCandles.length;
+        const currentBatchLimit = Math.min(batchSize, remaining);
+        if (currentBatchLimit <= 0) break;
+
+        const batch = await fetchBatch(baseUrl, symbol, interval, currentBatchLimit, currentEndTime);
+        if (!batch || batch.length === 0) {
+          break;
+        }
+
+        allCandles.unshift(...batch);
+
+        // Next older batch must end right before the earliest candle in this batch
+        const earliestTimeMs = batch[0].time * 1000;
+        currentEndTime = earliestTimeMs - 1;
+
+        if (batch.length < currentBatchLimit) {
+          // Reached beginning of Binance history for this timeframe
+          break;
+        }
       }
 
-      const rawData = await response.json();
-      if (!Array.isArray(rawData) || rawData.length === 0) {
-        continue;
+      if (allCandles.length > 0) {
+        // Deduplicate and sort ascending by time
+        const candleMap = new Map<number, CandleData>();
+        for (const c of allCandles) {
+          candleMap.set(c.time, c);
+        }
+        const sortedCandles = Array.from(candleMap.values()).sort((a, b) => a.time - b.time);
+
+        return { candles: sortedCandles, source: 'live' };
       }
-
-      const candles: CandleData[] = rawData.map((item: (string | number)[]) => ({
-        time: Math.floor(Number(item[0]) / 1000), // Unix seconds for lightweight-charts
-        open: parseFloat(String(item[1])),
-        high: parseFloat(String(item[2])),
-        low: parseFloat(String(item[3])),
-        close: parseFloat(String(item[4])),
-        volume: parseFloat(String(item[5])),
-        quoteVolume: parseFloat(String(item[7])),
-        trades: Number(item[8]),
-      }));
-
-      // Sort ascending by time
-      candles.sort((a, b) => a.time - b.time);
-
-      return { candles, source: 'live' };
     } catch {
-      // Try next endpoint
+      // Try next mirror endpoint
       continue;
     }
   }
 
-  // If all live endpoints fail (e.g. offline or strict firewall), generate realistic synthetic data
+  // If all live endpoints fail, generate realistic synthetic data
   console.warn('All Binance endpoints failed, using realistic simulated data fallback');
   const candles = generateFallbackCandles(symbol, interval, limit);
   return { candles, source: 'fallback' };

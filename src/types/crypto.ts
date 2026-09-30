@@ -46,6 +46,7 @@ export interface IndicatorSettings {
   showMa25: boolean;
   showMa99: boolean;
   showVolume: boolean;
+  showZigZag: boolean;
 }
 
 export interface RecentTrade {

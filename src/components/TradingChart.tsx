@@ -17,7 +17,6 @@ import {
   Maximize2,
   Minimize2,
   RefreshCw,
-  BarChart2,
   ZoomIn,
   ZoomOut,
   RotateCcw,
@@ -26,11 +25,23 @@ import {
   MousePointer,
   Trash2,
   X,
+  Activity,
+  TrendingUp,
 } from 'lucide-react';
-import { CandleData, ChartType, IndicatorSettings, Timeframe } from '../types/crypto';
-import { formatPrice, formatVolume, formatPoints, prepareVolumeData, calculateSMA } from '../utils/indicators';
+import { CandleData, ChartType, Timeframe } from '../types/crypto';
+import {
+  formatPrice,
+  formatVolume,
+  formatPoints,
+  prepareVolumeData,
+  calculateSMA,
+  calculateAtrZigZag,
+  analyzeZigZagLegs,
+  ZigZagPoint,
+  ZigZagLeg,
+} from '../utils/indicators';
 
-type ActiveTool = 'cursor' | 'anchor' | 'rectangle';
+type ActiveTool = 'cursor' | 'anchor' | 'rectangle' | 'ma' | 'zigzag';
 
 interface PointMeasurement {
   x1: number;
@@ -100,24 +111,32 @@ export const TradingChart: React.FC<TradingChartProps> = ({
   const lineSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const areaSeriesRef = useRef<ISeriesApi<'Area'> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
-  const ma7SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
-  const ma25SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
-  const ma99SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const maSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const zigzagSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
 
   const [chartType, setChartType] = useState<ChartType>('candlestick');
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [indicators, setIndicators] = useState<IndicatorSettings>({
-    showMa7: true,
-    showMa25: true,
-    showMa99: false,
-    showVolume: true,
-  });
+
+  // Dynamic Indicator Tool Settings
+  const [maPeriod, setMaPeriod] = useState<number>(20);
+  const [showMa, setShowMa] = useState<boolean>(false);
+
+  const [zigzagAtrMultiplier, setZigzagAtrMultiplier] = useState<number>(3);
+  const [showZigZag, setShowZigZag] = useState<boolean>(true);
 
   // Tools state
   const [activeTool, setActiveTool] = useState<ActiveTool>('cursor');
   const [measurement, setMeasurement] = useState<PointMeasurement | null>(null);
   const [rectangles, setRectangles] = useState<DrawnRectangle[]>([]);
   const [currentRect, setCurrentRect] = useState<DrawnRectangle | null>(null);
+  const [zigzagPoints, setZigzagPoints] = useState<ZigZagPoint[]>([]);
+  const [zigzagLegs, setZigzagLegs] = useState<ZigZagLeg[]>([]);
+  const [renderedLegs, setRenderedLegs] = useState<
+    (ZigZagLeg & { x1: number; y1: number; x2: number; y2: number })[]
+  >([]);
+  const [zigzagCoords, setZigzagCoords] = useState<
+    { x: number; y: number; colorHex: string; isHighlighted: boolean }[]
+  >([]);
 
   const dragStartRef = useRef<{
     x: number;
@@ -271,34 +290,29 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         type: 'volume',
       },
       priceScaleId: 'left',
-      visible: indicators.showVolume,
+      visible: true,
     });
     volumeSeriesRef.current = volumeSeries;
 
-    // 5. Moving Average Series
-    const ma7 = chart.addSeries(LineSeries, {
-      color: '#f0b90b',
-      lineWidth: 1,
-      title: 'MA(7)',
-      visible: indicators.showMa7,
+    // 5. Configurable Moving Average Series
+    const ma = chart.addSeries(LineSeries, {
+      color: '#38bdf8',
+      lineWidth: 2,
+      title: `MA(${maPeriod})`,
+      visible: false,
     });
-    ma7SeriesRef.current = ma7;
+    maSeriesRef.current = ma;
 
-    const ma25 = chart.addSeries(LineSeries, {
-      color: '#e024c3',
-      lineWidth: 1,
-      title: 'MA(25)',
-      visible: indicators.showMa25,
+    // 6. Configurable ZigZag Series (ATR-based)
+    const zigzag = chart.addSeries(LineSeries, {
+      color: '#ffffff',
+      lineWidth: 2,
+      crosshairMarkerVisible: false,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      visible: showZigZag,
     });
-    ma25SeriesRef.current = ma25;
-
-    const ma99 = chart.addSeries(LineSeries, {
-      color: '#2962ff',
-      lineWidth: 1,
-      title: 'MA(99)',
-      visible: indicators.showMa99,
-    });
-    ma99SeriesRef.current = ma99;
+    zigzagSeriesRef.current = zigzag;
 
     // Resize observer
     const resizeObserver = new ResizeObserver((entries) => {
@@ -318,7 +332,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     };
   }, []);
 
-  // Update chart data when candles change
+  // Update chart data when candles, MA period, or ZigZag multiplier changes
   useEffect(() => {
     if (!chartRef.current || candles.length === 0) return;
 
@@ -365,29 +379,84 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       volumeSeriesRef.current.setData(volumeData);
     }
 
-    // Moving Averages
-    if (ma7SeriesRef.current) {
-      const ma7 = calculateSMA(uniqueCandles, 7).map((d) => ({
+    // Dynamic Moving Average calculation with user-typed period
+    if (maSeriesRef.current) {
+      const maData = calculateSMA(uniqueCandles, maPeriod).map((d) => ({
         time: d.time as UTCTimestamp,
         value: d.value,
       }));
-      ma7SeriesRef.current.setData(ma7);
+      maSeriesRef.current.setData(maData);
+      maSeriesRef.current.applyOptions({ title: `MA(${maPeriod})` });
     }
 
-    if (ma25SeriesRef.current) {
-      const ma25 = calculateSMA(uniqueCandles, 25).map((d) => ({
+    // Dynamic ATR ZigZag calculation with user-typed multiplier
+    if (zigzagSeriesRef.current) {
+      const { points: zgPoints, series: zgSeries } = calculateAtrZigZag(
+        uniqueCandles,
+        atrValues,
+        zigzagAtrMultiplier
+      );
+      const mappedZigZag = zgSeries.map((d) => ({
         time: d.time as UTCTimestamp,
         value: d.value,
       }));
-      ma25SeriesRef.current.setData(ma25);
-    }
+      zigzagSeriesRef.current.setData(mappedZigZag);
+      zigzagSeriesRef.current.applyOptions({
+        title: '',
+        visible: showZigZag,
+      });
 
-    if (ma99SeriesRef.current) {
-      const ma99 = calculateSMA(uniqueCandles, 99).map((d) => ({
-        time: d.time as UTCTimestamp,
-        value: d.value,
-      }));
-      ma99SeriesRef.current.setData(ma99);
+      const analyzedLegs = analyzeZigZagLegs(zgPoints);
+      setZigzagPoints(zgPoints);
+      setZigzagLegs(analyzedLegs);
+
+      if (chartRef.current && candleSeriesRef.current && showZigZag) {
+        const timeScale = chartRef.current.timeScale();
+        const series = candleSeriesRef.current;
+
+        const projectedLegs: (ZigZagLeg & { x1: number; y1: number; x2: number; y2: number })[] = [];
+        for (const leg of analyzedLegs) {
+          const x1 = timeScale.timeToCoordinate(leg.startTime as UTCTimestamp);
+          const y1 = series.priceToCoordinate(leg.startPrice);
+          const x2 = timeScale.timeToCoordinate(leg.endTime as UTCTimestamp);
+          const y2 = series.priceToCoordinate(leg.endPrice);
+          if (x1 !== null && y1 !== null && x2 !== null && y2 !== null) {
+            projectedLegs.push({ ...leg, x1, y1, x2, y2 });
+          }
+        }
+        setRenderedLegs(projectedLegs);
+
+        const coords: { x: number; y: number; colorHex: string; isHighlighted: boolean }[] = [];
+        for (let i = 0; i < zgPoints.length; i++) {
+          const pt = zgPoints[i];
+          const x = timeScale.timeToCoordinate(pt.time as UTCTimestamp);
+          const y = series.priceToCoordinate(pt.value);
+          if (x !== null && y !== null) {
+            const incomingLeg = i > 0 ? analyzedLegs[i - 1] : null;
+            const outgoingLeg = i < analyzedLegs.length ? analyzedLegs[i] : null;
+            const activeLeg = (outgoingLeg && outgoingLeg.color !== 'white') ? outgoingLeg : incomingLeg;
+
+            let colorHex = '#ffffff';
+            let isHighlighted = false;
+            if (activeLeg?.color === 'green') {
+              colorHex = '#00E676';
+              isHighlighted = true;
+            } else if (activeLeg?.color === 'red') {
+              colorHex = '#FF1744';
+              isHighlighted = true;
+            } else if (activeLeg?.color === 'blue') {
+              colorHex = '#00E5FF';
+              isHighlighted = true;
+            } else if (activeLeg?.color === 'dark_blue') {
+              colorHex = '#1D4ED8';
+              isHighlighted = true;
+            }
+
+            coords.push({ x, y, colorHex, isHighlighted });
+          }
+        }
+        setZigzagCoords(coords);
+      }
     }
 
     // Auto-fit content only on pair or timeframe switch
@@ -396,7 +465,21 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       lastLoadedKeyRef.current = currentKey;
       chartRef.current.timeScale().fitContent();
     }
-  }, [candles, symbol, timeframe]);
+  }, [candles, symbol, timeframe, atrValues, maPeriod, zigzagAtrMultiplier]);
+
+  // Handle MA visibility toggle
+  useEffect(() => {
+    if (maSeriesRef.current) {
+      maSeriesRef.current.applyOptions({ visible: showMa });
+    }
+  }, [showMa]);
+
+  // Handle ZigZag visibility toggle
+  useEffect(() => {
+    if (zigzagSeriesRef.current) {
+      zigzagSeriesRef.current.applyOptions({ visible: showZigZag });
+    }
+  }, [showZigZag]);
 
   // Subscribe to Crosshair Move with precise ATR resolution
   useEffect(() => {
@@ -447,9 +530,10 @@ export const TradingChart: React.FC<TradingChartProps> = ({
 
       if (candleIdx >= 0 && candleIdx < candles.length) {
         const c = candles[candleIdx];
-        const candleAtr = (atrValues && atrValues[candleIdx] !== undefined)
-          ? atrValues[candleIdx]
-          : (atrMap.get(c.time) ?? latestAtr);
+        const candleAtr =
+          atrValues && atrValues[candleIdx] !== undefined
+            ? atrValues[candleIdx]
+            : (atrMap.get(c.time) ?? latestAtr);
 
         const dateObj = new Date(c.time * 1000);
         const timeFormatted = dateObj.toLocaleDateString('fa-IR', {
@@ -527,13 +611,113 @@ export const TradingChart: React.FC<TradingChartProps> = ({
           return r;
         })
       );
+
+      // Update ZigZag legs and pivot points coordinates
+      if (showZigZag && zigzagPoints.length > 0) {
+        const projectedLegs: (ZigZagLeg & { x1: number; y1: number; x2: number; y2: number })[] = [];
+        for (const leg of zigzagLegs) {
+          const x1 = timeScale.timeToCoordinate(leg.startTime as UTCTimestamp);
+          const y1 = series.priceToCoordinate(leg.startPrice);
+          const x2 = timeScale.timeToCoordinate(leg.endTime as UTCTimestamp);
+          const y2 = series.priceToCoordinate(leg.endPrice);
+          if (x1 !== null && y1 !== null && x2 !== null && y2 !== null) {
+            projectedLegs.push({ ...leg, x1, y1, x2, y2 });
+          }
+        }
+        setRenderedLegs(projectedLegs);
+
+        const coords: { x: number; y: number; colorHex: string; isHighlighted: boolean }[] = [];
+        for (let i = 0; i < zigzagPoints.length; i++) {
+          const pt = zigzagPoints[i];
+          const x = timeScale.timeToCoordinate(pt.time as UTCTimestamp);
+          const y = series.priceToCoordinate(pt.value);
+          if (x !== null && y !== null) {
+            const incomingLeg = i > 0 ? zigzagLegs[i - 1] : null;
+            const outgoingLeg = i < zigzagLegs.length ? zigzagLegs[i] : null;
+            const activeLeg = (outgoingLeg && outgoingLeg.color !== 'white') ? outgoingLeg : incomingLeg;
+
+            let colorHex = '#ffffff';
+            let isHighlighted = false;
+            if (activeLeg?.color === 'green') {
+              colorHex = '#00E676';
+              isHighlighted = true;
+            } else if (activeLeg?.color === 'red') {
+              colorHex = '#FF1744';
+              isHighlighted = true;
+            } else if (activeLeg?.color === 'blue') {
+              colorHex = '#00E5FF';
+              isHighlighted = true;
+            } else if (activeLeg?.color === 'dark_blue') {
+              colorHex = '#1D4ED8';
+              isHighlighted = true;
+            }
+
+            coords.push({ x, y, colorHex, isHighlighted });
+          }
+        }
+        setZigzagCoords(coords);
+      }
     };
 
     chartRef.current.timeScale().subscribeVisibleLogicalRangeChange(handleRangeOrScaleChange);
     return () => {
       chartRef.current?.timeScale().unsubscribeVisibleLogicalRangeChange(handleRangeOrScaleChange);
     };
-  }, [measurement, rectangles]);
+  }, [measurement, rectangles, showZigZag, zigzagPoints, zigzagLegs]);
+
+  // Keep ZigZag visuals updated when points or visibility changes
+  useEffect(() => {
+    if (!chartRef.current || !candleSeriesRef.current || !showZigZag || zigzagPoints.length === 0) {
+      setRenderedLegs([]);
+      setZigzagCoords([]);
+      return;
+    }
+    const timeScale = chartRef.current.timeScale();
+    const series = candleSeriesRef.current;
+
+    const projectedLegs: (ZigZagLeg & { x1: number; y1: number; x2: number; y2: number })[] = [];
+    for (const leg of zigzagLegs) {
+      const x1 = timeScale.timeToCoordinate(leg.startTime as UTCTimestamp);
+      const y1 = series.priceToCoordinate(leg.startPrice);
+      const x2 = timeScale.timeToCoordinate(leg.endTime as UTCTimestamp);
+      const y2 = series.priceToCoordinate(leg.endPrice);
+      if (x1 !== null && y1 !== null && x2 !== null && y2 !== null) {
+        projectedLegs.push({ ...leg, x1, y1, x2, y2 });
+      }
+    }
+    setRenderedLegs(projectedLegs);
+
+    const coords: { x: number; y: number; colorHex: string; isHighlighted: boolean }[] = [];
+    for (let i = 0; i < zigzagPoints.length; i++) {
+      const pt = zigzagPoints[i];
+      const x = timeScale.timeToCoordinate(pt.time as UTCTimestamp);
+      const y = series.priceToCoordinate(pt.value);
+      if (x !== null && y !== null) {
+        const incomingLeg = i > 0 ? zigzagLegs[i - 1] : null;
+        const outgoingLeg = i < zigzagLegs.length ? zigzagLegs[i] : null;
+        const activeLeg = (outgoingLeg && outgoingLeg.color !== 'white') ? outgoingLeg : incomingLeg;
+
+        let colorHex = '#ffffff';
+        let isHighlighted = false;
+        if (activeLeg?.color === 'green') {
+          colorHex = '#00E676';
+          isHighlighted = true;
+        } else if (activeLeg?.color === 'red') {
+          colorHex = '#FF1744';
+          isHighlighted = true;
+        } else if (activeLeg?.color === 'blue') {
+          colorHex = '#00E5FF';
+          isHighlighted = true;
+        } else if (activeLeg?.color === 'dark_blue') {
+          colorHex = '#1D4ED8';
+          isHighlighted = true;
+        }
+
+        coords.push({ x, y, colorHex, isHighlighted });
+      }
+    }
+    setZigzagCoords(coords);
+  }, [zigzagPoints, zigzagLegs, showZigZag]);
 
   // Handle Chart Type changes
   useEffect(() => {
@@ -543,28 +727,12 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     areaSeriesRef.current.applyOptions({ visible: chartType === 'area' });
   }, [chartType]);
 
-  // Handle Indicator visibility changes
-  useEffect(() => {
-    if (volumeSeriesRef.current) {
-      volumeSeriesRef.current.applyOptions({ visible: indicators.showVolume });
-    }
-    if (ma7SeriesRef.current) {
-      ma7SeriesRef.current.applyOptions({ visible: indicators.showMa7 });
-    }
-    if (ma25SeriesRef.current) {
-      ma25SeriesRef.current.applyOptions({ visible: indicators.showMa25 });
-    }
-    if (ma99SeriesRef.current) {
-      ma99SeriesRef.current.applyOptions({ visible: indicators.showMa99 });
-    }
-  }, [indicators]);
-
   // Handle Tool change: Enable chart panning in cursor mode, disable during drawing
   useEffect(() => {
     if (!chartRef.current) return;
     chartRef.current.applyOptions({
       handleScroll: {
-        pressedMouseMove: activeTool === 'cursor',
+        pressedMouseMove: activeTool === 'cursor' || activeTool === 'ma' || activeTool === 'zigzag',
         horzTouchDrag: true,
         vertTouchDrag: true,
         mouseWheel: false,
@@ -615,8 +783,12 @@ export const TradingChart: React.FC<TradingChartProps> = ({
 
   // --- MOUSE CLICK AND DRAG FOR ANCHOR MEASURE & RECTANGLE DRAWING ---
   const handleMouseDown = (e: React.MouseEvent) => {
-    // If in normal cursor mode, allow native chart panning!
-    if (activeTool === 'cursor' || e.button !== 0 || !chartContainerRef.current || !chartRef.current || !candleSeriesRef.current) {
+    // If not in a drawing tool, allow native chart panning!
+    if (activeTool !== 'anchor' && activeTool !== 'rectangle') {
+      return;
+    }
+
+    if (e.button !== 0 || !chartContainerRef.current || !chartRef.current || !candleSeriesRef.current) {
       return;
     }
 
@@ -742,10 +914,8 @@ export const TradingChart: React.FC<TradingChartProps> = ({
   let totalVolume = 0;
 
   if (measurement) {
-    // 1. Distance in points
     pointsDistance = Math.abs(measurement.price2 - measurement.price1);
 
-    // Candle indices in range
     let startIdx = 0;
     let endIdx = 0;
 
@@ -762,16 +932,13 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       endIdx = fEnd === -1 ? candles.length - 1 : Math.max(0, fEnd - 1);
     }
 
-    // 2. Percent of ATR55
     const baseAtr = (atrValues && atrValues[startIdx] !== undefined)
       ? atrValues[startIdx]
       : (latestAtr || 1);
     percentOfAtr55 = baseAtr > 0 ? (pointsDistance / baseAtr) * 100 : 0;
 
-    // 3. Candle count
     candleCount = Math.max(1, endIdx - startIdx + 1);
 
-    // 4. Total volume in range
     totalVolume = 0;
     for (let i = startIdx; i <= endIdx; i++) {
       if (candles[i]) {
@@ -786,7 +953,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         isFullscreen ? 'fixed inset-0 z-50 rounded-none' : 'relative w-full h-full flex-1 min-h-0'
       }`}
     >
-      {/* Top Toolbar: Timeframes, Indicators, Chart Type, Zoom Controls */}
+      {/* Top Toolbar: Timeframes, Chart Type, Zoom Controls (Clean - MA/Volume/ZigZag removed) */}
       <div className="shrink-0 flex flex-wrap items-center justify-between px-3 py-1.5 border-b border-[#2b313a] bg-[#181d26] gap-2">
         {/* Left: Timeframe buttons */}
         <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5">
@@ -808,7 +975,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
           ))}
         </div>
 
-        {/* Right side: Chart tools & Zoom Controls */}
+        {/* Right side: Chart type, Zoom Controls, Refresh and Fullscreen */}
         <div className="flex items-center gap-2">
           {/* Chart Type segmented selector */}
           <div className="flex items-center bg-[#1f2633] p-0.5 rounded-lg border border-[#2e3747]">
@@ -844,58 +1011,6 @@ export const TradingChart: React.FC<TradingChartProps> = ({
               }`}
             >
               مساحتی
-            </button>
-          </div>
-
-          {/* Quick Indicators Toggle */}
-          <div className="flex items-center gap-1.5 border-l border-[#2e3747] pl-2">
-            <button
-              onClick={() => setIndicators((prev) => ({ ...prev, showMa7: !prev.showMa7 }))}
-              className={`px-2 py-1 text-xs rounded transition-colors cursor-pointer font-mono font-medium ${
-                indicators.showMa7
-                  ? 'bg-[#f0b90b]/15 text-[#f0b90b] border border-[#f0b90b]/30'
-                  : 'text-gray-500 hover:text-gray-300'
-              }`}
-              title="Moving Average 7"
-            >
-              MA7
-            </button>
-
-            <button
-              onClick={() => setIndicators((prev) => ({ ...prev, showMa25: !prev.showMa25 }))}
-              className={`px-2 py-1 text-xs rounded transition-colors cursor-pointer font-mono font-medium ${
-                indicators.showMa25
-                  ? 'bg-[#e024c3]/15 text-[#e024c3] border border-[#e024c3]/30'
-                  : 'text-gray-500 hover:text-gray-300'
-              }`}
-              title="Moving Average 25"
-            >
-              MA25
-            </button>
-
-            <button
-              onClick={() => setIndicators((prev) => ({ ...prev, showMa99: !prev.showMa99 }))}
-              className={`px-2 py-1 text-xs rounded transition-colors cursor-pointer font-mono font-medium ${
-                indicators.showMa99
-                  ? 'bg-[#2962ff]/15 text-[#2962ff] border border-[#2962ff]/30'
-                  : 'text-gray-500 hover:text-gray-300'
-              }`}
-              title="Moving Average 99"
-            >
-              MA99
-            </button>
-
-            <button
-              onClick={() => setIndicators((prev) => ({ ...prev, showVolume: !prev.showVolume }))}
-              className={`flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors cursor-pointer ${
-                indicators.showVolume
-                  ? 'bg-[#0ecb81]/15 text-[#0ecb81] border border-[#0ecb81]/30 font-medium'
-                  : 'text-gray-500 hover:text-gray-300'
-              }`}
-              title="نمایش/پنهان‌سازی حجم معاملات (Volume)"
-            >
-              <BarChart2 className="w-3.5 h-3.5" />
-              <span>حجم</span>
             </button>
           </div>
 
@@ -983,25 +1098,15 @@ export const TradingChart: React.FC<TradingChartProps> = ({
 
               <span className="text-gray-500 ml-1">Vol:</span>
               <span className="text-amber-400/90">{formatVolume(displayInfo.volume)}</span>
-
-              <span className="text-amber-400 font-sans ml-2 border-l border-[#2e3747] pl-2 font-medium">
-                توان حرکتی (ATR 55):
-              </span>
-              <span className="text-amber-300 font-bold bg-amber-500/15 px-1.5 py-0.5 rounded border border-amber-500/30">
-                {formatPoints(displayInfo.atr)} پوینت
-              </span>
             </div>
           </div>
         ) : (
           <span className="text-gray-500">در حال بارگذاری اطلاعات کندل...</span>
         )}
 
-        {/* Active Indicators Legend */}
+        {/* Active Indicators Status Legend */}
         <div className="flex items-center gap-2 text-[11px]">
-          {indicators.showMa7 && <span className="text-[#f0b90b]">MA(7)</span>}
-          {indicators.showMa25 && <span className="text-[#e024c3]">MA(25)</span>}
-          {indicators.showMa99 && <span className="text-[#2962ff]">MA(99)</span>}
-          {indicators.showVolume && <span className="text-emerald-400">Vol</span>}
+          {showMa && <span className="text-[#38bdf8]">MA({maPeriod})</span>}
         </div>
       </div>
 
@@ -1030,7 +1135,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
                 ? 'bg-amber-500 text-black shadow-[0_0_12px_rgba(245,158,11,0.5)] font-bold'
                 : 'text-gray-400 hover:text-amber-400 hover:bg-[#232a38]'
             }`}
-            title="ابزار Anchor: کلیک و درگ برای محاسبه فاصله پوینت و درصد ATR55"
+            title="ابزار Anchor: محاسبه فاصله پوینت و درصد ATR55"
           >
             <Anchor className="w-4 h-4" />
             {activeTool === 'anchor' && (
@@ -1054,6 +1159,38 @@ export const TradingChart: React.FC<TradingChartProps> = ({
             )}
           </button>
 
+          {/* 4. MOVING AVERAGE TOOL (MA) */}
+          <button
+            onClick={() => setActiveTool(activeTool === 'ma' ? 'cursor' : 'ma')}
+            className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all cursor-pointer relative ${
+              activeTool === 'ma'
+                ? 'bg-[#38bdf8] text-black shadow-[0_0_12px_rgba(56,189,248,0.5)] font-bold'
+                : 'text-gray-400 hover:text-[#38bdf8] hover:bg-[#232a38]'
+            }`}
+            title="ابزار میانگین متحرک (MA): تنظیم دوره و نمایش"
+          >
+            <TrendingUp className="w-4 h-4" />
+            {showMa && (
+              <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-[#38bdf8]" />
+            )}
+          </button>
+
+          {/* 5. ZIGZAG TOOL */}
+          <button
+            onClick={() => setActiveTool(activeTool === 'zigzag' ? 'cursor' : 'zigzag')}
+            className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all cursor-pointer relative ${
+              activeTool === 'zigzag'
+                ? 'bg-amber-500 text-black shadow-[0_0_12px_rgba(245,158,11,0.5)] font-bold'
+                : 'text-gray-400 hover:text-amber-400 hover:bg-[#232a38]'
+            }`}
+            title="ابزار ZigZag: تنظیم ضریب ATR و نمایش"
+          >
+            <Activity className="w-4 h-4" />
+            {showZigZag && (
+              <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-400" />
+            )}
+          </button>
+
           {/* Divider */}
           <div className="w-6 h-px bg-[#2a3444] my-1" />
 
@@ -1070,13 +1207,102 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         {/* Canvas Container */}
         <div
           className={`relative flex-1 w-full h-full min-h-0 bg-[#131722] overflow-hidden select-none ${
-            activeTool !== 'cursor' ? 'cursor-crosshair' : ''
+            activeTool === 'anchor' || activeTool === 'rectangle' ? 'cursor-crosshair' : ''
           }`}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
         >
           <div ref={chartContainerRef} className="w-full h-full" />
+
+          {/* DYNAMIC TOOL SETTINGS BARS (هروقت ابزاری انتخاب شد تنظیماتش را در اونجا قرار بده) */}
+          {activeTool === 'ma' && (
+            <div className="absolute top-2 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-3 py-1.5 rounded-lg bg-[#181d26]/95 border border-[#38bdf8]/50 shadow-2xl backdrop-blur-md text-xs font-mono">
+              <div className="flex items-center gap-1.5 text-[#38bdf8] font-bold font-sans">
+                <TrendingUp className="w-3.5 h-3.5" />
+                <span>تنظیمات MA</span>
+              </div>
+              <div className="h-4 w-px bg-[#2d3748]" />
+              <div className="flex items-center gap-1.5">
+                <span className="text-gray-300 font-sans">دوره (Period):</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={500}
+                  value={maPeriod}
+                  onChange={(e) => setMaPeriod(Math.max(1, parseInt(e.target.value) || 1))}
+                  className="w-16 px-2 py-0.5 rounded bg-[#10131a] border border-[#38bdf8]/40 text-[#38bdf8] font-bold font-mono text-center focus:outline-none focus:border-[#38bdf8]"
+                  title="دوره MA را تایپ کنید (مثلاً 14, 20, 50, 200)"
+                />
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-gray-300 font-sans">نمایش:</span>
+                <button
+                  onClick={() => setShowMa(!showMa)}
+                  className={`px-2 py-0.5 rounded text-[11px] font-sans font-medium transition-colors cursor-pointer ${
+                    showMa
+                      ? 'bg-[#38bdf8]/20 text-[#38bdf8] border border-[#38bdf8]/40'
+                      : 'bg-gray-800 text-gray-400 border border-gray-700'
+                  }`}
+                >
+                  {showMa ? 'فعال' : 'غیرفعال'}
+                </button>
+              </div>
+              <button
+                onClick={() => setActiveTool('cursor')}
+                className="p-1 rounded hover:bg-[#2b3546] text-gray-400 hover:text-white transition-colors cursor-pointer"
+                title="بستن تنظیمات"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {activeTool === 'zigzag' && (
+            <div className="absolute top-2 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-3 py-1.5 rounded-lg bg-[#181d26]/95 border border-amber-500/50 shadow-2xl backdrop-blur-md text-xs font-mono">
+              <div className="flex items-center gap-1.5 text-amber-400 font-bold font-sans">
+                <Activity className="w-3.5 h-3.5" />
+                <span>تنظیمات ZigZag</span>
+              </div>
+              <div className="h-4 w-px bg-[#2d3748]" />
+              <div className="flex items-center gap-1.5">
+                <span className="text-gray-300 font-sans">میزان ATR:</span>
+                <input
+                  type="number"
+                  min={0.1}
+                  max={20}
+                  step={0.5}
+                  value={zigzagAtrMultiplier}
+                  onChange={(e) =>
+                    setZigzagAtrMultiplier(Math.max(0.1, parseFloat(e.target.value) || 0.1))
+                  }
+                  className="w-16 px-2 py-0.5 rounded bg-[#10131a] border border-amber-500/40 text-amber-400 font-bold font-mono text-center focus:outline-none focus:border-amber-400"
+                  title="ضریب ATR را تایپ کنید (مثلاً 2, 2.5, 3, 5)"
+                />
+                <span className="text-gray-400 text-[10px]">× ATR</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-gray-300 font-sans">نمایش:</span>
+                <button
+                  onClick={() => setShowZigZag(!showZigZag)}
+                  className={`px-2 py-0.5 rounded text-[11px] font-sans font-medium transition-colors cursor-pointer ${
+                    showZigZag
+                      ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+                      : 'bg-gray-800 text-gray-400 border border-gray-700'
+                  }`}
+                >
+                  {showZigZag ? 'فعال' : 'غیرفعال'}
+                </button>
+              </div>
+              <button
+                onClick={() => setActiveTool('cursor')}
+                className="p-1 rounded hover:bg-[#2b3546] text-gray-400 hover:text-white transition-colors cursor-pointer"
+                title="بستن تنظیمات"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
 
           {/* ACTIVE DRAWINGS OVERLAY */}
           <div className="absolute inset-0 pointer-events-none z-30">
@@ -1124,6 +1350,76 @@ export const TradingChart: React.FC<TradingChartProps> = ({
                   <circle cx={measurement.x2} cy={measurement.y2} r="5" fill="#f59e0b" stroke="#fff" strokeWidth="2" />
                 </>
               )}
+
+              {/* Multi-colored ZigZag Legs:
+                  - Bold Green (#00E676) for Up legs > 1000%
+                  - Bold Red (#FF1744) for Down legs > 1000%
+                  - Electric Blue (#00B0FF) for first leg breaking end of red/green leg
+                  - Pure White (#ffffff) for all other legs */}
+              {showZigZag &&
+                renderedLegs.map((leg) => {
+                  let strokeColor = '#ffffff';
+                  let strokeWidth = '2';
+
+                  if (leg.color === 'green') {
+                    strokeColor = '#00E676'; // سبز پررنگ
+                    strokeWidth = '3.5';
+                  } else if (leg.color === 'red') {
+                    strokeColor = '#FF1744'; // قرمز پررنگ
+                    strokeWidth = '3.5';
+                  } else if (leg.color === 'blue') {
+                    strokeColor = '#00E5FF'; // آبی روشن (اولین لگ شکننده < 5 ATR)
+                    strokeWidth = '3.5';
+                  } else if (leg.color === 'dark_blue') {
+                    strokeColor = '#1D4ED8'; // آبی تیره‌تر (لگ دوم بعد از آبی)
+                    strokeWidth = '3.5';
+                  }
+
+                  return (
+                    <g key={`zz-leg-${leg.index}`}>
+                      {leg.color !== 'white' && (
+                        <line
+                          x1={leg.x1}
+                          y1={leg.y1}
+                          x2={leg.x2}
+                          y2={leg.y2}
+                          stroke={strokeColor}
+                          strokeWidth="8"
+                          strokeOpacity="0.25"
+                          strokeLinecap="round"
+                        />
+                      )}
+                      <line
+                        x1={leg.x1}
+                        y1={leg.y1}
+                        x2={leg.x2}
+                        y2={leg.y2}
+                        stroke={strokeColor}
+                        strokeWidth={strokeWidth}
+                        strokeLinecap="round"
+                      />
+                    </g>
+                  );
+                })}
+
+              {/* ZigZag Pivot Dots with matching colors */}
+              {showZigZag &&
+                zigzagCoords.map((pt, idx) => (
+                  <g key={`zz-pt-${idx}`}>
+                    {pt.isHighlighted && (
+                      <circle cx={pt.x} cy={pt.y} r="8" fill={pt.colorHex} fillOpacity="0.25" />
+                    )}
+                    <circle
+                      cx={pt.x}
+                      cy={pt.y}
+                      r={pt.isHighlighted ? '5' : '3.5'}
+                      fill={pt.colorHex}
+                      stroke="#131722"
+                      strokeWidth="1.5"
+                    />
+                    <circle cx={pt.x} cy={pt.y} r="1.5" fill="#131722" />
+                  </g>
+                ))}
             </svg>
 
             {/* EXACT 4-ITEM INFO BOX - 100% IN ENGLISH */}
@@ -1186,18 +1482,18 @@ export const TradingChart: React.FC<TradingChartProps> = ({
             )}
           </div>
 
-          {/* Active Tool Prompt Toast */}
-          {activeTool !== 'cursor' && !measurement && !currentRect && (
+          {/* Active Tool Prompt Toast for Anchor / Rectangle */}
+          {(activeTool === 'anchor' || activeTool === 'rectangle') && !measurement && !currentRect && (
             <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 px-3 py-1.5 rounded-lg bg-[#181d26]/90 border border-[#2d3748] text-gray-200 text-xs backdrop-blur-md shadow-lg flex items-center gap-2 pointer-events-none">
               {activeTool === 'anchor' ? (
                 <>
                   <Anchor className="w-4 h-4 text-amber-400 animate-pulse" />
-                  <span>ابزار Anchor فعال است: با کلیک و درگ روی چارت، بازه مورد نظر را انتخاب کنید.</span>
+                  <span>ابزار Anchor: با کلیک و درگ روی چارت، دو نقطه را مشخص کنید.</span>
                 </>
               ) : (
                 <>
                   <Square className="w-4 h-4 text-sky-400 animate-pulse" />
-                  <span>ابزار مربع فعال است: با کلیک و درگ روی چارت، باکس مورد نظر را بکشید.</span>
+                  <span>ابزار مربع: با کلیک و درگ روی چارت، باکس مورد نظر را بکشید.</span>
                 </>
               )}
             </div>
@@ -1210,13 +1506,6 @@ export const TradingChart: React.FC<TradingChartProps> = ({
                 <div className="w-8 h-8 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
                 <span className="text-xs font-medium text-gray-300">دریافت کندل‌های {symbol} از بایننس...</span>
               </div>
-            </div>
-          )}
-
-          {/* Fallback notification pill if live endpoints failed */}
-          {dataSource === 'fallback' && (
-            <div className="absolute bottom-4 left-4 z-10 px-3 py-1.5 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs backdrop-blur-md">
-              داده‌های شبیه‌سازی شده بازار (عدم دسترسی موقت به وب‌سرویس بایننس)
             </div>
           )}
         </div>

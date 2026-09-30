@@ -2,8 +2,6 @@ import React from 'react';
 import {
   Activity,
   BarChart3,
-  MousePointer,
-  Sparkles,
 } from 'lucide-react';
 import { CryptoPair } from '../types/crypto';
 import { PairSelector } from './PairSelector';
@@ -60,29 +58,6 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {/* ATR Metrics Bar in Points (ATR 55, 2*ATR 55, 3*ATR 55) */}
           <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 text-xs">
-            {/* Hover indicator pill */}
-            <div
-              className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-medium transition-colors ${
-                isHoveredAtr
-                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-xs'
-                  : 'bg-[#1b212c] text-gray-400 border border-[#2b323f]'
-              }`}
-              title={isHoveredAtr ? `محاسبه توان حرکتی در زمان: ${hoveredDate || ''}` : 'محاسبه در آخرین کندل زنده'}
-            >
-              {isHoveredAtr ? (
-                <>
-                  <MousePointer className="w-3 h-3 text-amber-400 animate-pulse" />
-                  <span>زمان موس:</span>
-                  <span className="font-mono text-white font-semibold text-[10px]">{hoveredDate}</span>
-                </>
-              ) : (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                  <span>کندل جاری</span>
-                </>
-              )}
-            </div>
-
             {/* ATR(55) in Points */}
             <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#1f2633] border border-amber-500/30 shadow-xs">
               <div className="flex flex-col">
