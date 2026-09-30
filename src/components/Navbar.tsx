@@ -1,0 +1,159 @@
+import React from 'react';
+import {
+  Activity,
+  BarChart3,
+  MousePointer,
+  Sparkles,
+} from 'lucide-react';
+import { CryptoPair } from '../types/crypto';
+import { PairSelector } from './PairSelector';
+import { formatPoints } from '../utils/indicators';
+
+interface NavbarProps {
+  selectedPair: CryptoPair;
+  onSelectPair: (pair: CryptoPair) => void;
+  atr55: number;
+  twoAtr55: number;
+  threeAtr55: number;
+  isHoveredAtr?: boolean;
+  hoveredDate?: string | null;
+  wsStatus: 'connected' | 'reconnecting' | 'disconnected';
+  onOpenDataModal: () => void;
+}
+
+export const Navbar: React.FC<NavbarProps> = ({
+  selectedPair,
+  onSelectPair,
+  atr55,
+  twoAtr55,
+  threeAtr55,
+  isHoveredAtr,
+  hoveredDate,
+  wsStatus,
+  onOpenDataModal,
+}) => {
+  return (
+    <header className="bg-[#181d26] border-b border-[#2b313a] px-3 sm:px-4 py-2">
+      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3">
+        {/* Left side: Brand + Top-Left Pair Selector + ATR Metrics in Points */}
+        <div className="flex flex-wrap items-center gap-3 sm:gap-4">
+          {/* Logo / Brand */}
+          <div className="flex items-center gap-2 pr-3 border-r border-[#2d3443]">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-amber-600 flex items-center justify-center shadow-lg shadow-amber-500/20">
+              <BarChart3 className="w-5 h-5 text-black" />
+            </div>
+            <div>
+              <div className="flex items-center gap-1.5">
+                <span className="font-extrabold text-white text-sm tracking-wider">STRATEGY</span>
+                <span className="font-black text-amber-400 text-sm">LAB</span>
+              </div>
+              <span className="text-[10px] text-gray-400 block -mt-0.5">Binance Market Data</span>
+            </div>
+          </div>
+
+          {/* Top-Left Currency Selector (بالا سمت چپ انتخاب ارز) */}
+          <PairSelector
+            selectedPair={selectedPair}
+            onSelectPair={onSelectPair}
+            ticker={null}
+          />
+
+          {/* ATR Metrics Bar in Points (ATR 55, 2*ATR 55, 3*ATR 55) */}
+          <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 text-xs">
+            {/* Hover indicator pill */}
+            <div
+              className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-medium transition-colors ${
+                isHoveredAtr
+                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-xs'
+                  : 'bg-[#1b212c] text-gray-400 border border-[#2b323f]'
+              }`}
+              title={isHoveredAtr ? `محاسبه توان حرکتی در زمان: ${hoveredDate || ''}` : 'محاسبه در آخرین کندل زنده'}
+            >
+              {isHoveredAtr ? (
+                <>
+                  <MousePointer className="w-3 h-3 text-amber-400 animate-pulse" />
+                  <span>زمان موس:</span>
+                  <span className="font-mono text-white font-semibold text-[10px]">{hoveredDate}</span>
+                </>
+              ) : (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  <span>کندل جاری</span>
+                </>
+              )}
+            </div>
+
+            {/* ATR(55) in Points */}
+            <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#1f2633] border border-amber-500/30 shadow-xs">
+              <div className="flex flex-col">
+                <span className="text-[10px] font-semibold text-amber-400 tracking-wider font-mono leading-tight">
+                  ATR (55)
+                </span>
+                <span className="text-xs sm:text-sm font-bold font-mono text-white leading-tight">
+                  {formatPoints(atr55)} <span className="text-[10px] text-amber-400 font-normal">pts</span>
+                </span>
+              </div>
+            </div>
+
+            {/* 2*ATR(55) in Points */}
+            <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#1f2633] border border-sky-500/30 shadow-xs">
+              <div className="flex flex-col">
+                <span className="text-[10px] font-semibold text-sky-400 tracking-wider font-mono leading-tight">
+                  2*ATR (55)
+                </span>
+                <span className="text-xs sm:text-sm font-bold font-mono text-white leading-tight">
+                  {formatPoints(twoAtr55)} <span className="text-[10px] text-sky-400 font-normal">pts</span>
+                </span>
+              </div>
+            </div>
+
+            {/* 3*ATR(55) in Points */}
+            <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#1f2633] border border-purple-500/30 shadow-xs">
+              <div className="flex flex-col">
+                <span className="text-[10px] font-semibold text-purple-400 tracking-wider font-mono leading-tight">
+                  3*ATR (55)
+                </span>
+                <span className="text-xs sm:text-sm font-bold font-mono text-white leading-tight">
+                  {formatPoints(threeAtr55)} <span className="text-[10px] text-purple-400 font-normal">pts</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Right side: Raw Data Modal + WS Status */}
+        <div className="flex items-center gap-2.5 self-end xl:self-center">
+          {/* Quick Raw OHLCV Table button */}
+          <button
+            onClick={onOpenDataModal}
+            className="px-2.5 py-1.5 rounded-lg bg-[#222834] hover:bg-[#2b3342] text-xs text-gray-300 hover:text-white border border-[#303848] transition-colors cursor-pointer flex items-center gap-1.5"
+            title="مشاهده جدول خام مقادیر کندل‌ها"
+          >
+            <Activity className="w-3.5 h-3.5 text-amber-400" />
+            <span className="hidden sm:inline">داده‌های خام کندل</span>
+          </button>
+
+          {/* WebSocket Status Indicator */}
+          <div
+            className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-[#131720] border border-[#262d3a] text-[11px]"
+            title={`وضعیت اتصال داده زنده بایننس: ${wsStatus}`}
+          >
+            <span
+              className={`w-2 h-2 rounded-full ${
+                wsStatus === 'connected'
+                  ? 'bg-emerald-400 shadow-[0_0_8px_#34d399]'
+                  : wsStatus === 'reconnecting'
+                  ? 'bg-amber-400 animate-ping'
+                  : 'bg-rose-500'
+              }`}
+            />
+            <span className="text-gray-400 font-mono text-[10px] uppercase">
+              {wsStatus === 'connected' ? 'LIVE STREAM' : wsStatus}
+            </span>
+          </div>
+        </div>
+      </div>
+    </header>
+  );
+};
+
