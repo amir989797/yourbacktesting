@@ -4,6 +4,7 @@ import {
   BarChart3,
   Settings,
   HelpCircle,
+  Zap,
 } from 'lucide-react';
 import { CryptoPair } from '../types/crypto';
 import { PairSelector } from './PairSelector';
@@ -23,6 +24,8 @@ interface NavbarProps {
   onOpenDataModal: () => void;
   onOpenSettings?: () => void;
   onOpenGuide?: () => void;
+  onToggleStrategy?: () => void;
+  isStrategyOpen?: boolean;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -39,6 +42,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenDataModal,
   onOpenSettings,
   onOpenGuide,
+  onToggleStrategy,
+  isStrategyOpen,
 }) => {
   // محاسبات درصدی نسبت به باکس اول (ATR)
   const safeAtr = currentAtr > 0 ? currentAtr : 1;
@@ -173,8 +178,25 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         </div>
 
-        {/* Right side: Raw Data Modal + WS Status */}
-        <div className="flex items-center gap-2.5 self-end xl:self-center">
+        {/* Right side: Strategy Button + Raw Data Modal + WS Status */}
+        <div className="flex items-center gap-2 self-end xl:self-center">
+          {/* Strategy Toggle Button */}
+          {onToggleStrategy && (
+            <button
+              onClick={onToggleStrategy}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-md ${
+                isStrategyOpen
+                  ? 'bg-amber-400 text-black shadow-amber-500/25 ring-2 ring-amber-400/50'
+                  : 'bg-[#222834] text-amber-300 hover:text-white hover:bg-[#2b3342] border border-amber-500/40'
+              }`}
+              title="باز و بسته کردن پنل استراتژی معاملاتی"
+            >
+              <Zap className="w-3.5 h-3.5 fill-current" />
+              <span>استراتژی</span>
+              <span className="text-[10px] opacity-75 font-mono">E-Break</span>
+            </button>
+          )}
+
           {/* Quick Raw OHLCV Table button */}
           <button
             onClick={onOpenDataModal}

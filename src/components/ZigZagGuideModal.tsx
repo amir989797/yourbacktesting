@@ -61,18 +61,46 @@ export const ZigZagGuideModal: React.FC<ZigZagGuideModalProps> = ({
                 <span className="text-white font-bold">white leg:</span> length &gt;= {atrMult}ATR , count &gt;= {minC} candle
               </div>
               <div className="text-[#00E676]">
-                <span className="text-emerald-400 font-bold">green leg (bullish giant):</span> direction = UP , length &gt;= {longLegAtrMult}ATR ({Math.round(longLegAtrMult * 100)}%) , count &gt;= {minLongC} candle
+                <span className="text-emerald-400 font-bold">green leg (bullish giant):</span> direction = UP , length &gt;= {longLegAtrMult}ATR ({Math.round(longLegAtrMult * 100)}%) , count &gt;= {minLongC} candle <span className="text-amber-300 font-bold ml-1">[Start: A , End: B]</span>
               </div>
               <div className="text-[#FF1744]">
-                <span className="text-rose-400 font-bold">red leg (bearish giant):</span> direction = DOWN , length &gt;= {longLegAtrMult}ATR ({Math.round(longLegAtrMult * 100)}%) , count &gt;= {minLongC} candle
+                <span className="text-rose-400 font-bold">red leg (bearish giant):</span> direction = DOWN , length &gt;= {longLegAtrMult}ATR ({Math.round(longLegAtrMult * 100)}%) , count &gt;= {minLongC} candle <span className="text-amber-300 font-bold ml-1">[Start: A , End: B]</span>
               </div>
               <div className="text-[#00E5FF]">
-                <span className="text-cyan-400 font-bold">light blue leg:</span> 2nd or 4th leg after green/red (G+2, or G+4 if G+2 fails) , breaks green/red end price , breakout &lt;= 5ATR
+                <span className="text-cyan-400 font-bold">light blue leg:</span> 2nd or 4th leg after green/red , breaks green/red end price , breakout &lt;= 5ATR <span className="text-amber-300 font-bold ml-1">[Start: C , End: D]</span>
               </div>
               <div className="text-[#60A5FA]">
-                <span className="text-blue-500 font-bold">dark blue leg:</span> 2nd or 4th leg after light blue (B+2, or B+4 if B+2 fails) , breaks light blue end price , breakout &lt;= 5ATR
+                <span className="text-blue-500 font-bold">dark blue leg:</span> 2nd or 4th leg after light blue , breaks light blue end price , breakout &lt;= 5ATR <span className="text-amber-300 font-bold ml-1">[Start: E , End: F]</span>
               </div>
             </div>
+          </div>
+
+          {/* Points Naming Guide (A, B, C, D, E, F) */}
+          <div className="p-3.5 rounded-xl bg-[#121722] border border-amber-500/30">
+            <h4 className="text-xs font-bold text-amber-400 mb-2 flex items-center gap-1.5">
+              <span>🏷️</span>
+              <span>راهنمای حروف و برچسب نقاط عطف (Points Labels):</span>
+            </h4>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px]">
+              <div className="p-2.5 rounded-lg bg-[#0e1713] border border-emerald-500/30 text-emerald-300">
+                <div className="font-bold text-white mb-1">لگ سبز / قرمز:</div>
+                <div>شروع لگ: <strong className="text-amber-400 font-mono text-xs">A</strong></div>
+                <div>پایان لگ: <strong className="text-amber-400 font-mono text-xs">B</strong></div>
+              </div>
+              <div className="p-2.5 rounded-lg bg-[#0c1824] border border-cyan-500/30 text-cyan-300">
+                <div className="font-bold text-white mb-1">لگ آبی کم‌رنگ:</div>
+                <div>شروع لگ: <strong className="text-amber-400 font-mono text-xs">C</strong></div>
+                <div>پایان لگ: <strong className="text-amber-400 font-mono text-xs">D</strong></div>
+              </div>
+              <div className="p-2.5 rounded-lg bg-[#0d1629] border border-blue-500/30 text-blue-300">
+                <div className="font-bold text-white mb-1">لگ آبی پررنگ:</div>
+                <div>شروع لگ: <strong className="text-amber-400 font-mono text-xs">E</strong></div>
+                <div>پایان لگ: <strong className="text-amber-400 font-mono text-xs">F</strong></div>
+              </div>
+            </div>
+            <p className="text-[10px] text-gray-400 mt-2 leading-relaxed">
+              * حروف قله‌ها (High) در بالای نقطه و حروف کف‌ها (Low) در پایین نقطه با فونت کوچک و نشانگر رنگی نمایش داده می‌شوند.
+            </p>
           </div>
 
           {/* SECTION 2: Detailed Persian Explanations */}

@@ -29,8 +29,10 @@ import {
   TrendingUp,
   Sliders,
   Settings,
+  Zap,
 } from 'lucide-react';
 import { CandleData, ChartType, Timeframe, ZigZagSettings } from '../types/crypto';
+import { StrategyTrade, TradeStatus } from '../types/strategy';
 import {
   formatPrice,
   formatVolume,
@@ -71,6 +73,15 @@ interface DrawnRectangle {
   logical2: Logical | null;
 }
 
+interface ZigZagCoord {
+  x: number;
+  y: number;
+  colorHex: string;
+  isHighlighted: boolean;
+  label?: 'A' | 'B' | 'C' | 'D' | 'E' | 'F';
+  pointType?: 'high' | 'low';
+}
+
 interface TradingChartProps {
   candles: CandleData[];
   symbol: string;
@@ -93,6 +104,28 @@ interface TradingChartProps {
   zigzagSettings?: ZigZagSettings;
   onUpdateZigZagSettings?: (settings: ZigZagSettings) => void;
   onOpenSettingsModal?: () => void;
+  strategyTrades?: StrategyTrade[];
+  showStrategyTrades?: boolean;
+  onToggleStrategyPanel?: () => void;
+  isStrategyPanelOpen?: boolean;
+}
+
+interface RenderedTrade {
+  id: string;
+  direction: 'BUY' | 'SELL';
+  status: TradeStatus;
+  xEntry: number;
+  yEntry: number;
+  xExit: number;
+  yTP: number;
+  ySL: number;
+  entryPrice: number;
+  takeProfit: number;
+  stopLoss: number;
+  riskReward: number;
+  pnl: number;
+  candlesRemaining?: number;
+  waitingForPostLeg?: boolean;
 }
 
 export const TradingChart: React.FC<TradingChartProps> = ({
@@ -110,6 +143,10 @@ export const TradingChart: React.FC<TradingChartProps> = ({
   zigzagSettings,
   onUpdateZigZagSettings,
   onOpenSettingsModal,
+  strategyTrades,
+  showStrategyTrades = true,
+  onToggleStrategyPanel,
+  isStrategyPanelOpen,
 }) => {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -149,9 +186,8 @@ export const TradingChart: React.FC<TradingChartProps> = ({
   const [renderedLegs, setRenderedLegs] = useState<
     (ZigZagLeg & { x1: number; y1: number; x2: number; y2: number })[]
   >([]);
-  const [zigzagCoords, setZigzagCoords] = useState<
-    { x: number; y: number; colorHex: string; isHighlighted: boolean }[]
-  >([]);
+  const [zigzagCoords, setZigzagCoords] = useState<ZigZagCoord[]>([]);
+  const [renderedTrades, setRenderedTrades] = useState<RenderedTrade[]>([]);
 
   const dragStartRef = useRef<{
     x: number;
@@ -448,7 +484,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
           }
           setRenderedLegs(projectedLegs);
 
-          const coords: { x: number; y: number; colorHex: string; isHighlighted: boolean }[] = [];
+          const coords: ZigZagCoord[] = [];
           for (let i = 0; i < zgPoints.length; i++) {
             const pt = zgPoints[i];
             const x = timeScale.timeToCoordinate(pt.time as UTCTimestamp);
@@ -470,11 +506,27 @@ export const TradingChart: React.FC<TradingChartProps> = ({
                 colorHex = '#00E5FF';
                 isHighlighted = true;
               } else if (activeLeg?.color === 'dark_blue') {
-                colorHex = '#1D4ED8';
+                colorHex = '#3B82F6';
                 isHighlighted = true;
               }
 
-              coords.push({ x, y, colorHex, isHighlighted });
+              // Explicit letter coloring matching user rules
+              if (pt.label === 'C' || pt.label === 'D') {
+                colorHex = '#00E5FF'; // آبی کم‌رنگ
+                isHighlighted = true;
+              } else if (pt.label === 'E' || pt.label === 'F') {
+                colorHex = '#3B82F6'; // آبی پررنگ
+                isHighlighted = true;
+              }
+
+              coords.push({
+                x,
+                y,
+                colorHex,
+                isHighlighted,
+                label: pt.label,
+                pointType: pt.type,
+              });
             }
           }
           setZigzagCoords(coords);
@@ -667,7 +719,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         }
         setRenderedLegs(projectedLegs);
 
-        const coords: { x: number; y: number; colorHex: string; isHighlighted: boolean }[] = [];
+        const coords: ZigZagCoord[] = [];
         for (let i = 0; i < zigzagPoints.length; i++) {
           const pt = zigzagPoints[i];
           const x = timeScale.timeToCoordinate(pt.time as UTCTimestamp);
@@ -689,14 +741,64 @@ export const TradingChart: React.FC<TradingChartProps> = ({
               colorHex = '#00E5FF';
               isHighlighted = true;
             } else if (activeLeg?.color === 'dark_blue') {
-              colorHex = '#1D4ED8';
+              colorHex = '#3B82F6';
               isHighlighted = true;
             }
 
-            coords.push({ x, y, colorHex, isHighlighted });
+            if (pt.label === 'C' || pt.label === 'D') {
+              colorHex = '#00E5FF';
+              isHighlighted = true;
+            } else if (pt.label === 'E' || pt.label === 'F') {
+              colorHex = '#3B82F6';
+              isHighlighted = true;
+            }
+
+            coords.push({
+              x,
+              y,
+              colorHex,
+              isHighlighted,
+              label: pt.label,
+              pointType: pt.type,
+            });
           }
         }
         setZigzagCoords(coords);
+      }
+
+      // Update Strategy Trades coordinates on chart navigation
+      if (showStrategyTrades && strategyTrades && strategyTrades.length > 0) {
+        const projs: RenderedTrade[] = [];
+        for (const t of strategyTrades) {
+          const startTime = (t.entryTime || t.timeF) as UTCTimestamp;
+          const endTime = (t.exitTime || candles[candles.length - 1]?.time) as UTCTimestamp;
+          const x1 = timeScale.timeToCoordinate(startTime);
+          const x2 = timeScale.timeToCoordinate(endTime);
+          const yEntry = series.priceToCoordinate(t.entryPrice);
+          const yTP = series.priceToCoordinate(t.takeProfit);
+          const ySL = series.priceToCoordinate(t.stopLoss);
+
+          if (x1 !== null && yEntry !== null) {
+            projs.push({
+              id: t.id,
+              direction: t.direction,
+              status: t.status,
+              xEntry: x1,
+              yEntry,
+              xExit: Math.max(x1 + 35, x2 ?? x1 + 60),
+              yTP: yTP ?? yEntry,
+              ySL: ySL ?? yEntry,
+              entryPrice: t.entryPrice,
+              takeProfit: t.takeProfit,
+              stopLoss: t.stopLoss,
+              riskReward: t.riskReward,
+              pnl: t.pnl,
+              candlesRemaining: t.candlesRemainingToEnter,
+              waitingForPostLeg: t.waitingForPostLeg,
+            });
+          }
+        }
+        setRenderedTrades(projs);
       }
     };
 
@@ -704,7 +806,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     return () => {
       chartRef.current?.timeScale().unsubscribeVisibleLogicalRangeChange(handleRangeOrScaleChange);
     };
-  }, [measurement, rectangles, showZigZag, zigzagPoints, zigzagLegs]);
+  }, [measurement, rectangles, showZigZag, zigzagPoints, zigzagLegs, showStrategyTrades, strategyTrades, candles]);
 
   // Keep ZigZag visuals updated when points or visibility changes
   useEffect(() => {
@@ -728,7 +830,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     }
     setRenderedLegs(projectedLegs);
 
-    const coords: { x: number; y: number; colorHex: string; isHighlighted: boolean }[] = [];
+    const coords: ZigZagCoord[] = [];
     for (let i = 0; i < zigzagPoints.length; i++) {
       const pt = zigzagPoints[i];
       const x = timeScale.timeToCoordinate(pt.time as UTCTimestamp);
@@ -750,15 +852,78 @@ export const TradingChart: React.FC<TradingChartProps> = ({
           colorHex = '#00E5FF';
           isHighlighted = true;
         } else if (activeLeg?.color === 'dark_blue') {
-          colorHex = '#1D4ED8';
+          colorHex = '#3B82F6';
           isHighlighted = true;
         }
 
-        coords.push({ x, y, colorHex, isHighlighted });
+        if (pt.label === 'C' || pt.label === 'D') {
+          colorHex = '#00E5FF';
+          isHighlighted = true;
+        } else if (pt.label === 'E' || pt.label === 'F') {
+          colorHex = '#3B82F6';
+          isHighlighted = true;
+        }
+
+        coords.push({
+          x,
+          y,
+          colorHex,
+          isHighlighted,
+          label: pt.label,
+          pointType: pt.type,
+        });
       }
     }
     setZigzagCoords(coords);
   }, [zigzagPoints, zigzagLegs, showZigZag]);
+
+  // Keep Strategy Trades visuals updated
+  useEffect(() => {
+    if (
+      !chartRef.current ||
+      !candleSeriesRef.current ||
+      !showStrategyTrades ||
+      !strategyTrades ||
+      strategyTrades.length === 0
+    ) {
+      setRenderedTrades([]);
+      return;
+    }
+    const timeScale = chartRef.current.timeScale();
+    const series = candleSeriesRef.current;
+
+    const projs: RenderedTrade[] = [];
+    for (const t of strategyTrades) {
+      const startTime = (t.entryTime || t.timeF) as UTCTimestamp;
+      const endTime = (t.exitTime || candles[candles.length - 1]?.time) as UTCTimestamp;
+      const x1 = timeScale.timeToCoordinate(startTime);
+      const x2 = timeScale.timeToCoordinate(endTime);
+      const yEntry = series.priceToCoordinate(t.entryPrice);
+      const yTP = series.priceToCoordinate(t.takeProfit);
+      const ySL = series.priceToCoordinate(t.stopLoss);
+
+      if (x1 !== null && yEntry !== null) {
+        projs.push({
+          id: t.id,
+          direction: t.direction,
+          status: t.status,
+          xEntry: x1,
+          yEntry,
+          xExit: Math.max(x1 + 35, x2 ?? x1 + 60),
+          yTP: yTP ?? yEntry,
+          ySL: ySL ?? yEntry,
+          entryPrice: t.entryPrice,
+          takeProfit: t.takeProfit,
+          stopLoss: t.stopLoss,
+          riskReward: t.riskReward,
+          pnl: t.pnl,
+          candlesRemaining: t.candlesRemainingToEnter,
+          waitingForPostLeg: t.waitingForPostLeg,
+        });
+      }
+    }
+    setRenderedTrades(projs);
+  }, [strategyTrades, showStrategyTrades, candles]);
 
   // Handle Chart Type changes
   useEffect(() => {
@@ -1232,6 +1397,22 @@ export const TradingChart: React.FC<TradingChartProps> = ({
             )}
           </button>
 
+          {/* 6. STRATEGY PANEL TOGGLE */}
+          {onToggleStrategyPanel && (
+            <button
+              onClick={onToggleStrategyPanel}
+              className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all cursor-pointer relative ${
+                isStrategyPanelOpen
+                  ? 'bg-amber-400 text-black shadow-[0_0_12px_rgba(245,158,11,0.6)] font-bold'
+                  : 'text-amber-400/80 hover:text-amber-300 hover:bg-amber-500/15'
+              }`}
+              title="باز/بستن پنل استراتژی معاملاتی (یک‌سوم صفحه)"
+            >
+              <Zap className="w-4 h-4 fill-current" />
+              <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-400" />
+            </button>
+          )}
+
           {/* Divider */}
           <div className="w-6 h-px bg-[#2a3444] my-1" />
 
@@ -1505,7 +1686,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
                     strokeColor = '#00E5FF'; // آبی روشن (اولین لگ شکننده < 5 ATR)
                     strokeWidth = '3.5';
                   } else if (leg.color === 'dark_blue') {
-                    strokeColor = '#1D4ED8'; // آبی تیره‌تر (لگ دوم بعد از آبی)
+                    strokeColor = '#3B82F6'; // آبی پررنگ (لگ دوم بعد از آبی)
                     strokeWidth = '3.5';
                   }
 
@@ -1536,7 +1717,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
                   );
                 })}
 
-              {/* ZigZag Pivot Dots with matching colors */}
+              {/* ZigZag Pivot Dots and Letter Labels (A, B, C, D, E, F) */}
               {showZigZag &&
                 zigzagCoords.map((pt, idx) => (
                   <g key={`zz-pt-${idx}`}>
@@ -1552,8 +1733,170 @@ export const TradingChart: React.FC<TradingChartProps> = ({
                       strokeWidth="1.5"
                     />
                     <circle cx={pt.x} cy={pt.y} r="1.5" fill="#131722" />
+
+                    {/* Letter Label (A, B for Green/Red; C, D for Light Blue; E, F for Dark Blue) */}
+                    {pt.label && (
+                      <g className="select-none pointer-events-none">
+                        <rect
+                          x={pt.x - 7.5}
+                          y={pt.pointType === 'high' ? pt.y - 23 : pt.y + 9}
+                          width={15}
+                          height={14}
+                          rx={3}
+                          fill="#0b0e14"
+                          fillOpacity="0.95"
+                          stroke={pt.colorHex}
+                          strokeWidth="1.2"
+                        />
+                        <text
+                          x={pt.x}
+                          y={pt.pointType === 'high' ? pt.y - 15.5 : pt.y + 16.5}
+                          textAnchor="middle"
+                          dominantBaseline="central"
+                          fill={pt.colorHex}
+                          fontSize="9.5"
+                          fontWeight="bold"
+                          fontFamily="ui-monospace, monospace"
+                        >
+                          {pt.label}
+                        </text>
+                      </g>
+                    )}
                   </g>
                 ))}
+
+              {/* Strategy 1 Trades & Levels Overlay (Entry E, Stop F, Target A) */}
+              {showStrategyTrades &&
+                renderedTrades.map((rt) => {
+                  const isBuy = rt.direction === 'BUY';
+                  const isWin = rt.status === 'WIN';
+                  const isLoss = rt.status === 'LOSS';
+                  const isActive = rt.status === 'ACTIVE';
+
+                  return (
+                    <g key={`trade-exec-${rt.id}`}>
+                      {/* Entry Price Line (Amber) */}
+                      <line
+                        x1={rt.xEntry}
+                        y1={rt.yEntry}
+                        x2={rt.xExit}
+                        y2={rt.yEntry}
+                        stroke="#f59e0b"
+                        strokeWidth="1.5"
+                        strokeDasharray="3 3"
+                        strokeOpacity="0.85"
+                      />
+
+                      {/* Take Profit Line (Emerald / Green) */}
+                      <line
+                        x1={rt.xEntry}
+                        y1={rt.yTP}
+                        x2={rt.xExit}
+                        y2={rt.yTP}
+                        stroke="#10b981"
+                        strokeWidth="1.5"
+                        strokeDasharray="4 2"
+                      />
+                      <g transform={`translate(${rt.xExit + 2}, ${rt.yTP - 8})`}>
+                        <rect
+                          x={0}
+                          y={0}
+                          width={46}
+                          height={14}
+                          rx={2}
+                          fill="#064e3b"
+                          stroke="#10b981"
+                          strokeWidth="0.8"
+                          fillOpacity="0.9"
+                        />
+                        <text
+                          x={23}
+                          y={10}
+                          textAnchor="middle"
+                          fill="#34d399"
+                          fontSize="8"
+                          fontWeight="bold"
+                          fontFamily="monospace"
+                        >
+                          TP (A)
+                        </text>
+                      </g>
+
+                      {/* Stop Loss Line (Rose / Red) */}
+                      <line
+                        x1={rt.xEntry}
+                        y1={rt.ySL}
+                        x2={rt.xExit}
+                        y2={rt.ySL}
+                        stroke="#f43f5e"
+                        strokeWidth="1.5"
+                        strokeDasharray="4 2"
+                      />
+                      <g transform={`translate(${rt.xExit + 2}, ${rt.ySL - 8})`}>
+                        <rect
+                          x={0}
+                          y={0}
+                          width={46}
+                          height={14}
+                          rx={2}
+                          fill="#881337"
+                          stroke="#f43f5e"
+                          strokeWidth="0.8"
+                          fillOpacity="0.9"
+                        />
+                        <text
+                          x={23}
+                          y={10}
+                          textAnchor="middle"
+                          fill="#fb7185"
+                          fontSize="8"
+                          fontWeight="bold"
+                          fontFamily="monospace"
+                        >
+                          SL (F)
+                        </text>
+                      </g>
+
+                      {/* Vertical connector line */}
+                      <line
+                        x1={rt.xEntry}
+                        y1={Math.min(rt.yTP, rt.ySL)}
+                        x2={rt.xEntry}
+                        y2={Math.max(rt.yTP, rt.ySL)}
+                        stroke="#64748b"
+                        strokeWidth="1"
+                        strokeDasharray="2 2"
+                        strokeOpacity="0.6"
+                      />
+
+                      {/* Entry Badge */}
+                      <g transform={`translate(${rt.xEntry - 28}, ${isBuy ? rt.yEntry + 8 : rt.yEntry - 22})`}>
+                        <rect
+                          x={0}
+                          y={0}
+                          width={56}
+                          height={16}
+                          rx={3}
+                          fill={isBuy ? '#064e3b' : '#881337'}
+                          stroke={isBuy ? '#10b981' : '#f43f5e'}
+                          strokeWidth="1"
+                          fillOpacity="0.95"
+                        />
+                        <text
+                          x={28}
+                          y={11}
+                          textAnchor="middle"
+                          fill="#ffffff"
+                          fontSize="8.5"
+                          fontWeight="bold"
+                          fontFamily="ui-monospace, monospace"
+                        >
+                          {isBuy ? '▲ BUY' : '▼ SELL'} {isWin ? '✓' : isLoss ? '✗' : isActive ? '●' : ''}
+                        </text>
+                      </g>
+                    </g>
+                  );
+                })}
             </svg>
 
             {/* EXACT 4-ITEM INFO BOX - 100% IN ENGLISH */}

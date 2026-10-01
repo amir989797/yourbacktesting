@@ -194,6 +194,7 @@ export interface ZigZagPoint {
   legPoints: number;
   legAtrRatio: number;
   candleIndex?: number;
+  label?: 'A' | 'B' | 'C' | 'D' | 'E' | 'F';
 }
 
 /**
@@ -479,6 +480,11 @@ export interface ZigZagLeg {
   color: 'white' | 'green' | 'red' | 'blue' | 'dark_blue';
   isGiantLeg?: boolean;
   breaksGiantLegIndex?: number;
+  startLabel?: 'A' | 'C' | 'E';
+  endLabel?: 'B' | 'D' | 'F';
+  cycleGiantLegIndex?: number;
+  cyclePointAPrice?: number;
+  cyclePointATime?: number;
 }
 
 /**
@@ -541,10 +547,14 @@ export function analyzeZigZagLegs(
   }
 
   // Sequential cycle detection:
-  // Step 1: Find next giant leg (Green/Red: >= 10 ATR and > 20 candles)
-  // Step 2: آبی کم‌رنگ: لگ دوم بعد از سبز یا قرمز (giantIdx + 2) که انتهای لگ سبز یا قرمز را شکسته باشد
-  // Step 3: آبی پررنگ: لگ دوم بعد از آبی کم‌رنگ (blueIdx + 2) که انتهای آن‌را شکسته باشد
+  // Step 1: Find next giant leg (Green/Red: >= 10 ATR and > 20 candles) -> Label start: A, end: B
+  // Step 2: آبی کم‌رنگ: لگ دوم یا چهارم بعد از سبز یا قرمز که انتهای آن‌را شکسته باشد -> Label start: C, end: D
+  // Step 3: آبی پررنگ: لگ دوم یا چهارم بعد از آبی کم‌رنگ که انتهای آن‌را شکسته باشد -> Label start: E, end: F
   // Step 4: پس از این چرخه، تا شرایط تشکیل قرمز یا سبز مجدد صبر کن
+  for (const p of points) {
+    p.label = undefined;
+  }
+
   let searchIdx = 0;
   while (searchIdx < legs.length) {
     let giantIdx = -1;
@@ -559,6 +569,18 @@ export function analyzeZigZagLegs(
 
     const giant = legs[giantIdx];
     const targetPrice = giant.endPrice;
+    const cycleGiantLegIndex = giant.index;
+    const cyclePointAPrice = giant.startPrice;
+    const cyclePointATime = giant.startTime;
+
+    // Label giant leg: Start = A, End = B
+    points[giant.startIndex].label = 'A';
+    points[giant.endIndex].label = 'B';
+    giant.startLabel = 'A';
+    giant.endLabel = 'B';
+    giant.cycleGiantLegIndex = cycleGiantLegIndex;
+    giant.cyclePointAPrice = cyclePointAPrice;
+    giant.cyclePointATime = cyclePointATime;
 
     // آبی کم‌رنگ: دقیقاً لگ دوم بعد از سبز یا قرمز (giantIdx + 2)
     const g2Index = giantIdx + 2;
@@ -591,7 +613,14 @@ export function analyzeZigZagLegs(
       if (brokeGiant && within5AtrG2 && !g2.isGiantLeg) {
         g2.color = 'blue';
         g2.breaksGiantLegIndex = giant.index;
+        g2.cycleGiantLegIndex = cycleGiantLegIndex;
+        g2.cyclePointAPrice = cyclePointAPrice;
+        g2.cyclePointATime = cyclePointATime;
         blueIdx = g2Index;
+        points[g2.startIndex].label = 'C';
+        points[g2.endIndex].label = 'D';
+        g2.startLabel = 'C';
+        g2.endLabel = 'D';
       }
     }
 
@@ -622,7 +651,14 @@ export function analyzeZigZagLegs(
           if (brokeGiant4 && within5AtrG4 && !g4.isGiantLeg) {
             g4.color = 'blue';
             g4.breaksGiantLegIndex = giant.index;
+            g4.cycleGiantLegIndex = cycleGiantLegIndex;
+            g4.cyclePointAPrice = cyclePointAPrice;
+            g4.cyclePointATime = cyclePointATime;
             blueIdx = g4Index;
+            points[g4.startIndex].label = 'C';
+            points[g4.endIndex].label = 'D';
+            g4.startLabel = 'C';
+            g4.endLabel = 'D';
           }
         }
       }
@@ -660,8 +696,15 @@ export function analyzeZigZagLegs(
 
         if (brokeBlue && within5AtrB2 && !b2.isGiantLeg) {
           b2.color = 'dark_blue';
+          b2.cycleGiantLegIndex = cycleGiantLegIndex;
+          b2.cyclePointAPrice = cyclePointAPrice;
+          b2.cyclePointATime = cyclePointATime;
           darkBlueIdx = b2Index;
           nextSearch = b2Index + 1;
+          points[b2.startIndex].label = 'E';
+          points[b2.endIndex].label = 'F';
+          b2.startLabel = 'E';
+          b2.endLabel = 'F';
         }
       }
 
@@ -693,7 +736,14 @@ export function analyzeZigZagLegs(
 
             if (brokeBlue4 && within5AtrB4 && !b4.isGiantLeg) {
               b4.color = 'dark_blue';
+              b4.cycleGiantLegIndex = cycleGiantLegIndex;
+              b4.cyclePointAPrice = cyclePointAPrice;
+              b4.cyclePointATime = cyclePointATime;
               nextSearch = b4Index + 1;
+              points[b4.startIndex].label = 'E';
+              points[b4.endIndex].label = 'F';
+              b4.startLabel = 'E';
+              b4.endLabel = 'F';
             }
           }
         }

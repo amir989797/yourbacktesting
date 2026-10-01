@@ -1,12 +1,16 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { CryptoPair, CandleData, Timeframe, ZigZagSettings } from './types/crypto';
 import { POPULAR_PAIRS, fetchKlines, subscribeToKlineStream } from './services/binance';
-import { calculateATR } from './utils/indicators';
+import { calculateATR, calculateAtrZigZag, analyzeZigZagLegs } from './utils/indicators';
+import { StrategyConfig, DEFAULT_STRATEGY_CONFIG } from './types/strategy';
+import { runStrategy1Backtest } from './utils/strategyEngine';
 import { Navbar } from './components/Navbar';
 import { TradingChart } from './components/TradingChart';
 import { CandleDataModal } from './components/CandleDataModal';
 import { ZigZagSettingsModal, DEFAULT_ZIGZAG_SETTINGS } from './components/ZigZagSettingsModal';
 import { ZigZagGuideModal } from './components/ZigZagGuideModal';
+import { StrategyPanel } from './components/StrategyPanel';
+import { Zap } from 'lucide-react';
 
 export default function App() {
   const [selectedPair, setSelectedPair] = useState<CryptoPair>(POPULAR_PAIRS[0]);
@@ -18,6 +22,41 @@ export default function App() {
   const [isDataModalOpen, setIsDataModalOpen] = useState<boolean>(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
   const [isGuideModalOpen, setIsGuideModalOpen] = useState<boolean>(false);
+
+  // Strategy Panel Open/Close state (persisted)
+  const [isStrategyOpen, setIsStrategyOpen] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('is_strategy_panel_open');
+      if (saved !== null) return saved === 'true';
+    } catch {}
+    return true; // Open by default
+  });
+
+  const handleToggleStrategy = () => {
+    setIsStrategyOpen((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('is_strategy_panel_open', String(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  // Strategy Configuration state (persisted)
+  const [strategyConfig, setStrategyConfig] = useState<StrategyConfig>(() => {
+    try {
+      const saved = localStorage.getItem('trading_strategy_config');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return DEFAULT_STRATEGY_CONFIG;
+  });
+
+  const handleUpdateStrategyConfig = (newConfig: StrategyConfig) => {
+    setStrategyConfig({ ...newConfig });
+    try {
+      localStorage.setItem('trading_strategy_config', JSON.stringify(newConfig));
+    } catch {}
+  };
 
   // Configurable ZigZag & ATR Settings (persisted in localStorage)
   const [zigzagSettings, setZigzagSettings] = useState<ZigZagSettings>(() => {
@@ -102,6 +141,40 @@ export default function App() {
     return calculateATR(candles, zigzagSettings.atrPeriod);
   }, [candles, zigzagSettings.atrPeriod]);
 
+  // Synchronized ZigZag points and analyzed legs for strategy engine
+  const zigzagData = useMemo(() => {
+    if (candles.length === 0) return { points: [], legs: [] };
+    const { points } = calculateAtrZigZag(
+      candles,
+      atrMetrics.atrValues,
+      zigzagSettings.atrMultiplier,
+      zigzagSettings.minCandles
+    );
+    const legs = analyzeZigZagLegs(
+      points,
+      zigzagSettings.minCandlesForLongLeg,
+      zigzagSettings.longLegAtrMultiplier
+    );
+    return { points, legs };
+  }, [
+    candles,
+    atrMetrics.atrValues,
+    zigzagSettings.atrMultiplier,
+    zigzagSettings.minCandles,
+    zigzagSettings.minCandlesForLongLeg,
+    zigzagSettings.longLegAtrMultiplier,
+  ]);
+
+  // Run Strategy 1 Backtest and Real-time signals
+  const strategyResult = useMemo(() => {
+    return runStrategy1Backtest(
+      candles,
+      zigzagData.points,
+      zigzagData.legs,
+      strategyConfig
+    );
+  }, [candles, zigzagData.points, zigzagData.legs, strategyConfig]);
+
   const isHovering = Boolean(hoveredAtrData?.isHovering);
   const currentAtr = isHovering ? hoveredAtrData!.atr : atrMetrics.currentATR;
   const currentTwoAtr = isHovering ? hoveredAtrData!.twoAtr : atrMetrics.twoATR;
@@ -129,28 +202,69 @@ export default function App() {
           onOpenDataModal={() => setIsDataModalOpen(true)}
           onOpenSettings={() => setIsSettingsModalOpen(true)}
           onOpenGuide={() => setIsGuideModalOpen(true)}
+          onToggleStrategy={handleToggleStrategy}
+          isStrategyOpen={isStrategyOpen}
         />
       </div>
 
-      {/* 2. Main Full-Height & Full-Width Trading Chart (with Anchor Point & Measure tool) */}
-      <main className="flex-1 w-full h-full min-h-0 overflow-hidden flex flex-col p-1 sm:p-2">
-        <TradingChart
-          candles={candles}
-          symbol={selectedPair.symbol}
-          timeframe={timeframe}
-          onTimeframeChange={setTimeframe}
-          isLoading={isLoading}
-          dataSource={dataSource}
-          onRefresh={loadMarketData}
-          atrValues={atrMetrics.atrValues}
-          atrMap={atrMetrics.atrMap}
-          latestAtr={atrMetrics.currentATR}
-          onHoverAtr={(data) => setHoveredAtrData(data)}
-          zigzagSettings={zigzagSettings}
-          onUpdateZigZagSettings={handleUpdateZigZagSettings}
-          onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
-        />
-      </main>
+      {/* 2. Main Workspace: Chart (2/3) + Strategy Panel (1/3) on the right */}
+      <div className="flex-1 w-full min-h-0 flex flex-col lg:flex-row overflow-hidden relative">
+        {/* Main Chart: takes ~2/3 (67%) when strategy is open, 100% when closed */}
+        <main
+          className={`h-full min-h-0 min-w-0 transition-all duration-200 flex flex-col p-1 sm:p-2 ${
+            isStrategyOpen ? 'w-full lg:w-[67%] xl:w-[70%]' : 'w-full'
+          }`}
+        >
+          <TradingChart
+            candles={candles}
+            symbol={selectedPair.symbol}
+            timeframe={timeframe}
+            onTimeframeChange={setTimeframe}
+            isLoading={isLoading}
+            dataSource={dataSource}
+            onRefresh={loadMarketData}
+            atrValues={atrMetrics.atrValues}
+            atrMap={atrMetrics.atrMap}
+            latestAtr={atrMetrics.currentATR}
+            onHoverAtr={(data) => setHoveredAtrData(data)}
+            zigzagSettings={zigzagSettings}
+            onUpdateZigZagSettings={handleUpdateZigZagSettings}
+            onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
+            strategyTrades={strategyResult.trades}
+            showStrategyTrades={strategyConfig.showOnChart}
+            onToggleStrategyPanel={handleToggleStrategy}
+            isStrategyPanelOpen={isStrategyOpen}
+          />
+        </main>
+
+        {/* Quick Docked Button on the Right edge when Strategy Panel is closed */}
+        {!isStrategyOpen && (
+          <button
+            onClick={handleToggleStrategy}
+            className="hidden lg:flex absolute right-0 top-1/2 -translate-y-1/2 z-30 bg-[#1e2533] hover:bg-amber-400 text-amber-400 hover:text-black border-l border-y border-amber-500/40 rounded-l-xl px-2 py-3.5 shadow-2xl transition-all flex-col items-center gap-2 cursor-pointer group"
+            title="باز کردن پنل استراتژی معاملاتی (یک‌سوم صفحه)"
+          >
+            <Zap className="w-4 h-4 fill-current group-hover:scale-110 transition-transform" />
+            <span className="text-[11px] font-bold [writing-mode:vertical-rl] tracking-widest font-sans">
+              استراتژی E-Break
+            </span>
+          </button>
+        )}
+
+        {/* Strategy Panel: Takes ~1/3 (33%) on the right side of the screen */}
+        {isStrategyOpen && (
+          <div className="w-full lg:w-[33%] xl:w-[30%] min-w-[320px] max-w-[500px] h-full shrink-0 min-h-0 overflow-hidden border-t lg:border-t-0 lg:border-l border-[#232b3a] z-20">
+            <StrategyPanel
+              isOpen={isStrategyOpen}
+              onClose={() => setIsStrategyOpen(false)}
+              config={strategyConfig}
+              onUpdateConfig={handleUpdateStrategyConfig}
+              trades={strategyResult.trades}
+              metrics={strategyResult.metrics}
+            />
+          </div>
+        )}
+      </div>
 
       {/* 3. OHLCV Raw Data Inspector Modal */}
       <CandleDataModal
