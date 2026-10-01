@@ -203,7 +203,8 @@ export interface ZigZagPoint {
 export function calculateAtrZigZag(
   candles: CandleData[],
   atrValues: number[],
-  atrMultiplier: number = 3
+  atrMultiplier: number = 3,
+  minCandles: number = 3
 ): {
   points: ZigZagPoint[];
   series: { time: number; value: number }[];
@@ -211,29 +212,34 @@ export function calculateAtrZigZag(
   const n = candles.length;
   if (n < 2) return { points: [], series: [] };
 
-  // 1. Establish the initial trend direction
+  const effectiveMinCandles = Math.max(1, minCandles);
+
+  // 1. Establish the initial trend direction (requires >= effectiveMinCandles and >= 3 ATR)
   let trend = 0; // 1 for UP (seeking peak), -1 for DOWN (seeking trough)
   let startIdx = 0;
   for (let i = 1; i < n; i++) {
     const c = candles[i];
-    const threshold = ((atrValues && atrValues[i] > 0) ? atrValues[i] : Math.max(0.0001, c.high - c.low)) * atrMultiplier;
+    const atr = (atrValues && atrValues[i] > 0) ? atrValues[i] : Math.max(0.0001, c.high - c.low);
+    const th = atr * atrMultiplier;
 
-    if (c.high - candles[0].low >= threshold) {
-      trend = 1;
-      startIdx = i;
-      break;
-    } else if (candles[0].high - c.low >= threshold) {
-      trend = -1;
-      startIdx = i;
-      break;
+    if (i >= effectiveMinCandles) {
+      if (c.high - candles[0].low >= th) {
+        trend = 1;
+        startIdx = i;
+        break;
+      } else if (candles[0].high - c.low >= th) {
+        trend = -1;
+        startIdx = i;
+        break;
+      }
     }
   }
 
   if (trend === 0) return { points: [], series: [] };
 
-  const pivots: ZigZagPoint[] = [];
+  const rawPivots: ZigZagPoint[] = [];
   if (trend === 1) {
-    pivots.push({
+    rawPivots.push({
       time: candles[0].time,
       value: candles[0].low,
       type: 'low',
@@ -243,7 +249,7 @@ export function calculateAtrZigZag(
       candleIndex: 0,
     });
   } else {
-    pivots.push({
+    rawPivots.push({
       time: candles[0].time,
       value: candles[0].high,
       type: 'high',
@@ -259,33 +265,42 @@ export function calculateAtrZigZag(
 
   for (let i = startIdx; i < n; i++) {
     const c = candles[i];
-    const th = ((atrValues && atrValues[i] > 0) ? atrValues[i] : Math.max(0.0001, c.high - c.low)) * atrMultiplier;
-    const lastPivot = pivots[pivots.length - 1];
+    const atr = (atrValues && atrValues[i] > 0) ? atrValues[i] : Math.max(0.0001, c.high - c.low);
+    const th = atr * atrMultiplier;
+    const lastPivot = rawPivots[rawPivots.length - 1];
 
     if (trend === 1) {
-      // In UP leg: extend peak to highest high
-      if (curExtremeIdx <= (lastPivot.candleIndex ?? 0)) {
+      // Last confirmed is LOW. Searching for HIGH.
+      // If price drops below last confirmed low before finding valid high:
+      if (c.low < lastPivot.value) {
+        lastPivot.value = c.low;
+        lastPivot.time = c.time;
+        lastPivot.candleIndex = i;
         curExtremeVal = c.high;
         curExtremeIdx = i;
-      } else if (c.high > curExtremeVal) {
+        continue;
+      }
+
+      if (c.high > curExtremeVal) {
         curExtremeVal = c.high;
         curExtremeIdx = i;
       }
 
-      // Reversal down confirmed when price drops by threshold from peak
-      if (curExtremeIdx > (lastPivot.candleIndex ?? 0) && curExtremeVal - c.low >= th) {
-        const confirmedPeakIdx = curExtremeIdx;
-        const diff = curExtremeVal - lastPivot.value;
-        const peakAtr = (atrValues && atrValues[confirmedPeakIdx] > 0) ? atrValues[confirmedPeakIdx] : th / atrMultiplier;
+      const candleDist = curExtremeIdx - (lastPivot.candleIndex ?? 0);
+      const priceDist = curExtremeVal - lastPivot.value;
+      const peakAtr = (atrValues && atrValues[curExtremeIdx] > 0) ? atrValues[curExtremeIdx] : atr;
 
-        pivots.push({
+      // Both conditions: >= effectiveMinCandles AND >= atrMultiplier * ATR distance, plus reversal pull-back
+      if (candleDist >= effectiveMinCandles && priceDist >= atrMultiplier * peakAtr && curExtremeVal - c.low >= th) {
+        const confirmedPeakIdx = curExtremeIdx;
+        rawPivots.push({
           time: candles[confirmedPeakIdx].time,
           value: curExtremeVal,
           type: 'high',
           candleIndex: confirmedPeakIdx,
           atrAtPoint: peakAtr,
-          legPoints: diff,
-          legAtrRatio: peakAtr > 0 ? diff / peakAtr : 0,
+          legPoints: priceDist,
+          legAtrRatio: peakAtr > 0 ? priceDist / peakAtr : 0,
         });
 
         // Switch to DOWN leg: search for lowest low among candles strictly AFTER confirmedPeakIdx
@@ -300,29 +315,37 @@ export function calculateAtrZigZag(
         }
       }
     } else {
-      // In DOWN leg: extend trough to lowest low
-      if (curExtremeIdx <= (lastPivot.candleIndex ?? 0)) {
+      // Last confirmed is HIGH. Searching for LOW.
+      // If price rises above last confirmed high before finding valid low:
+      if (c.high > lastPivot.value) {
+        lastPivot.value = c.high;
+        lastPivot.time = c.time;
+        lastPivot.candleIndex = i;
         curExtremeVal = c.low;
         curExtremeIdx = i;
-      } else if (c.low < curExtremeVal) {
+        continue;
+      }
+
+      if (c.low < curExtremeVal) {
         curExtremeVal = c.low;
         curExtremeIdx = i;
       }
 
-      // Reversal up confirmed when price rises by threshold from trough
-      if (curExtremeIdx > (lastPivot.candleIndex ?? 0) && c.high - curExtremeVal >= th) {
-        const confirmedTroughIdx = curExtremeIdx;
-        const diff = lastPivot.value - curExtremeVal;
-        const troughAtr = (atrValues && atrValues[confirmedTroughIdx] > 0) ? atrValues[confirmedTroughIdx] : th / atrMultiplier;
+      const candleDist = curExtremeIdx - (lastPivot.candleIndex ?? 0);
+      const priceDist = lastPivot.value - curExtremeVal;
+      const troughAtr = (atrValues && atrValues[curExtremeIdx] > 0) ? atrValues[curExtremeIdx] : atr;
 
-        pivots.push({
+      // Both conditions: >= effectiveMinCandles AND >= atrMultiplier * ATR distance, plus reversal pull-back
+      if (candleDist >= effectiveMinCandles && priceDist >= atrMultiplier * troughAtr && c.high - curExtremeVal >= th) {
+        const confirmedTroughIdx = curExtremeIdx;
+        rawPivots.push({
           time: candles[confirmedTroughIdx].time,
           value: curExtremeVal,
           type: 'low',
           candleIndex: confirmedTroughIdx,
           atrAtPoint: troughAtr,
-          legPoints: diff,
-          legAtrRatio: troughAtr > 0 ? diff / troughAtr : 0,
+          legPoints: priceDist,
+          legAtrRatio: troughAtr > 0 ? priceDist / troughAtr : 0,
         });
 
         // Switch to UP leg: search for highest high among candles strictly AFTER confirmedTroughIdx
@@ -340,11 +363,11 @@ export function calculateAtrZigZag(
   }
 
   // Active ongoing leg up to the latest extreme
-  const lastPivot = pivots[pivots.length - 1];
+  const lastPivot = rawPivots[rawPivots.length - 1];
   if (curExtremeIdx > (lastPivot.candleIndex ?? 0)) {
     const diff = Math.abs(curExtremeVal - lastPivot.value);
     const lastAtr = (atrValues && atrValues[curExtremeIdx] > 0) ? atrValues[curExtremeIdx] : 1;
-    pivots.push({
+    rawPivots.push({
       time: candles[curExtremeIdx].time,
       value: curExtremeVal,
       type: trend === 1 ? 'high' : 'low',
@@ -355,6 +378,52 @@ export function calculateAtrZigZag(
     });
   }
 
+  // Post-filter: Strict guarantee that EVERY leg between any two consecutive points
+  // has AT LEAST effectiveMinCandles distance AND AT LEAST atrMultiplier * ATR distance.
+  let pivots = [...rawPivots];
+  let changed = true;
+  let passes = 0;
+  while (changed && passes < 10) {
+    changed = false;
+    passes++;
+    const next: ZigZagPoint[] = [];
+
+    for (let i = 0; i < pivots.length; i++) {
+      if (next.length >= 2) {
+        const pPrev2 = next[next.length - 2];
+        const pPrev1 = next[next.length - 1];
+        const pCurr = pivots[i];
+
+        const cDist = (pCurr.candleIndex ?? 0) - (pPrev1.candleIndex ?? 0);
+        const pDist = Math.abs(pCurr.value - pPrev1.value);
+        const refAtr = (atrValues && atrValues[pCurr.candleIndex ?? 0] > 0) ? atrValues[pCurr.candleIndex ?? 0] : 1;
+        const pRatio = pDist / refAtr;
+
+        // If leg between pPrev1 and pCurr violates either rule (< effectiveMinCandles or < atrMultiplier ATR):
+        if (cDist < effectiveMinCandles || pRatio < (atrMultiplier - 0.01)) {
+          if (pCurr.type === pPrev2.type) {
+            if (pCurr.type === 'high' && pCurr.value >= pPrev2.value) {
+              next.pop(); // remove pPrev1
+              next.pop(); // remove pPrev2
+              next.push(pCurr); // pCurr becomes the higher high
+              changed = true;
+              continue;
+            }
+            if (pCurr.type === 'low' && pCurr.value <= pPrev2.value) {
+              next.pop(); // remove pPrev1
+              next.pop(); // remove pPrev2
+              next.push(pCurr); // pCurr becomes the lower low
+              changed = true;
+              continue;
+            }
+          }
+        }
+      }
+      next.push(pivots[i]);
+    }
+    pivots = next;
+  }
+
   // Final check to guarantee strictly increasing time and alternating types
   const cleanPivots: ZigZagPoint[] = [];
   for (const p of pivots) {
@@ -362,10 +431,29 @@ export function calculateAtrZigZag(
       cleanPivots.push(p);
     } else {
       const prev = cleanPivots[cleanPivots.length - 1];
-      if ((p.candleIndex ?? 0) > (prev.candleIndex ?? 0) && p.type !== prev.type) {
+      if (p.type === prev.type) {
+        // If same type occurs in succession, keep the more extreme point
+        if (p.type === 'high' && p.value > prev.value) {
+          cleanPivots[cleanPivots.length - 1] = p;
+        } else if (p.type === 'low' && p.value < prev.value) {
+          cleanPivots[cleanPivots.length - 1] = p;
+        }
+      } else if ((p.candleIndex ?? 0) > (prev.candleIndex ?? 0)) {
         cleanPivots.push(p);
       }
     }
+  }
+
+  // Recalculate metrics accurately
+  for (let i = 1; i < cleanPivots.length; i++) {
+    const prev = cleanPivots[i - 1];
+    const curr = cleanPivots[i];
+    const diff = Math.abs(curr.value - prev.value);
+    const cIdx = curr.candleIndex ?? 0;
+    const atr = (atrValues && atrValues[cIdx] > 0) ? atrValues[cIdx] : 1;
+    curr.atrAtPoint = atr;
+    curr.legPoints = diff;
+    curr.legAtrRatio = atr > 0 ? diff / atr : 0;
   }
 
   const series = cleanPivots.map((p) => ({
@@ -394,20 +482,27 @@ export interface ZigZagLeg {
 }
 
 /**
- * Classifies ZigZag legs based on:
+ * Classifies ZigZag legs based on user rules:
  * 1. Giant leg > 1000% of ATR (>= 10 * ATR) AND > 20 candles:
  *    - Bold Green for bullish (صعودی)
  *    - Bold Red for bearish (نزولی)
- * 2. First subsequent leg that breaks the end of a red/green leg AND is < 5 ATR: Bright Blue (آبی روشن)
- * 3. ONLY the 2nd leg after the blue leg (B+2): If it breaks the end of the blue leg and is in the same direction,
- *    color it Darker Blue (آبی تیره‌تر).
- * 4. After completing this sequence, wait until conditions for a new Red or Green leg form before repeating.
- * 5. All other legs: White (سفید)
+ * 2. آبی کم‌رنگ (Light Blue):
+ *    - لگ دوم بعد از سبز یا قرمز (G + 2) است که انتهای لگ سبز یا قرمز را شکسته باشد.
+ * 3. آبی پررنگ (Dark Blue):
+ *    - لگ دوم بعد از آبی کم‌رنگ (B + 2) است که انتهای آن‌را شکسته باشد.
+ * 4. سپس تا شرایط تشکیل قرمز یا سبز مجدد صبر کن.
+ * 5. سایر لگ‌ها: سفید (White)
  */
-export function analyzeZigZagLegs(points: ZigZagPoint[]): ZigZagLeg[] {
+export function analyzeZigZagLegs(
+  points: ZigZagPoint[],
+  minCandlesForLongLeg: number = 20,
+  longLegAtrMultiplier: number = 10
+): ZigZagLeg[] {
   if (points.length < 2) return [];
 
   const legs: ZigZagLeg[] = [];
+  const minLongCandles = Math.max(1, minCandlesForLongLeg);
+  const minLongRatio = Math.max(0.1, longLegAtrMultiplier);
 
   for (let i = 1; i < points.length; i++) {
     const start = points[i - 1];
@@ -422,8 +517,8 @@ export function analyzeZigZagLegs(points: ZigZagPoint[]): ZigZagLeg[] {
     let color: 'white' | 'green' | 'red' | 'blue' | 'dark_blue' = 'white';
     let isGiant = false;
 
-    // Condition: Leg > 1000% (ratio >= 10) AND > 20 candles (لگ سبز و قرمز باید بیشتر از ۲۰ کندل باشند)
-    if (ratio >= 10 && candleCount > 20) {
+    // Condition: Leg >= minLongRatio * ATR AND >= minLongCandles candles (لگ سبز و قرمز بلند)
+    if (ratio >= minLongRatio && candleCount >= minLongCandles) {
       isGiant = true;
       color = isUp ? 'green' : 'red';
     }
@@ -446,10 +541,10 @@ export function analyzeZigZagLegs(points: ZigZagPoint[]): ZigZagLeg[] {
   }
 
   // Sequential cycle detection:
-  // Step 1: Find next giant leg (Green/Red)
-  // Step 2: Find first breaking leg < 5 ATR -> color 'blue'
-  // Step 3: ONLY the 2nd leg after blue leg (B+2) -> if breaks end of B and same direction -> color 'dark_blue'
-  // Step 4: Wait until conditions for a new Red/Green leg form before repeating!
+  // Step 1: Find next giant leg (Green/Red: >= 10 ATR and > 20 candles)
+  // Step 2: آبی کم‌رنگ: لگ دوم بعد از سبز یا قرمز (giantIdx + 2) که انتهای لگ سبز یا قرمز را شکسته باشد
+  // Step 3: آبی پررنگ: لگ دوم بعد از آبی کم‌رنگ (blueIdx + 2) که انتهای آن‌را شکسته باشد
+  // Step 4: پس از این چرخه، تا شرایط تشکیل قرمز یا سبز مجدد صبر کن
   let searchIdx = 0;
   while (searchIdx < legs.length) {
     let giantIdx = -1;
@@ -465,62 +560,146 @@ export function analyzeZigZagLegs(points: ZigZagPoint[]): ZigZagLeg[] {
     const giant = legs[giantIdx];
     const targetPrice = giant.endPrice;
 
+    // آبی کم‌رنگ: دقیقاً لگ دوم بعد از سبز یا قرمز (giantIdx + 2)
+    const g2Index = giantIdx + 2;
     let blueIdx = -1;
-    for (let f = giantIdx + 1; f < legs.length; f++) {
-      // If a newer giant leg forms before any qualifying blue leg, pivot to the newer giant leg
-      if (legs[f].isGiantLeg) {
-        giantIdx = f;
-        break;
-      }
 
-      const leg = legs[f];
-      let broke = false;
+    if (g2Index < legs.length) {
+      const g2 = legs[g2Index];
+
+      // بررسی شکست انتهای لگ سبز یا قرمز توسط لگ دوم (نباید بیش از ۵ برابر ATR از قیمت شکست عبور کند)
+      let brokeGiant = false;
+      let breakoutDist = 0;
       if (giant.isUp) {
-        if (Math.max(leg.startPrice, leg.endPrice) > targetPrice) broke = true;
+        // لگ سبز صعودی است و در سقف (targetPrice) تمام شده؛ لگ دوم باید بالاتر از این سقف برود
+        if (g2.endPrice > targetPrice) {
+          brokeGiant = true;
+          breakoutDist = g2.endPrice - targetPrice;
+        }
       } else {
-        if (Math.min(leg.startPrice, leg.endPrice) < targetPrice) broke = true;
+        // لگ قرمز نزولی است و در کف (targetPrice) تمام شده؛ لگ دوم باید پایین‌تر از این کف برود
+        if (g2.endPrice < targetPrice) {
+          brokeGiant = true;
+          breakoutDist = targetPrice - g2.endPrice;
+        }
       }
 
-      if (broke && leg.legAtrRatio < 5) {
-        leg.color = 'blue';
-        leg.breaksGiantLegIndex = giant.index;
-        blueIdx = f;
-        break;
+      // شرط سقف نفوذ: فاصله عبور از نقطه شکست نباید بیشتر از ۵ برابر ATR باشد
+      const refAtrG2 = points[g2.endIndex]?.atrAtPoint || points[giant.endIndex]?.atrAtPoint || 1;
+      const within5AtrG2 = breakoutDist <= 5 * refAtrG2;
+
+      if (brokeGiant && within5AtrG2 && !g2.isGiantLeg) {
+        g2.color = 'blue';
+        g2.breaksGiantLegIndex = giant.index;
+        blueIdx = g2Index;
       }
     }
 
+    // اگر لگ دوم (G+2) برک‌اوت نکرد، بررسی لگ چهارم (G+4) پس از سبز یا قرمز:
+    if (blueIdx === -1) {
+      const g4Index = giantIdx + 4;
+      if (g4Index < legs.length) {
+        const hasInterGiant = legs.slice(giantIdx + 1, g4Index).some((l) => l.isGiantLeg);
+        if (!hasInterGiant) {
+          const g4 = legs[g4Index];
+          let brokeGiant4 = false;
+          let breakoutDist4 = 0;
+          if (giant.isUp) {
+            if (g4.endPrice > targetPrice) {
+              brokeGiant4 = true;
+              breakoutDist4 = g4.endPrice - targetPrice;
+            }
+          } else {
+            if (g4.endPrice < targetPrice) {
+              brokeGiant4 = true;
+              breakoutDist4 = targetPrice - g4.endPrice;
+            }
+          }
+
+          const refAtrG4 = points[g4.endIndex]?.atrAtPoint || points[giant.endIndex]?.atrAtPoint || 1;
+          const within5AtrG4 = breakoutDist4 <= 5 * refAtrG4;
+
+          if (brokeGiant4 && within5AtrG4 && !g4.isGiantLeg) {
+            g4.color = 'blue';
+            g4.breaksGiantLegIndex = giant.index;
+            blueIdx = g4Index;
+          }
+        }
+      }
+    }
+
+    // آبی پررنگ: لگ دوم بعد از آبی کم‌رنگ (blueIdx + 2) یا در صورت عدم شکست، لگ چهارم (blueIdx + 4)
     if (blueIdx !== -1) {
-      // Check ONLY the 2nd leg after the blue leg (blueIdx + 2)
       const b2Index = blueIdx + 2;
       let nextSearch = blueIdx + 1;
+      let darkBlueIdx = -1;
 
       if (b2Index < legs.length) {
         const b2 = legs[b2Index];
         const blueLeg = legs[blueIdx];
 
-        // Must be in the same direction as the blue leg and not a giant leg
-        if (b2.isUp === blueLeg.isUp && !b2.isGiantLeg) {
-          let brokeEnd = false;
-          if (blueLeg.isUp) {
-            // Blue leg was UP (ended at High). Does b2 break the blue leg's High?
-            if (b2.endPrice > blueLeg.endPrice) {
-              brokeEnd = true;
-            }
-          } else {
-            // Blue leg was DOWN (ended at Low). Does b2 break the blue leg's Low?
-            if (b2.endPrice < blueLeg.endPrice) {
-              brokeEnd = true;
-            }
+        let brokeBlue = false;
+        let breakoutDistB2 = 0;
+        if (blueLeg.isUp) {
+          // آبی کم‌رنگ صعودی است؛ لگ دوم بعد از آن باید بالاتر از سقف آن برود
+          if (b2.endPrice > blueLeg.endPrice) {
+            brokeBlue = true;
+            breakoutDistB2 = b2.endPrice - blueLeg.endPrice;
           }
+        } else {
+          // آبی کم‌رنگ نزولی است؛ لگ دوم بعد از آن باید پایین‌تر از کف آن برود
+          if (b2.endPrice < blueLeg.endPrice) {
+            brokeBlue = true;
+            breakoutDistB2 = blueLeg.endPrice - b2.endPrice;
+          }
+        }
 
-          if (brokeEnd) {
-            b2.color = 'dark_blue';
-            nextSearch = b2Index + 1;
+        // شرط سقف نفوذ: نباید بیش از ۵ برابر ATR از قیمت شکست عبور کند
+        const refAtrB2 = points[b2.endIndex]?.atrAtPoint || points[blueLeg.endIndex]?.atrAtPoint || 1;
+        const within5AtrB2 = breakoutDistB2 <= 5 * refAtrB2;
+
+        if (brokeBlue && within5AtrB2 && !b2.isGiantLeg) {
+          b2.color = 'dark_blue';
+          darkBlueIdx = b2Index;
+          nextSearch = b2Index + 1;
+        }
+      }
+
+      // اگر لگ دوم بعد از آبی برک‌اوت نکرد، بررسی لگ چهارم (B+4):
+      if (darkBlueIdx === -1) {
+        const b4Index = blueIdx + 4;
+        if (b4Index < legs.length) {
+          const hasInterGiant = legs.slice(blueIdx + 1, b4Index).some((l) => l.isGiantLeg);
+          if (!hasInterGiant) {
+            const b4 = legs[b4Index];
+            const blueLeg = legs[blueIdx];
+
+            let brokeBlue4 = false;
+            let breakoutDistB4 = 0;
+            if (blueLeg.isUp) {
+              if (b4.endPrice > blueLeg.endPrice) {
+                brokeBlue4 = true;
+                breakoutDistB4 = b4.endPrice - blueLeg.endPrice;
+              }
+            } else {
+              if (b4.endPrice < blueLeg.endPrice) {
+                brokeBlue4 = true;
+                breakoutDistB4 = blueLeg.endPrice - b4.endPrice;
+              }
+            }
+
+            const refAtrB4 = points[b4.endIndex]?.atrAtPoint || points[blueLeg.endIndex]?.atrAtPoint || 1;
+            const within5AtrB4 = breakoutDistB4 <= 5 * refAtrB4;
+
+            if (brokeBlue4 && within5AtrB4 && !b4.isGiantLeg) {
+              b4.color = 'dark_blue';
+              nextSearch = b4Index + 1;
+            }
           }
         }
       }
 
-      // Wait until next giant leg forms!
+      // تا شرایط تشکیل قرمز یا سبز مجدد صبر کن
       searchIdx = nextSearch;
     } else {
       searchIdx = giantIdx + 1;

@@ -27,8 +27,10 @@ import {
   X,
   Activity,
   TrendingUp,
+  Sliders,
+  Settings,
 } from 'lucide-react';
-import { CandleData, ChartType, Timeframe } from '../types/crypto';
+import { CandleData, ChartType, Timeframe, ZigZagSettings } from '../types/crypto';
 import {
   formatPrice,
   formatVolume,
@@ -84,9 +86,13 @@ interface TradingChartProps {
     atr: number;
     twoAtr: number;
     threeAtr: number;
+    candleRange: number;
     timeStr: string;
     isHovering: boolean;
   }) => void;
+  zigzagSettings?: ZigZagSettings;
+  onUpdateZigZagSettings?: (settings: ZigZagSettings) => void;
+  onOpenSettingsModal?: () => void;
 }
 
 export const TradingChart: React.FC<TradingChartProps> = ({
@@ -101,6 +107,9 @@ export const TradingChart: React.FC<TradingChartProps> = ({
   atrMap,
   latestAtr,
   onHoverAtr,
+  zigzagSettings,
+  onUpdateZigZagSettings,
+  onOpenSettingsModal,
 }) => {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -123,6 +132,12 @@ export const TradingChart: React.FC<TradingChartProps> = ({
 
   const [zigzagAtrMultiplier, setZigzagAtrMultiplier] = useState<number>(3);
   const [showZigZag, setShowZigZag] = useState<boolean>(true);
+
+  // Active ZigZag settings (either from props or local state)
+  const activeZigZagMultiplier = zigzagSettings?.atrMultiplier ?? zigzagAtrMultiplier;
+  const activeMinCandles = zigzagSettings?.minCandles ?? 3;
+  const activeMinCandlesForLongLeg = zigzagSettings?.minCandlesForLongLeg ?? 20;
+  const activeLongLegAtrMultiplier = zigzagSettings?.longLegAtrMultiplier ?? 10;
 
   // Tools state
   const [activeTool, setActiveTool] = useState<ActiveTool>('cursor');
@@ -389,12 +404,13 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       maSeriesRef.current.applyOptions({ title: `MA(${maPeriod})` });
     }
 
-    // Dynamic ATR ZigZag calculation with user-typed multiplier
+    // Dynamic ATR ZigZag calculation with user-configurable settings
     if (zigzagSeriesRef.current) {
       const { points: zgPoints, series: zgSeries } = calculateAtrZigZag(
         uniqueCandles,
         atrValues,
-        zigzagAtrMultiplier
+        activeZigZagMultiplier,
+        activeMinCandles
       );
       const mappedZigZag = zgSeries.map((d) => ({
         time: d.time as UTCTimestamp,
@@ -406,56 +422,66 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         visible: showZigZag,
       });
 
-      const analyzedLegs = analyzeZigZagLegs(zgPoints);
+      const analyzedLegs = analyzeZigZagLegs(
+        zgPoints,
+        activeMinCandlesForLongLeg,
+        activeLongLegAtrMultiplier
+      );
       setZigzagPoints(zgPoints);
       setZigzagLegs(analyzedLegs);
 
       if (chartRef.current && candleSeriesRef.current && showZigZag) {
-        const timeScale = chartRef.current.timeScale();
-        const series = candleSeriesRef.current;
+        const updateCoords = () => {
+          if (!chartRef.current || !candleSeriesRef.current) return;
+          const timeScale = chartRef.current.timeScale();
+          const series = candleSeriesRef.current;
 
-        const projectedLegs: (ZigZagLeg & { x1: number; y1: number; x2: number; y2: number })[] = [];
-        for (const leg of analyzedLegs) {
-          const x1 = timeScale.timeToCoordinate(leg.startTime as UTCTimestamp);
-          const y1 = series.priceToCoordinate(leg.startPrice);
-          const x2 = timeScale.timeToCoordinate(leg.endTime as UTCTimestamp);
-          const y2 = series.priceToCoordinate(leg.endPrice);
-          if (x1 !== null && y1 !== null && x2 !== null && y2 !== null) {
-            projectedLegs.push({ ...leg, x1, y1, x2, y2 });
-          }
-        }
-        setRenderedLegs(projectedLegs);
-
-        const coords: { x: number; y: number; colorHex: string; isHighlighted: boolean }[] = [];
-        for (let i = 0; i < zgPoints.length; i++) {
-          const pt = zgPoints[i];
-          const x = timeScale.timeToCoordinate(pt.time as UTCTimestamp);
-          const y = series.priceToCoordinate(pt.value);
-          if (x !== null && y !== null) {
-            const incomingLeg = i > 0 ? analyzedLegs[i - 1] : null;
-            const outgoingLeg = i < analyzedLegs.length ? analyzedLegs[i] : null;
-            const activeLeg = (outgoingLeg && outgoingLeg.color !== 'white') ? outgoingLeg : incomingLeg;
-
-            let colorHex = '#ffffff';
-            let isHighlighted = false;
-            if (activeLeg?.color === 'green') {
-              colorHex = '#00E676';
-              isHighlighted = true;
-            } else if (activeLeg?.color === 'red') {
-              colorHex = '#FF1744';
-              isHighlighted = true;
-            } else if (activeLeg?.color === 'blue') {
-              colorHex = '#00E5FF';
-              isHighlighted = true;
-            } else if (activeLeg?.color === 'dark_blue') {
-              colorHex = '#1D4ED8';
-              isHighlighted = true;
+          const projectedLegs: (ZigZagLeg & { x1: number; y1: number; x2: number; y2: number })[] = [];
+          for (const leg of analyzedLegs) {
+            const x1 = timeScale.timeToCoordinate(leg.startTime as UTCTimestamp);
+            const y1 = series.priceToCoordinate(leg.startPrice);
+            const x2 = timeScale.timeToCoordinate(leg.endTime as UTCTimestamp);
+            const y2 = series.priceToCoordinate(leg.endPrice);
+            if (x1 !== null && y1 !== null && x2 !== null && y2 !== null) {
+              projectedLegs.push({ ...leg, x1, y1, x2, y2 });
             }
-
-            coords.push({ x, y, colorHex, isHighlighted });
           }
-        }
-        setZigzagCoords(coords);
+          setRenderedLegs(projectedLegs);
+
+          const coords: { x: number; y: number; colorHex: string; isHighlighted: boolean }[] = [];
+          for (let i = 0; i < zgPoints.length; i++) {
+            const pt = zgPoints[i];
+            const x = timeScale.timeToCoordinate(pt.time as UTCTimestamp);
+            const y = series.priceToCoordinate(pt.value);
+            if (x !== null && y !== null) {
+              const incomingLeg = i > 0 ? analyzedLegs[i - 1] : null;
+              const outgoingLeg = i < analyzedLegs.length ? analyzedLegs[i] : null;
+              const activeLeg = (outgoingLeg && outgoingLeg.color !== 'white') ? outgoingLeg : incomingLeg;
+
+              let colorHex = '#ffffff';
+              let isHighlighted = false;
+              if (activeLeg?.color === 'green') {
+                colorHex = '#00E676';
+                isHighlighted = true;
+              } else if (activeLeg?.color === 'red') {
+                colorHex = '#FF1744';
+                isHighlighted = true;
+              } else if (activeLeg?.color === 'blue') {
+                colorHex = '#00E5FF';
+                isHighlighted = true;
+              } else if (activeLeg?.color === 'dark_blue') {
+                colorHex = '#1D4ED8';
+                isHighlighted = true;
+              }
+
+              coords.push({ x, y, colorHex, isHighlighted });
+            }
+          }
+          setZigzagCoords(coords);
+        };
+
+        requestAnimationFrame(updateCoords);
+        setTimeout(updateCoords, 60);
       }
     }
 
@@ -465,7 +491,19 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       lastLoadedKeyRef.current = currentKey;
       chartRef.current.timeScale().fitContent();
     }
-  }, [candles, symbol, timeframe, atrValues, maPeriod, zigzagAtrMultiplier]);
+  }, [
+    candles,
+    symbol,
+    timeframe,
+    atrValues,
+    maPeriod,
+    zigzagSettings,
+    activeZigZagMultiplier,
+    activeMinCandles,
+    activeMinCandlesForLongLeg,
+    activeLongLegAtrMultiplier,
+    showZigZag,
+  ]);
 
   // Handle MA visibility toggle
   useEffect(() => {
@@ -494,10 +532,12 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         candles.length === 0
       ) {
         setHoverData(null);
+        const lastC = candles[candles.length - 1];
         onHoverAtr?.({
           atr: latestAtr,
           twoAtr: latestAtr * 2,
           threeAtr: latestAtr * 3,
+          candleRange: lastC ? Math.max(0, lastC.high - lastC.low) : 0,
           timeStr: '',
           isHovering: false,
         });
@@ -548,6 +588,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
           atr: candleAtr,
           twoAtr: candleAtr * 2,
           threeAtr: candleAtr * 3,
+          candleRange: Math.max(0, c.high - c.low),
           timeStr: timeFormatted,
           isHovering: true,
         });
@@ -1259,30 +1300,122 @@ export const TradingChart: React.FC<TradingChartProps> = ({
           )}
 
           {activeTool === 'zigzag' && (
-            <div className="absolute top-2 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-3 py-1.5 rounded-lg bg-[#181d26]/95 border border-amber-500/50 shadow-2xl backdrop-blur-md text-xs font-mono">
+            <div className="absolute top-2 left-1/2 -translate-x-1/2 z-40 flex flex-wrap items-center gap-2.5 px-3 py-1.5 rounded-xl bg-[#181d26]/95 border border-amber-500/50 shadow-2xl backdrop-blur-md text-xs font-mono">
               <div className="flex items-center gap-1.5 text-amber-400 font-bold font-sans">
                 <Activity className="w-3.5 h-3.5" />
                 <span>تنظیمات ZigZag</span>
               </div>
               <div className="h-4 w-px bg-[#2d3748]" />
-              <div className="flex items-center gap-1.5">
-                <span className="text-gray-300 font-sans">میزان ATR:</span>
+
+              {/* 1. Period ATR */}
+              <div className="flex items-center gap-1.5" title="Period ATR (دوره زمانی ATR)">
+                <span className="text-gray-300 font-sans text-[11px]">Period:</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={500}
+                  value={zigzagSettings?.atrPeriod ?? 55}
+                  onChange={(e) => {
+                    const val = Math.max(1, parseInt(e.target.value) || 1);
+                    if (onUpdateZigZagSettings && zigzagSettings) {
+                      onUpdateZigZagSettings({ ...zigzagSettings, atrPeriod: val });
+                    }
+                  }}
+                  className="w-14 px-1.5 py-0.5 rounded bg-[#10131a] border border-amber-500/40 text-amber-400 font-bold font-mono text-center focus:outline-none focus:border-amber-400"
+                />
+              </div>
+
+              {/* 2. Min Candle */}
+              <div className="flex items-center gap-1.5" title="Min Candle (حداقل فاصله کندل بین دو پیوت)">
+                <span className="text-gray-300 font-sans text-[11px]">Min Candle:</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={zigzagSettings?.minCandles ?? 3}
+                  onChange={(e) => {
+                    const val = Math.max(1, parseInt(e.target.value) || 1);
+                    if (onUpdateZigZagSettings && zigzagSettings) {
+                      onUpdateZigZagSettings({ ...zigzagSettings, minCandles: val });
+                    }
+                  }}
+                  className="w-12 px-1.5 py-0.5 rounded bg-[#10131a] border border-sky-500/40 text-sky-400 font-bold font-mono text-center focus:outline-none focus:border-sky-400"
+                />
+              </div>
+
+              {/* 3. Min Candle for Long Leg */}
+              <div className="flex items-center gap-1.5" title="Min Candle for Long Leg (حداقل کندل برای لگ سبز/قرمز)">
+                <span className="text-gray-300 font-sans text-[11px]">Long Leg:</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={500}
+                  value={zigzagSettings?.minCandlesForLongLeg ?? 20}
+                  onChange={(e) => {
+                    const val = Math.max(1, parseInt(e.target.value) || 1);
+                    if (onUpdateZigZagSettings && zigzagSettings) {
+                      onUpdateZigZagSettings({ ...zigzagSettings, minCandlesForLongLeg: val });
+                    }
+                  }}
+                  className="w-14 px-1.5 py-0.5 rounded bg-[#10131a] border border-emerald-500/40 text-emerald-400 font-bold font-mono text-center focus:outline-none focus:border-emerald-400"
+                />
+              </div>
+
+              {/* 4. ATR Multiplier */}
+              <div className="flex items-center gap-1.5" title="ضریب نوسان ATR عادی">
+                <span className="text-gray-300 font-sans text-[11px]">ضریب:</span>
                 <input
                   type="number"
                   min={0.1}
                   max={20}
-                  step={0.5}
-                  value={zigzagAtrMultiplier}
-                  onChange={(e) =>
-                    setZigzagAtrMultiplier(Math.max(0.1, parseFloat(e.target.value) || 0.1))
-                  }
-                  className="w-16 px-2 py-0.5 rounded bg-[#10131a] border border-amber-500/40 text-amber-400 font-bold font-mono text-center focus:outline-none focus:border-amber-400"
-                  title="ضریب ATR را تایپ کنید (مثلاً 2, 2.5, 3, 5)"
+                  step="any"
+                  value={zigzagSettings?.atrMultiplier ?? zigzagAtrMultiplier}
+                  onChange={(e) => {
+                    const val = Math.max(0.1, parseFloat(e.target.value) || 0.1);
+                    setZigzagAtrMultiplier(val);
+                    if (onUpdateZigZagSettings && zigzagSettings) {
+                      onUpdateZigZagSettings({ ...zigzagSettings, atrMultiplier: val });
+                    }
+                  }}
+                  className="w-13 px-1.5 py-0.5 rounded bg-[#10131a] border border-purple-500/40 text-purple-400 font-bold font-mono text-center focus:outline-none focus:border-purple-400"
                 />
-                <span className="text-gray-400 text-[10px]">× ATR</span>
+                <span className="text-gray-400 text-[10px]">×ATR</span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-gray-300 font-sans">نمایش:</span>
+
+              {/* 5. Long Leg ATR Multiplier */}
+              <div className="flex items-center gap-1.5" title="ضریب ATR لگ‌های بزرگ (سبز و قرمز)">
+                <span className="text-gray-300 font-sans text-[11px]">ضریب بزرگ:</span>
+                <input
+                  type="number"
+                  min={0.5}
+                  max={50}
+                  step={0.5}
+                  value={zigzagSettings?.longLegAtrMultiplier ?? 10}
+                  onChange={(e) => {
+                    const val = Math.max(0.5, parseFloat(e.target.value) || 0.5);
+                    if (onUpdateZigZagSettings && zigzagSettings) {
+                      onUpdateZigZagSettings({ ...zigzagSettings, longLegAtrMultiplier: val });
+                    }
+                  }}
+                  className="w-13 px-1.5 py-0.5 rounded bg-[#10131a] border border-rose-500/40 text-rose-400 font-bold font-mono text-center focus:outline-none focus:border-rose-400"
+                />
+                <span className="text-gray-400 text-[10px]">×ATR</span>
+              </div>
+
+              {/* Full Settings Modal button */}
+              {onOpenSettingsModal && (
+                <button
+                  onClick={onOpenSettingsModal}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded bg-[#222a38] hover:bg-[#2c3748] border border-[#354256] text-amber-300 text-[11px] font-sans transition-colors cursor-pointer"
+                  title="باز کردن پنل کامل تنظیمات"
+                >
+                  <Sliders className="w-3 h-3 text-amber-400" />
+                  <span>پیشرفته</span>
+                </button>
+              )}
+
+              {/* Visibility Toggle */}
+              <div className="flex items-center gap-1">
                 <button
                   onClick={() => setShowZigZag(!showZigZag)}
                   className={`px-2 py-0.5 rounded text-[11px] font-sans font-medium transition-colors cursor-pointer ${
@@ -1294,6 +1427,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
                   {showZigZag ? 'فعال' : 'غیرفعال'}
                 </button>
               </div>
+
               <button
                 onClick={() => setActiveTool('cursor')}
                 className="p-1 rounded hover:bg-[#2b3546] text-gray-400 hover:text-white transition-colors cursor-pointer"

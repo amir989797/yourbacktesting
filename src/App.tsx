@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { CryptoPair, CandleData, Timeframe } from './types/crypto';
+import { CryptoPair, CandleData, Timeframe, ZigZagSettings } from './types/crypto';
 import { POPULAR_PAIRS, fetchKlines, subscribeToKlineStream } from './services/binance';
 import { calculateATR } from './utils/indicators';
 import { Navbar } from './components/Navbar';
 import { TradingChart } from './components/TradingChart';
 import { CandleDataModal } from './components/CandleDataModal';
+import { ZigZagSettingsModal, DEFAULT_ZIGZAG_SETTINGS } from './components/ZigZagSettingsModal';
+import { ZigZagGuideModal } from './components/ZigZagGuideModal';
 
 export default function App() {
   const [selectedPair, setSelectedPair] = useState<CryptoPair>(POPULAR_PAIRS[0]);
@@ -14,12 +16,31 @@ export default function App() {
   const [dataSource, setDataSource] = useState<'live' | 'fallback'>('live');
   const [wsStatus, setWsStatus] = useState<'connected' | 'reconnecting' | 'disconnected'>('disconnected');
   const [isDataModalOpen, setIsDataModalOpen] = useState<boolean>(false);
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
+  const [isGuideModalOpen, setIsGuideModalOpen] = useState<boolean>(false);
 
-  // Dynamic Hovered ATR state
+  // Configurable ZigZag & ATR Settings (persisted in localStorage)
+  const [zigzagSettings, setZigzagSettings] = useState<ZigZagSettings>(() => {
+    try {
+      const saved = localStorage.getItem('strategy_zigzag_settings');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return DEFAULT_ZIGZAG_SETTINGS;
+  });
+
+  const handleUpdateZigZagSettings = (newSettings: ZigZagSettings) => {
+    setZigzagSettings({ ...newSettings });
+    try {
+      localStorage.setItem('strategy_zigzag_settings', JSON.stringify(newSettings));
+    } catch {}
+  };
+
+  // Dynamic Hovered ATR state (مقادیر در لحظه موس برای تمام باکس‌ها)
   const [hoveredAtrData, setHoveredAtrData] = useState<{
     atr: number;
     twoAtr: number;
     threeAtr: number;
+    candleRange: number;
     timeStr: string;
     isHovering: boolean;
   } | null>(null);
@@ -76,30 +97,38 @@ export default function App() {
     };
   }, [selectedPair.symbol, timeframe]);
 
-  // Calculate ATR(55), 2*ATR(55), 3*ATR(55) and ATR map in real-time
+  // Calculate ATR(period), 2*ATR(period), 3*ATR(period) and ATR map in real-time
   const atrMetrics = useMemo(() => {
-    return calculateATR(candles, 55);
-  }, [candles]);
+    return calculateATR(candles, zigzagSettings.atrPeriod);
+  }, [candles, zigzagSettings.atrPeriod]);
 
-  // Active ATR to display in Navbar (either from mouse hover on a candle, or latest live candle)
-  const displayAtr = hoveredAtrData?.isHovering ? hoveredAtrData.atr : atrMetrics.currentATR;
-  const displayTwoAtr = hoveredAtrData?.isHovering ? hoveredAtrData.twoAtr : atrMetrics.twoATR;
-  const displayThreeAtr = hoveredAtrData?.isHovering ? hoveredAtrData.threeAtr : atrMetrics.threeATR;
+  const isHovering = Boolean(hoveredAtrData?.isHovering);
+  const currentAtr = isHovering ? hoveredAtrData!.atr : atrMetrics.currentATR;
+  const currentTwoAtr = isHovering ? hoveredAtrData!.twoAtr : atrMetrics.twoATR;
+  const currentThreeAtr = isHovering ? hoveredAtrData!.threeAtr : atrMetrics.threeATR;
+  const lastCandle = candles.length > 0 ? candles[candles.length - 1] : null;
+  const currentCandleRange = isHovering
+    ? hoveredAtrData!.candleRange
+    : (lastCandle ? Math.max(0, lastCandle.high - lastCandle.low) : 0);
 
   return (
     <div className="flex flex-col h-screen w-screen bg-[#0b0e14] text-gray-200 antialiased font-sans select-none overflow-hidden">
-      {/* 1. Top Header: Pair selector + ATR(55), 2*ATR(55), 3*ATR(55) in points (dynamic on hover) */}
+      {/* 1. Top Header: Pair selector + همه باکس‌های ATR به صورت دینامیک با موس */}
       <div className="shrink-0">
         <Navbar
           selectedPair={selectedPair}
           onSelectPair={(p) => setSelectedPair(p)}
-          atr55={displayAtr}
-          twoAtr55={displayTwoAtr}
-          threeAtr55={displayThreeAtr}
-          isHoveredAtr={hoveredAtrData?.isHovering}
+          currentAtr={currentAtr}
+          currentTwoAtr={currentTwoAtr}
+          currentThreeAtr={currentThreeAtr}
+          currentCandleRange={currentCandleRange}
+          atrPeriod={zigzagSettings.atrPeriod}
+          isHoveredAtr={isHovering}
           hoveredDate={hoveredAtrData?.timeStr}
           wsStatus={wsStatus}
           onOpenDataModal={() => setIsDataModalOpen(true)}
+          onOpenSettings={() => setIsSettingsModalOpen(true)}
+          onOpenGuide={() => setIsGuideModalOpen(true)}
         />
       </div>
 
@@ -117,6 +146,9 @@ export default function App() {
           atrMap={atrMetrics.atrMap}
           latestAtr={atrMetrics.currentATR}
           onHoverAtr={(data) => setHoveredAtrData(data)}
+          zigzagSettings={zigzagSettings}
+          onUpdateZigZagSettings={handleUpdateZigZagSettings}
+          onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
         />
       </main>
 
@@ -127,6 +159,21 @@ export default function App() {
         candles={candles}
         pair={selectedPair}
         timeframe={timeframe}
+      />
+
+      {/* 4. ZigZag & ATR Settings Modal */}
+      <ZigZagSettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
+        settings={zigzagSettings}
+        onSave={handleUpdateZigZagSettings}
+      />
+
+      {/* 5. ZigZag Leg Rules Guide Modal */}
+      <ZigZagGuideModal
+        isOpen={isGuideModalOpen}
+        onClose={() => setIsGuideModalOpen(false)}
+        settings={zigzagSettings}
       />
     </div>
   );

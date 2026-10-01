@@ -2,6 +2,8 @@ import React from 'react';
 import {
   Activity,
   BarChart3,
+  Settings,
+  HelpCircle,
 } from 'lucide-react';
 import { CryptoPair } from '../types/crypto';
 import { PairSelector } from './PairSelector';
@@ -10,26 +12,40 @@ import { formatPoints } from '../utils/indicators';
 interface NavbarProps {
   selectedPair: CryptoPair;
   onSelectPair: (pair: CryptoPair) => void;
-  atr55: number;
-  twoAtr55: number;
-  threeAtr55: number;
+  currentAtr: number;
+  currentTwoAtr: number;
+  currentThreeAtr: number;
+  currentCandleRange?: number;
+  atrPeriod?: number;
   isHoveredAtr?: boolean;
   hoveredDate?: string | null;
   wsStatus: 'connected' | 'reconnecting' | 'disconnected';
   onOpenDataModal: () => void;
+  onOpenSettings?: () => void;
+  onOpenGuide?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
   selectedPair,
   onSelectPair,
-  atr55,
-  twoAtr55,
-  threeAtr55,
+  currentAtr,
+  currentTwoAtr,
+  currentThreeAtr,
+  currentCandleRange = 0,
+  atrPeriod = 55,
   isHoveredAtr,
   hoveredDate,
   wsStatus,
   onOpenDataModal,
+  onOpenSettings,
+  onOpenGuide,
 }) => {
+  // محاسبات درصدی نسبت به باکس اول (ATR)
+  const safeAtr = currentAtr > 0 ? currentAtr : 1;
+  const twoAtrPct = ((currentTwoAtr / safeAtr) * 100).toFixed(0);
+  const threeAtrPct = ((currentThreeAtr / safeAtr) * 100).toFixed(0);
+  const candlePct = ((currentCandleRange / safeAtr) * 100).toFixed(0);
+
   return (
     <header className="bg-[#181d26] border-b border-[#2b313a] px-3 sm:px-4 py-2">
       <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3">
@@ -56,43 +72,104 @@ export const Navbar: React.FC<NavbarProps> = ({
             ticker={null}
           />
 
-          {/* ATR Metrics Bar in Points (ATR 55, 2*ATR 55, 3*ATR 55) */}
+          {/* ATR Metrics Bar: همه باکس‌ها با موس تغییر می‌کنند؛ باکس اول بر اساس pts و بقیه به درصد */}
           <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 text-xs">
-            {/* ATR(55) in Points */}
-            <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#1f2633] border border-amber-500/30 shadow-xs">
+            {/* باکس اول: ATR(period) فقط بر اساس pts */}
+            <div
+              className={`flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#1f2633] border transition-all shadow-xs ${
+                isHoveredAtr ? 'border-amber-400/80 shadow-amber-500/10' : 'border-amber-500/30'
+              }`}
+              title={isHoveredAtr && hoveredDate ? `ATR کندل در ${hoveredDate}` : 'ATR کندل جاری'}
+            >
               <div className="flex flex-col">
                 <span className="text-[10px] font-semibold text-amber-400 tracking-wider font-mono leading-tight">
-                  ATR (55)
+                  ATR ({atrPeriod})
                 </span>
                 <span className="text-xs sm:text-sm font-bold font-mono text-white leading-tight">
-                  {formatPoints(atr55)} <span className="text-[10px] text-amber-400 font-normal">pts</span>
+                  {formatPoints(currentAtr)} <span className="text-[10px] text-amber-400 font-normal">pts</span>
                 </span>
               </div>
             </div>
 
-            {/* 2*ATR(55) in Points */}
+            {/* باکس دوم: 2*ATR(period) بر اساس درصد از باکس اول (۲۰۰٪) */}
             <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#1f2633] border border-sky-500/30 shadow-xs">
               <div className="flex flex-col">
                 <span className="text-[10px] font-semibold text-sky-400 tracking-wider font-mono leading-tight">
-                  2*ATR (55)
+                  2*ATR ({atrPeriod})
                 </span>
-                <span className="text-xs sm:text-sm font-bold font-mono text-white leading-tight">
-                  {formatPoints(twoAtr55)} <span className="text-[10px] text-sky-400 font-normal">pts</span>
-                </span>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-xs sm:text-sm font-bold font-mono text-white leading-tight">
+                    {twoAtrPct}%
+                  </span>
+                  <span className="text-[10px] text-sky-400/80 font-mono">
+                    ({formatPoints(currentTwoAtr)} pts)
+                  </span>
+                </div>
               </div>
             </div>
 
-            {/* 3*ATR(55) in Points */}
+            {/* باکس سوم: 3*ATR(period) بر اساس درصد از باکس اول (۳۰۰٪) */}
             <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#1f2633] border border-purple-500/30 shadow-xs">
               <div className="flex flex-col">
                 <span className="text-[10px] font-semibold text-purple-400 tracking-wider font-mono leading-tight">
-                  3*ATR (55)
+                  3*ATR ({atrPeriod})
                 </span>
-                <span className="text-xs sm:text-sm font-bold font-mono text-white leading-tight">
-                  {formatPoints(threeAtr55)} <span className="text-[10px] text-purple-400 font-normal">pts</span>
-                </span>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-xs sm:text-sm font-bold font-mono text-white leading-tight">
+                    {threeAtrPct}%
+                  </span>
+                  <span className="text-[10px] text-purple-400/80 font-mono">
+                    ({formatPoints(currentThreeAtr)} pts)
+                  </span>
+                </div>
               </div>
             </div>
+
+            {/* باکس چهارم: کندل (Range) بر اساس درصد از باکس اول */}
+            <div
+              className={`flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#1f2633] border transition-all shadow-xs ${
+                isHoveredAtr
+                  ? 'border-emerald-500 bg-emerald-950/25 shadow-emerald-500/10'
+                  : 'border-emerald-500/30'
+              }`}
+              title="دامنه کندل (High - Low) و درصد آن نسبت به ATR"
+            >
+              <div className="flex flex-col">
+                <span className="text-[10px] font-semibold text-emerald-400 tracking-wider font-mono leading-tight">
+                  کندل (Range)
+                </span>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-xs sm:text-sm font-bold font-mono text-white leading-tight">
+                    {candlePct}%
+                  </span>
+                  <span className="text-[10px] text-emerald-400/80 font-mono">
+                    ({formatPoints(currentCandleRange)} pts)
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* آیکون تنظیمات کنار نوار بالا برای تغییر Period ATR و سایر موارد */}
+            {onOpenSettings && (
+              <button
+                onClick={onOpenSettings}
+                className="flex items-center justify-center p-2 rounded-lg bg-[#1f2633] hover:bg-[#283244] border border-[#2e3748] hover:border-amber-400/50 text-gray-400 hover:text-amber-400 transition-all cursor-pointer shadow-xs group"
+                title="تنظیمات اندیکاتور زیگ‌زاگ و دوره زمانی ATR"
+              >
+                <Settings className="w-4 h-4 group-hover:rotate-45 transition-transform duration-300" />
+              </button>
+            )}
+
+            {/* آیکون راهنما کنار آیکون تنظیمات برای نمایش شروط لگ‌ها */}
+            {onOpenGuide && (
+              <button
+                onClick={onOpenGuide}
+                className="flex items-center justify-center p-2 rounded-lg bg-[#1f2633] hover:bg-[#283244] border border-[#2e3748] hover:border-sky-400/50 text-gray-400 hover:text-sky-400 transition-all cursor-pointer shadow-xs group"
+                title="راهنمای شروط و رنگ‌بندی لگ‌های زیگ‌زاگ"
+              >
+                <HelpCircle className="w-4 h-4 group-hover:scale-110 transition-transform duration-200" />
+              </button>
+            )}
           </div>
         </div>
 

@@ -49,6 +49,14 @@ export interface IndicatorSettings {
   showZigZag: boolean;
 }
 
+export interface ZigZagSettings {
+  atrPeriod: number; // Period ATR (پیش‌فرض 55)
+  minCandles: number; // Min candle (پیش‌فرض 3)
+  minCandlesForLongLeg: number; // Min candle for long leg (پیش‌فرض 20)
+  atrMultiplier: number; // ضریب ATR لگ‌های عادی (پیش‌فرض 3)
+  longLegAtrMultiplier: number; // ضریب ATR نوسان لگ‌های بزرگ (پیش‌فرض 10)
+}
+
 export interface RecentTrade {
   id: number;
   price: number;
