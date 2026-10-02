@@ -91,7 +91,25 @@ export interface OptimizationTrial {
   maxDrawdown: number;
   profitFactor: number;
   isValid: boolean; // آیا هر ۳ شرط درودان، وین‌ریت و تعداد معامله برقرار است؟
-  bayesianReason?: string; // علت و توجیه ریاضی بیزی برای این آزمایش
+}
+
+export interface ParameterRange {
+  min: number;
+  max: number;
+  bestVal: number;
+  bestValProfit?: number;
+  step: number;
+}
+
+export interface AdaptiveRanges {
+  atrPeriod: ParameterRange;
+  minCandles: ParameterRange;
+  minCandlesForLongLeg: ParameterRange;
+  atrMultiplier: ParameterRange;
+  longLegAtrMultiplier: ParameterRange;
+  maxBlueLegPercent: ParameterRange;
+  maxBreakoutAtrMultiplier: ParameterRange;
+  maxRiskReward: ParameterRange;
 }
 
 interface BacktestScannerModalProps {
@@ -125,16 +143,16 @@ type OptSortCol =
 
 type SortDirection = 'asc' | 'desc';
 
-// دامنه‌های مقادیر گسسته برای ۸ پارامتر
-const DOMAINS = {
-  atrPeriod: [15, 25, 35, 45, 55, 65, 75, 85, 100],
-  minCandles: [1, 2, 3, 4, 5, 6, 7, 8],
-  minCandlesForLongLeg: [10, 14, 18, 20, 24, 28, 32, 36],
-  atrMultiplier: [1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0],
-  longLegAtrMultiplier: [6, 8, 10, 12, 14, 16, 18],
-  maxBlueLegPercent: [35, 45, 55, 60, 65, 75, 85],
-  maxBreakoutAtrMultiplier: [2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
-  maxRiskReward: [1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0],
+// دامنه‌های اولیه پیش‌فرض
+const DEFAULT_RANGES: AdaptiveRanges = {
+  atrPeriod: { min: 15, max: 100, bestVal: 55, step: 5 },
+  minCandles: { min: 1, max: 8, bestVal: 3, step: 1 },
+  minCandlesForLongLeg: { min: 10, max: 36, bestVal: 20, step: 2 },
+  atrMultiplier: { min: 1.5, max: 5.0, bestVal: 3.0, step: 0.5 },
+  longLegAtrMultiplier: { min: 6.0, max: 18.0, bestVal: 10.0, step: 1.0 },
+  maxBlueLegPercent: { min: 35, max: 85, bestVal: 60, step: 5 },
+  maxBreakoutAtrMultiplier: { min: 2.0, max: 7.0, bestVal: 5.0, step: 0.5 },
+  maxRiskReward: { min: 1.0, max: 10.0, bestVal: 2.0, step: 0.5 },
 };
 
 function generateConfigHash(p: {
@@ -158,7 +176,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   currentTimeframe,
   onSelectPairAndClose,
 }) => {
-  // Navigation Tabs: 'scanner' (اسکن دستی بازار) | 'optimizer' (بهینه‌ساز خودکار بیزی)
+  // Navigation Tabs: 'scanner' (اسکن دستی بازار) | 'optimizer' (بهینه‌ساز بیزی رنج‌محور)
   const [activeTab, setActiveTab] = useState<'scanner' | 'optimizer'>('scanner');
 
   // Strategy selection
@@ -170,8 +188,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const [capital, setCapital] = useState<number>(10000);
   const [riskPercent, setRiskPercent] = useState<number>(1.0);
   const [maxCandlesToEnter, setMaxCandlesToEnter] = useState<number>(100);
-  const [timeframe, setTimeframe] = useState<Timeframe>(currentTimeframe === '1m' ? '5m' : currentTimeframe);
-  const [candleHistoryLimit, setCandleHistoryLimit] = useState<number>(500);
+  const [timeframe, setTimeframe] = useState<Timeframe>('5m');
+  const [candleHistoryLimit, setCandleHistoryLimit] = useState<number>(5000);
   const [universeOption, setUniverseOption] = useState<'all_1m' | 'top_30' | 'top_50'>('all_1m');
 
   // Cached Candles in Memory to avoid repeated downloads!
@@ -240,9 +258,21 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const [optMaxBreakoutAtr, setOptMaxBreakoutAtr] = useState<number>(zigzagSettings.maxBreakoutAtrMultiplier ?? 5.0);
   const [lockMaxBreakoutAtr, setLockMaxBreakoutAtr] = useState<boolean>(false);
 
-  // پارامتر هشتم: نسبت ریسک به ریوارد (Max Risk Reward)
-  const [optMaxRiskReward, setOptMaxRiskReward] = useState<number>(5.0);
+  const [optMaxRiskReward, setOptMaxRiskReward] = useState<number>(2.0);
   const [lockMaxRiskReward, setLockMaxRiskReward] = useState<boolean>(false);
+
+  // همگام‌سازی با تنظیمات زیگ‌زاگ وارده توسط کاربر در چارت
+  useEffect(() => {
+    if (zigzagSettings) {
+      if (zigzagSettings.atrPeriod) setOptAtrPeriod(zigzagSettings.atrPeriod);
+      if (zigzagSettings.minCandles) setOptMinCandles(zigzagSettings.minCandles);
+      if (zigzagSettings.minCandlesForLongLeg) setOptMinCandlesLong(zigzagSettings.minCandlesForLongLeg);
+      if (zigzagSettings.atrMultiplier) setOptAtrMultiplier(zigzagSettings.atrMultiplier);
+      if (zigzagSettings.longLegAtrMultiplier) setOptLongLegAtrMult(zigzagSettings.longLegAtrMultiplier);
+      if (zigzagSettings.maxBlueLegPercent !== undefined) setOptMaxBlueLegPercent(zigzagSettings.maxBlueLegPercent);
+      if (zigzagSettings.maxBreakoutAtrMultiplier !== undefined) setOptMaxBreakoutAtr(zigzagSettings.maxBreakoutAtrMultiplier);
+    }
+  }, [zigzagSettings]);
 
   // شروط اولیه ارزیابی مدل
   const [targetMaxDrawdown, setTargetMaxDrawdown] = useState<number>(20.0);
@@ -258,19 +288,35 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   // ریجستری هش‌های تست‌شده برای جلوگیری قطعی از هرگونه تست تکراری
   const visitedHashesRef = useRef<Set<string>>(new Set());
 
-  // جدول تاریخچه تمام آزمایش‌ها
-  const [optHistory, setOptHistory] = useState<OptimizationTrial[]>(() => {
+  // =========================================================================
+  // مدل بهینه‌سازی سبک و کم‌حجم (فقط ۱۰ تست برتر + رنج‌های بهینه‌شونده پارامترها)
+  // =========================================================================
+  const [totalEvaluatedCount, setTotalEvaluatedCount] = useState<number>(() => {
     try {
-      const saved = localStorage.getItem('zigzag_optimizer_history_v4');
+      const saved = localStorage.getItem('zigzag_opt_total_count_v5');
+      if (saved) return parseInt(saved, 10);
+    } catch {}
+    return 0;
+  });
+
+  // رنج‌های تطبیق‌پذیر پارامترها که در طول تست‌ها مدام بهینه‌تر می‌شوند
+  const [adaptiveRanges, setAdaptiveRanges] = useState<AdaptiveRanges>(() => {
+    try {
+      const saved = localStorage.getItem('zigzag_opt_ranges_v5');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return DEFAULT_RANGES;
+  });
+
+  // فقط و فقط ۱۰ تست برتر در جدول و حافظه ذخیره می‌شوند
+  const [top10Trials, setTop10Trials] = useState<OptimizationTrial[]>(() => {
+    try {
+      const saved = localStorage.getItem('zigzag_opt_top10_v5');
       if (saved) return JSON.parse(saved);
     } catch {}
     return [];
   });
 
-  // فیلتر ردیف‌های قبول در جدول بهینه‌ساز
-  const [filterOnlyValid, setFilterOnlyValid] = useState<boolean>(false);
-
-  // مرتب‌سازی جدول بهینه‌ساز (پیش‌فرض: سود خالص نزولی)
   const [optSortColumn, setOptSortColumn] = useState<OptSortCol>('netProfit');
   const [optSortDirection, setOptSortDirection] = useState<SortDirection>('desc');
 
@@ -283,13 +329,20 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
   // بازیابی هش‌های قبلی
   useEffect(() => {
-    for (const item of optHistory) {
-      if (item.hash) visitedHashesRef.current.add(item.hash);
-      else visitedHashesRef.current.add(generateConfigHash(item));
+    for (const item of top10Trials) {
+      visitedHashesRef.current.add(item.hash || generateConfigHash(item));
     }
-  }, [optHistory]);
+  }, [top10Trials]);
 
-  // ذخیره‌سازی محلی
+  // ذخیره‌سازی محلی فوق سبک (تنها ۱۰ مورد + رنج‌ها)
+  useEffect(() => {
+    try {
+      localStorage.setItem('zigzag_opt_top10_v5', JSON.stringify(top10Trials));
+      localStorage.setItem('zigzag_opt_ranges_v5', JSON.stringify(adaptiveRanges));
+      localStorage.setItem('zigzag_opt_total_count_v5', totalEvaluatedCount.toString());
+    } catch {}
+  }, [top10Trials, adaptiveRanges, totalEvaluatedCount]);
+
   useEffect(() => {
     if (results.length > 0) {
       try {
@@ -306,14 +359,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     }
   }, [allCollectedTrades]);
 
-  useEffect(() => {
-    if (optHistory.length > 0) {
-      try {
-        localStorage.setItem('zigzag_optimizer_history_v4', JSON.stringify(optHistory.slice(0, 300)));
-      } catch {}
-    }
-  }, [optHistory]);
-
   // کنترل تایمر ۱۵ دقیقه‌ای پیوسته
   useEffect(() => {
     let interval: any;
@@ -326,7 +371,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             clearInterval(interval);
             stopOptimizerRef.current = true;
             setIsOptimizing(false);
-            showToast('⏸️ سشن ۱۵ دقیقه‌ای به پایان رسید و تمام پیشرفت‌ها خودکار ذخیره شدند.');
+            showToast('⏸️ سشن ۱۵ دقیقه‌ای به پایان رسید و رنج‌های بهینه ذخیره شدند.');
             return 0;
           }
           return next;
@@ -337,7 +382,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   }, [isOptimizing, sessionSecondsLeft]);
 
   // =========================================================
-  // اسکن کامل بازار: تمام ارزهای بالای ۱ میلیون دلار
+  // اسکن کامل بازار: تمام ارزهای بالای ۱ میلیون دلار بدون برش
   // =========================================================
   const handleStartScan = async (useCachedOnly: boolean = false) => {
     setIsScanning(true);
@@ -347,13 +392,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     setAllCollectedTrades([]);
 
     try {
-      // دریافت تمام جفت‌ارزهای با حجم ۲۴ ساعته بالای ۱ میلیون دلار
       const allPairs = await fetchUSDTMarketPairs(1_000_000);
       let targetPairs: CryptoPair[] = allPairs;
 
       if (universeOption === 'top_30') targetPairs = allPairs.slice(0, 30);
       else if (universeOption === 'top_50') targetPairs = allPairs.slice(0, 50);
-      else targetPairs = allPairs; // اسکن تمام ارزهای بازار بالای ۱ میلیون دلار بدون محدودیت!
+      else targetPairs = allPairs; // اسکن تمام ارزهای بالای ۱ میلیون دلار بدون محدودیت!
 
       const total = targetPairs.length;
       setProgress({ current: 0, total, currentSymbol: '' });
@@ -387,19 +431,19 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
               if (candles.length < 50) return;
 
-              const atrMetrics = calculateATR(candles, zigzagSettings.atrPeriod);
+              const atrMetrics = calculateATR(candles, optAtrPeriod);
               const { points } = calculateAtrZigZag(
                 candles,
                 atrMetrics.atrValues,
-                zigzagSettings.atrMultiplier,
-                zigzagSettings.minCandles
+                optAtrMultiplier,
+                optMinCandles
               );
               const legs = analyzeZigZagLegs(
                 points,
-                zigzagSettings.minCandlesForLongLeg,
-                zigzagSettings.longLegAtrMultiplier,
-                zigzagSettings.maxBlueLegPercent ?? 60,
-                zigzagSettings.maxBreakoutAtrMultiplier ?? 5
+                optMinCandlesLong,
+                optLongLegAtrMult,
+                optMaxBlueLegPercent,
+                optMaxBreakoutAtr
               );
 
               const tempConfig: StrategyConfig = {
@@ -420,8 +464,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                   legs,
                   tempConfig,
                   atrMetrics.atrValues,
-                  zigzagSettings.atrMultiplier,
-                  zigzagSettings.minCandles
+                  optAtrMultiplier,
+                  optMinCandles
                 );
               } else {
                 backtestRes = runStrategy1Backtest(candles, points, legs, tempConfig);
@@ -497,7 +541,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   };
 
   // =========================================================
-  // آمار کلی و تحلیلی برای تب اسکن دستی بازار (بازگردانی کامل)
+  // آمار کلی و نمودارهای تب اسکن دستی بازار
   // =========================================================
   const totalScanned = results.length;
   const profitableCount = results.filter((r) => r.netProfit > 0).length;
@@ -519,7 +563,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       ? parseFloat(((totalWinTradesSum / totalTradesSum) * 100).toFixed(1))
       : 0;
 
-  // محاسبه منحنی سرمایه و درودان برای چارت تب اسکن
   const equityPoints = useMemo(() => {
     if (allCollectedTrades.length === 0) return [];
     const sortedTrades = [...allCollectedTrades].sort((a, b) => (a.exitTime || a.entryTime || 0) - (b.exitTime || b.entryTime || 0));
@@ -570,7 +613,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     return 0;
   }, [portfolioMaxDrawdown, riskPercent]);
 
-  // فیلتر و مرتب‌سازی جدول اسکن بازار
   const filteredScannerResults = useMemo(() => {
     return results
       .filter((r) => {
@@ -596,7 +638,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       });
   }, [results, searchFilter, onlyProfitable, scannerSortCol, scannerSortDir]);
 
-  // خروجی CSV برای اسکنر
   const handleExportScannerCSV = () => {
     if (results.length === 0) return;
     const headers = [
@@ -636,8 +677,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   };
 
   // =========================================================================
-  // موتور مدل‌سازی تعاملی چندپارامتری و یادگیری بیزی بر مبنای لاگ تاریخچه
-  // (Multi-Parameter Interaction & Bayesian Acquisition Engine)
+  // ارزیابی یک ترکیب ۸تایی روی تمام جفت‌ارزهای کش‌شده
   // =========================================================================
   const evaluateSingleCombination = (params: {
     atrPeriod: number;
@@ -747,13 +787,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   };
 
   /**
-   * تولید هوشمند کاندیدای بعدی بر مبنای تحلیل دقیق لاگ آزمایش‌های گذشته:
-   * ۱. تفکیک لاگ به دسته‌های موفق (Good) و ناموفق (Bad)
-   * ۲. محاسبه نرخ درست‌نمایی بیزی (Bayesian Likelihood Ratio) برای هر مقدار پارامتر
-   * ۳. محاسبه اثر هم‌افزایی متقابل (Interaction Synergy) بین جفت‌های کلیدی
-   * ۴. امتیازدهی به کاندیداها با تابع دریافت (Acquisition Function) و تضمین عدم تکرار
+   * تولید کاندیدای بعدی دقیقاً از داخل رنج‌های تطبیق‌پذیر بهینه‌شده
    */
-  const getNextBayesianCandidateFromLog = (history: OptimizationTrial[]): {
+  const getNextCandidateFromAdaptiveRanges = (
+    ranges: AdaptiveRanges,
+    visited: Set<string>
+  ): {
     atrPeriod: number;
     minCandles: number;
     minCandlesForLongLeg: number;
@@ -763,34 +802,53 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     maxBreakoutAtrMultiplier: number;
     maxRiskReward: number;
   } | null => {
-    // اگر هنوز تعداد تست‌های گذشته کم باشد (کمتر از ۶ تست)، کاوش تنوع اولیه انجام می‌دهیم
-    if (history.length < 6) {
-      for (let att = 0; att < 300; att++) {
-        const candidate = {
-          atrPeriod: lockAtrPeriod ? optAtrPeriod : DOMAINS.atrPeriod[att % DOMAINS.atrPeriod.length],
-          minCandles: lockMinCandles ? optMinCandles : DOMAINS.minCandles[(att * 2) % DOMAINS.minCandles.length],
-          minCandlesForLongLeg: lockMinCandlesLong ? optMinCandlesLong : DOMAINS.minCandlesForLongLeg[att % DOMAINS.minCandlesForLongLeg.length],
-          atrMultiplier: lockAtrMultiplier ? optAtrMultiplier : DOMAINS.atrMultiplier[att % DOMAINS.atrMultiplier.length],
-          longLegAtrMultiplier: lockLongLegAtrMult ? optLongLegAtrMult : DOMAINS.longLegAtrMultiplier[att % DOMAINS.longLegAtrMultiplier.length],
-          maxBlueLegPercent: lockMaxBlueLegPercent ? optMaxBlueLegPercent : DOMAINS.maxBlueLegPercent[att % DOMAINS.maxBlueLegPercent.length],
-          maxBreakoutAtrMultiplier: lockMaxBreakoutAtr ? optMaxBreakoutAtr : DOMAINS.maxBreakoutAtrMultiplier[att % DOMAINS.maxBreakoutAtrMultiplier.length],
-          maxRiskReward: lockMaxRiskReward ? optMaxRiskReward : DOMAINS.maxRiskReward[att % DOMAINS.maxRiskReward.length],
-        };
-        const hash = generateConfigHash(candidate);
-        if (!visitedHashesRef.current.has(hash)) return candidate;
+    const sampleParam = (r: ParameterRange, isLocked: boolean, lockedVal: number) => {
+      if (isLocked) return lockedVal;
+      const count = Math.max(1, Math.round((r.max - r.min) / r.step));
+      // ۷۰٪ شانس در مجاورت مقدار بهینه (bestVal) و ۳۰٪ شانس کاوش در کل رنج فعال
+      if (Math.random() < 0.7 && r.bestVal !== undefined) {
+        const offset = (Math.floor(Math.random() * 3) - 1) * r.step;
+        const val = Math.max(r.min, Math.min(r.max, r.bestVal + offset));
+        return parseFloat(val.toFixed(2));
+      }
+      const idx = Math.floor(Math.random() * (count + 1));
+      const val = r.min + idx * r.step;
+      return parseFloat(Math.min(r.max, Math.max(r.min, val)).toFixed(2));
+    };
+
+    for (let attempts = 0; attempts < 300; attempts++) {
+      const candidate = {
+        atrPeriod: sampleParam(ranges.atrPeriod, lockAtrPeriod, optAtrPeriod),
+        minCandles: sampleParam(ranges.minCandles, lockMinCandles, optMinCandles),
+        minCandlesForLongLeg: sampleParam(ranges.minCandlesForLongLeg, lockMinCandlesLong, optMinCandlesLong),
+        atrMultiplier: sampleParam(ranges.atrMultiplier, lockAtrMultiplier, optAtrMultiplier),
+        longLegAtrMultiplier: sampleParam(ranges.longLegAtrMultiplier, lockLongLegAtrMult, optLongLegAtrMult),
+        maxBlueLegPercent: sampleParam(ranges.maxBlueLegPercent, lockMaxBlueLegPercent, optMaxBlueLegPercent),
+        maxBreakoutAtrMultiplier: sampleParam(ranges.maxBreakoutAtrMultiplier, lockMaxBreakoutAtr, optMaxBreakoutAtr),
+        maxRiskReward: sampleParam(ranges.maxRiskReward, lockMaxRiskReward, optMaxRiskReward),
+      };
+
+      const hash = generateConfigHash(candidate);
+      if (!visited.has(hash)) {
+        return candidate;
       }
     }
 
-    // ۱. تفکیک تاریخچه به موفق و ناموفق
-    const goodTrials = history.filter(
-      (h) => h.isValid || (h.maxDrawdown <= targetMaxDrawdown && h.netProfit > 0)
-    );
-    const badTrials = history.filter(
-      (h) => h.maxDrawdown > targetMaxDrawdown || h.winRate < targetMinWinRate || h.netProfit <= 0
-    );
+    return null;
+  };
 
-    // ۲. محاسبه جدول فراوانی مقادیر برای هر پارامتر آزاد
-    const paramKeys = [
+  /**
+   * به‌روزرسانی هوشمند رنج‌های هر ۸ پارامتر بر مبنای تست‌های موفق (بدون ذخیره هزاران سطر در رم)
+   */
+  const refineAdaptiveRanges = (
+    currentRanges: AdaptiveRanges,
+    trial: OptimizationTrial
+  ): AdaptiveRanges => {
+    // تنها در صورتی که تست سودآور باشد یا شروط را محقق کرده باشد رنج‌ها را به سمت آن متمایل می‌کنیم
+    if (!trial.isValid && trial.netProfit <= 0) return currentRanges;
+
+    const nextRanges: AdaptiveRanges = { ...currentRanges };
+    const keys: (keyof AdaptiveRanges)[] = [
       'atrPeriod',
       'minCandles',
       'minCandlesForLongLeg',
@@ -799,83 +857,55 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       'maxBlueLegPercent',
       'maxBreakoutAtrMultiplier',
       'maxRiskReward',
-    ] as const;
+    ];
 
-    const valueScores: Record<string, Record<number, number>> = {};
-    for (const key of paramKeys) {
-      valueScores[key] = {};
-      const domain = DOMAINS[key];
-      for (const val of domain) {
-        const goodCount = goodTrials.filter((t) => t[key] === val).length;
-        const badCount = badTrials.filter((t) => t[key] === val).length;
-        // نسبت بیزی لاپلاس:
-        valueScores[key][val] = (goodCount + 1.0) / (badCount + 1.0);
+    for (const key of keys) {
+      const val = trial[key];
+      const r = { ...nextRanges[key] };
+      const def = DEFAULT_RANGES[key];
+
+      // به‌روزرسانی بهترین مقدار (Best Center)
+      if (trial.isValid && trial.netProfit > (r.bestValProfit || -Infinity)) {
+        r.bestVal = val;
+        r.bestValProfit = trial.netProfit;
       }
+
+      // تنظیم رنج فعال: متمرکز شدن در بازه ۲ تا ۳ گام اطراف مقادیر برنده
+      const newMin = Math.max(def.min, Math.min(r.min, val - 2 * r.step));
+      const newMax = Math.min(def.max, Math.max(r.max, val + 2 * r.step));
+
+      r.min = parseFloat(newMin.toFixed(2));
+      r.max = parseFloat(newMax.toFixed(2));
+      nextRanges[key] = r;
     }
 
-    // ۳. تحلیل هم‌افزایی جفت‌های تاثیرگذار (Interaction Matrix)
-    // مثلاً (atrMultiplier, minCandles) و (maxRiskReward, atrMultiplier)
-    const synergyPairs = [
-      ['atrMultiplier', 'minCandles'],
-      ['maxRiskReward', 'atrMultiplier'],
-      ['maxBlueLegPercent', 'longLegAtrMultiplier'],
-      ['atrPeriod', 'minCandlesForLongLeg'],
-    ] as const;
+    return nextRanges;
+  };
 
-    const pairScores: Record<string, number> = {};
-    for (const [k1, k2] of synergyPairs) {
-      for (const t of goodTrials) {
-        const pKey = `${k1}:${t[k1]}|${k2}:${t[k2]}`;
-        pairScores[pKey] = (pairScores[pKey] || 0) + 1.5;
-      }
-    }
+  /**
+   * ذخیره فقط ۱۰ تست برتر (Top 10) در حافظه تا صفحه هرگز سنگین نشود
+   */
+  const updateTop10List = (
+    currentTop10: OptimizationTrial[],
+    newTrial: OptimizationTrial
+  ): OptimizationTrial[] => {
+    const merged = [...currentTop10, newTrial];
 
-    // ۴. تولید استخر کاندیداهای جدید و انتخاب برترین کاندیدا با تابع دریافت (Acquisition)
-    let bestCandidate: any = null;
-    let maxAcquisition = -Infinity;
+    // مرتب‌سازی بر اساس: ۱. قبولی در شروط  ۲. بیشترین سود خالص
+    merged.sort((a, b) => {
+      if (a.isValid && !b.isValid) return -1;
+      if (!a.isValid && b.isValid) return 1;
+      return b.netProfit - a.netProfit;
+    });
 
-    for (let i = 0; i < 200; i++) {
-      const candidate = {
-        atrPeriod: lockAtrPeriod ? optAtrPeriod : DOMAINS.atrPeriod[Math.floor(Math.random() * DOMAINS.atrPeriod.length)],
-        minCandles: lockMinCandles ? optMinCandles : DOMAINS.minCandles[Math.floor(Math.random() * DOMAINS.minCandles.length)],
-        minCandlesForLongLeg: lockMinCandlesLong ? optMinCandlesLong : DOMAINS.minCandlesForLongLeg[Math.floor(Math.random() * DOMAINS.minCandlesForLongLeg.length)],
-        atrMultiplier: lockAtrMultiplier ? optAtrMultiplier : DOMAINS.atrMultiplier[Math.floor(Math.random() * DOMAINS.atrMultiplier.length)],
-        longLegAtrMultiplier: lockLongLegAtrMult ? optLongLegAtrMult : DOMAINS.longLegAtrMultiplier[Math.floor(Math.random() * DOMAINS.longLegAtrMultiplier.length)],
-        maxBlueLegPercent: lockMaxBlueLegPercent ? optMaxBlueLegPercent : DOMAINS.maxBlueLegPercent[Math.floor(Math.random() * DOMAINS.maxBlueLegPercent.length)],
-        maxBreakoutAtrMultiplier: lockMaxBreakoutAtr ? optMaxBreakoutAtr : DOMAINS.maxBreakoutAtrMultiplier[Math.floor(Math.random() * DOMAINS.maxBreakoutAtrMultiplier.length)],
-        maxRiskReward: lockMaxRiskReward ? optMaxRiskReward : DOMAINS.maxRiskReward[Math.floor(Math.random() * DOMAINS.maxRiskReward.length)],
-      };
-
-      const hash = generateConfigHash(candidate);
-      if (visitedHashesRef.current.has(hash)) continue;
-
-      // محاسبه امتیاز دریافت بیزی: مجموع لگاریتم شانس‌ها + پاداش هم‌افزایی جفت‌ها + فاکتور اکتشاف
-      let acquisition = 0;
-      for (const key of paramKeys) {
-        acquisition += Math.log(valueScores[key][candidate[key]] || 1.0);
-      }
-
-      for (const [k1, k2] of synergyPairs) {
-        const pKey = `${k1}:${candidate[k1]}|${k2}:${candidate[k2]}`;
-        if (pairScores[pKey]) acquisition += pairScores[pKey] * 0.8;
-      }
-
-      // ضریب تنوع و کاوش تصادفی (Exploration Bonus)
-      acquisition += Math.random() * 0.5;
-
-      if (acquisition > maxAcquisition) {
-        maxAcquisition = acquisition;
-        bestCandidate = candidate;
-      }
-    }
-
-    return bestCandidate;
+    // دقیقاً ۱۰ مورد برتر را نگه می‌داریم
+    return merged.slice(0, 10);
   };
 
   // حلقه پیوسته بهینه‌سازی (اجرای خودکار تا ۱۵ دقیقه یا توقف کاربر)
   const handleStartAutoOptimization = async () => {
     if (cachedCandlesMapRef.current.size === 0) {
-      showToast('در حال دانلود داده‌های بازار برای کش اولیه...');
+      showToast('در حال دانلود اولیه داده‌های بازار برای کش...');
       await handleStartScan(false);
     }
 
@@ -887,13 +917,15 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       sessionSecondsRef.current = 900;
     }
 
-    let localHistory = [...optHistory];
+    let localTop10 = [...top10Trials];
+    let localRanges = { ...adaptiveRanges };
+    let evaluatedCount = totalEvaluatedCount;
 
     while (!stopOptimizerRef.current && sessionSecondsRef.current > 0) {
-      // انتخاب هوشمند کاندیدای بعدی با تحلیل لاگ تاریخچه
-      const candidate = getNextBayesianCandidateFromLog(localHistory);
+      // تولید کاندیدای بعدی با استفاده از رنج‌های تطبیق‌پذیر
+      const candidate = getNextCandidateFromAdaptiveRanges(localRanges, visitedHashesRef.current);
       if (!candidate) {
-        showToast('✅ تمامی ترکیب‌های ممکن در دامنه‌های انتخابی بدون تکرار بررسی شدند.');
+        showToast('✅ تمامی ترکیب‌های موجود در رنج بهینه فعلی بدون تکرار آزمایش شدند.');
         break;
       }
 
@@ -901,20 +933,28 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       visitedHashesRef.current.add(hash);
 
       const evalRes = evaluateSingleCombination(candidate);
+      evaluatedCount++;
+      setTotalEvaluatedCount(evaluatedCount);
+
       if (evalRes) {
         const trial: OptimizationTrial = {
-          id: localHistory.length + 1,
+          id: evaluatedCount,
           hash,
           timestamp: new Date().toLocaleTimeString('fa-IR'),
           ...candidate,
           ...evalRes,
         };
 
-        localHistory.push(trial);
-        setOptHistory([...localHistory]);
+        // ۱. به‌روزرسانی رنج‌های پارامترها
+        localRanges = refineAdaptiveRanges(localRanges, trial);
+        setAdaptiveRanges(localRanges);
+
+        // ۲. به‌روزرسانی جدول (فقط ۱۰ تست برتر)
+        localTop10 = updateTop10List(localTop10, trial);
+        setTop10Trials(localTop10);
       }
 
-      // تاخیر کوتاه ۲۰ میلی‌ثانیه‌ای برای رندر روان و بدون فریز مرورگر
+      // تاخیر کوتاه ۲۰ میلی‌ثانیه‌ای برای روانی مطلق مرورگر
       await new Promise((r) => setTimeout(r, 20));
     }
 
@@ -926,53 +966,37 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     setIsOptimizing(false);
   };
 
-  const handleClearOptHistory = () => {
-    setOptHistory([]);
+  const handleResetOptimizer = () => {
+    setTop10Trials([]);
+    setAdaptiveRanges(DEFAULT_RANGES);
+    setTotalEvaluatedCount(0);
     visitedHashesRef.current.clear();
     try {
-      localStorage.removeItem('zigzag_optimizer_history_v4');
+      localStorage.removeItem('zigzag_opt_top10_v5');
+      localStorage.removeItem('zigzag_opt_ranges_v5');
+      localStorage.removeItem('zigzag_opt_total_count_v5');
     } catch {}
-    showToast('جدول بهینه‌ساز با موفقیت پاک شد.');
+    showToast('اطلاعات بهینه‌ساز و رنج‌ها بازنشانی شدند.');
   };
 
-  // مرتب‌سازی جدول بهینه‌ساز بر اساس ستون انتخابی (پیش‌فرض: سود خالص)
-  const sortedOptHistory = useMemo(() => {
-    let list = optHistory;
-    if (filterOnlyValid) {
-      list = list.filter((r) => r.isValid);
-    }
+  // بهترین ترکیب برنده مستقیماً از ردیف اول ۱۰ تست برتر
+  const bestWinningRow = useMemo(() => {
+    if (top10Trials.length === 0) return null;
+    return top10Trials[0];
+  }, [top10Trials]);
 
-    return [...list].sort((a, b) => {
+  // مرتب‌سازی ۱۰ تست برتر بر اساس ستون انتخابی
+  const sortedTop10 = useMemo(() => {
+    return [...top10Trials].sort((a, b) => {
       let valA: any = a[optSortColumn];
       let valB: any = b[optSortColumn];
       const numA = Number(valA) || 0;
       const numB = Number(valB) || 0;
       return optSortDirection === 'desc' ? numB - numA : numA - numB;
     });
-  }, [optHistory, filterOnlyValid, optSortColumn, optSortDirection]);
+  }, [top10Trials, optSortColumn, optSortDirection]);
 
-  // بهترین ترکیب برنده مستقیماً از ردیف‌های جدول استخراج می‌شود:
-  const bestWinningRow = useMemo(() => {
-    if (optHistory.length === 0) return null;
-
-    // ۱. ردیف‌هایی از جدول که هر ۳ شرط را دارا هستند:
-    const validRows = optHistory.filter(
-      (r) =>
-        r.maxDrawdown <= targetMaxDrawdown &&
-        r.winRate >= targetMinWinRate &&
-        r.totalTrades >= targetMinTrades
-    );
-
-    if (validRows.length > 0) {
-      // ردیفی با بیشترین سود خالص
-      return [...validRows].sort((a, b) => b.netProfit - a.netProfit)[0];
-    }
-
-    // ۲. در غیر این صورت، پر سودترین ردیف جدول را نمایش بده
-    return [...optHistory].sort((a, b) => b.netProfit - a.netProfit)[0];
-  }, [optHistory, targetMaxDrawdown, targetMinWinRate, targetMinTrades]);
-
-  // اعمال بهترین پارامترهای جدول به چارت زنده
+  // اعمال بهترین پارامترهای برنده به چارت زنده
   const handleApplyBestToChart = () => {
     if (!bestWinningRow || !onUpdateZigZagSettings) return;
     onUpdateZigZagSettings({
@@ -988,30 +1012,31 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     showToast('✨ بهترین ترکیب برنده جدول به اندیکاتور زیگ‌زاگ چارت اعمال شد!');
   };
 
-  // خروجی JSON
+  // خروجی JSON فوق سبک (تنها ۱۰ تست برتر + رنج‌های بهینه)
   const handleExportJSON = () => {
     const payload = {
-      applet: 'Binance ZigZag Strategy Optimizer',
+      applet: 'Binance ZigZag Strategy Adaptive Range Optimizer',
       exportedAt: new Date().toISOString(),
       strategyId: selectedStrategyId,
+      totalEvaluatedTests: totalEvaluatedCount,
       constraints: {
         targetMaxDrawdown,
         targetMinWinRate,
         targetMinTrades,
       },
+      adaptiveRanges,
+      top10Trials,
       bestWinningRow,
-      totalTested: optHistory.length,
-      history: optHistory,
     };
 
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `zigzag_optimizer_${selectedStrategyId}_${new Date().toISOString().slice(0, 10)}.json`;
+    link.download = `zigzag_top10_ranges_${selectedStrategyId}_${new Date().toISOString().slice(0, 10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
-    showToast('💾 فایل JSON شامل تمام نتایج جدول و پارامترها دانلود شد.');
+    showToast('💾 فایل سبک JSON شامل ۱۰ تست برتر و رنج‌های بهینه دانلود شد.');
   };
 
   const handleImportJSONClick = () => {
@@ -1030,20 +1055,25 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         if (!parsed || typeof parsed !== 'object') throw new Error('فرمت نامعتبر است');
 
         if (parsed.strategyId) setSelectedStrategyId(parsed.strategyId);
+        if (parsed.totalEvaluatedTests) setTotalEvaluatedCount(parsed.totalEvaluatedTests);
         if (parsed.constraints) {
           if (parsed.constraints.targetMaxDrawdown) setTargetMaxDrawdown(parsed.constraints.targetMaxDrawdown);
           if (parsed.constraints.targetMinWinRate) setTargetMinWinRate(parsed.constraints.targetMinWinRate);
           if (parsed.constraints.targetMinTrades) setTargetMinTrades(parsed.constraints.targetMinTrades);
         }
 
-        if (Array.isArray(parsed.history)) {
-          setOptHistory(parsed.history);
-          for (const item of parsed.history) {
+        if (parsed.adaptiveRanges) {
+          setAdaptiveRanges(parsed.adaptiveRanges);
+        }
+
+        if (Array.isArray(parsed.top10Trials)) {
+          setTop10Trials(parsed.top10Trials);
+          for (const item of parsed.top10Trials) {
             visitedHashesRef.current.add(item.hash || generateConfigHash(item));
           }
         }
 
-        showToast(`✅ فایل JSON با موفقیت بارگذاری شد (${parsed.history?.length || 0} تست اضافه شد).`);
+        showToast(`✅ فایل سبک JSON بارگذاری شد (${parsed.top10Trials?.length || 0} تست برتر و رنج‌ها به‌روزرسانی شدند).`);
       } catch (err: any) {
         alert('خطا در بارگذاری فایل: ' + (err?.message || 'فایل JSON نامعتبر است'));
       }
@@ -1106,7 +1136,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="text-sm sm:text-base font-extrabold text-white">
-                  بک‌تست چندارزی و بهینه‌ساز بیزی چندپارامتری
+                  بک‌تست چندارزی و بهینه‌ساز سبک رنج‌محور (Top 10)
                 </h3>
                 {cachedCount > 0 && (
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-bold font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
@@ -1116,7 +1146,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                 )}
               </div>
               <p className="text-[11px] text-gray-400">
-                بررسی هوشمند لاگ آزمایش‌های پیشین، تحلیل اثر متقابل پارامترها و سشن‌های کنترل‌شده ۱۵ دقیقه‌ای
+                بهینه‌سازی پویا با به‌روزرسانی رنج پارامترها و ذخیره تنها ۱۰ تست برتر جهت سبکی و سرعت حداکثری
               </p>
             </div>
           </div>
@@ -1145,7 +1175,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               }`}
             >
               <Cpu className="w-3.5 h-3.5" />
-              <span>بهینه‌ساز بیزی (۸ پارامتر)</span>
+              <span>بهینه‌ساز رنج‌محور (Top 10)</span>
             </button>
           </div>
 
@@ -1246,9 +1276,119 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                       max={20}
                       step={0.5}
                       value={optMaxRiskReward}
-                      onChange={(e) => setOptMaxRiskReward(parseFloat(e.target.value) || 5)}
+                      onChange={(e) => setOptMaxRiskReward(parseFloat(e.target.value) || 2)}
                       disabled={isScanning}
                       className="w-full px-2 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-emerald-400 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* تنظیمات زیگ‌زاگ و ATR وارد شده توسط کاربر برای بک‌تست */}
+              <div className="p-2.5 rounded-xl bg-[#0e121a] border border-[#242e40]">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-[11px] font-bold text-amber-400 flex items-center gap-1.5">
+                    <Sliders className="w-3.5 h-3.5" />
+                    <span>تنظیمات زیگ‌زاگ و ATR برای بک‌تست (وارد شده توسط کاربر):</span>
+                  </span>
+                  <span className="text-[10px] text-gray-400">
+                    * بک‌تست دقیقاً بر اساس مقادیر واردشده زیر اجرا می‌شود.
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+                  <div>
+                    <label className="text-[9px] text-gray-400 block mb-0.5">دوره ATR:</label>
+                    <input
+                      type="number"
+                      value={optAtrPeriod}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10) || 55;
+                        setOptAtrPeriod(val);
+                        onUpdateZigZagSettings?.({ ...zigzagSettings, atrPeriod: val });
+                      }}
+                      className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[9px] text-gray-400 block mb-0.5">حداقل کندل:</label>
+                    <input
+                      type="number"
+                      value={optMinCandles}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10) || 3;
+                        setOptMinCandles(val);
+                        onUpdateZigZagSettings?.({ ...zigzagSettings, minCandles: val });
+                      }}
+                      className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[9px] text-gray-400 block mb-0.5">کندل لگ بلند:</label>
+                    <input
+                      type="number"
+                      value={optMinCandlesLong}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10) || 20;
+                        setOptMinCandlesLong(val);
+                        onUpdateZigZagSettings?.({ ...zigzagSettings, minCandlesForLongLeg: val });
+                      }}
+                      className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[9px] text-gray-400 block mb-0.5">ضریب عادی ATR:</label>
+                    <input
+                      type="number"
+                      step={0.1}
+                      value={optAtrMultiplier}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 3.0;
+                        setOptAtrMultiplier(val);
+                        onUpdateZigZagSettings?.({ ...zigzagSettings, atrMultiplier: val });
+                      }}
+                      className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[9px] text-gray-400 block mb-0.5">ضریب لگ بزرگ:</label>
+                    <input
+                      type="number"
+                      step={0.5}
+                      value={optLongLegAtrMult}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 10.0;
+                        setOptLongLegAtrMult(val);
+                        onUpdateZigZagSettings?.({ ...zigzagSettings, longLegAtrMultiplier: val });
+                      }}
+                      className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[9px] text-gray-400 block mb-0.5">سقف لگ آبی %:</label>
+                    <input
+                      type="number"
+                      step={5}
+                      value={optMaxBlueLegPercent}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 60;
+                        setOptMaxBlueLegPercent(val);
+                        onUpdateZigZagSettings?.({ ...zigzagSettings, maxBlueLegPercent: val });
+                      }}
+                      className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[9px] text-gray-400 block mb-0.5">نفوذ شکست ATR:</label>
+                    <input
+                      type="number"
+                      step={0.5}
+                      value={optMaxBreakoutAtr}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 5.0;
+                        setOptMaxBreakoutAtr(val);
+                        onUpdateZigZagSettings?.({ ...zigzagSettings, maxBreakoutAtrMultiplier: val });
+                      }}
+                      className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
                     />
                   </div>
                 </div>
@@ -1321,7 +1461,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               </div>
             </div>
 
-            {/* کارت‌های آمار استراتژی (بازگردانی دقیق طبق درخواست کاربر) */}
+            {/* کارت‌های آمار استراتژی در تب اسکن */}
             {results.length > 0 && (
               <div className="p-3 bg-[#0f131c] border border-[#232c3d] rounded-xl shrink-0">
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
@@ -1392,7 +1532,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               </div>
             )}
 
-            {/* نمودارهای تصویری تعاملی Equity & Drawdown (بازگردانی دقیق طبق درخواست کاربر) */}
+            {/* نمودارهای تصویری Equity & Drawdown */}
             {equityPoints.length > 1 && (
               <div className="p-3 bg-[#0d1017] border border-[#232c3d] rounded-xl shrink-0">
                 <div className="flex items-center justify-between pb-2 mb-1.5 border-b border-[#1c2433]">
@@ -1609,7 +1749,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         )}
 
         {/* ========================================================= */}
-        {/* TAB 2: OPTIMIZER (بهینه‌ساز بیزی چندپارامتری هوشمند) */}
+        {/* TAB 2: OPTIMIZER (مدل سبک و سریع: ۱۰ تست برتر + رنج‌های بهینه) */}
         {/* ========================================================= */}
         {activeTab === 'optimizer' && (
           <div className="flex-1 flex flex-col overflow-y-auto p-4 space-y-3.5">
@@ -1621,7 +1761,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-gray-400">استراتژی تحت بهینه‌سازی:</span>
+                    <span className="text-xs font-bold text-gray-400">استراتژی هدف:</span>
                     <span className="text-xs font-extrabold text-cyan-300 font-sans px-2.5 py-0.5 rounded-md bg-cyan-950/80 border border-cyan-500/40">
                       {selectedStrategyId === 'strategy_1_e_breakout'
                         ? 'استراتژی ۱: شکست نقطه E (تارگت A / استاپ F)'
@@ -1629,7 +1769,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                     </span>
                   </div>
                   <span className="text-[11px] text-gray-400 mt-0.5 block">
-                    تایم‌فریم تست: <strong className="text-white font-mono">{timeframe}</strong> | ریسک تست: <strong className="text-white font-mono">{riskPercent}%</strong> | سرمایه: <strong className="text-white font-mono">{capital.toLocaleString()} USDT</strong>
+                    تایم‌فریم تست: <strong className="text-white font-mono">{timeframe}</strong> | ریسک: <strong className="text-white font-mono">{riskPercent}%</strong> | سرمایه: <strong className="text-white font-mono">{capital.toLocaleString()} USDT</strong>
                   </span>
                 </div>
               </div>
@@ -1649,28 +1789,28 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                   type="button"
                   onClick={handleExportJSON}
                   className="px-3 py-1.5 rounded-xl bg-[#1b2230] hover:bg-[#253046] text-cyan-300 border border-cyan-500/30 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-                  title="دانلود کامل نتایج جدول و پارامترها به صورت JSON"
+                  title="دانلود فایل سبک JSON شامل ۱۰ تست برتر و رنج‌های بهینه"
                 >
                   <Download className="w-3.5 h-3.5" />
-                  <span>خروجی JSON</span>
+                  <span>خروجی سبک JSON</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={handleImportJSONClick}
                   className="px-3 py-1.5 rounded-xl bg-[#1b2230] hover:bg-[#253046] text-amber-300 border border-amber-500/30 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-                  title="بارگذاری نتایج از فایل JSON"
+                  title="بارگذاری فایل JSON رنج‌ها و ۱۰ تست برتر"
                 >
                   <Upload className="w-3.5 h-3.5" />
                   <span>بارگذاری JSON</span>
                 </button>
 
-                {optHistory.length > 0 && (
+                {top10Trials.length > 0 && (
                   <button
                     type="button"
-                    onClick={handleClearOptHistory}
+                    onClick={handleResetOptimizer}
                     className="p-1.5 rounded-xl bg-[#1b2230] hover:bg-rose-950/40 text-gray-400 hover:text-rose-400 border border-[#2b3548] cursor-pointer"
-                    title="پاک کردن جدول تاریخچه آزمایش‌ها"
+                    title="بازنشانی جدول ۱۰ تست برتر و رنج‌ها"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -1678,76 +1818,151 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               </div>
             </div>
 
-            {/* ۲. شروط اولیه ارزیابی مدل */}
-            <div className="p-3 rounded-2xl bg-[#161d2b] border border-[#26354a] grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-              <div className="bg-[#0e121a] p-2 rounded-xl border border-[#222d3e]">
-                <label className="text-[10px] text-gray-300 block mb-1">
-                  حداکثر درودان مجاز (Max Drawdown %):
-                </label>
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="number"
-                    step={0.5}
-                    min={5}
-                    max={50}
-                    value={targetMaxDrawdown}
-                    onChange={(e) => setTargetMaxDrawdown(parseFloat(e.target.value) || 20)}
-                    className="w-full px-2 py-1 bg-[#161c28] border border-[#2d384c] rounded-lg text-amber-400 font-mono font-bold text-xs text-center focus:outline-none"
-                  />
-                  <span className="text-xs font-bold text-gray-400">%</span>
+            {/* ۲. رنج‌های فعال و تطبیق‌پذیر پارامترها (Adaptive Ranges Display) */}
+            <div className="p-3 rounded-2xl bg-gradient-to-r from-[#171f2e] to-[#121722] border border-[#2b3a52]">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <Sliders className="w-4 h-4 text-cyan-400" />
+                  <span className="text-xs font-bold text-white">
+                    رنج‌های بهینه پارامترها (Adaptive Search Ranges):
+                  </span>
+                  <span className="text-[10px] text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded-md font-mono">
+                    کل آزمایش‌های انجام‌شده: {totalEvaluatedCount.toLocaleString()} تست
+                  </span>
                 </div>
+                <span className="text-[11px] text-gray-400">
+                  * رنج‌ها با هر تست موفق بهینه‌تر می‌شوند و آزمایش‌های بعدی مستقیماً از این رنج‌ها انتخاب می‌شوند.
+                </span>
               </div>
 
-              <div className="bg-[#0e121a] p-2 rounded-xl border border-[#222d3e]">
-                <label className="text-[10px] text-gray-300 block mb-1">
-                  حداقل وین‌ریت مجاز (Min Win Rate %):
-                </label>
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="number"
-                    step={1}
-                    min={10}
-                    max={90}
-                    value={targetMinWinRate}
-                    onChange={(e) => setTargetMinWinRate(parseFloat(e.target.value) || 40)}
-                    className="w-full px-2 py-1 bg-[#161c28] border border-[#2d384c] rounded-lg text-sky-400 font-mono font-bold text-xs text-center focus:outline-none"
-                  />
-                  <span className="text-xs font-bold text-gray-400">%</span>
+              {/* نمایشگر رنج‌های ۸ پارامتر */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                <div className="bg-[#0e121a] p-2 rounded-xl border border-[#232e42]">
+                  <span className="text-[10px] text-gray-400 block mb-0.5">۱. دوره ATR:</span>
+                  <div className="flex items-baseline justify-between font-mono">
+                    <span className="text-cyan-300 font-bold">[{adaptiveRanges.atrPeriod.min} - {adaptiveRanges.atrPeriod.max}]</span>
+                    <span className="text-[10px] text-amber-400">مرکز: {adaptiveRanges.atrPeriod.bestVal}</span>
+                  </div>
                 </div>
-              </div>
 
-              <div className="bg-[#0e121a] p-2 rounded-xl border border-[#222d3e]">
-                <label className="text-[10px] text-gray-300 block mb-1">
-                  حداقل تعداد کل معاملات (Min Total Trades):
-                </label>
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="number"
-                    step={10}
-                    min={20}
-                    max={1000}
-                    value={targetMinTrades}
-                    onChange={(e) => setTargetMinTrades(parseInt(e.target.value, 10) || 100)}
-                    className="w-full px-2 py-1 bg-[#161c28] border border-[#2d384c] rounded-lg text-emerald-400 font-mono font-bold text-xs text-center focus:outline-none"
-                  />
-                  <span className="text-xs font-bold text-gray-400">معامله</span>
+                <div className="bg-[#0e121a] p-2 rounded-xl border border-[#232e42]">
+                  <span className="text-[10px] text-gray-400 block mb-0.5">۲. حداقل کندل:</span>
+                  <div className="flex items-baseline justify-between font-mono">
+                    <span className="text-cyan-300 font-bold">[{adaptiveRanges.minCandles.min} - {adaptiveRanges.minCandles.max}]</span>
+                    <span className="text-[10px] text-amber-400">مرکز: {adaptiveRanges.minCandles.bestVal}</span>
+                  </div>
+                </div>
+
+                <div className="bg-[#0e121a] p-2 rounded-xl border border-[#232e42]">
+                  <span className="text-[10px] text-gray-400 block mb-0.5">۳. کندل لگ بلند:</span>
+                  <div className="flex items-baseline justify-between font-mono">
+                    <span className="text-cyan-300 font-bold">[{adaptiveRanges.minCandlesForLongLeg.min} - {adaptiveRanges.minCandlesForLongLeg.max}]</span>
+                    <span className="text-[10px] text-amber-400">مرکز: {adaptiveRanges.minCandlesForLongLeg.bestVal}</span>
+                  </div>
+                </div>
+
+                <div className="bg-[#0e121a] p-2 rounded-xl border border-[#232e42]">
+                  <span className="text-[10px] text-gray-400 block mb-0.5">۴. ضریب عادی:</span>
+                  <div className="flex items-baseline justify-between font-mono">
+                    <span className="text-cyan-300 font-bold">[{adaptiveRanges.atrMultiplier.min}× - {adaptiveRanges.atrMultiplier.max}×]</span>
+                    <span className="text-[10px] text-amber-400">مرکز: {adaptiveRanges.atrMultiplier.bestVal}×</span>
+                  </div>
+                </div>
+
+                <div className="bg-[#0e121a] p-2 rounded-xl border border-[#232e42]">
+                  <span className="text-[10px] text-gray-400 block mb-0.5">۵. ضریب لگ بزرگ:</span>
+                  <div className="flex items-baseline justify-between font-mono">
+                    <span className="text-cyan-300 font-bold">[{adaptiveRanges.longLegAtrMultiplier.min}× - {adaptiveRanges.longLegAtrMultiplier.max}×]</span>
+                    <span className="text-[10px] text-amber-400">مرکز: {adaptiveRanges.longLegAtrMultiplier.bestVal}×</span>
+                  </div>
+                </div>
+
+                <div className="bg-[#0e121a] p-2 rounded-xl border border-[#232e42]">
+                  <span className="text-[10px] text-gray-400 block mb-0.5">۶. سقف لگ آبی:</span>
+                  <div className="flex items-baseline justify-between font-mono">
+                    <span className="text-cyan-300 font-bold">[{adaptiveRanges.maxBlueLegPercent.min}% - {adaptiveRanges.maxBlueLegPercent.max}%]</span>
+                    <span className="text-[10px] text-amber-400">مرکز: {adaptiveRanges.maxBlueLegPercent.bestVal}%</span>
+                  </div>
+                </div>
+
+                <div className="bg-[#0e121a] p-2 rounded-xl border border-[#232e42]">
+                  <span className="text-[10px] text-gray-400 block mb-0.5">۷. نفوذ شکست ATR:</span>
+                  <div className="flex items-baseline justify-between font-mono">
+                    <span className="text-cyan-300 font-bold">[{adaptiveRanges.maxBreakoutAtrMultiplier.min}× - {adaptiveRanges.maxBreakoutAtrMultiplier.max}×]</span>
+                    <span className="text-[10px] text-amber-400">مرکز: {adaptiveRanges.maxBreakoutAtrMultiplier.bestVal}×</span>
+                  </div>
+                </div>
+
+                <div className="bg-[#0e121a] p-2 rounded-xl border border-[#232e42]">
+                  <span className="text-[10px] text-gray-400 block mb-0.5">۸. ریسک به ریوارد (R:R):</span>
+                  <div className="flex items-baseline justify-between font-mono">
+                    <span className="text-cyan-300 font-bold">[{adaptiveRanges.maxRiskReward.min} - {adaptiveRanges.maxRiskReward.max}]</span>
+                    <span className="text-[10px] text-amber-400">مرکز: {adaptiveRanges.maxRiskReward.bestVal}</span>
+                  </div>
                 </div>
               </div>
             </div>
 
-            {/* ۳. تنظیمات ۸ پارامتر با ورودی و چک‌باکس قفل */}
-            <div className="p-3.5 rounded-2xl bg-[#141924] border border-[#242e40]">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-bold text-white">
-                  تنظیمات ۸ پارامتر استراتژی برای بهینه‌سازی بیزی:
-                </span>
-                <span className="text-[11px] text-gray-400">
-                  * هر پارامتری که تیک زده شود، <strong className="text-amber-400">قفل</strong> و مقدار آن ثابت می‌ماند.
-                </span>
+            {/* ۳. شروط اولیه ارزیابی و تنظیمات قفل پارامترها */}
+            <div className="p-3.5 rounded-2xl bg-[#141924] border border-[#242e40] space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div className="bg-[#0e121a] p-2 rounded-xl border border-[#222d3e]">
+                  <label className="text-[10px] text-gray-300 block mb-1">
+                    حداکثر درودان مجاز (Max Drawdown %):
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="number"
+                      step={0.5}
+                      min={5}
+                      max={50}
+                      value={targetMaxDrawdown}
+                      onChange={(e) => setTargetMaxDrawdown(parseFloat(e.target.value) || 20)}
+                      className="w-full px-2 py-1 bg-[#161c28] border border-[#2d384c] rounded-lg text-amber-400 font-mono font-bold text-xs text-center focus:outline-none"
+                    />
+                    <span className="text-xs font-bold text-gray-400">%</span>
+                  </div>
+                </div>
+
+                <div className="bg-[#0e121a] p-2 rounded-xl border border-[#222d3e]">
+                  <label className="text-[10px] text-gray-300 block mb-1">
+                    حداقل وین‌ریت مجاز (Min Win Rate %):
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="number"
+                      step={1}
+                      min={10}
+                      max={90}
+                      value={targetMinWinRate}
+                      onChange={(e) => setTargetMinWinRate(parseFloat(e.target.value) || 40)}
+                      className="w-full px-2 py-1 bg-[#161c28] border border-[#2d384c] rounded-lg text-sky-400 font-mono font-bold text-xs text-center focus:outline-none"
+                    />
+                    <span className="text-xs font-bold text-gray-400">%</span>
+                  </div>
+                </div>
+
+                <div className="bg-[#0e121a] p-2 rounded-xl border border-[#222d3e]">
+                  <label className="text-[10px] text-gray-300 block mb-1">
+                    حداقل تعداد کل معاملات (Min Trades):
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="number"
+                      step={10}
+                      min={20}
+                      max={1000}
+                      value={targetMinTrades}
+                      onChange={(e) => setTargetMinTrades(parseInt(e.target.value, 10) || 100)}
+                      className="w-full px-2 py-1 bg-[#161c28] border border-[#2d384c] rounded-lg text-emerald-400 font-mono font-bold text-xs text-center focus:outline-none"
+                    />
+                    <span className="text-xs font-bold text-gray-400">معامله</span>
+                  </div>
+                </div>
               </div>
 
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                {/* ۱. atrPeriod */}
+              {/* گزینه‌های قفل پارامترها */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pt-1 border-t border-[#222d3e]">
                 <div className={`p-2 rounded-xl border ${lockAtrPeriod ? 'bg-[#0e1117] border-gray-700/60 opacity-60' : 'bg-[#171e2b] border-[#2a364a]'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-gray-200">۱. دوره ATR</label>
@@ -1770,7 +1985,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                   />
                 </div>
 
-                {/* ۲. minCandles */}
                 <div className={`p-2 rounded-xl border ${lockMinCandles ? 'bg-[#0e1117] border-gray-700/60 opacity-60' : 'bg-[#171e2b] border-[#2a364a]'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-gray-200">۲. حداقل کندل</label>
@@ -1793,7 +2007,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                   />
                 </div>
 
-                {/* ۳. minCandlesForLongLeg */}
                 <div className={`p-2 rounded-xl border ${lockMinCandlesLong ? 'bg-[#0e1117] border-gray-700/60 opacity-60' : 'bg-[#171e2b] border-[#2a364a]'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-gray-200">۳. کندل لگ بلند</label>
@@ -1816,7 +2029,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                   />
                 </div>
 
-                {/* ۴. atrMultiplier */}
                 <div className={`p-2 rounded-xl border ${lockAtrMultiplier ? 'bg-[#0e1117] border-gray-700/60 opacity-60' : 'bg-[#171e2b] border-[#2a364a]'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-gray-200">۴. ضریب عادی</label>
@@ -1840,7 +2052,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                   />
                 </div>
 
-                {/* ۵. longLegAtrMultiplier */}
                 <div className={`p-2 rounded-xl border ${lockLongLegAtrMult ? 'bg-[#0e1117] border-gray-700/60 opacity-60' : 'bg-[#171e2b] border-[#2a364a]'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-gray-200">۵. ضریب لگ بزرگ</label>
@@ -1864,7 +2075,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                   />
                 </div>
 
-                {/* ۶. maxBlueLegPercent */}
                 <div className={`p-2 rounded-xl border ${lockMaxBlueLegPercent ? 'bg-[#0e1117] border-gray-700/60 opacity-60' : 'bg-[#171e2b] border-[#2a364a]'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-gray-200">۶. سقف لگ آبی %</label>
@@ -1888,7 +2098,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                   />
                 </div>
 
-                {/* ۷. maxBreakoutAtrMultiplier */}
                 <div className={`p-2 rounded-xl border ${lockMaxBreakoutAtr ? 'bg-[#0e1117] border-gray-700/60 opacity-60' : 'bg-[#171e2b] border-[#2a364a]'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-gray-200">۷. نفوذ شکست (ATR)</label>
@@ -1912,7 +2121,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                   />
                 </div>
 
-                {/* ۸. maxRiskReward */}
                 <div className={`p-2 rounded-xl border ${lockMaxRiskReward ? 'bg-[#0e1117] border-gray-700/60 opacity-60' : 'bg-[#171e2b] border-[#2a364a]'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-gray-200">۸. ریسک به ریوارد (R:R)</label>
@@ -1938,7 +2146,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               </div>
 
               {/* کنترل اجرای سشن ۱۵ دقیقه‌ای */}
-              <div className="flex flex-wrap items-center justify-between gap-3 pt-3 mt-3 border-t border-[#232c3d]">
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-[#232c3d]">
                 <div className="flex items-center gap-2">
                   {!isOptimizing ? (
                     <button
@@ -1948,7 +2156,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                     >
                       <Play className="w-4 h-4 fill-current" />
                       <span>
-                        {sessionSecondsLeft <= 0 ? 'ادامه سشن ۱۵ دقیقه‌ای جدید' : 'شروع بهینه‌سازی خودکار بیزی (سشن پیوسته ۱۵ دقیقه‌ای)'}
+                        {sessionSecondsLeft <= 0 ? 'ادامه سشن ۱۵ دقیقه‌ای جدید' : 'شروع بهینه‌سازی رنج‌محور (سشن ۱۵ دقیقه‌ای)'}
                       </span>
                     </button>
                   ) : (
@@ -1970,10 +2178,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                     <Clock className="w-3.5 h-3.5 text-amber-400" />
                     <span>زمان باقی‌مانده سشن: {formatTimer(sessionSecondsLeft)}</span>
                   </div>
-
-                  <span className="text-[11px] text-gray-400">
-                    ({optHistory.length} آزمایش در جدول ثبت شده)
-                  </span>
                 </div>
 
                 {bestWinningRow && (
@@ -1984,13 +2188,13 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                     title="اعمال مستقیم برنده جدول به اندیکاتور زیگ‌زاگ چارت"
                   >
                     <Award className="w-4 h-4 text-emerald-400" />
-                    <span>اعمال بهترین ترکیب جدول به چارت اصلی</span>
+                    <span>اعمال بهترین ترکیب برنده به چارت اصلی</span>
                   </button>
                 )}
               </div>
             </div>
 
-            {/* ۴. کارت ترکیب برنده (مستقیماً از ردیف‌های جدول استخراج شده است) */}
+            {/* ۴. کارت ترکیب برنده جدول */}
             {bestWinningRow && (
               <div className="p-3.5 rounded-2xl bg-gradient-to-r from-amber-950/30 via-[#151c28] to-[#121622] border border-amber-500/40 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
@@ -1999,7 +2203,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                   </div>
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-extrabold text-amber-400">بهترین ترکیب برنده از جدول (Winning Row)</span>
+                      <span className="text-xs font-extrabold text-amber-400">بهترین ترکیب کشف‌شده (Top #1 Winner)</span>
                       <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-amber-400/20 text-amber-300">ردیف #{bestWinningRow.id}</span>
                       {bestWinningRow.isValid ? (
                         <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
@@ -2007,7 +2211,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                         </span>
                       ) : (
                         <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
-                          ⚠️ پر سودترین ردیف جدول (در انتظار پاس شدن شروط)
+                          ⚠️ پر سودترین ردیف جدول
                         </span>
                       )}
                     </div>
@@ -2031,23 +2235,18 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               </div>
             )}
 
-            {/* ۵. جدول تاریخچه تمام آزمایش‌ها (۸ پارامتر + نتایج، مرتب‌شده بر اساس سود خالص) */}
+            {/* ۵. جدول ۱۰ ترکیب برتر (Top 10 Elite) */}
             <div className="flex-1 min-h-60 rounded-xl border border-[#242e40] overflow-hidden flex flex-col">
               <div className="px-4 py-2.5 bg-[#0e121a] border-b border-[#232c3d] flex items-center justify-between text-xs font-bold text-gray-300">
-                <div className="flex items-center gap-3">
-                  <span>جدول آزمایش ترکیبات بیزی ({sortedOptHistory.length} ردیف)</span>
-                  <label className="flex items-center gap-1.5 text-xs text-gray-400 font-normal cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={filterOnlyValid}
-                      onChange={(e) => setFilterOnlyValid(e.target.checked)}
-                      className="rounded bg-[#171d28] border-gray-600 text-amber-500 focus:ring-0 cursor-pointer"
-                    />
-                    <span>فقط ردیف‌های قبول (پاس‌کننده هر ۳ شرط)</span>
-                  </label>
+                <div className="flex items-center gap-2">
+                  <Award className="w-4 h-4 text-amber-400" />
+                  <span>جدول ۱۰ ترکیب برتر تاریخچه (Top 10 Elite Tests)</span>
+                  <span className="text-[10px] text-gray-400 font-normal">
+                    (تنها ۱۰ تست برتر برای سبکی و سرعت در حافظه نگهداری می‌شوند)
+                  </span>
                 </div>
-                <span className="text-[11px] text-gray-400 font-normal">
-                  * سیستم قبل از هر تست لاگ را تحلیل کرده و جدول را بر اساس <strong className="text-emerald-400">بیشترین سود خالص</strong> مرتب می‌کند.
+                <span className="text-[11px] text-emerald-400 font-mono">
+                  مرتب‌شده بر اساس بیشترین سود خالص
                 </span>
               </div>
 
@@ -2055,7 +2254,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                 <table className="w-full text-right text-xs">
                   <thead className="bg-[#10141c] text-gray-400 border-b border-[#232c3d] select-none">
                     <tr>
-                      <th className="py-2.5 px-2.5">#</th>
+                      <th className="py-2.5 px-2.5">رتبه</th>
                       <th className="py-2.5 px-2 text-center cursor-pointer" onClick={() => handleOptSort('atrPeriod')}>
                         دوره ATR {renderOptSortArrow('atrPeriod')}
                       </th>
@@ -2087,28 +2286,28 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                       <th className="py-2.5 px-2 text-center cursor-pointer" onClick={() => handleOptSort('profitFactor')}>
                         PF {renderOptSortArrow('profitFactor')}
                       </th>
-                      <th className="py-2.5 px-2.5 text-center">وضعیت شروط</th>
+                      <th className="py-2.5 px-2.5 text-center">وضعیت</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#1e2736] font-mono text-[11px]">
-                    {sortedOptHistory.length === 0 ? (
+                    {sortedTop10.length === 0 ? (
                       <tr>
                         <td colSpan={15} className="py-8 text-center text-gray-500 font-sans">
-                          هنوز آزمایشی ثبت نشده است. دکمه «شروع بهینه‌سازی خودکار بیزی» را بزنید تا ترکیبات بررسی شوند.
+                          هنوز آزمایشی ثبت نشده است. با زدن «شروع بهینه‌سازی رنج‌محور»، تست‌ها شروع شده و ۱۰ ترکیب برتر اینجا نمایش داده می‌شوند.
                         </td>
                       </tr>
                     ) : (
-                      sortedOptHistory.map((row) => {
-                        const isTheBest = bestWinningRow && bestWinningRow.id === row.id;
+                      sortedTop10.map((row, idx) => {
+                        const isTheBest = idx === 0;
                         return (
                           <tr
-                            key={row.id}
+                            key={row.hash || row.id}
                             className={`hover:bg-[#161c28] transition-colors ${
                               isTheBest ? 'bg-amber-950/30 border-r-4 border-amber-400' : ''
                             }`}
                           >
                             <td className="py-2 px-2.5">
-                              <span className="font-bold text-white">#{row.id}</span>
+                              <span className="font-bold text-white">#{idx + 1}</span>
                               {isTheBest && (
                                 <span className="mr-1 text-[10px] text-amber-400 font-sans font-bold">🏆 برنده</span>
                               )}
@@ -2159,7 +2358,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         {/* Footer */}
         <div className="px-5 py-3 border-t border-[#232c3d] bg-[#0d1118] shrink-0 flex items-center justify-between text-xs text-gray-400">
           <div>
-            * داده‌های بازار در حافظه کش ذخیره می‌شوند تا تست‌های بهینه‌سازی بدون نیاز به دانلود مجدد اجرا شوند. تمام حالت‌های تست‌شده ثبت شده و از آزمون تکراری جلوگیری می‌شود.
+            * داده‌های بازار در حافظه کش ذخیره می‌شوند. سیستم تنها ۱۰ تست برتر و رنج‌های بهینه‌شده را ذخیره می‌کند تا سرعت و سبکی برنامه همواره حفظ شود.
           </div>
           <button
             type="button"

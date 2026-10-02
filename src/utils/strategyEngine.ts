@@ -647,6 +647,7 @@ function calculateMetrics(trades: StrategyTrade[], initialCapital: number): Stra
   let currentEquity = initialCapital;
   let peakEquity = initialCapital;
   let maxDrawdown = 0;
+  let maxDrawdownPercent = 0;
 
   for (const t of trades) {
     if (t.status === 'WIN') {
@@ -673,12 +674,20 @@ function calculateMetrics(trades: StrategyTrade[], initialCapital: number): Stra
     netProfit += t.pnl;
     currentEquity += t.pnl;
 
+    // به‌روزرسانی بیشترین سرمایه ثبت‌شده تا این لحظه (Peak Equity)
     if (currentEquity > peakEquity) {
       peakEquity = currentEquity;
     }
-    const dd = peakEquity - currentEquity;
-    if (dd > maxDrawdown) {
-      maxDrawdown = dd;
+
+    // افت سرمایه نسبت به بیشترین سرمایه‌ای که تا این لحظه ثبت شده
+    const ddDollars = peakEquity - currentEquity;
+    const ddPercent = peakEquity > 0 ? (ddDollars / peakEquity) * 100 : 0;
+
+    if (ddDollars > maxDrawdown) {
+      maxDrawdown = ddDollars;
+    }
+    if (ddPercent > maxDrawdownPercent) {
+      maxDrawdownPercent = ddPercent;
     }
   }
 
@@ -689,7 +698,6 @@ function calculateMetrics(trades: StrategyTrade[], initialCapital: number): Stra
   const profitFactor = totalLoss > 0 ? totalProfit / totalLoss : totalProfit > 0 ? 99.9 : 0;
   const avgRiskReward = completedTradesCount > 0 ? rrSum / completedTradesCount : 0;
   const netProfitPercent = initialCapital > 0 ? (netProfit / initialCapital) * 100 : 0;
-  const maxDrawdownPercent = peakEquity > 0 ? (maxDrawdown / peakEquity) * 100 : 0;
 
   return {
     totalTrades: totalTradesCount,
