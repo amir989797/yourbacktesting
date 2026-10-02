@@ -15,6 +15,8 @@ export const DEFAULT_ZIGZAG_SETTINGS: ZigZagSettings = {
   minCandlesForLongLeg: 20,
   atrMultiplier: 3,
   longLegAtrMultiplier: 10,
+  maxBlueLegPercent: 60,
+  maxBreakoutAtrMultiplier: 5,
 };
 
 export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
@@ -32,6 +34,12 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
   const [longLegAtrMultiplier, setLongLegAtrMultiplier] = useState<number | string>(
     settings.longLegAtrMultiplier ?? 10
   );
+  const [maxBlueLegPercent, setMaxBlueLegPercent] = useState<number | string>(
+    settings.maxBlueLegPercent ?? 60
+  );
+  const [maxBreakoutAtrMultiplier, setMaxBreakoutAtrMultiplier] = useState<number | string>(
+    settings.maxBreakoutAtrMultiplier ?? 5
+  );
 
   // Sync state if settings prop changes
   React.useEffect(() => {
@@ -41,6 +49,8 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
       setMinCandlesForLongLeg(settings.minCandlesForLongLeg);
       setAtrMultiplier(settings.atrMultiplier);
       setLongLegAtrMultiplier(settings.longLegAtrMultiplier ?? 10);
+      setMaxBlueLegPercent(settings.maxBlueLegPercent ?? 60);
+      setMaxBreakoutAtrMultiplier(settings.maxBreakoutAtrMultiplier ?? 5);
     }
   }, [isOpen, settings]);
 
@@ -52,6 +62,8 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
     setMinCandlesForLongLeg(DEFAULT_ZIGZAG_SETTINGS.minCandlesForLongLeg);
     setAtrMultiplier(DEFAULT_ZIGZAG_SETTINGS.atrMultiplier);
     setLongLegAtrMultiplier(DEFAULT_ZIGZAG_SETTINGS.longLegAtrMultiplier);
+    setMaxBlueLegPercent(DEFAULT_ZIGZAG_SETTINGS.maxBlueLegPercent ?? 60);
+    setMaxBreakoutAtrMultiplier(DEFAULT_ZIGZAG_SETTINGS.maxBreakoutAtrMultiplier ?? 5);
   };
 
   const handleSave = (e: React.FormEvent) => {
@@ -61,6 +73,8 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
     const finalMinCandlesLong = Math.max(1, parseInt(String(minCandlesForLongLeg), 10) || 20);
     const finalAtrMult = Math.max(0.1, parseFloat(String(atrMultiplier)) || 1);
     const finalLongAtrMult = Math.max(0.1, parseFloat(String(longLegAtrMultiplier)) || 10);
+    const finalMaxBlue = Math.max(1, parseFloat(String(maxBlueLegPercent)) || 60);
+    const finalMaxBreakout = Math.max(0.5, parseFloat(String(maxBreakoutAtrMultiplier)) || 5);
 
     onSave({
       atrPeriod: finalAtrPeriod,
@@ -68,6 +82,8 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
       minCandlesForLongLeg: finalMinCandlesLong,
       atrMultiplier: finalAtrMult,
       longLegAtrMultiplier: finalLongAtrMult,
+      maxBlueLegPercent: finalMaxBlue,
+      maxBreakoutAtrMultiplier: finalMaxBreakout,
     });
     onClose();
   };
@@ -279,6 +295,78 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
             </div>
           </div>
 
+          {/* 6. Blue Leg Max % Ratio (محدودیت ۶۰ درصدی لگ‌های آبی) */}
+          <div className="p-3 rounded-xl bg-[#1a212d] border border-[#283244] hover:border-cyan-500/40 transition-colors">
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-cyan-400" />
+                سقف اندازه لگ‌های آبی (نسبت به قرمز/سبز)
+              </label>
+              <span className="text-[11px] font-mono text-cyan-400 font-bold">
+                {maxBlueLegPercent}%
+              </span>
+            </div>
+            <p className="text-[11px] text-gray-400 mb-2.5 leading-relaxed">
+              محدودیت درصدی برای لگ‌های آبی (C تا D و E تا F): اندازه پوینت لگ آبی باید کمتر از این درصد از لگ قرمز/سبز باشد (پیش‌فرض ۶۰٪).
+            </p>
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={10}
+                max={100}
+                step={5}
+                value={Number(maxBlueLegPercent) || 60}
+                onChange={(e) => setMaxBlueLegPercent(Number(e.target.value))}
+                className="flex-1 accent-cyan-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
+              />
+              <input
+                type="number"
+                min={1}
+                max={200}
+                step={1}
+                value={maxBlueLegPercent}
+                onChange={(e) => setMaxBlueLegPercent(e.target.value)}
+                className="w-18 px-2.5 py-1 text-xs font-mono font-bold text-center text-cyan-400 bg-[#10141c] border border-[#323d50] rounded-lg focus:outline-none focus:border-cyan-400"
+              />
+            </div>
+          </div>
+
+          {/* 7. Max Breakout Penetration ATR (سقف نفوذ شکست انتهای لگ) */}
+          <div className="p-3 rounded-xl bg-[#1a212d] border border-[#283244] hover:border-indigo-500/40 transition-colors">
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-indigo-400" />
+                سقف نفوذ شکست انتهای لگ (برابر ATR)
+              </label>
+              <span className="text-[11px] font-mono text-indigo-400 font-bold">
+                {maxBreakoutAtrMultiplier}× ATR
+              </span>
+            </div>
+            <p className="text-[11px] text-gray-400 mb-2.5 leading-relaxed">
+              فاصله مجاز عبور قیمت از نقطه شکست انتهای لگ نباید بیشتر از این مضرب از ATR باشد (پیش‌فرض ۵ برابر ATR).
+            </p>
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={1}
+                max={20}
+                step={0.5}
+                value={Number(maxBreakoutAtrMultiplier) || 5}
+                onChange={(e) => setMaxBreakoutAtrMultiplier(Number(e.target.value))}
+                className="flex-1 accent-indigo-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
+              />
+              <input
+                type="number"
+                min={0.5}
+                max={50}
+                step="any"
+                value={maxBreakoutAtrMultiplier}
+                onChange={(e) => setMaxBreakoutAtrMultiplier(e.target.value)}
+                className="w-18 px-2.5 py-1 text-xs font-mono font-bold text-center text-indigo-400 bg-[#10141c] border border-[#323d50] rounded-lg focus:outline-none focus:border-indigo-400"
+              />
+            </div>
+          </div>
+
           {/* Actions */}
           <div className="flex items-center justify-between pt-3 border-t border-[#252e3d]">
             <button
@@ -287,7 +375,7 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 hover:text-white hover:bg-[#252e3d] transition-colors cursor-pointer"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              <span>پیش‌فرض (55 / 3 / 20 / 3 / 10)</span>
+              <span>پیش‌فرض (55 / 3 / 20 / 3 / 10 / 60% / 5x)</span>
             </button>
 
             <div className="flex items-center gap-2">

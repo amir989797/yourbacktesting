@@ -502,13 +502,17 @@ export interface ZigZagLeg {
 export function analyzeZigZagLegs(
   points: ZigZagPoint[],
   minCandlesForLongLeg: number = 20,
-  longLegAtrMultiplier: number = 10
+  longLegAtrMultiplier: number = 10,
+  maxBlueLegPercent: number = 60,
+  maxBreakoutAtrMultiplier: number = 5
 ): ZigZagLeg[] {
   if (points.length < 2) return [];
 
   const legs: ZigZagLeg[] = [];
   const minLongCandles = Math.max(1, minCandlesForLongLeg);
   const minLongRatio = Math.max(0.1, longLegAtrMultiplier);
+  const maxBlueRatio = Math.max(0.01, (maxBlueLegPercent || 60) / 100);
+  const maxBreakoutMult = Math.max(0.1, maxBreakoutAtrMultiplier || 5);
 
   for (let i = 1; i < points.length; i++) {
     const start = points[i - 1];
@@ -573,6 +577,9 @@ export function analyzeZigZagLegs(
     const cyclePointAPrice = giant.startPrice;
     const cyclePointATime = giant.startTime;
 
+    // شرط محدودیت درصدی برای لگ های آبی (پیش‌فرض ۶۰٪ pts لگ قرمز یا سبز)
+    const maxBluePts = maxBlueRatio * giant.legPoints;
+
     // Label giant leg: Start = A, End = B
     points[giant.startIndex].label = 'A';
     points[giant.endIndex].label = 'B';
@@ -589,7 +596,7 @@ export function analyzeZigZagLegs(
     if (g2Index < legs.length) {
       const g2 = legs[g2Index];
 
-      // بررسی شکست انتهای لگ سبز یا قرمز توسط لگ دوم (نباید بیش از ۵ برابر ATR از قیمت شکست عبور کند)
+      // بررسی شکست انتهای لگ سبز یا قرمز توسط لگ دوم (نباید بیش از maxBreakoutMult برابر ATR از قیمت شکست عبور کند)
       let brokeGiant = false;
       let breakoutDist = 0;
       if (giant.isUp) {
@@ -606,11 +613,13 @@ export function analyzeZigZagLegs(
         }
       }
 
-      // شرط سقف نفوذ: فاصله عبور از نقطه شکست نباید بیشتر از ۵ برابر ATR باشد
+      // شرط سقف نفوذ: فاصله عبور از نقطه شکست نباید بیشتر از maxBreakoutMult برابر ATR باشد
       const refAtrG2 = points[g2.endIndex]?.atrAtPoint || points[giant.endIndex]?.atrAtPoint || 1;
-      const within5AtrG2 = breakoutDist <= 5 * refAtrG2;
+      const within5AtrG2 = breakoutDist <= maxBreakoutMult * refAtrG2;
+      // شرط محدودیت درصدی (پیش‌فرض ۶۰ درصد): اندازه لگ آبی باید کمتر از maxBluePts باشد
+      const isUnder60PctG2 = g2.legPoints < maxBluePts;
 
-      if (brokeGiant && within5AtrG2 && !g2.isGiantLeg) {
+      if (brokeGiant && within5AtrG2 && isUnder60PctG2 && !g2.isGiantLeg) {
         g2.color = 'blue';
         g2.breaksGiantLegIndex = giant.index;
         g2.cycleGiantLegIndex = cycleGiantLegIndex;
@@ -646,9 +655,10 @@ export function analyzeZigZagLegs(
           }
 
           const refAtrG4 = points[g4.endIndex]?.atrAtPoint || points[giant.endIndex]?.atrAtPoint || 1;
-          const within5AtrG4 = breakoutDist4 <= 5 * refAtrG4;
+          const within5AtrG4 = breakoutDist4 <= maxBreakoutMult * refAtrG4;
+          const isUnder60PctG4 = g4.legPoints < maxBluePts;
 
-          if (brokeGiant4 && within5AtrG4 && !g4.isGiantLeg) {
+          if (brokeGiant4 && within5AtrG4 && isUnder60PctG4 && !g4.isGiantLeg) {
             g4.color = 'blue';
             g4.breaksGiantLegIndex = giant.index;
             g4.cycleGiantLegIndex = cycleGiantLegIndex;
@@ -690,11 +700,13 @@ export function analyzeZigZagLegs(
           }
         }
 
-        // شرط سقف نفوذ: نباید بیش از ۵ برابر ATR از قیمت شکست عبور کند
+        // شرط سقف نفوذ: نباید بیش از maxBreakoutMult برابر ATR از قیمت شکست عبور کند
         const refAtrB2 = points[b2.endIndex]?.atrAtPoint || points[blueLeg.endIndex]?.atrAtPoint || 1;
-        const within5AtrB2 = breakoutDistB2 <= 5 * refAtrB2;
+        const within5AtrB2 = breakoutDistB2 <= maxBreakoutMult * refAtrB2;
+        // شرط محدودیت درصدی: اندازه لگ آبی پررنگ نیز باید کمتر از maxBluePts باشد
+        const isUnder60PctB2 = b2.legPoints < maxBluePts;
 
-        if (brokeBlue && within5AtrB2 && !b2.isGiantLeg) {
+        if (brokeBlue && within5AtrB2 && isUnder60PctB2 && !b2.isGiantLeg) {
           b2.color = 'dark_blue';
           b2.cycleGiantLegIndex = cycleGiantLegIndex;
           b2.cyclePointAPrice = cyclePointAPrice;
@@ -732,9 +744,10 @@ export function analyzeZigZagLegs(
             }
 
             const refAtrB4 = points[b4.endIndex]?.atrAtPoint || points[blueLeg.endIndex]?.atrAtPoint || 1;
-            const within5AtrB4 = breakoutDistB4 <= 5 * refAtrB4;
+            const within5AtrB4 = breakoutDistB4 <= maxBreakoutMult * refAtrB4;
+            const isUnder60PctB4 = b4.legPoints < maxBluePts;
 
-            if (brokeBlue4 && within5AtrB4 && !b4.isGiantLeg) {
+            if (brokeBlue4 && within5AtrB4 && isUnder60PctB4 && !b4.isGiantLeg) {
               b4.color = 'dark_blue';
               b4.cycleGiantLegIndex = cycleGiantLegIndex;
               b4.cyclePointAPrice = cyclePointAPrice;

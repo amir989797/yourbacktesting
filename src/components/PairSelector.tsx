@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Search, ChevronDown, Check, TrendingUp, TrendingDown, Star, Sparkles } from 'lucide-react';
 import { CryptoPair, Ticker24h } from '../types/crypto';
-import { POPULAR_PAIRS } from '../services/binance';
+import { POPULAR_PAIRS, fetchUSDTMarketPairs } from '../services/binance';
 import { formatPrice } from '../utils/indicators';
 
 interface PairSelectorProps {
@@ -18,7 +18,29 @@ export const PairSelector: React.FC<PairSelectorProps> = ({
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState<string>('All');
+  const [availablePairs, setAvailablePairs] = useState<CryptoPair[]>(POPULAR_PAIRS);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Fetch all market pairs with >$1M 24h volume
+  useEffect(() => {
+    let isMounted = true;
+    fetchUSDTMarketPairs(1_000_000).then((pairs) => {
+      if (isMounted && pairs.length > 0) {
+        // Merge with POPULAR_PAIRS ensuring unique symbols
+        const map = new Map<string, CryptoPair>();
+        for (const p of POPULAR_PAIRS) map.set(p.symbol, p);
+        for (const p of pairs) {
+          if (!map.has(p.symbol)) {
+            map.set(p.symbol, p);
+          }
+        }
+        setAvailablePairs(Array.from(map.values()));
+      }
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -33,7 +55,7 @@ export const PairSelector: React.FC<PairSelectorProps> = ({
 
   const categories = ['All', 'Popular', 'Layer 1', 'DeFi', 'Meme', 'AI & Tech'];
 
-  const filteredPairs = POPULAR_PAIRS.filter((pair) => {
+  const filteredPairs = availablePairs.filter((pair) => {
     const matchesSearch =
       pair.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
       pair.name.toLowerCase().includes(searchQuery.toLowerCase()) ||

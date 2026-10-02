@@ -3,12 +3,13 @@ import { CryptoPair, CandleData, Timeframe, ZigZagSettings } from './types/crypt
 import { POPULAR_PAIRS, fetchKlines, subscribeToKlineStream } from './services/binance';
 import { calculateATR, calculateAtrZigZag, analyzeZigZagLegs } from './utils/indicators';
 import { StrategyConfig, DEFAULT_STRATEGY_CONFIG } from './types/strategy';
-import { runStrategy1Backtest } from './utils/strategyEngine';
+import { runStrategyBacktest } from './utils/strategyEngine';
 import { Navbar } from './components/Navbar';
 import { TradingChart } from './components/TradingChart';
 import { CandleDataModal } from './components/CandleDataModal';
 import { ZigZagSettingsModal, DEFAULT_ZIGZAG_SETTINGS } from './components/ZigZagSettingsModal';
 import { ZigZagGuideModal } from './components/ZigZagGuideModal';
+import { BacktestScannerModal } from './components/BacktestScannerModal';
 import { StrategyPanel } from './components/StrategyPanel';
 import { Zap } from 'lucide-react';
 
@@ -22,6 +23,7 @@ export default function App() {
   const [isDataModalOpen, setIsDataModalOpen] = useState<boolean>(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
   const [isGuideModalOpen, setIsGuideModalOpen] = useState<boolean>(false);
+  const [isBacktestModalOpen, setIsBacktestModalOpen] = useState<boolean>(false);
 
   // Strategy Panel Open/Close state (persisted)
   const [isStrategyOpen, setIsStrategyOpen] = useState<boolean>(() => {
@@ -46,7 +48,7 @@ export default function App() {
   const [strategyConfig, setStrategyConfig] = useState<StrategyConfig>(() => {
     try {
       const saved = localStorage.getItem('trading_strategy_config');
-      if (saved) return JSON.parse(saved);
+      if (saved) return { ...DEFAULT_STRATEGY_CONFIG, ...JSON.parse(saved) };
     } catch {}
     return DEFAULT_STRATEGY_CONFIG;
   });
@@ -165,15 +167,26 @@ export default function App() {
     zigzagSettings.longLegAtrMultiplier,
   ]);
 
-  // Run Strategy 1 Backtest and Real-time signals
+  // Run Strategy Backtest (Strategy 1 or Strategy 2)
   const strategyResult = useMemo(() => {
-    return runStrategy1Backtest(
+    return runStrategyBacktest(
       candles,
       zigzagData.points,
       zigzagData.legs,
-      strategyConfig
+      strategyConfig,
+      atrMetrics.atrValues,
+      zigzagSettings.atrMultiplier,
+      zigzagSettings.minCandles
     );
-  }, [candles, zigzagData.points, zigzagData.legs, strategyConfig]);
+  }, [
+    candles,
+    zigzagData.points,
+    zigzagData.legs,
+    strategyConfig,
+    atrMetrics.atrValues,
+    zigzagSettings.atrMultiplier,
+    zigzagSettings.minCandles,
+  ]);
 
   const isHovering = Boolean(hoveredAtrData?.isHovering);
   const currentAtr = isHovering ? hoveredAtrData!.atr : atrMetrics.currentATR;
@@ -202,6 +215,7 @@ export default function App() {
           onOpenDataModal={() => setIsDataModalOpen(true)}
           onOpenSettings={() => setIsSettingsModalOpen(true)}
           onOpenGuide={() => setIsGuideModalOpen(true)}
+          onOpenBacktest={() => setIsBacktestModalOpen(true)}
           onToggleStrategy={handleToggleStrategy}
           isStrategyOpen={isStrategyOpen}
         />
@@ -246,7 +260,7 @@ export default function App() {
           >
             <Zap className="w-4 h-4 fill-current group-hover:scale-110 transition-transform" />
             <span className="text-[11px] font-bold [writing-mode:vertical-rl] tracking-widest font-sans">
-              استراتژی E-Break
+              استراتژی
             </span>
           </button>
         )}
@@ -288,6 +302,19 @@ export default function App() {
         isOpen={isGuideModalOpen}
         onClose={() => setIsGuideModalOpen(false)}
         settings={zigzagSettings}
+      />
+
+      {/* 6. Multi-Symbol Backtest Scanner Modal (همواره در حافظه می‌ماند تا با بستن مودال داده‌ها از بین نروند) */}
+      <BacktestScannerModal
+        isOpen={isBacktestModalOpen}
+        onClose={() => setIsBacktestModalOpen(false)}
+        zigzagSettings={zigzagSettings}
+        onUpdateZigZagSettings={setZigzagSettings}
+        currentTimeframe={timeframe}
+        onSelectPairAndClose={(p) => {
+          setSelectedPair(p);
+          setIsBacktestModalOpen(false);
+        }}
       />
     </div>
   );

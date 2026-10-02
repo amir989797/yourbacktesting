@@ -3,6 +3,7 @@ export interface StrategyConfig {
   selectedStrategyId: string;
   riskPercent: number;
   maxCandlesToEnter: number;
+  maxRiskReward: number;
   maxTradesPerLeg: number;
   showOnChart: boolean;
 }
@@ -12,7 +13,8 @@ export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
   selectedStrategyId: 'strategy_1_e_breakout',
   riskPercent: 1.0,
   maxCandlesToEnter: 100,
-  maxTradesPerLeg: 1,
+  maxRiskReward: 5,
+  maxTradesPerLeg: 3,
   showOnChart: true,
 };
 
@@ -20,7 +22,10 @@ export type TradeStatus = 'PENDING' | 'ACTIVE' | 'WIN' | 'LOSS' | 'EXPIRED';
 
 export interface StrategyTrade {
   id: string;
+  strategyId?: string;
+  strategyName?: string;
   cycleIndex: number;
+  attemptNumber?: number;
   direction: 'BUY' | 'SELL';
   cycleType: 'bullish' | 'bearish';
   

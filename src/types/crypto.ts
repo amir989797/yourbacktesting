@@ -55,6 +55,8 @@ export interface ZigZagSettings {
   minCandlesForLongLeg: number; // Min candle for long leg (پیش‌فرض 20)
   atrMultiplier: number; // ضریب ATR لگ‌های عادی (پیش‌فرض 3)
   longLegAtrMultiplier: number; // ضریب ATR نوسان لگ‌های بزرگ (پیش‌فرض 10)
+  maxBlueLegPercent?: number; // سقف درصدی اندازه لگ‌های آبی نسبت به قرمز/سبز (پیش‌فرض 60)
+  maxBreakoutAtrMultiplier?: number; // سقف نفوذ شکست انتهای لگ بر مبنای ATR (پیش‌فرض 5)
 }
 
 export interface RecentTrade {

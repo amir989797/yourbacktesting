@@ -461,7 +461,9 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       const analyzedLegs = analyzeZigZagLegs(
         zgPoints,
         activeMinCandlesForLongLeg,
-        activeLongLegAtrMultiplier
+        activeLongLegAtrMultiplier,
+        zigzagSettings?.maxBlueLegPercent ?? 60,
+        zigzagSettings?.maxBreakoutAtrMultiplier ?? 5
       );
       setZigzagPoints(zgPoints);
       setZigzagLegs(analyzedLegs);

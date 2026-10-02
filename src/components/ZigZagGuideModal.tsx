@@ -67,10 +67,10 @@ export const ZigZagGuideModal: React.FC<ZigZagGuideModalProps> = ({
                 <span className="text-rose-400 font-bold">red leg (bearish giant):</span> direction = DOWN , length &gt;= {longLegAtrMult}ATR ({Math.round(longLegAtrMult * 100)}%) , count &gt;= {minLongC} candle <span className="text-amber-300 font-bold ml-1">[Start: A , End: B]</span>
               </div>
               <div className="text-[#00E5FF]">
-                <span className="text-cyan-400 font-bold">light blue leg:</span> 2nd or 4th leg after green/red , breaks green/red end price , breakout &lt;= 5ATR <span className="text-amber-300 font-bold ml-1">[Start: C , End: D]</span>
+                <span className="text-cyan-400 font-bold">light blue leg:</span> 2nd or 4th leg after green/red , breaks green/red end price , breakout &lt;= 5ATR , pts &lt; 60% of green/red <span className="text-amber-300 font-bold ml-1">[Start: C , End: D]</span>
               </div>
               <div className="text-[#60A5FA]">
-                <span className="text-blue-500 font-bold">dark blue leg:</span> 2nd or 4th leg after light blue , breaks light blue end price , breakout &lt;= 5ATR <span className="text-amber-300 font-bold ml-1">[Start: E , End: F]</span>
+                <span className="text-blue-500 font-bold">dark blue leg:</span> 2nd or 4th leg after light blue , breaks light blue end price , breakout &lt;= 5ATR , pts &lt; 60% of green/red <span className="text-amber-300 font-bold ml-1">[Start: E , End: F]</span>
               </div>
             </div>
           </div>
@@ -147,9 +147,15 @@ export const ZigZagGuideModal: React.FC<ZigZagGuideModalProps> = ({
               <p className="text-[11px] text-cyan-100/90 leading-relaxed mb-1.5">
                 <strong>دومین لگ (G+2)</strong> یا در صورت عدم شکست، <strong>چهارمین لگ (G+4)</strong> بعد از سبز یا قرمز که هم‌جهت با آن است و انتهای لگ سبز یا قرمز را می‌شکند.
               </p>
-              <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-[#061820] border border-cyan-400/30 text-[10px] text-cyan-300">
-                <ShieldAlert className="w-3.5 h-3.5 shrink-0 text-amber-400" />
-                <span><strong>شرط سقف نفوذ:</strong> پس از شکست، میزان عبور قیمت نباید بیشتر از <strong>۵ برابر ATR</strong> باشد.</span>
+              <div className="flex flex-col gap-1 px-2 py-1.5 rounded bg-[#061820] border border-cyan-400/30 text-[10px] text-cyan-300">
+                <div className="flex items-center gap-1.5">
+                  <ShieldAlert className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+                  <span><strong>شرط سقف نفوذ:</strong> پس از شکست، میزان عبور قیمت نباید بیشتر از <strong>۵ برابر ATR</strong> باشد.</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-amber-300">
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-400" />
+                  <span><strong>شرط اندازه لگ:</strong> اندازه لگ آبی باید <strong>کمتر از ۶۰٪ pts لگ قرمز یا سبز</strong> باشد.</span>
+                </div>
               </div>
             </div>
 
@@ -162,9 +168,15 @@ export const ZigZagGuideModal: React.FC<ZigZagGuideModalProps> = ({
               <p className="text-[11px] text-blue-100/90 leading-relaxed mb-1.5">
                 <strong>دومین لگ (B+2)</strong> یا در صورت عدم شکست، <strong>چهارمین لگ (B+4)</strong> بعد از آبی کم‌رنگ که انتهای آبی کم‌رنگ را به سمت جلو می‌شکند.
               </p>
-              <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-[#081226] border border-blue-400/30 text-[10px] text-blue-300">
-                <ShieldAlert className="w-3.5 h-3.5 shrink-0 text-amber-400" />
-                <span><strong>شرط سقف نفوذ:</strong> پس از شکست، میزان عبور قیمت نباید بیشتر از <strong>۵ برابر ATR</strong> باشد.</span>
+              <div className="flex flex-col gap-1 px-2 py-1.5 rounded bg-[#081226] border border-blue-400/30 text-[10px] text-blue-300">
+                <div className="flex items-center gap-1.5">
+                  <ShieldAlert className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+                  <span><strong>شرط سقف نفوذ:</strong> پس از شکست، میزان عبور قیمت نباید بیشتر از <strong>۵ برابر ATR</strong> باشد.</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-amber-300">
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-400" />
+                  <span><strong>شرط اندازه لگ:</strong> اندازه لگ آبی پررنگ نیز باید <strong>کمتر از ۶۰٪ pts لگ قرمز یا سبز</strong> باشد.</span>
+                </div>
               </div>
               <p className="text-[10px] text-gray-400 mt-1.5">
                 * پس از ثبت لگ آبی پررنگ، سیستم تا تشکیل مجدد لگ سبز یا قرمز بعدی در حالت سفید منتظر می‌ماند.

@@ -30,7 +30,79 @@ export const POPULAR_PAIRS: CryptoPair[] = [
   { symbol: 'OPUSDT', baseAsset: 'OP', quoteAsset: 'USDT', name: 'Optimism', category: 'Layer 1' },
   { symbol: 'RENDERUSDT', baseAsset: 'RENDER', quoteAsset: 'USDT', name: 'Render Token', category: 'AI & Tech' },
   { symbol: 'FETUSDT', baseAsset: 'FET', quoteAsset: 'USDT', name: 'Artificial Superintelligence', category: 'AI & Tech' },
+  { symbol: 'INJUSDT', baseAsset: 'INJ', quoteAsset: 'USDT', name: 'Injective', category: 'DeFi' },
+  { symbol: 'TIAUSDT', baseAsset: 'TIA', quoteAsset: 'USDT', name: 'Celestia', category: 'Layer 1' },
+  { symbol: 'APTUSDT', baseAsset: 'APT', quoteAsset: 'USDT', name: 'Aptos', category: 'Layer 1' },
+  { symbol: 'FILUSDT', baseAsset: 'FIL', quoteAsset: 'USDT', name: 'Filecoin', category: 'Layer 1' },
+  { symbol: 'ATOMUSDT', baseAsset: 'ATOM', quoteAsset: 'USDT', name: 'Cosmos', category: 'Layer 1' },
+  { symbol: 'ICPUSDT', baseAsset: 'ICP', quoteAsset: 'USDT', name: 'Internet Computer', category: 'Layer 1' },
+  { symbol: 'FTMUSDT', baseAsset: 'FTM', quoteAsset: 'USDT', name: 'Fantom', category: 'Layer 1' },
+  { symbol: 'WIFUSDT', baseAsset: 'WIF', quoteAsset: 'USDT', name: 'dogwifhat', category: 'Meme' },
+  { symbol: 'FLOKIUSDT', baseAsset: 'FLOKI', quoteAsset: 'USDT', name: 'Floki', category: 'Meme' },
+  { symbol: 'BONKUSDT', baseAsset: 'BONK', quoteAsset: 'USDT', name: 'Bonk', category: 'Meme' },
+  { symbol: 'SEIUSDT', baseAsset: 'SEI', quoteAsset: 'USDT', name: 'Sei Network', category: 'Layer 1' },
+  { symbol: 'TAOUSDT', baseAsset: 'TAO', quoteAsset: 'USDT', name: 'Bittensor', category: 'AI & Tech' },
+  { symbol: 'STXUSDT', baseAsset: 'STX', quoteAsset: 'USDT', name: 'Stacks', category: 'Layer 1' },
+  { symbol: 'WLDUSDT', baseAsset: 'WLD', quoteAsset: 'USDT', name: 'Worldcoin', category: 'AI & Tech' },
+  { symbol: 'PENDLEUSDT', baseAsset: 'PENDLE', quoteAsset: 'USDT', name: 'Pendle', category: 'DeFi' },
+  { symbol: 'JUPUSDT', baseAsset: 'JUP', quoteAsset: 'USDT', name: 'Jupiter', category: 'DeFi' },
+  { symbol: 'ONDOUSDT', baseAsset: 'ONDO', quoteAsset: 'USDT', name: 'Ondo Finance', category: 'DeFi' },
+  { symbol: 'CRVUSDT', baseAsset: 'CRV', quoteAsset: 'USDT', name: 'Curve DAO', category: 'DeFi' },
+  { symbol: 'MKRUSDT', baseAsset: 'MKR', quoteAsset: 'USDT', name: 'Maker', category: 'DeFi' },
+  { symbol: 'LDOUSDT', baseAsset: 'LDO', quoteAsset: 'USDT', name: 'Lido DAO', category: 'DeFi' },
+  { symbol: 'GRTUSDT', baseAsset: 'GRT', quoteAsset: 'USDT', name: 'The Graph', category: 'AI & Tech' },
+  { symbol: 'RUNEUSDT', baseAsset: 'RUNE', quoteAsset: 'USDT', name: 'THORChain', category: 'DeFi' },
+  { symbol: 'HBARUSDT', baseAsset: 'HBAR', quoteAsset: 'USDT', name: 'Hedera', category: 'Layer 1' },
 ];
+
+/**
+ * Fetch all active USDT market pairs with 24h volume/market turnover >= $1M
+ */
+export async function fetchUSDTMarketPairs(minVolumeUsd: number = 1000000): Promise<CryptoPair[]> {
+  for (const baseUrl of BINANCE_REST_ENDPOINTS) {
+    try {
+      const response = await fetch(`${baseUrl}/api/v3/ticker/24hr`, {
+        signal: AbortSignal.timeout(6000),
+      });
+      if (!response.ok) continue;
+      const data = await response.json();
+      if (!Array.isArray(data)) continue;
+
+      const pairs: CryptoPair[] = [];
+      for (const item of data) {
+        const symbol = String(item.symbol);
+        const quoteVol = parseFloat(item.quoteVolume || '0');
+
+        if (
+          symbol.endsWith('USDT') &&
+          quoteVol >= minVolumeUsd &&
+          !symbol.includes('UP') &&
+          !symbol.includes('DOWN') &&
+          !symbol.includes('BEAR') &&
+          !symbol.includes('BULL')
+        ) {
+          const base = symbol.slice(0, -4);
+          pairs.push({
+            symbol,
+            baseAsset: base,
+            quoteAsset: 'USDT',
+            name: base,
+            category: 'Popular',
+          });
+        }
+      }
+
+      if (pairs.length > 0) {
+        return pairs;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  // Fallback to rich predefined high cap list
+  return POPULAR_PAIRS;
+}
 
 async function fetchBatch(
   baseUrl: string,
