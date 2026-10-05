@@ -48,8 +48,14 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
   );
   const [capitalInput, setCapitalInput] = useState<string>(String(config.capital));
   const [riskInput, setRiskInput] = useState<string>(String(config.riskPercent));
+  const [entryCommissionInput, setEntryCommissionInput] = useState<string>(
+    String(config.entryCommissionPercent ?? 0.06)
+  );
+  const [exitCommissionInput, setExitCommissionInput] = useState<string>(
+    String(config.exitCommissionPercent ?? 0.06)
+  );
   const [maxCandlesInput, setMaxCandlesInput] = useState<string>(String(config.maxCandlesToEnter));
-  const [maxRRInput, setMaxRRInput] = useState<string>(String(config.maxRiskReward || 5));
+  const [maxRRInput, setMaxRRInput] = useState<string>(String(config.maxRiskReward || 2));
 
   if (!isOpen) return null;
 
@@ -66,6 +72,32 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
     const num = parseFloat(val);
     if (!isNaN(num) && num > 0) {
       onUpdateConfig({ ...config, riskPercent: num });
+    }
+  };
+
+  const handleEntryCommissionChange = (val: string) => {
+    setEntryCommissionInput(val);
+    const num = parseFloat(val);
+    if (!isNaN(num) && num >= 0) {
+      const exit = parseFloat(exitCommissionInput) || 0;
+      onUpdateConfig({
+        ...config,
+        entryCommissionPercent: num,
+        commissionPercent: parseFloat((num + exit).toFixed(4)),
+      });
+    }
+  };
+
+  const handleExitCommissionChange = (val: string) => {
+    setExitCommissionInput(val);
+    const num = parseFloat(val);
+    if (!isNaN(num) && num >= 0) {
+      const entry = parseFloat(entryCommissionInput) || 0;
+      onUpdateConfig({
+        ...config,
+        exitCommissionPercent: num,
+        commissionPercent: parseFloat((entry + num).toFixed(4)),
+      });
     }
   };
 
@@ -214,8 +246,8 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
               </button>
             </div>
 
-            {/* 3 Strategy Inputs Side-by-Side in 3 Columns */}
-            <div className="grid grid-cols-3 gap-2">
+            {/* Strategy Inputs Side-by-Side */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
               {/* Risk % */}
               <div className="bg-[#0e121a] p-2 rounded-lg border border-[#252f42]">
                 <div className="text-[10px] text-gray-300 font-semibold mb-1 flex items-center justify-between">
@@ -248,7 +280,45 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                   value={maxRRInput}
                   onChange={(e) => handleMaxRRChange(e.target.value)}
                   className="w-full py-1 text-xs font-mono font-bold text-center text-emerald-400 bg-[#161c28] border border-[#2b364a] rounded focus:outline-none focus:border-emerald-400"
-                  placeholder="5"
+                  placeholder="2"
+                />
+              </div>
+
+              {/* Entry Commission % */}
+              <div className="bg-[#0e121a] p-2 rounded-lg border border-[#252f42]">
+                <div className="text-[10px] text-amber-300 font-semibold mb-1 flex items-center justify-between">
+                  <span>کارمزد ورود (%)</span>
+                  <span className="text-amber-400 font-mono font-bold">%</span>
+                </div>
+                <input
+                  type="number"
+                  min={0}
+                  max={5}
+                  step={0.01}
+                  value={entryCommissionInput}
+                  onChange={(e) => handleEntryCommissionChange(e.target.value)}
+                  className="w-full py-1 text-xs font-mono font-bold text-center text-amber-400 bg-[#161c28] border border-[#2b364a] rounded focus:outline-none focus:border-amber-400"
+                  placeholder="0.06"
+                  title="کارمزد ورود به پوزیشن (پیش‌فرض ۰.۰۶٪)"
+                />
+              </div>
+
+              {/* Exit Commission % */}
+              <div className="bg-[#0e121a] p-2 rounded-lg border border-[#252f42]">
+                <div className="text-[10px] text-amber-300 font-semibold mb-1 flex items-center justify-between">
+                  <span>کارمزد خروج (%)</span>
+                  <span className="text-amber-400 font-mono font-bold">%</span>
+                </div>
+                <input
+                  type="number"
+                  min={0}
+                  max={5}
+                  step={0.01}
+                  value={exitCommissionInput}
+                  onChange={(e) => handleExitCommissionChange(e.target.value)}
+                  className="w-full py-1 text-xs font-mono font-bold text-center text-amber-400 bg-[#161c28] border border-[#2b364a] rounded focus:outline-none focus:border-amber-400"
+                  placeholder="0.06"
+                  title="کارمزد خروج از پوزیشن (پیش‌فرض ۰.۰۶٪)"
                 />
               </div>
 
@@ -313,6 +383,20 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
               </div>
             </div>
 
+            {/* Total Fee Card */}
+            <div className="p-3 rounded-xl bg-[#171c27] border border-amber-500/30">
+              <div className="text-[10px] text-amber-300 mb-0.5 flex items-center justify-between">
+                <span>کارمزد کل ({config.commissionPercent ?? 0.12}%)</span>
+                <span className="text-[9px] text-gray-400">ورود: {config.entryCommissionPercent ?? 0.06}% | خروج: {config.exitCommissionPercent ?? 0.06}%</span>
+              </div>
+              <div className="text-base font-bold font-mono text-amber-400">
+                -${(metrics.totalFee || 0).toLocaleString()}
+              </div>
+              <div className="text-[10px] text-gray-400">
+                سود ناخالص: ${(metrics.totalProfit - metrics.totalLoss).toLocaleString()}
+              </div>
+            </div>
+
             {/* Win Rate Card */}
             <div className="p-3 rounded-xl bg-[#171c27] border border-[#263143]">
               <div className="text-[10px] text-gray-400 mb-0.5">نرخ برد (Win Rate)</div>
@@ -324,6 +408,17 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                   className="bg-emerald-400 h-full rounded-full transition-all duration-300"
                   style={{ width: `${Math.min(100, Math.max(0, metrics.winRate))}%` }}
                 />
+              </div>
+            </div>
+
+            {/* Max Drawdown */}
+            <div className="p-3 rounded-xl bg-[#171c27] border border-[#263143]">
+              <div className="text-[10px] text-gray-400 mb-0.5">حداکثر افت (Max DD)</div>
+              <div className="text-base font-bold font-mono text-rose-400">
+                {metrics.maxDrawdownPercent}%
+              </div>
+              <div className="text-[10px] text-gray-400">
+                افت دلاری: -${metrics.maxDrawdown.toLocaleString()}
               </div>
             </div>
 
@@ -511,7 +606,7 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
 
                     <div className="flex items-center justify-between text-[11px] font-mono">
                       <span className="text-gray-400">
-                        ورود: ${t.entryPrice.toLocaleString()}
+                        ورود: ${t.entryPrice.toLocaleString()} {t.exitPrice ? `| خروج: $${t.exitPrice.toLocaleString()}` : ''}
                       </span>
                       <span
                         className={`font-bold ${
@@ -527,7 +622,9 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                     </div>
 
                     <div className="flex items-center justify-between text-[10px] text-gray-500 mt-1">
-                      <span>R:R: {t.riskReward}:1</span>
+                      <span>
+                        R:R: {t.riskReward}:1 {t.fee !== undefined ? `| کارمزد: -$${t.fee} (ورود: $${t.entryFee ?? 0} | خروج: $${t.exitFee ?? 0})` : ''}
+                      </span>
                       <span>ورود پس از {t.candlesElapsedToEntry} کندل</span>
                     </div>
                   </div>

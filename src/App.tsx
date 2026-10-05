@@ -48,7 +48,19 @@ export default function App() {
   const [strategyConfig, setStrategyConfig] = useState<StrategyConfig>(() => {
     try {
       const saved = localStorage.getItem('trading_strategy_config');
-      if (saved) return { ...DEFAULT_STRATEGY_CONFIG, ...JSON.parse(saved) };
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        const entryFee = parsed.entryCommissionPercent ?? 0.06;
+        const exitFee = parsed.exitCommissionPercent ?? 0.06;
+        const totalFee = parsed.commissionPercent ?? parseFloat((entryFee + exitFee).toFixed(4));
+        return {
+          ...DEFAULT_STRATEGY_CONFIG,
+          ...parsed,
+          entryCommissionPercent: entryFee,
+          exitCommissionPercent: exitFee,
+          commissionPercent: totalFee,
+        };
+      }
     } catch {}
     return DEFAULT_STRATEGY_CONFIG;
   });

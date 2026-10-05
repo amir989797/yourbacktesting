@@ -8,6 +8,11 @@ const BINANCE_REST_ENDPOINTS = [
   'https://api3.binance.com',
 ];
 
+const BINANCE_FUTURES_ENDPOINTS = [
+  'https://fapi.binance.com',
+  'https://fapi.binance.vision',
+];
+
 export const POPULAR_PAIRS: CryptoPair[] = [
   { symbol: 'BTCUSDT', baseAsset: 'BTC', quoteAsset: 'USDT', name: 'Bitcoin', category: 'Popular' },
   { symbol: 'ETHUSDT', baseAsset: 'ETH', quoteAsset: 'USDT', name: 'Ethereum', category: 'Popular' },
@@ -54,6 +59,57 @@ export const POPULAR_PAIRS: CryptoPair[] = [
   { symbol: 'RUNEUSDT', baseAsset: 'RUNE', quoteAsset: 'USDT', name: 'THORChain', category: 'DeFi' },
   { symbol: 'HBARUSDT', baseAsset: 'HBAR', quoteAsset: 'USDT', name: 'Hedera', category: 'Layer 1' },
 ];
+
+/**
+ * Fetch all active Binance USDT-M Futures pairs with 24h quote volume >= minVolumeUsd
+ */
+export async function fetchFuturesMarketPairs(minVolumeUsd: number = 200000): Promise<CryptoPair[]> {
+  for (const baseUrl of BINANCE_FUTURES_ENDPOINTS) {
+    try {
+      const response = await fetch(`${baseUrl}/fapi/v1/ticker/24hr`, {
+        signal: AbortSignal.timeout(6000),
+      });
+      if (!response.ok) continue;
+      const data = await response.json();
+      if (!Array.isArray(data)) continue;
+
+      const volumeMap = new Map<string, number>();
+      const pairs: CryptoPair[] = [];
+      for (const item of data) {
+        const symbol = String(item.symbol);
+        const quoteVol = parseFloat(item.quoteVolume || '0');
+
+        if (
+          symbol.endsWith('USDT') &&
+          quoteVol >= minVolumeUsd &&
+          !symbol.includes('_')
+        ) {
+          const base = symbol.slice(0, -4);
+          pairs.push({
+            symbol,
+            baseAsset: base,
+            quoteAsset: 'USDT',
+            name: base,
+            category: 'Futures',
+          });
+          volumeMap.set(symbol, quoteVol);
+        }
+      }
+
+      // Sort by 24h volume descending
+      pairs.sort((a, b) => (volumeMap.get(b.symbol) || 0) - (volumeMap.get(a.symbol) || 0));
+
+      if (pairs.length > 0) {
+        return pairs;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  // Fallback to Popular Pairs
+  return POPULAR_PAIRS.map(p => ({ ...p, category: 'Futures' }));
+}
 
 /**
  * Fetch all active USDT market pairs with 24h volume/market turnover >= $1M
@@ -111,7 +167,9 @@ async function fetchBatch(
   batchLimit: number,
   endTime?: number
 ): Promise<CandleData[]> {
-  let url = `${baseUrl}/api/v3/klines?symbol=${symbol.toUpperCase()}&interval=${interval}&limit=${batchLimit}`;
+  const isFutures = baseUrl.includes('fapi.binance');
+  const path = isFutures ? '/fapi/v1/klines' : '/api/v3/klines';
+  let url = `${baseUrl}${path}?symbol=${symbol.toUpperCase()}&interval=${interval}&limit=${batchLimit}`;
   if (endTime !== undefined) {
     url += `&endTime=${endTime}`;
   }
@@ -138,55 +196,89 @@ async function fetchBatch(
   }));
 }
 
+const INTERVAL_MS_MAP: Record<string, number> = {
+  '1m': 60 * 1000,
+  '3m': 3 * 60 * 1000,
+  '5m': 5 * 60 * 1000,
+  '15m': 15 * 60 * 1000,
+  '30m': 30 * 60 * 1000,
+  '1h': 60 * 60 * 1000,
+  '2h': 2 * 60 * 60 * 1000,
+  '4h': 4 * 60 * 60 * 1000,
+  '6h': 6 * 60 * 60 * 1000,
+  '8h': 8 * 60 * 60 * 1000,
+  '12h': 12 * 60 * 60 * 1000,
+  '1d': 24 * 60 * 60 * 1000,
+  '3d': 3 * 24 * 60 * 1000,
+  '1w': 7 * 24 * 60 * 1000,
+};
+
 /**
- * Fetch up to 5,000 klines (candlesticks) from Binance using backward pagination
+ * Fetch up to 5,000 klines (candlesticks) from Binance with high-speed parallel pagination and endpoint rotation
  */
 export async function fetchKlines(
   symbol: string,
   interval: string,
-  limit: number = 5000
+  limit: number = 5000,
+  isFutures: boolean = true
 ): Promise<{ candles: CandleData[]; source: 'live' | 'fallback' }> {
-  for (const baseUrl of BINANCE_REST_ENDPOINTS) {
+  const endpoints = isFutures
+    ? [...BINANCE_FUTURES_ENDPOINTS, ...BINANCE_REST_ENDPOINTS]
+    : BINANCE_REST_ENDPOINTS;
+
+  const intervalMs = INTERVAL_MS_MAP[interval] || 5 * 60 * 1000;
+
+  for (let epIndex = 0; epIndex < endpoints.length; epIndex++) {
+    const primaryUrl = endpoints[epIndex];
     try {
-      const allCandles: CandleData[] = [];
-      let currentEndTime: number | undefined = undefined;
-      const batchSize = 1000;
-      const numBatches = Math.ceil(limit / batchSize);
+      // Step 1: Fetch the most recent 1,000 candles first
+      const firstBatchLimit = Math.min(1000, limit);
+      const batch0 = await fetchBatch(primaryUrl, symbol, interval, firstBatchLimit);
+      if (!batch0 || batch0.length === 0) continue;
 
-      for (let b = 0; b < numBatches; b++) {
-        const remaining = limit - allCandles.length;
-        const currentBatchLimit = Math.min(batchSize, remaining);
-        if (currentBatchLimit <= 0) break;
+      // If user only wanted <=1000 candles or coin has fewer than 1000 candles, return immediately!
+      if (limit <= 1000 || batch0.length < firstBatchLimit) {
+        return { candles: batch0.sort((a, b) => a.time - b.time), source: 'live' };
+      }
 
-        const batch = await fetchBatch(baseUrl, symbol, interval, currentBatchLimit, currentEndTime);
-        if (!batch || batch.length === 0) {
-          break;
-        }
+      // Step 2: Coin has more history. Fetch remaining batches (up to 4 more batches) in PARALLEL
+      const remainingCount = limit - batch0.length;
+      const numRemainingBatches = Math.ceil(remainingCount / 1000);
+      const earliestTimeMs = batch0[0].time * 1000;
 
-        allCandles.unshift(...batch);
+      const parallelRequests: Promise<CandleData[]>[] = [];
+      for (let b = 0; b < numRemainingBatches; b++) {
+        const batchLimit = Math.min(1000, remainingCount - b * 1000);
+        if (batchLimit <= 0) break;
+        // Projected endTime for each 1000-candle block
+        const targetEndTime = earliestTimeMs - 1 - (b * 1000 * intervalMs);
+        // Distribute requests across available mirror endpoints to avoid rate limit choke
+        const endpointUrl = endpoints[(epIndex + b + 1) % endpoints.length];
+        parallelRequests.push(
+          fetchBatch(endpointUrl, symbol, interval, batchLimit, targetEndTime)
+        );
+      }
 
-        // Next older batch must end right before the earliest candle in this batch
-        const earliestTimeMs = batch[0].time * 1000;
-        currentEndTime = earliestTimeMs - 1;
+      const otherBatches = await Promise.all(parallelRequests);
 
-        if (batch.length < currentBatchLimit) {
-          // Reached beginning of Binance history for this timeframe
-          break;
+      // Merge and deduplicate all candles
+      const candleMap = new Map<number, CandleData>();
+      for (const c of batch0) {
+        candleMap.set(c.time, c);
+      }
+      for (const b of otherBatches) {
+        if (Array.isArray(b)) {
+          for (const c of b) {
+            candleMap.set(c.time, c);
+          }
         }
       }
 
-      if (allCandles.length > 0) {
-        // Deduplicate and sort ascending by time
-        const candleMap = new Map<number, CandleData>();
-        for (const c of allCandles) {
-          candleMap.set(c.time, c);
-        }
-        const sortedCandles = Array.from(candleMap.values()).sort((a, b) => a.time - b.time);
-
+      const sortedCandles = Array.from(candleMap.values()).sort((a, b) => a.time - b.time);
+      if (sortedCandles.length > 0) {
         return { candles: sortedCandles, source: 'live' };
       }
     } catch {
-      // Try next mirror endpoint
       continue;
     }
   }

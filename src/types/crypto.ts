@@ -34,7 +34,7 @@ export interface CryptoPair {
   quoteAsset: string;
   name: string;
   icon?: string;
-  category: 'Popular' | 'Layer 1' | 'DeFi' | 'Meme' | 'AI & Tech';
+  category: 'Popular' | 'Layer 1' | 'DeFi' | 'Meme' | 'AI & Tech' | 'Futures';
 }
 
 export type Timeframe = '1m' | '5m' | '15m' | '30m' | '1h' | '4h' | '1d' | '1w';

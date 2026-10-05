@@ -153,6 +153,15 @@ export function runStrategy1Backtest(
           let pnl = 0;
           let pnlPercent = 0;
 
+          const entryFeeRate =
+            (config.entryCommissionPercent ??
+              (config.commissionPercent !== undefined ? config.commissionPercent / 2 : 0.06)) / 100;
+          const exitFeeRate =
+            (config.exitCommissionPercent ??
+              (config.commissionPercent !== undefined ? config.commissionPercent / 2 : 0.06)) / 100;
+
+          const entryFee = positionValue * entryFeeRate;
+
           for (let k = entryCandleIdx; k < candles.length; k++) {
             const ck = candles[k];
 
@@ -166,15 +175,19 @@ export function runStrategy1Backtest(
                 exitPrice = stopLoss;
                 exitTime = ck.time;
                 exitCandleIdx = k;
-                pnl = -riskAmount;
-                pnlPercent = -config.riskPercent;
+                const exitFee = (positionSize * exitPrice) * exitFeeRate;
+                const tradeFee = entryFee + exitFee;
+                pnl = -riskAmount - tradeFee;
+                pnlPercent = (pnl / config.capital) * 100;
                 break;
               } else if (hitTP) {
                 status = 'WIN';
                 exitPrice = takeProfit;
                 exitTime = ck.time;
                 exitCandleIdx = k;
-                pnl = riskAmount * riskReward;
+                const exitFee = (positionSize * exitPrice) * exitFeeRate;
+                const tradeFee = entryFee + exitFee;
+                pnl = (riskAmount * riskReward) - tradeFee;
                 pnlPercent = (pnl / config.capital) * 100;
                 break;
               } else if (hitSL) {
@@ -182,8 +195,10 @@ export function runStrategy1Backtest(
                 exitPrice = stopLoss;
                 exitTime = ck.time;
                 exitCandleIdx = k;
-                pnl = -riskAmount;
-                pnlPercent = -config.riskPercent;
+                const exitFee = (positionSize * exitPrice) * exitFeeRate;
+                const tradeFee = entryFee + exitFee;
+                pnl = -riskAmount - tradeFee;
+                pnlPercent = (pnl / config.capital) * 100;
                 break;
               }
             } else {
@@ -196,15 +211,19 @@ export function runStrategy1Backtest(
                 exitPrice = stopLoss;
                 exitTime = ck.time;
                 exitCandleIdx = k;
-                pnl = -riskAmount;
-                pnlPercent = -config.riskPercent;
+                const exitFee = (positionSize * exitPrice) * exitFeeRate;
+                const tradeFee = entryFee + exitFee;
+                pnl = -riskAmount - tradeFee;
+                pnlPercent = (pnl / config.capital) * 100;
                 break;
               } else if (hitTP) {
                 status = 'WIN';
                 exitPrice = takeProfit;
                 exitTime = ck.time;
                 exitCandleIdx = k;
-                pnl = riskAmount * riskReward;
+                const exitFee = (positionSize * exitPrice) * exitFeeRate;
+                const tradeFee = entryFee + exitFee;
+                pnl = (riskAmount * riskReward) - tradeFee;
                 pnlPercent = (pnl / config.capital) * 100;
                 break;
               } else if (hitSL) {
@@ -212,8 +231,10 @@ export function runStrategy1Backtest(
                 exitPrice = stopLoss;
                 exitTime = ck.time;
                 exitCandleIdx = k;
-                pnl = -riskAmount;
-                pnlPercent = -config.riskPercent;
+                const exitFee = (positionSize * exitPrice) * exitFeeRate;
+                const tradeFee = entryFee + exitFee;
+                pnl = -riskAmount - tradeFee;
+                pnlPercent = (pnl / config.capital) * 100;
                 break;
               }
             }
@@ -223,12 +244,19 @@ export function runStrategy1Backtest(
           if (status === 'ACTIVE') {
             const latestCandle = candles[candles.length - 1];
             const curPrice = latestCandle.close;
+            exitPrice = curPrice;
             const currentMove = direction === 'BUY' ? curPrice - entryPrice : entryPrice - curPrice;
-            pnl = positionSize * currentMove;
+            const grossMovePnl = positionSize * currentMove;
+            const exitFee = (positionSize * exitPrice) * exitFeeRate;
+            const tradeFee = entryFee + exitFee;
+            pnl = grossMovePnl - tradeFee;
             pnlPercent = (pnl / config.capital) * 100;
           }
 
           const elapsed = entryCandleIdx - candleIdxF;
+          const actualExitPrice = exitPrice ?? entryPrice;
+          const tradeExitFee = (positionSize * actualExitPrice) * exitFeeRate;
+          const tradeTotalFee = entryFee + tradeExitFee;
 
           trades.push({
             id: `trade-${trades.length + 1}-${darkBlueLeg.index}-att${attempt}`,
@@ -258,6 +286,10 @@ export function runStrategy1Backtest(
             waitingForPostLeg: false,
             hasPostLeg: true,
             status,
+            grossPnl: parseFloat((pnl + tradeTotalFee).toFixed(2)),
+            entryFee: parseFloat(entryFee.toFixed(2)),
+            exitFee: parseFloat(tradeExitFee.toFixed(2)),
+            fee: parseFloat(tradeTotalFee.toFixed(2)),
             pnl: parseFloat(pnl.toFixed(2)),
             pnlPercent: parseFloat(pnlPercent.toFixed(2)),
           });
@@ -403,6 +435,15 @@ export function runStrategy2Backtest(
               let pnl = 0;
               let pnlPercent = 0;
 
+              const entryFeeRate =
+                (config.entryCommissionPercent ??
+                  (config.commissionPercent !== undefined ? config.commissionPercent / 2 : 0.06)) / 100;
+              const exitFeeRate =
+                (config.exitCommissionPercent ??
+                  (config.commissionPercent !== undefined ? config.commissionPercent / 2 : 0.06)) / 100;
+
+              const entryFee = positionValue * entryFeeRate;
+
               for (let k = entryCandleIdx; k < candles.length; k++) {
                 const ck = candles[k];
                 const hitTP = ck.low <= takeProfit;
@@ -413,15 +454,19 @@ export function runStrategy2Backtest(
                   exitPrice = stopLoss;
                   exitTime = ck.time;
                   exitCandleIdx = k;
-                  pnl = -riskAmount;
-                  pnlPercent = -config.riskPercent;
+                  const exitFee = (positionSize * exitPrice) * exitFeeRate;
+                  const tradeFee = entryFee + exitFee;
+                  pnl = -riskAmount - tradeFee;
+                  pnlPercent = (pnl / config.capital) * 100;
                   break;
                 } else if (hitTP) {
                   status = 'WIN';
                   exitPrice = takeProfit;
                   exitTime = ck.time;
                   exitCandleIdx = k;
-                  pnl = riskAmount * riskReward;
+                  const exitFee = (positionSize * exitPrice) * exitFeeRate;
+                  const tradeFee = entryFee + exitFee;
+                  pnl = (riskAmount * riskReward) - tradeFee;
                   pnlPercent = (pnl / config.capital) * 100;
                   break;
                 } else if (hitSL) {
@@ -429,8 +474,10 @@ export function runStrategy2Backtest(
                   exitPrice = stopLoss;
                   exitTime = ck.time;
                   exitCandleIdx = k;
-                  pnl = -riskAmount;
-                  pnlPercent = -config.riskPercent;
+                  const exitFee = (positionSize * exitPrice) * exitFeeRate;
+                  const tradeFee = entryFee + exitFee;
+                  pnl = -riskAmount - tradeFee;
+                  pnlPercent = (pnl / config.capital) * 100;
                   break;
                 }
               }
@@ -438,10 +485,18 @@ export function runStrategy2Backtest(
               if (status === 'ACTIVE') {
                 const latestCandle = candles[candles.length - 1];
                 const curPrice = latestCandle.close;
+                exitPrice = curPrice;
                 const currentMove = entryPrice - curPrice;
-                pnl = positionSize * currentMove;
+                const grossMovePnl = positionSize * currentMove;
+                const exitFee = (positionSize * exitPrice) * exitFeeRate;
+                const tradeFee = entryFee + exitFee;
+                pnl = grossMovePnl - tradeFee;
                 pnlPercent = (pnl / config.capital) * 100;
               }
+
+              const actualExitPrice = exitPrice ?? entryPrice;
+              const tradeExitFee = (positionSize * actualExitPrice) * exitFeeRate;
+              const tradeTotalFee = entryFee + tradeExitFee;
 
               trades.push({
                 id: `trade-s2-${trades.length + 1}-${darkBlueLeg.index}`,
@@ -473,6 +528,10 @@ export function runStrategy2Backtest(
                 waitingForPostLeg: false,
                 hasPostLeg: true,
                 status,
+                grossPnl: parseFloat((pnl + tradeTotalFee).toFixed(2)),
+                entryFee: parseFloat(entryFee.toFixed(2)),
+                exitFee: parseFloat(tradeExitFee.toFixed(2)),
+                fee: parseFloat(tradeTotalFee.toFixed(2)),
                 pnl: parseFloat(pnl.toFixed(2)),
                 pnlPercent: parseFloat(pnlPercent.toFixed(2)),
               });
@@ -519,6 +578,15 @@ export function runStrategy2Backtest(
               let pnl = 0;
               let pnlPercent = 0;
 
+              const entryFeeRate =
+                (config.entryCommissionPercent ??
+                  (config.commissionPercent !== undefined ? config.commissionPercent / 2 : 0.06)) / 100;
+              const exitFeeRate =
+                (config.exitCommissionPercent ??
+                  (config.commissionPercent !== undefined ? config.commissionPercent / 2 : 0.06)) / 100;
+
+              const entryFee = positionValue * entryFeeRate;
+
               for (let k = entryCandleIdx; k < candles.length; k++) {
                 const ck = candles[k];
                 const hitTP = ck.high >= takeProfit;
@@ -529,15 +597,19 @@ export function runStrategy2Backtest(
                   exitPrice = stopLoss;
                   exitTime = ck.time;
                   exitCandleIdx = k;
-                  pnl = -riskAmount;
-                  pnlPercent = -config.riskPercent;
+                  const exitFee = (positionSize * exitPrice) * exitFeeRate;
+                  const tradeFee = entryFee + exitFee;
+                  pnl = -riskAmount - tradeFee;
+                  pnlPercent = (pnl / config.capital) * 100;
                   break;
                 } else if (hitTP) {
                   status = 'WIN';
                   exitPrice = takeProfit;
                   exitTime = ck.time;
                   exitCandleIdx = k;
-                  pnl = riskAmount * riskReward;
+                  const exitFee = (positionSize * exitPrice) * exitFeeRate;
+                  const tradeFee = entryFee + exitFee;
+                  pnl = (riskAmount * riskReward) - tradeFee;
                   pnlPercent = (pnl / config.capital) * 100;
                   break;
                 } else if (hitSL) {
@@ -545,8 +617,10 @@ export function runStrategy2Backtest(
                   exitPrice = stopLoss;
                   exitTime = ck.time;
                   exitCandleIdx = k;
-                  pnl = -riskAmount;
-                  pnlPercent = -config.riskPercent;
+                  const exitFee = (positionSize * exitPrice) * exitFeeRate;
+                  const tradeFee = entryFee + exitFee;
+                  pnl = -riskAmount - tradeFee;
+                  pnlPercent = (pnl / config.capital) * 100;
                   break;
                 }
               }
@@ -554,10 +628,18 @@ export function runStrategy2Backtest(
               if (status === 'ACTIVE') {
                 const latestCandle = candles[candles.length - 1];
                 const curPrice = latestCandle.close;
+                exitPrice = curPrice;
                 const currentMove = curPrice - entryPrice;
-                pnl = positionSize * currentMove;
+                const grossMovePnl = positionSize * currentMove;
+                const exitFee = (positionSize * exitPrice) * exitFeeRate;
+                const tradeFee = entryFee + exitFee;
+                pnl = grossMovePnl - tradeFee;
                 pnlPercent = (pnl / config.capital) * 100;
               }
+
+              const actualExitPrice = exitPrice ?? entryPrice;
+              const tradeExitFee = (positionSize * actualExitPrice) * exitFeeRate;
+              const tradeTotalFee = entryFee + tradeExitFee;
 
               trades.push({
                 id: `trade-s2-${trades.length + 1}-${darkBlueLeg.index}`,
@@ -589,6 +671,10 @@ export function runStrategy2Backtest(
                 waitingForPostLeg: false,
                 hasPostLeg: true,
                 status,
+                grossPnl: parseFloat((pnl + tradeTotalFee).toFixed(2)),
+                entryFee: parseFloat(entryFee.toFixed(2)),
+                exitFee: parseFloat(tradeExitFee.toFixed(2)),
+                fee: parseFloat(tradeTotalFee.toFixed(2)),
                 pnl: parseFloat(pnl.toFixed(2)),
                 pnlPercent: parseFloat(pnlPercent.toFixed(2)),
               });
@@ -648,8 +734,14 @@ function calculateMetrics(trades: StrategyTrade[], initialCapital: number): Stra
   let peakEquity = initialCapital;
   let maxDrawdown = 0;
   let maxDrawdownPercent = 0;
+  let totalFee = 0;
 
-  for (const t of trades) {
+  // معاملات بر اساس زمان مرتب می‌شوند تا تقدم و تأخر واقعی شبیه‌سازی گردد
+  const sortedTrades = [...trades].sort(
+    (a, b) => (a.exitTime || a.entryTime || a.timeF || 0) - (b.exitTime || b.entryTime || b.timeF || 0)
+  );
+
+  for (const t of sortedTrades) {
     if (t.status === 'WIN') {
       winTrades++;
       completedTradesCount++;
@@ -665,29 +757,36 @@ function calculateMetrics(trades: StrategyTrade[], initialCapital: number): Stra
       expiredTrades++;
     }
 
-    // مجموع سود ناخالص و زیان ناخالص برای محاسبه دقیق Profit Factor و Net Profit
-    if (t.pnl > 0) {
-      totalProfit += t.pnl;
-    } else if (t.pnl < 0) {
-      totalLoss += Math.abs(t.pnl);
-    }
-    netProfit += t.pnl;
-    currentEquity += t.pnl;
-
-    // به‌روزرسانی بیشترین سرمایه ثبت‌شده تا این لحظه (Peak Equity)
-    if (currentEquity > peakEquity) {
-      peakEquity = currentEquity;
+    if (t.fee) {
+      totalFee += t.fee;
     }
 
-    // افت سرمایه نسبت به بیشترین سرمایه‌ای که تا این لحظه ثبت شده
-    const ddDollars = peakEquity - currentEquity;
-    const ddPercent = peakEquity > 0 ? (ddDollars / peakEquity) * 100 : 0;
+    // تأثیر مالی معاملات بسته یا جاری بر سرمایه و درودان
+    if (t.status === 'WIN' || t.status === 'LOSS' || t.status === 'ACTIVE') {
+      if (t.pnl > 0) {
+        totalProfit += t.pnl;
+      } else if (t.pnl < 0) {
+        totalLoss += Math.abs(t.pnl);
+      }
+      netProfit += t.pnl;
+      currentEquity += t.pnl;
 
-    if (ddDollars > maxDrawdown) {
-      maxDrawdown = ddDollars;
-    }
-    if (ddPercent > maxDrawdownPercent) {
-      maxDrawdownPercent = ddPercent;
+      // سقف تاریخی سرمایه (Peak Equity)
+      if (currentEquity > peakEquity) {
+        peakEquity = currentEquity;
+      }
+
+      // افت سرمایه نسبت به سقف تاریخی
+      const ddDollars = peakEquity - currentEquity;
+      const ddPercent = peakEquity > 0 ? (ddDollars / peakEquity) * 100 : 0;
+
+      // قانون درودان: مقدار درودان هرگز کم نمی‌شود، بلکه تنها با افت‌های جدید افزایش می‌یابد
+      if (ddDollars > maxDrawdown) {
+        maxDrawdown = ddDollars;
+      }
+      if (ddPercent > maxDrawdownPercent) {
+        maxDrawdownPercent = ddPercent;
+      }
     }
   }
 
@@ -709,6 +808,7 @@ function calculateMetrics(trades: StrategyTrade[], initialCapital: number): Stra
     winRate: parseFloat(winRate.toFixed(1)),
     totalProfit: parseFloat(totalProfit.toFixed(2)),
     totalLoss: parseFloat(totalLoss.toFixed(2)),
+    totalFee: parseFloat(totalFee.toFixed(2)),
     netProfit: parseFloat(netProfit.toFixed(2)),
     netProfitPercent: parseFloat(netProfitPercent.toFixed(2)),
     profitFactor: parseFloat(profitFactor.toFixed(2)),
@@ -730,6 +830,7 @@ function getEmptyMetrics(capital: number): StrategyMetrics {
     winRate: 0,
     totalProfit: 0,
     totalLoss: 0,
+    totalFee: 0,
     netProfit: 0,
     netProfitPercent: 0,
     profitFactor: 0,

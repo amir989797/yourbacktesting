@@ -21,8 +21,14 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  ArrowLeft,
+  ArrowRight,
   LineChart,
   Download,
+  Camera,
+  ZoomIn,
+  ZoomOut,
+  MoveHorizontal,
   Upload,
   Copy,
   Check,
@@ -44,7 +50,7 @@ import {
 } from 'lucide-react';
 import { CryptoPair, CandleData, Timeframe, ZigZagSettings } from '../types/crypto';
 import { StrategyConfig, StrategyTrade } from '../types/strategy';
-import { fetchUSDTMarketPairs, fetchKlines } from '../services/binance';
+import { fetchUSDTMarketPairs, fetchFuturesMarketPairs, fetchKlines } from '../services/binance';
 import { calculateATR, calculateAtrZigZag, analyzeZigZagLegs } from '../utils/indicators';
 import { runStrategy1Backtest, runStrategy2Backtest } from '../utils/strategyEngine';
 
@@ -60,6 +66,7 @@ export interface BacktestResultItem {
   netProfitPercent: number;
   totalProfit: number;
   totalLoss: number;
+  totalFee: number;
   profitFactor: number;
   avgRiskReward: number;
   maxDrawdown: number;
@@ -126,6 +133,7 @@ type ScannerSortCol =
   | 'totalTrades'
   | 'winRate'
   | 'netProfit'
+  | 'totalFee'
   | 'profitFactor'
   | 'maxDrawdownPercent'
   | 'optimalRiskForDD20';
@@ -168,6 +176,9 @@ function generateConfigHash(p: {
   return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxRiskReward}`;
 }
 
+// حافظه کش ماندگار کندل‌های دانلودشده در طول سشن مرورگر
+const GLOBAL_CANDLE_CACHE = new Map<string, { pair: CryptoPair; candles: CandleData[]; timeframe: string }>();
+
 export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   isOpen,
   onClose,
@@ -187,14 +198,45 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   // General Parameters
   const [capital, setCapital] = useState<number>(10000);
   const [riskPercent, setRiskPercent] = useState<number>(1.0);
+  const [entryCommissionPercent, setEntryCommissionPercent] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('backtest_entry_commission_percent');
+      if (saved !== null) return parseFloat(saved);
+    } catch {}
+    return 0.06; // کارمزد ورود 0.06% پیش‌فرض
+  });
+  const [exitCommissionPercent, setExitCommissionPercent] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('backtest_exit_commission_percent');
+      if (saved !== null) return parseFloat(saved);
+    } catch {}
+    return 0.06; // کارمزد خروج 0.06% پیش‌فرض
+  });
+  const commissionPercent = parseFloat((entryCommissionPercent + exitCommissionPercent).toFixed(4));
   const [maxCandlesToEnter, setMaxCandlesToEnter] = useState<number>(100);
   const [timeframe, setTimeframe] = useState<Timeframe>('5m');
   const [candleHistoryLimit, setCandleHistoryLimit] = useState<number>(5000);
-  const [universeOption, setUniverseOption] = useState<'all_1m' | 'top_30' | 'top_50'>('all_1m');
+  const [universeOption, setUniverseOption] = useState<'all_futures' | 'top_50' | 'top_30' | 'all_1m'>(() => {
+    try {
+      const saved = localStorage.getItem('backtest_universe_option');
+      if (saved && (saved === 'all_futures' || saved === 'top_50' || saved === 'top_30' || saved === 'all_1m')) {
+        return saved as any;
+      }
+    } catch {}
+    return 'all_futures'; // دریافت پیش‌فرض ارزهای فیوچرز
+  });
 
   // Cached Candles in Memory to avoid repeated downloads!
-  const cachedCandlesMapRef = useRef<Map<string, { pair: CryptoPair; candles: CandleData[] }>>(new Map());
-  const [cachedCount, setCachedCount] = useState<number>(0);
+  const [cachedCount, setCachedCount] = useState<number>(() => GLOBAL_CANDLE_CACHE.size);
+
+  // تعداد ورکر همزمان برای دانلود و اسکن موازی سریع (Workers Concurrency)
+  const [scanWorkersCount, setScanWorkersCount] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('backtest_scan_workers_v2');
+      if (saved) return parseInt(saved, 10);
+    } catch {}
+    return 12; // پیش‌فرض ۱۲ ورکر برای سرعت بالا در ۶۵۰ ارز
+  });
 
   // Scanner status & results
   const [isScanning, setIsScanning] = useState<boolean>(false);
@@ -207,7 +249,26 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const [results, setResults] = useState<BacktestResultItem[]>(() => {
     try {
       const saved = localStorage.getItem('backtest_scanned_results_v2');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed.map((item: any) => ({
+            ...item,
+            totalFee: typeof item.totalFee === 'number' ? item.totalFee : 0,
+            netProfit: typeof item.netProfit === 'number' ? item.netProfit : 0,
+            netProfitPercent: typeof item.netProfitPercent === 'number' ? item.netProfitPercent : 0,
+            totalProfit: typeof item.totalProfit === 'number' ? item.totalProfit : 0,
+            totalLoss: typeof item.totalLoss === 'number' ? item.totalLoss : 0,
+            totalTrades: typeof item.totalTrades === 'number' ? item.totalTrades : 0,
+            winTrades: typeof item.winTrades === 'number' ? item.winTrades : 0,
+            lossTrades: typeof item.lossTrades === 'number' ? item.lossTrades : 0,
+            winRate: typeof item.winRate === 'number' ? item.winRate : 0,
+            profitFactor: typeof item.profitFactor === 'number' ? item.profitFactor : 0,
+            maxDrawdownPercent: typeof item.maxDrawdownPercent === 'number' ? item.maxDrawdownPercent : 0,
+            optimalRiskForDD20: typeof item.optimalRiskForDD20 === 'number' ? item.optimalRiskForDD20 : 0,
+          }));
+        }
+      }
     } catch {}
     return [];
   });
@@ -220,11 +281,25 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     return [];
   });
 
+  // بیشترین درودان ثبت‌شده در طول اسکن که تضمین می‌کند درودان فقط می‌تواند زیاد شود و هرگز کم نمی‌شود
+  const [scanMaxDrawdown, setScanMaxDrawdown] = useState<number>(0);
+
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
-  // Chart View Options in Scanner Tab
-  const [activeChartTab, setActiveChartTab] = useState<'both' | 'equity' | 'drawdown'>('both');
+  // Full-width Zoom & Mouse Drag-to-Pan for Equity Chart
+  const chartScrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const [zoomLevel, setZoomLevel] = useState<number>(1); // 1 = 100% Fit (تمام‌عرض با زوم اوت خودکار)
+  const isDraggingChartRef = useRef<boolean>(false);
+  const dragStartXRef = useRef<number>(0);
+  const dragStartScrollLeftRef = useRef<number>(0);
+  const [isChartDragging, setIsChartDragging] = useState<boolean>(false);
+  const [hoveredEquityPoint, setHoveredEquityPoint] = useState<{
+    index: number;
+    x: number;
+    y: number;
+    point: (typeof equityPoints)[0];
+  } | null>(null);
 
   // Table Sorting & Search in Scanner
   const [searchFilter, setSearchFilter] = useState<string>('');
@@ -359,6 +434,15 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     }
   }, [allCollectedTrades]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem('backtest_universe_option', universeOption);
+      localStorage.setItem('backtest_entry_commission_percent', entryCommissionPercent.toString());
+      localStorage.setItem('backtest_exit_commission_percent', exitCommissionPercent.toString());
+      localStorage.setItem('backtest_commission_percent', commissionPercent.toString());
+    } catch {}
+  }, [universeOption, entryCommissionPercent, exitCommissionPercent, commissionPercent]);
+
   // کنترل تایمر ۱۵ دقیقه‌ای پیوسته
   useEffect(() => {
     let interval: any;
@@ -390,14 +474,23 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     setErrorMsg(null);
     setResults([]);
     setAllCollectedTrades([]);
+    setScanMaxDrawdown(0);
 
     try {
-      const allPairs = await fetchUSDTMarketPairs(1_000_000);
-      let targetPairs: CryptoPair[] = allPairs;
+      let targetPairs: CryptoPair[] = [];
+      const isFuturesUniverse = universeOption !== 'all_1m';
 
-      if (universeOption === 'top_30') targetPairs = allPairs.slice(0, 30);
-      else if (universeOption === 'top_50') targetPairs = allPairs.slice(0, 50);
-      else targetPairs = allPairs; // اسکن تمام ارزهای بالای ۱ میلیون دلار بدون محدودیت!
+      if (universeOption === 'all_futures') {
+        targetPairs = await fetchFuturesMarketPairs(200_000);
+      } else if (universeOption === 'top_30') {
+        const futures = await fetchFuturesMarketPairs(200_000);
+        targetPairs = futures.slice(0, 30);
+      } else if (universeOption === 'top_50') {
+        const futures = await fetchFuturesMarketPairs(200_000);
+        targetPairs = futures.slice(0, 50);
+      } else {
+        targetPairs = await fetchUSDTMarketPairs(1_000_000);
+      }
 
       const total = targetPairs.length;
       setProgress({ current: 0, total, currentSymbol: '' });
@@ -405,32 +498,41 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       const collectedResults: BacktestResultItem[] = [];
       const collectedTrades: StrategyTrade[] = [];
 
-      const batchSize = 3;
-      for (let i = 0; i < total; i += batchSize) {
-        if (abortControllerRef.current) break;
-        const batch = targetPairs.slice(i, i + batchSize);
+      const queue = [...targetPairs];
+      let completedCount = 0;
+      let lastUiCommit = 0;
 
-        await Promise.all(
-          batch.map(async (pair) => {
-            if (abortControllerRef.current) return;
-            setProgress((prev) => ({ ...prev, currentSymbol: pair.symbol }));
+      const triggerThrottledCommit = (force: boolean = false) => {
+        const now = Date.now();
+        if (force || now - lastUiCommit > 250) {
+          lastUiCommit = now;
+          setResults([...collectedResults]);
+          setAllCollectedTrades([...collectedTrades]);
+        }
+      };
 
-            try {
-              let candles: CandleData[] = [];
-              const cached = cachedCandlesMapRef.current.get(pair.symbol);
-              if (useCachedOnly && cached && cached.candles.length >= 50) {
-                candles = cached.candles;
-              } else {
-                const fetched = await fetchKlines(pair.symbol, timeframe, candleHistoryLimit);
-                candles = fetched.candles;
-                if (candles.length >= 50) {
-                  cachedCandlesMapRef.current.set(pair.symbol, { pair, candles });
-                  setCachedCount(cachedCandlesMapRef.current.size);
-                }
+      const runWorker = async () => {
+        while (queue.length > 0 && !abortControllerRef.current) {
+          const pair = queue.shift();
+          if (!pair) break;
+
+          setProgress({ current: completedCount, total, currentSymbol: pair.symbol });
+
+          try {
+            let candles: CandleData[] = [];
+            const cached = GLOBAL_CANDLE_CACHE.get(pair.symbol);
+            if (useCachedOnly && cached && cached.candles.length >= 50) {
+              candles = cached.candles;
+            } else {
+              const fetched = await fetchKlines(pair.symbol, timeframe, candleHistoryLimit, isFuturesUniverse);
+              candles = fetched.candles;
+              if (candles.length >= 50) {
+                GLOBAL_CANDLE_CACHE.set(pair.symbol, { pair, candles, timeframe });
+                setCachedCount(GLOBAL_CANDLE_CACHE.size);
               }
+            }
 
-              if (candles.length < 50) return;
-
+            if (candles.length >= 50) {
               const atrMetrics = calculateATR(candles, optAtrPeriod);
               const { points } = calculateAtrZigZag(
                 candles,
@@ -450,6 +552,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                 capital,
                 selectedStrategyId,
                 riskPercent,
+                entryCommissionPercent,
+                exitCommissionPercent,
+                commissionPercent,
                 maxRiskReward: optMaxRiskReward,
                 maxCandlesToEnter,
                 maxTradesPerLeg: 1,
@@ -494,36 +599,189 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                 netProfitPercent: metrics.netProfitPercent,
                 totalProfit: metrics.totalProfit,
                 totalLoss: metrics.totalLoss,
+                totalFee: metrics.totalFee || 0,
                 profitFactor: metrics.profitFactor,
                 avgRiskReward: metrics.avgRiskReward,
                 maxDrawdown: metrics.maxDrawdown,
                 maxDrawdownPercent: metrics.maxDrawdownPercent,
                 optimalRiskForDD20,
-                lastTradeStatus: lastTrade?.status === 'WIN' || lastTrade?.status === 'LOSS' || lastTrade?.status === 'ACTIVE'
-                  ? lastTrade.status
-                  : undefined,
+                lastTradeStatus:
+                  lastTrade?.status === 'WIN' || lastTrade?.status === 'LOSS' || lastTrade?.status === 'ACTIVE'
+                    ? lastTrade.status
+                    : undefined,
                 trades,
               };
 
               collectedResults.push(resultItem);
-              setResults([...collectedResults]);
-
               const finishedTrades = trades.filter((t) => t.status === 'WIN' || t.status === 'LOSS');
               collectedTrades.push(...finishedTrades);
-              setAllCollectedTrades([...collectedTrades]);
-            } catch (e) {
-              console.warn(`Error scanning ${pair.symbol}:`, e);
             }
-          })
-        );
+          } catch (e) {
+            console.warn(`Error scanning ${pair.symbol}:`, e);
+          } finally {
+            completedCount++;
+            setProgress((prev) => ({ ...prev, current: completedCount }));
+            triggerThrottledCommit(false);
+          }
+        }
+      };
 
-        setProgress((prev) => ({ ...prev, current: Math.min(total, i + batch.length) }));
-      }
+      const concurrency = Math.min(scanWorkersCount, targetPairs.length);
+      await Promise.all(Array.from({ length: concurrency }, () => runWorker()));
+
+      triggerThrottledCommit(true);
     } catch {
       setErrorMsg('خطا در دریافت لیست ارزها از بایننس. لطفاً مجدداً بررسی کنید.');
     } finally {
       setIsScanning(false);
     }
+  };
+
+  // =========================================================
+  // محاسبه و آپدیت مجدد فوری نتایج بک‌تست بر اساس پارامترهای جدید
+  // روی دیتایی که قبلاً دانلود شده است (بدون دانلود مجدد از اینترنت)
+  // =========================================================
+  const handleRerunOnCachedData = async () => {
+    if (GLOBAL_CANDLE_CACHE.size === 0) {
+      showToast('⚠️ دیتای دانلودی در حافظه نیست. لطفاً ابتدا دکمه «شروع اسکن کامل بازار (دانلود زنده)» را بزنید.');
+      return;
+    }
+
+    setIsScanning(true);
+    abortControllerRef.current = false;
+    setErrorMsg(null);
+    setResults([]);
+    setAllCollectedTrades([]);
+    setScanMaxDrawdown(0);
+
+    const cachedEntries = Array.from(GLOBAL_CANDLE_CACHE.values());
+    const total = cachedEntries.length;
+    setProgress({ current: 0, total, currentSymbol: '' });
+
+    const collectedResults: BacktestResultItem[] = [];
+    const collectedTrades: StrategyTrade[] = [];
+
+    const queue = [...cachedEntries];
+    let completedCount = 0;
+    let lastUiCommit = 0;
+
+    const triggerThrottledCommit = (force: boolean = false) => {
+      const now = Date.now();
+      if (force || now - lastUiCommit > 250) {
+        lastUiCommit = now;
+        setResults([...collectedResults]);
+        setAllCollectedTrades([...collectedTrades]);
+      }
+    };
+
+    const runWorker = async () => {
+      while (queue.length > 0 && !abortControllerRef.current) {
+        const item = queue.shift();
+        if (!item) break;
+
+        const pair = item.pair;
+        const candles = item.candles;
+        if (candles.length >= 50) {
+          const atrMetrics = calculateATR(candles, optAtrPeriod);
+          const { points } = calculateAtrZigZag(
+            candles,
+            atrMetrics.atrValues,
+            optAtrMultiplier,
+            optMinCandles
+          );
+          const legs = analyzeZigZagLegs(
+            points,
+            optMinCandlesLong,
+            optLongLegAtrMult,
+            optMaxBlueLegPercent,
+            optMaxBreakoutAtr
+          );
+
+          const tempConfig: StrategyConfig = {
+            capital,
+            selectedStrategyId,
+            riskPercent,
+            entryCommissionPercent,
+            exitCommissionPercent,
+            commissionPercent,
+            maxRiskReward: optMaxRiskReward,
+            maxCandlesToEnter,
+            maxTradesPerLeg: 1,
+            showOnChart: true,
+          };
+
+          let backtestRes;
+          if (selectedStrategyId === 'strategy_2_next_pivot') {
+            backtestRes = runStrategy2Backtest(
+              candles,
+              points,
+              legs,
+              tempConfig,
+              atrMetrics.atrValues,
+              optAtrMultiplier,
+              optMinCandles
+            );
+          } else {
+            backtestRes = runStrategy1Backtest(candles, points, legs, tempConfig);
+          }
+
+          const { trades, metrics } = backtestRes;
+
+          let optimalRiskForDD20 = 0;
+          if (metrics.maxDrawdownPercent > 0) {
+            optimalRiskForDD20 = parseFloat(((riskPercent * 19.0) / metrics.maxDrawdownPercent).toFixed(2));
+          } else if (metrics.totalTrades > 0) {
+            optimalRiskForDD20 = 5.0;
+          }
+
+          const lastTrade = trades.length > 0 ? trades[trades.length - 1] : undefined;
+
+          collectedResults.push({
+            pair,
+            candlesCount: candles.length,
+            totalTrades: metrics.totalTrades,
+            winTrades: metrics.winTrades,
+            lossTrades: metrics.lossTrades,
+            activeTrades: metrics.activeTrades,
+            winRate: metrics.winRate,
+            netProfit: metrics.netProfit,
+            netProfitPercent: metrics.netProfitPercent,
+            totalProfit: metrics.totalProfit,
+            totalLoss: metrics.totalLoss,
+            totalFee: metrics.totalFee || 0,
+            profitFactor: metrics.profitFactor,
+            avgRiskReward: metrics.avgRiskReward,
+            maxDrawdown: metrics.maxDrawdown,
+            maxDrawdownPercent: metrics.maxDrawdownPercent,
+            optimalRiskForDD20,
+            lastTradeStatus:
+              lastTrade?.status === 'WIN' || lastTrade?.status === 'LOSS' || lastTrade?.status === 'ACTIVE'
+                ? lastTrade.status
+                : undefined,
+            trades,
+          });
+
+          const finishedTrades = trades.filter((t) => t.status === 'WIN' || t.status === 'LOSS');
+          collectedTrades.push(...finishedTrades);
+        }
+
+        completedCount++;
+        setProgress({
+          current: completedCount,
+          total,
+          currentSymbol: pair.symbol,
+        });
+        triggerThrottledCommit(false);
+      }
+    };
+
+    const concurrency = Math.min(scanWorkersCount, cachedEntries.length);
+    await Promise.all(Array.from({ length: concurrency }, () => runWorker()));
+
+    triggerThrottledCommit(true);
+
+    setIsScanning(false);
+    showToast(`✅ نتایج بک‌تست بر اساس پارامترهای جدید با موفقیت روی ${collectedResults.length} جفت‌ارز به‌روزرسانی شد!`);
   };
 
   const handleStopScan = () => {
@@ -534,6 +792,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const handleClearResults = () => {
     setResults([]);
     setAllCollectedTrades([]);
+    setScanMaxDrawdown(0);
     try {
       localStorage.removeItem('backtest_scanned_results_v2');
       localStorage.removeItem('backtest_scanned_trades_v2');
@@ -550,6 +809,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const totalNetProfitSum = results.reduce((acc, r) => acc + r.netProfit, 0);
   const totalProfitSum = results.reduce((acc, r) => acc + r.totalProfit, 0);
   const totalLossSum = results.reduce((acc, r) => acc + r.totalLoss, 0);
+  const totalFeeSum = results.reduce((acc, r) => acc + (r.totalFee || 0), 0);
 
   const portfolioProfitFactor =
     totalLossSum > 0
@@ -569,16 +829,31 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
     let currentEquity = capital;
     let peakEquity = capital;
+    let runningMaxDrawdown = 0;
+    let runningMaxDrawdownDollars = 0;
 
     return sortedTrades.map((t, index) => {
       currentEquity += t.pnl;
-      if (currentEquity > peakEquity) peakEquity = currentEquity;
-      const ddPercent = peakEquity > 0 ? ((peakEquity - currentEquity) / peakEquity) * 100 : 0;
+      if (currentEquity > peakEquity) {
+        peakEquity = currentEquity;
+      }
+      const ddDollars = peakEquity - currentEquity;
+      const ddPercent = peakEquity > 0 ? (ddDollars / peakEquity) * 100 : 0;
+
+      // طبق فرمول استاندارد حداکثر درودان: مقدار درودان هرگز کم نمی‌شود، بلکه تنها با افت‌های عمیق‌تر افزایش می‌یابد
+      if (ddPercent > runningMaxDrawdown) {
+        runningMaxDrawdown = ddPercent;
+      }
+      if (ddDollars > runningMaxDrawdownDollars) {
+        runningMaxDrawdownDollars = ddDollars;
+      }
 
       return {
         tradeIndex: index + 1,
         equity: parseFloat(currentEquity.toFixed(2)),
-        drawdown: parseFloat(ddPercent.toFixed(2)),
+        drawdown: parseFloat(runningMaxDrawdown.toFixed(2)), // حداکثر درودان تجمعی تا این معامله
+        currentDrawdown: parseFloat(ddPercent.toFixed(2)), // درودان لحظه‌ای
+        maxDrawdownDollars: parseFloat(runningMaxDrawdownDollars.toFixed(2)),
         pnl: t.pnl,
         symbol: t.id.split('-')[2] || '',
         direction: t.direction,
@@ -600,11 +875,24 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     };
   }, [equityPoints, capital]);
 
+  // به‌روزرسانی حداکثر درودان در حین اسکن: مقدار درودان فقط می‌تواند افزایش یابد و هرگز کم نمی‌شود
+  useEffect(() => {
+    if (results.length === 0) {
+      setScanMaxDrawdown(0);
+      return;
+    }
+    const maxPair = Math.max(...results.map((r) => r.maxDrawdownPercent || 0));
+    const combined = chartStats.maxDd || 0;
+    const currentWorst = Math.max(maxPair, combined);
+    setScanMaxDrawdown((prev) => parseFloat(Math.max(prev, currentWorst).toFixed(2)));
+  }, [results, chartStats.maxDd]);
+
   const portfolioMaxDrawdown = useMemo(() => {
-    if (chartStats.maxDd > 0.1) return parseFloat(chartStats.maxDd.toFixed(2));
-    if (results.length > 0) return parseFloat(Math.max(...results.map((r) => r.maxDrawdownPercent), 0).toFixed(2));
-    return 0;
-  }, [chartStats.maxDd, results]);
+    if (results.length === 0) return 0;
+    const maxPair = Math.max(...results.map((r) => r.maxDrawdownPercent || 0));
+    const combined = chartStats.maxDd || 0;
+    return parseFloat(Math.max(scanMaxDrawdown, maxPair, combined).toFixed(2));
+  }, [results, scanMaxDrawdown, chartStats.maxDd]);
 
   const portfolioOptimalRisk = useMemo(() => {
     if (portfolioMaxDrawdown > 0) {
@@ -648,6 +936,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       'باخت',
       'وین‌ریت (%)',
       'سود خالص (USDT)',
+      'کارمزد کل (USDT)',
       'درصد سود (%)',
       'فاکتور سود',
       'حداکثر درودان (%)',
@@ -661,6 +950,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       r.lossTrades,
       r.winRate,
       r.netProfit,
+      r.totalFee || 0,
       r.netProfitPercent,
       r.profitFactor,
       r.maxDrawdownPercent,
@@ -676,6 +966,306 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     URL.revokeObjectURL(url);
   };
 
+  const handleChartMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || !chartScrollContainerRef.current) return;
+    isDraggingChartRef.current = true;
+    setIsChartDragging(true);
+    dragStartXRef.current = e.clientX;
+    dragStartScrollLeftRef.current = chartScrollContainerRef.current.scrollLeft;
+  };
+
+  const handleChartMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isDraggingChartRef.current || !chartScrollContainerRef.current) return;
+    e.preventDefault();
+    const deltaX = e.clientX - dragStartXRef.current;
+    chartScrollContainerRef.current.scrollLeft = dragStartScrollLeftRef.current - deltaX;
+  };
+
+  const handleChartMouseUpOrLeave = () => {
+    if (isDraggingChartRef.current) {
+      isDraggingChartRef.current = false;
+      setIsChartDragging(false);
+    }
+  };
+
+  const handleChartWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) {
+      e.preventDefault();
+      const zoomDelta = e.deltaY < 0 ? 0.3 : -0.3;
+      setZoomLevel((prev) => Math.min(8, Math.max(1, parseFloat((prev + zoomDelta).toFixed(1)))));
+    }
+  };
+
+  const handleDownloadEquityChartImage = () => {
+    if (equityPoints.length < 2) {
+      showToast('⚠️ داده‌های کافی برای ساخت تصویر نمودار وجود ندارد.');
+      return;
+    }
+
+    try {
+      const width = 1400;
+      const height = 820;
+      const dpr = 2; // High-DPI retina scale
+      const canvas = document.createElement('canvas');
+      canvas.width = width * dpr;
+      canvas.height = height * dpr;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      ctx.scale(dpr, dpr);
+
+      // Background
+      ctx.fillStyle = '#0b0f17';
+      ctx.fillRect(0, 0, width, height);
+
+      // Outer Border
+      ctx.strokeStyle = '#222d3f';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(10, 10, width - 20, height - 20);
+
+      // Header Banner
+      ctx.fillStyle = '#111723';
+      ctx.fillRect(10, 10, width - 20, 85);
+      ctx.strokeStyle = '#222d3f';
+      ctx.beginPath();
+      ctx.moveTo(10, 95);
+      ctx.lineTo(width - 10, 95);
+      ctx.stroke();
+
+      // Header Text
+      ctx.fillStyle = '#f8fafc';
+      ctx.font = 'bold 20px system-ui, -apple-system, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText('کارنامه و نمودار رشد سرمایه معاملات الگوریتمی (Equity Curve)', width - 40, 45);
+
+      ctx.font = '13px system-ui, -apple-system, sans-serif';
+      ctx.fillStyle = '#94a3b8';
+      const stratTitle =
+        selectedStrategyId === 'strategy_1_e_breakout'
+          ? 'استراتژی ۱: شکست نقطه E (تارگت A / استاپ F)'
+          : 'استراتژی ۲: اولین تشکیل لگ بعد از F (تارگت R:R)';
+      ctx.fillText(
+        `${stratTitle}  |  تایم‌فریم: ${timeframe}  |  دامنه: فیوچرز  |  تاریخ: ${new Date().toLocaleDateString('fa-IR')} ${new Date().toLocaleTimeString('fa-IR')}`,
+        width - 40,
+        75
+      );
+
+      // Brand Left Side
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#38bdf8';
+      ctx.font = 'bold 16px system-ui, -apple-system, sans-serif';
+      ctx.fillText('ZigZag Algorithmic Backtester', 40, 45);
+      ctx.font = '12px system-ui, -apple-system, sans-serif';
+      ctx.fillStyle = '#64748b';
+      ctx.fillText(`تعداد معاملات شبیه‌سازی‌شده: ${equityPoints.length} معامله`, 40, 72);
+
+      // Chart Area Dimensions
+      const chartX = 85;
+      const chartY = 125;
+      const chartW = width - 130;
+      const chartH = 340;
+
+      // Chart background
+      ctx.fillStyle = '#0f141f';
+      ctx.fillRect(chartX, chartY, chartW, chartH);
+      ctx.strokeStyle = '#1e293b';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(chartX, chartY, chartW, chartH);
+
+      // Calculate Min and Max Equity
+      const eqs = equityPoints.map((p) => p.equity);
+      const minEq = Math.min(...eqs, capital);
+      const maxEq = Math.max(...eqs, capital);
+      const eqRange = maxEq - minEq || 1;
+
+      // Draw Grid Lines (Horizontal)
+      const gridLevels = 5;
+      ctx.textAlign = 'right';
+      ctx.font = '11px monospace';
+      for (let g = 0; g <= gridLevels; g++) {
+        const val = minEq + (eqRange * (gridLevels - g)) / gridLevels;
+        const gy = chartY + (g / gridLevels) * chartH;
+        ctx.strokeStyle = Math.abs(val - capital) < 5 ? 'rgba(245, 158, 11, 0.5)' : '#1e2838';
+        ctx.setLineDash(Math.abs(val - capital) < 5 ? [5, 4] : [2, 4]);
+        ctx.beginPath();
+        ctx.moveTo(chartX, gy);
+        ctx.lineTo(chartX + chartW, gy);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Label on left
+        ctx.fillStyle = Math.abs(val - capital) < 5 ? '#fbbf24' : '#64748b';
+        ctx.fillText(`$${Math.round(val).toLocaleString()}`, chartX - 10, gy + 4);
+      }
+
+      // Build Curve Points
+      const numPts = equityPoints.length;
+      const ptCoords: { x: number; y: number; eq: number }[] = [];
+      for (let i = 0; i < numPts; i++) {
+        const cx = chartX + (i / (numPts - 1)) * chartW;
+        const cy = chartY + chartH - ((equityPoints[i].equity - minEq) / eqRange) * chartH;
+        ptCoords.push({ x: cx, y: cy, eq: equityPoints[i].equity });
+      }
+
+      // Fill Gradient under Curve
+      const grad = ctx.createLinearGradient(0, chartY, 0, chartY + chartH);
+      grad.addColorStop(0, 'rgba(16, 185, 129, 0.35)');
+      grad.addColorStop(0.7, 'rgba(16, 185, 129, 0.08)');
+      grad.addColorStop(1, 'rgba(16, 185, 129, 0.0)');
+
+      ctx.beginPath();
+      ctx.moveTo(chartX, chartY + chartH);
+      ptCoords.forEach((p) => ctx.lineTo(p.x, p.y));
+      ctx.lineTo(chartX + chartW, chartY + chartH);
+      ctx.closePath();
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      // Stroke Line Curve
+      ctx.beginPath();
+      ptCoords.forEach((p, idx) => {
+        if (idx === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      });
+      ctx.strokeStyle = '#10b981';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      // Final Point Marker
+      if (ptCoords.length > 0) {
+        const lastPt = ptCoords[ptCoords.length - 1];
+        ctx.fillStyle = '#10b981';
+        ctx.beginPath();
+        ctx.arc(lastPt.x, lastPt.y, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+
+      // ==========================================
+      // Statistics Cards Dashboard (Below Chart)
+      // ==========================================
+      const statsY = 495;
+      const statsH = 300;
+
+      // Stats Section Container
+      ctx.fillStyle = '#101522';
+      ctx.fillRect(30, statsY, width - 60, statsH);
+      ctx.strokeStyle = '#222e42';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(30, statsY, width - 60, statsH);
+
+      // Section Header Title
+      ctx.fillStyle = '#fbbf24';
+      ctx.font = 'bold 15px system-ui, -apple-system, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText('📊 آمار و کارنامه تحلیلی معاملات پرتفوی', width - 50, statsY + 30);
+
+      // Metric Boxes Definition
+      const finalEq = equityPoints[equityPoints.length - 1].equity;
+      const netProfitVal = finalEq - capital;
+      const netProfitPct = capital > 0 ? (netProfitVal / capital) * 100 : 0;
+
+      const statCards = [
+        {
+          title: 'سرمایه اولیه',
+          value: `$${capital.toLocaleString()}`,
+          sub: 'USDT',
+          color: '#ffffff',
+        },
+        {
+          title: 'سرمایه نهایی (Equity)',
+          value: `$${finalEq.toLocaleString()}`,
+          sub: 'USDT',
+          color: '#38bdf8',
+        },
+        {
+          title: 'سود خالص (Net Profit)',
+          value: `${netProfitVal >= 0 ? '+' : ''}$${Math.round(netProfitVal).toLocaleString()}`,
+          sub: `${netProfitPct >= 0 ? '+' : ''}${netProfitPct.toFixed(1)}%`,
+          color: netProfitVal >= 0 ? '#10b981' : '#f43f5e',
+        },
+        {
+          title: 'کارمزد کل معاملات',
+          value: `-$${Math.round(totalFeeSum).toLocaleString()}`,
+          sub: `ورود ${entryCommissionPercent}% + خروج ${exitCommissionPercent}%`,
+          color: '#fbbf24',
+        },
+        {
+          title: 'نرخ برد (Win Rate)',
+          value: `${portfolioWinRate}%`,
+          sub: `${totalWinTradesSum} برد / ${totalTradesSum - totalWinTradesSum} باخت`,
+          color: '#38bdf8',
+        },
+        {
+          title: 'پروفیت فکتور (PF)',
+          value: `${portfolioProfitFactor}`,
+          sub: `سود: $${Math.round(totalProfitSum).toLocaleString()} | زیان: $${Math.round(totalLossSum).toLocaleString()}`,
+          color: portfolioProfitFactor >= 1.5 ? '#10b981' : portfolioProfitFactor >= 1.0 ? '#fbbf24' : '#f43f5e',
+        },
+        {
+          title: 'حداکثر افت کل (Max Drawdown)',
+          value: `${portfolioMaxDrawdown}%`,
+          sub: 'بیشترین افت تجربه شده',
+          color: '#f43f5e',
+        },
+        {
+          title: 'ریسک بهینه (DD < 20%)',
+          value: portfolioOptimalRisk > 0 ? `${portfolioOptimalRisk}%` : '—',
+          sub: `کنترل درودان زیر ۲۰٪`,
+          color: '#34d399',
+        },
+      ];
+
+      // Draw Grid of 2 rows x 4 cols
+      const cols = 4;
+      const cardW = (width - 120) / cols;
+      const cardH = 100;
+      const startCardY = statsY + 50;
+
+      statCards.forEach((c, idx) => {
+        const colIdx = idx % cols;
+        const rowIdx = Math.floor(idx / cols);
+        const cardX = width - 50 - (colIdx + 1) * cardW;
+        const cardY = startCardY + rowIdx * (cardH + 15);
+
+        // Card box
+        ctx.fillStyle = '#161d2b';
+        ctx.fillRect(cardX + 10, cardY, cardW - 20, cardH);
+        ctx.strokeStyle = '#273449';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(cardX + 10, cardY, cardW - 20, cardH);
+
+        // Title
+        ctx.textAlign = 'right';
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '11px system-ui, -apple-system, sans-serif';
+        ctx.fillText(c.title, cardX + cardW - 25, cardY + 24);
+
+        // Value
+        ctx.fillStyle = c.color;
+        ctx.font = 'bold 18px monospace';
+        ctx.fillText(c.value, cardX + cardW - 25, cardY + 54);
+
+        // Subtitle
+        ctx.fillStyle = '#64748b';
+        ctx.font = '10px system-ui, -apple-system, sans-serif';
+        ctx.fillText(c.sub, cardX + cardW - 25, cardY + 80);
+      });
+
+      // Export Canvas as PNG
+      const link = document.createElement('a');
+      link.download = `equity_curve_report_${new Date().toISOString().slice(0, 10)}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+      showToast('📸 تصویر باکیفیت نمودار رشد سرمایه و کارنامه با موفقیت دانلود شد!');
+    } catch (err) {
+      console.error('Failed to generate chart image', err);
+      showToast('❌ خطا در ساخت تصویر نمودار.');
+    }
+  };
+
   // =========================================================================
   // ارزیابی یک ترکیب ۸تایی روی تمام جفت‌ارزهای کش‌شده
   // =========================================================================
@@ -689,7 +1279,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     maxBreakoutAtrMultiplier: number;
     maxRiskReward: number;
   }) => {
-    const cachedEntries = Array.from(cachedCandlesMapRef.current.values());
+    const cachedEntries = Array.from(GLOBAL_CANDLE_CACHE.values());
     if (cachedEntries.length === 0) return null;
 
     let totalTradesSum = 0;
@@ -704,6 +1294,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       capital,
       selectedStrategyId,
       riskPercent,
+      entryCommissionPercent,
+      exitCommissionPercent,
+      commissionPercent,
       maxRiskReward: params.maxRiskReward,
       maxCandlesToEnter,
       maxTradesPerLeg: 1,
@@ -904,7 +1497,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
   // حلقه پیوسته بهینه‌سازی (اجرای خودکار تا ۱۵ دقیقه یا توقف کاربر)
   const handleStartAutoOptimization = async () => {
-    if (cachedCandlesMapRef.current.size === 0) {
+    if (GLOBAL_CANDLE_CACHE.size === 0) {
       showToast('در حال دانلود اولیه داده‌های بازار برای کش...');
       await handleStartScan(false);
     }
@@ -971,12 +1564,14 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     setAdaptiveRanges(DEFAULT_RANGES);
     setTotalEvaluatedCount(0);
     visitedHashesRef.current.clear();
+    setSessionSecondsLeft(900);
+    sessionSecondsRef.current = 900;
     try {
       localStorage.removeItem('zigzag_opt_top10_v5');
       localStorage.removeItem('zigzag_opt_ranges_v5');
       localStorage.removeItem('zigzag_opt_total_count_v5');
     } catch {}
-    showToast('اطلاعات بهینه‌ساز و رنج‌ها بازنشانی شدند.');
+    showToast('🔄 تمام آزمایش‌ها، ترکیب‌ها و رنج‌های بهینه‌ساز با موفقیت پاک و بازنشانی شدند.');
   };
 
   // بهترین ترکیب برنده مستقیماً از ردیف اول ۱۰ تست برتر
@@ -1082,6 +1677,24 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     e.target.value = '';
   };
 
+  const handleScannerSort = (col: ScannerSortCol) => {
+    if (scannerSortCol === col) {
+      setScannerSortDir((prev) => (prev === 'desc' ? 'asc' : 'desc'));
+    } else {
+      setScannerSortCol(col);
+      setScannerSortDir('desc');
+    }
+  };
+
+  const renderScannerSortArrow = (col: ScannerSortCol) => {
+    if (scannerSortCol !== col) return <ArrowUpDown className="w-3 h-3 text-gray-500 inline-block mr-1 opacity-50" />;
+    return scannerSortDir === 'desc' ? (
+      <ArrowDown className="w-3.5 h-3.5 text-amber-400 inline-block mr-1" />
+    ) : (
+      <ArrowUp className="w-3.5 h-3.5 text-amber-400 inline-block mr-1" />
+    );
+  };
+
   const handleOptSort = (col: OptSortCol) => {
     if (optSortColumn === col) {
       setOptSortDirection((prev) => (prev === 'desc' ? 'asc' : 'desc'));
@@ -1108,7 +1721,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
   return (
     <div
-      className={`fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/85 backdrop-blur-xs transition-opacity duration-200 ${
+      className={`fixed inset-0 z-50 flex items-center justify-center p-1 sm:p-1.5 bg-black/85 backdrop-blur-xs transition-opacity duration-200 ${
         isOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none hidden'
       }`}
       dir="rtl"
@@ -1116,7 +1729,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       <input type="file" ref={fileInputRef} onChange={handleFileChange} accept=".json" className="hidden" />
 
       <div
-        className="w-full max-w-6xl max-h-[94vh] bg-[#121622] border border-[#2b3548] rounded-2xl shadow-2xl flex flex-col overflow-hidden text-gray-200 relative"
+        className="w-[99.5vw] max-w-[99.5vw] h-[98.5vh] max-h-[98.5vh] bg-[#121622] border border-[#2b3548] rounded-xl sm:rounded-2xl shadow-2xl flex flex-col overflow-hidden text-gray-200 relative"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Floating Toast notification */}
@@ -1216,9 +1829,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                     disabled={isScanning}
                     className="w-full px-2 py-1.5 bg-[#171d28] border border-[#2e394e] rounded-lg text-white text-xs font-medium focus:outline-none focus:border-amber-400 cursor-pointer disabled:opacity-50"
                   >
-                    <option value="all_1m">تمام ارزهای با حجم بالای ۱ میلیون دلار ($1M+) بدون سقف</option>
-                    <option value="top_50">۵۰ ارز برتر بازار (Top 50)</option>
-                    <option value="top_30">۳۰ ارز نقدشونده اول (Top 30)</option>
+                    <option value="all_futures">ارزهای فیوچرز بایننس (USDT-M Futures) - پیش‌فرض</option>
+                    <option value="top_50">۵۰ ارز برتر فیوچرز (Top 50 Futures)</option>
+                    <option value="top_30">۳۰ ارز نقدشونده اول فیوچرز (Top 30 Futures)</option>
+                    <option value="all_1m">تمام ارزهای اسپات با حجم بالای ۱ میلیون دلار ($1M+)</option>
                   </select>
                 </div>
 
@@ -1254,8 +1868,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                   </div>
                 </div>
 
-                <div className="bg-[#0e121a] p-2 rounded-xl border border-[#283244] flex items-center gap-2">
-                  <div className="flex-1">
+                <div className="bg-[#0e121a] p-2 rounded-xl border border-[#283244] grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                  <div>
                     <label className="text-[10px] font-semibold text-gray-400 block mb-1">ریسک (%):</label>
                     <input
                       type="number"
@@ -1265,10 +1879,38 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                       value={riskPercent}
                       onChange={(e) => setRiskPercent(parseFloat(e.target.value) || 1)}
                       disabled={isScanning}
-                      className="w-full px-2 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-rose-400 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
+                      className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-rose-400 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
                     />
                   </div>
-                  <div className="flex-1">
+                  <div>
+                    <label className="text-[10px] font-semibold text-amber-300 block mb-1">کارمزد ورود (%):</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={entryCommissionPercent}
+                      onChange={(e) => setEntryCommissionPercent(parseFloat(e.target.value) || 0)}
+                      disabled={isScanning}
+                      className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-amber-400 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
+                      title="کارمزد ورود به هر پوزیشن (پیش‌فرض ۰.۰۶٪)"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-amber-300 block mb-1">کارمزد خروج (%):</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={exitCommissionPercent}
+                      onChange={(e) => setExitCommissionPercent(parseFloat(e.target.value) || 0)}
+                      disabled={isScanning}
+                      className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-amber-400 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
+                      title="کارمزد خروج از هر پوزیشن (پیش‌فرض ۰.۰۶٪)"
+                    />
+                  </div>
+                  <div>
                     <label className="text-[10px] font-semibold text-gray-400 block mb-1">حداکثر R:R:</label>
                     <input
                       type="number"
@@ -1278,7 +1920,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                       value={optMaxRiskReward}
                       onChange={(e) => setOptMaxRiskReward(parseFloat(e.target.value) || 2)}
                       disabled={isScanning}
-                      className="w-full px-2 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-emerald-400 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
+                      className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-emerald-400 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
                     />
                   </div>
                 </div>
@@ -1286,14 +1928,32 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
               {/* تنظیمات زیگ‌زاگ و ATR وارد شده توسط کاربر برای بک‌تست */}
               <div className="p-2.5 rounded-xl bg-[#0e121a] border border-[#242e40]">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-[11px] font-bold text-amber-400 flex items-center gap-1.5">
-                    <Sliders className="w-3.5 h-3.5" />
-                    <span>تنظیمات زیگ‌زاگ و ATR برای بک‌تست (وارد شده توسط کاربر):</span>
-                  </span>
-                  <span className="text-[10px] text-gray-400">
-                    * بک‌تست دقیقاً بر اساس مقادیر واردشده زیر اجرا می‌شود.
-                  </span>
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                  <div className="flex items-center gap-1.5">
+                    <Sliders className="w-3.5 h-3.5 text-amber-400" />
+                    <span className="text-[11px] font-bold text-amber-400">
+                      تنظیمات زیگ‌زاگ و ATR برای بک‌تست (وارد شده توسط کاربر):
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-gray-400 hidden sm:inline">
+                      * با تغییر مقادیر زیر، دکمه روبرو را بزنید تا با دیتای دانلودشده قبلی نتایج فوراً محاسبه شوند:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleRerunOnCachedData}
+                      disabled={isScanning || cachedCount === 0}
+                      className={`px-3 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                        cachedCount > 0 && !isScanning
+                          ? 'bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-black shadow-md shadow-emerald-500/25'
+                          : 'bg-[#182030] text-gray-500 border border-[#2b3548] cursor-not-allowed opacity-60'
+                      }`}
+                      title={cachedCount === 0 ? 'ابتدا باید داده‌های بازار را با دکمه اسکن زنده دانلود کنید' : 'محاسبه مجدد فوری با پارامترهای جدید'}
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin' : ''}`} />
+                      <span>⚡ محاسبه و آپدیت با پارامترهای جدید ({cachedCount} ارز دانلودی)</span>
+                    </button>
+                  </div>
                 </div>
                 <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
                   <div>
@@ -1404,19 +2064,53 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                         className="px-5 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-extrabold text-xs flex items-center gap-2 shadow-lg shadow-amber-500/25 transition-all cursor-pointer"
                       >
                         <Play className="w-4 h-4 fill-current" />
-                        <span>شروع اسکن کامل بازار (دانلود زنده $1M+)</span>
+                        <span>
+                          {universeOption === 'all_futures'
+                            ? 'شروع اسکن کامل بازار (دانلود زنده فیوچرز USDT-M)'
+                            : universeOption === 'top_50'
+                            ? 'شروع اسکن کامل بازار (دانلود زنده ۵۰ ارز فیوچرز)'
+                            : universeOption === 'top_30'
+                            ? 'شروع اسکن کامل بازار (دانلود زنده ۳۰ ارز فیوچرز)'
+                            : 'شروع اسکن کامل بازار (دانلود زنده اسپات $1M+)'}
+                        </span>
                       </button>
 
                       {cachedCount > 0 && (
                         <button
                           type="button"
-                          onClick={() => handleStartScan(true)}
-                          className="px-4 py-2 rounded-xl bg-[#20293d] hover:bg-[#2d3a56] text-emerald-400 border border-emerald-500/30 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer"
+                          onClick={handleRerunOnCachedData}
+                          className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500/20 to-teal-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-md"
+                          title="اجرای مجدد بک‌تست با پارامترهای جدید بدون نیاز به دانلود مجدد"
                         >
-                          <Database className="w-3.5 h-3.5" />
-                          <span>اجرا روی دیتای کش‌شده ({cachedCount} ارز)</span>
+                          <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>⚡ اجرای سریع با پارامترهای جدید ({cachedCount} ارز دانلودشده)</span>
                         </button>
                       )}
+
+                      {/* انتخابگر تعداد ورکر همزمان برای افزایش سرعت اسکن ۶۵۰ ارز */}
+                      <div className="flex items-center gap-1.5 px-3 py-1.5 bg-[#0d121c] border border-[#2b374c] rounded-xl text-xs shadow-inner">
+                        <Cpu className="w-3.5 h-3.5 text-cyan-400" />
+                        <span className="text-[10px] text-gray-300 font-bold whitespace-nowrap">ورکر همزمان:</span>
+                        <select
+                          value={scanWorkersCount}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            setScanWorkersCount(val);
+                            try {
+                              localStorage.setItem('backtest_scan_workers_v2', String(val));
+                            } catch {}
+                          }}
+                          disabled={isScanning}
+                          className="bg-[#171d2b] border border-[#2e3b50] text-cyan-300 font-mono font-bold rounded-lg px-2 py-0.5 text-xs focus:outline-none cursor-pointer disabled:opacity-50"
+                          title="تعداد جفت‌ارزهایی که به طور موازی و همزمان دانلود و بک‌تست می‌شوند"
+                        >
+                          <option value={6}>۶ ورکر (پایه)</option>
+                          <option value={10}>۱۰ ورکر (سریع)</option>
+                          <option value={12}>۱۲ ورکر (توربو - پیش‌فرض)</option>
+                          <option value={16}>۱۶ ورکر (فوق سریع)</option>
+                          <option value={20}>۲۰ ورکر (حداکثر سرعت)</option>
+                        </select>
+                      </div>
                     </div>
                   ) : (
                     <button
@@ -1464,7 +2158,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             {/* کارت‌های آمار استراتژی در تب اسکن */}
             {results.length > 0 && (
               <div className="p-3 bg-[#0f131c] border border-[#232c3d] rounded-xl shrink-0">
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
+                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 text-xs">
                   <div className="p-2.5 rounded-xl bg-[#141924] border border-[#263143]">
                     <span className="text-[10px] text-gray-400 block mb-0.5">ارزهای بررسی‌شده</span>
                     <div className="flex items-baseline gap-1.5">
@@ -1478,6 +2172,15 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                     <span className={`text-base font-extrabold font-mono ${totalNetProfitSum >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                       {totalNetProfitSum >= 0 ? '+' : ''}
                       {totalNetProfitSum.toLocaleString()} <span className="text-[10px]">USDT</span>
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 rounded-xl bg-[#141924] border border-amber-500/30">
+                    <span className="text-[10px] text-amber-300 block mb-0.5">
+                      کارمزد کل ({entryCommissionPercent}% ورود + {exitCommissionPercent}% خروج)
+                    </span>
+                    <span className="text-base font-extrabold text-amber-400 font-mono">
+                      -{totalFeeSum.toLocaleString()} <span className="text-[10px]">USDT</span>
                     </span>
                   </div>
 
@@ -1532,140 +2235,269 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               </div>
             )}
 
-            {/* نمودارهای تصویری Equity & Drawdown */}
+            {/* نمودار رشد تجمعی ارزش سرمایه (تمام‌عرض با زوم اوت خودکار، قابلیت درگ با موس و دانلود تصویر) */}
             {equityPoints.length > 1 && (
-              <div className="p-3 bg-[#0d1017] border border-[#232c3d] rounded-xl shrink-0">
-                <div className="flex items-center justify-between pb-2 mb-1.5 border-b border-[#1c2433]">
+              <div className="p-3 bg-[#0d1017] border border-[#232c3d] rounded-xl shrink-0 w-full space-y-2.5">
+                {/* هدر نمودار و دکمه‌های کنترلی */}
+                <div className="flex flex-wrap items-center justify-between pb-2 border-b border-[#1c2433] gap-2">
                   <div className="flex items-center gap-2">
-                    <LineChart className="w-4 h-4 text-amber-400" />
-                    <span className="text-xs font-bold text-white">
-                      نمودار تجمعی معاملات پرتفوی ({equityPoints.length} معامله ثبت‌شده)
-                    </span>
+                    <div className="p-1 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-400">
+                      <LineChart className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-white">
+                          نمودار رشد تجمعی ارزش سرمایه (Equity Curve)
+                        </span>
+                        <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.2 rounded">
+                          {equityPoints.length.toLocaleString()} معامله ثبت‌شده
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-gray-400 mt-0.5 block">
+                        سرمایه اولیه: <strong className="text-gray-200 font-mono">${capital.toLocaleString()}</strong> | سرمایه جاری: <strong className="text-emerald-300 font-mono">${equityPoints[equityPoints.length - 1].equity.toLocaleString()}</strong> ({((equityPoints[equityPoints.length - 1].equity - capital) >= 0 ? '+' : '')}{(((equityPoints[equityPoints.length - 1].equity - capital) / capital) * 100).toFixed(1)}%)
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-1 bg-[#161c28] p-0.5 rounded-lg border border-[#263143]">
+
+                  <div className="flex items-center gap-2">
+                    {/* کنترل بزرگ‌نمایی و نمایش تمام‌عرض (Zoom & Pan) */}
+                    <div className="flex items-center gap-1.5 bg-[#131924] px-2 py-1 rounded-xl border border-[#243044]">
+                      <button
+                        type="button"
+                        onClick={() => setZoomLevel((prev) => Math.max(1, parseFloat((prev - 0.5).toFixed(1))))}
+                        disabled={zoomLevel <= 1}
+                        className="p-1 rounded text-gray-400 hover:text-white hover:bg-[#1f2838] transition-colors disabled:opacity-30 cursor-pointer"
+                        title="کوچک‌نمایی (Zoom Out)"
+                      >
+                        <ZoomOut className="w-3.5 h-3.5" />
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setZoomLevel(1)}
+                        className={`px-2.5 py-0.5 rounded text-[10px] font-mono font-bold transition-all cursor-pointer ${
+                          zoomLevel === 1
+                            ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+                            : 'text-gray-300 hover:text-white hover:bg-[#1f2838]'
+                        }`}
+                        title="نمایش تمام‌عرض و جا شدن تمام معاملات در صفحه بدون اسکرول (Zoom Out کامل)"
+                      >
+                        {zoomLevel === 1 ? 'تمام‌عرض (Fit)' : `${Math.round(zoomLevel * 100)}%`}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setZoomLevel((prev) => Math.min(8, parseFloat((prev + 0.5).toFixed(1))))}
+                        disabled={zoomLevel >= 8}
+                        className="p-1 rounded text-gray-400 hover:text-white hover:bg-[#1f2838] transition-colors disabled:opacity-30 cursor-pointer"
+                        title="بزرگ‌نمایی (Zoom In)"
+                      >
+                        <ZoomIn className="w-3.5 h-3.5" />
+                      </button>
+
+                      {zoomLevel > 1 && (
+                        <span className="text-[10px] text-amber-400 font-sans hidden sm:flex items-center gap-1 mr-1">
+                          <MoveHorizontal className="w-3 h-3" />
+                          <span>با موس بکشید (Drag)</span>
+                        </span>
+                      )}
+                    </div>
+
+                    {/* دکمه دانلود تصویر نمودار به همراه کارنامه آماری */}
                     <button
                       type="button"
-                      onClick={() => setActiveChartTab('both')}
-                      className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors cursor-pointer ${
-                        activeChartTab === 'both' ? 'bg-amber-400 text-black font-bold' : 'text-gray-400 hover:text-white'
-                      }`}
+                      onClick={handleDownloadEquityChartImage}
+                      className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-bold text-xs flex items-center gap-1.5 shadow-md shadow-amber-500/20 cursor-pointer transition-all"
+                      title="دانلود تصویر باکیفیت PNG نمودار به همراه جدول کامل آمار زیر تصویر"
                     >
-                      هر دو
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setActiveChartTab('equity')}
-                      className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors cursor-pointer ${
-                        activeChartTab === 'equity' ? 'bg-amber-400 text-black font-bold' : 'text-gray-400 hover:text-white'
-                      }`}
-                    >
-                      ارزش سرمایه (Equity)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setActiveChartTab('drawdown')}
-                      className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors cursor-pointer ${
-                        activeChartTab === 'drawdown' ? 'bg-amber-400 text-black font-bold' : 'text-gray-400 hover:text-white'
-                      }`}
-                    >
-                      افت سرمایه (Drawdown)
+                      <Camera className="w-3.5 h-3.5" />
+                      <span>دانلود تصویر نمودار و آمار (PNG)</span>
                     </button>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {(activeChartTab === 'both' || activeChartTab === 'equity') && (
-                    <div className="bg-[#121622] p-2 rounded-xl border border-[#212b3b] relative">
-                      <div className="flex items-center justify-between text-[10px] text-gray-400 mb-1">
-                        <span className="text-emerald-400 font-bold">رشد تجمعی ارزش سرمایه (USDT)</span>
-                        <span className="font-mono">
-                          پایان: <strong>{equityPoints[equityPoints.length - 1].equity.toLocaleString()}</strong> USDT
-                        </span>
-                      </div>
-                      <div className="h-28 w-full relative">
-                        <svg viewBox="0 0 500 100" preserveAspectRatio="none" className="w-full h-full overflow-visible">
+                {/* محفظه نمودار با اسکرول، کشیدن با موس (Mouse Drag-to-Pan) و بزرگ‌نمایی */}
+                <div
+                  ref={chartScrollContainerRef}
+                  dir="ltr"
+                  onMouseDown={handleChartMouseDown}
+                  onMouseMove={handleChartMouseMove}
+                  onMouseUp={handleChartMouseUpOrLeave}
+                  onMouseLeave={handleChartMouseUpOrLeave}
+                  onWheel={handleChartWheel}
+                  style={{
+                    cursor: isChartDragging ? 'grabbing' : zoomLevel > 1 ? 'grab' : 'crosshair',
+                  }}
+                  className="w-full overflow-x-auto overflow-y-hidden pb-2 pt-1 rounded-xl bg-[#10141f] border border-[#202b3c] select-none scrollbar-thin scrollbar-thumb-[#2c394e] scrollbar-track-[#0c1018]"
+                >
+                  {(() => {
+                    const svgWidth = 1000;
+                    const svgHeight = 180;
+                    const yRange = chartStats.maxEq - chartStats.minEq || 1;
+
+                    return (
+                      <div
+                        style={{
+                          width: `${100 * zoomLevel}%`,
+                          minWidth: '100%',
+                        }}
+                        className="relative h-48 select-none"
+                      >
+                        <svg
+                          viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+                          preserveAspectRatio="none"
+                          className="w-full h-full overflow-visible pointer-events-auto"
+                          onMouseMove={(e) => {
+                            if (isChartDragging) return;
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            const mouseX = e.clientX - rect.left;
+                            const ratio = Math.max(0, Math.min(1, mouseX / rect.width));
+                            const idx = Math.min(
+                              equityPoints.length - 1,
+                              Math.max(0, Math.round(ratio * (equityPoints.length - 1)))
+                            );
+                            const p = equityPoints[idx];
+                            if (p) {
+                              const x = (idx / (equityPoints.length - 1)) * svgWidth;
+                              const y = svgHeight - 15 - ((p.equity - chartStats.minEq) / yRange) * (svgHeight - 30);
+                              setHoveredEquityPoint({ index: idx, x: mouseX, y, point: p });
+                            }
+                          }}
+                        >
                           <defs>
-                            <linearGradient id="eqGradScan" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="0%" stopColor="#10b981" stopOpacity="0.35" />
+                            <linearGradient id="eqGradFull" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="0%" stopColor="#10b981" stopOpacity="0.4" />
+                              <stop offset="60%" stopColor="#10b981" stopOpacity="0.12" />
                               <stop offset="100%" stopColor="#10b981" stopOpacity="0.0" />
                             </linearGradient>
                           </defs>
+
+                          {/* خطوط تراز افقی (Grid Lines) */}
+                          {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+                            const val = chartStats.minEq + yRange * ratio;
+                            const gy = svgHeight - 15 - ratio * (svgHeight - 30);
+                            const isBaseline = Math.abs(val - capital) < yRange * 0.05;
+                            return (
+                              <g key={ratio}>
+                                <line
+                                  x1={0}
+                                  y1={gy}
+                                  x2={svgWidth}
+                                  y2={gy}
+                                  stroke={isBaseline ? 'rgba(245, 158, 11, 0.45)' : '#1a2230'}
+                                  strokeWidth={isBaseline ? 1.2 : 0.8}
+                                  strokeDasharray={isBaseline ? '4,4' : undefined}
+                                />
+                                <text
+                                  x={svgWidth - 10}
+                                  y={gy - 4}
+                                  fill={isBaseline ? '#fbbf24' : '#4b5563'}
+                                  fontSize="9"
+                                  fontFamily="monospace"
+                                  textAnchor="end"
+                                >
+                                  ${Math.round(val).toLocaleString()}
+                                </text>
+                              </g>
+                            );
+                          })}
+
+                          {/* ناحیه پرشده گرادینت زیر منحنی */}
                           <path
-                            d={`M 0,100 ${equityPoints
+                            d={`M 0,${svgHeight - 15} ${equityPoints
                               .map((p, idx) => {
-                                const x = (idx / (equityPoints.length - 1)) * 500;
-                                const yRange = chartStats.maxEq - chartStats.minEq || 1;
-                                const y = 100 - ((p.equity - chartStats.minEq) / yRange) * 90 - 5;
+                                const x = (idx / (equityPoints.length - 1)) * svgWidth;
+                                const y = svgHeight - 15 - ((p.equity - chartStats.minEq) / yRange) * (svgHeight - 30);
                                 return `L ${x.toFixed(1)},${y.toFixed(1)}`;
                               })
-                              .join(' ')} L 500,100 Z`}
-                            fill="url(#eqGradScan)"
+                              .join(' ')} L ${svgWidth},${svgHeight - 15} Z`}
+                            fill="url(#eqGradFull)"
                           />
+
+                          {/* خط اصلی منحنی رشد سرمایه */}
                           <path
                             d={`M ${equityPoints
                               .map((p, idx) => {
-                                const x = (idx / (equityPoints.length - 1)) * 500;
-                                const yRange = chartStats.maxEq - chartStats.minEq || 1;
-                                const y = 100 - ((p.equity - chartStats.minEq) / yRange) * 90 - 5;
+                                const x = (idx / (equityPoints.length - 1)) * svgWidth;
+                                const y = svgHeight - 15 - ((p.equity - chartStats.minEq) / yRange) * (svgHeight - 30);
                                 return `${idx === 0 ? '' : 'L '}${x.toFixed(1)},${y.toFixed(1)}`;
                               })
                               .join(' ')}`}
                             fill="none"
                             stroke="#10b981"
-                            strokeWidth="2"
+                            strokeWidth="2.2"
                             strokeLinecap="round"
                             strokeLinejoin="round"
                           />
-                        </svg>
-                      </div>
-                    </div>
-                  )}
 
-                  {(activeChartTab === 'both' || activeChartTab === 'drawdown') && (
-                    <div className="bg-[#121622] p-2 rounded-xl border border-[#212b3b] relative">
-                      <div className="flex items-center justify-between text-[10px] text-gray-400 mb-1">
-                        <span className="text-rose-400 font-bold">منحنی افت سرمایه (Drawdown %)</span>
-                        <span className="font-mono text-rose-400">
-                          حداکثر افت: <strong>{portfolioMaxDrawdown}%</strong>
-                        </span>
-                      </div>
-                      <div className="h-28 w-full relative">
-                        <svg viewBox="0 0 500 100" preserveAspectRatio="none" className="w-full h-full overflow-visible">
-                          <defs>
-                            <linearGradient id="ddGradScan" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="0%" stopColor="#f43f5e" stopOpacity="0.0" />
-                              <stop offset="100%" stopColor="#f43f5e" stopOpacity="0.4" />
-                            </linearGradient>
-                          </defs>
-                          <line x1="0" y1="5" x2="500" y2="5" stroke="#4b5563" strokeWidth="1" />
-                          <path
-                            d={`M 0,5 ${equityPoints
-                              .map((p, idx) => {
-                                const x = (idx / (equityPoints.length - 1)) * 500;
-                                const y = 5 + (p.drawdown / Math.max(20, chartStats.maxDd)) * 90;
-                                return `L ${x.toFixed(1)},${y.toFixed(1)}`;
-                              })
-                              .join(' ')} L 500,5 Z`}
-                            fill="url(#ddGradScan)"
-                          />
-                          <path
-                            d={`M ${equityPoints
-                              .map((p, idx) => {
-                                const x = (idx / (equityPoints.length - 1)) * 500;
-                                const y = 5 + (p.drawdown / Math.max(20, chartStats.maxDd)) * 90;
-                                return `${idx === 0 ? '' : 'L '}${x.toFixed(1)},${y.toFixed(1)}`;
-                              })
-                              .join(' ')}`}
-                            fill="none"
-                            stroke="#f43f5e"
-                            strokeWidth="1.8"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
+                          {/* نقطه شناور در هنگام حرکت موس (Hover Point) */}
+                          {hoveredEquityPoint && (
+                            <g>
+                              <line
+                                x1={(hoveredEquityPoint.index / (equityPoints.length - 1)) * svgWidth}
+                                y1={0}
+                                x2={(hoveredEquityPoint.index / (equityPoints.length - 1)) * svgWidth}
+                                y2={svgHeight}
+                                stroke="rgba(255, 255, 255, 0.35)"
+                                strokeWidth="1"
+                                strokeDasharray="3,3"
+                              />
+                              <circle
+                                cx={(hoveredEquityPoint.index / (equityPoints.length - 1)) * svgWidth}
+                                cy={hoveredEquityPoint.y}
+                                r={5}
+                                fill="#10b981"
+                                stroke="#ffffff"
+                                strokeWidth="2"
+                              />
+                            </g>
+                          )}
                         </svg>
+
+                        {/* جعبه اطلاعات شناور پوینت انتخاب شده */}
+                        {hoveredEquityPoint && (
+                          <div
+                            style={{
+                              left: Math.max(10, Math.min(hoveredEquityPoint.x - 100, (100 * zoomLevel * 8) - 220)),
+                              top: Math.max(10, hoveredEquityPoint.y - 65),
+                            }}
+                            className="absolute pointer-events-none z-30 p-2 rounded-lg bg-[#0a0e17]/95 border border-cyan-500/40 shadow-xl backdrop-blur-xs text-[10px] space-y-0.5 font-sans"
+                            dir="rtl"
+                          >
+                            <div className="flex items-center justify-between text-gray-300 font-bold border-b border-[#202a3a] pb-1 mb-1">
+                              <span>معامله #{hoveredEquityPoint.index + 1}</span>
+                              <span className="font-mono text-cyan-300">{hoveredEquityPoint.point.symbol || 'USDT'}</span>
+                              <span
+                                className={`px-1 rounded text-[9px] font-mono ${
+                                  hoveredEquityPoint.point.direction === 'BUY'
+                                    ? 'bg-emerald-500/20 text-emerald-400'
+                                    : 'bg-rose-500/20 text-rose-400'
+                                }`}
+                              >
+                                {hoveredEquityPoint.point.direction}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between text-gray-400">
+                              <span>سود معامله:</span>
+                              <span
+                                className={`font-mono font-bold ${
+                                  hoveredEquityPoint.point.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                                }`}
+                              >
+                                {hoveredEquityPoint.point.pnl >= 0 ? '+' : ''}${hoveredEquityPoint.point.pnl}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between text-gray-400">
+                              <span>ارزش سرمایه:</span>
+                              <span className="font-mono font-bold text-white">
+                                ${hoveredEquityPoint.point.equity.toLocaleString()}
+                              </span>
+                            </div>
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  )}
+                    );
+                  })()}
                 </div>
               </div>
             )}
@@ -1705,28 +2537,87 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                 <thead className="bg-[#0e121a] text-gray-300 font-semibold border-b border-[#232c3d]">
                   <tr>
                     <th className="py-2.5 px-3">#</th>
-                    <th className="py-2.5 px-3">جفت‌ارز</th>
-                    <th className="py-2.5 px-3 text-center">تعداد معامله</th>
-                    <th className="py-2.5 px-3 text-center">وین‌ریت</th>
-                    <th className="py-2.5 px-3 text-center">سود خالص</th>
-                    <th className="py-2.5 px-3 text-center">Profit Factor</th>
-                    <th className="py-2.5 px-3 text-center">درصد درودان</th>
-                    <th className="py-2.5 px-3 text-center text-emerald-400 font-bold">ریسک بهینه (DD &lt; 20%)</th>
+                    <th
+                      className="py-2.5 px-3 cursor-pointer hover:text-white transition-colors"
+                      onClick={() => handleScannerSort('symbol')}
+                      title="مرتب‌سازی بر اساس نماد"
+                    >
+                      جفت‌ارز {renderScannerSortArrow('symbol')}
+                    </th>
+                    <th
+                      className="py-2.5 px-3 text-center cursor-pointer hover:text-white transition-colors"
+                      onClick={() => handleScannerSort('totalTrades')}
+                      title="مرتب‌سازی بر اساس تعداد معاملات"
+                    >
+                      تعداد معامله {renderScannerSortArrow('totalTrades')}
+                    </th>
+                    <th
+                      className="py-2.5 px-3 text-center cursor-pointer hover:text-white transition-colors"
+                      onClick={() => handleScannerSort('winRate')}
+                      title="مرتب‌سازی بر اساس وین‌ریت"
+                    >
+                      وین‌ریت {renderScannerSortArrow('winRate')}
+                    </th>
+                    <th
+                      className="py-2.5 px-3 text-center cursor-pointer hover:text-white transition-colors"
+                      onClick={() => handleScannerSort('netProfit')}
+                      title="مرتب‌سازی بر اساس سود خالص (با کسر کارمزد)"
+                    >
+                      سود خالص {renderScannerSortArrow('netProfit')}
+                    </th>
+                    <th
+                      className="py-2.5 px-3 text-center text-amber-300 cursor-pointer hover:text-amber-200 transition-colors"
+                      onClick={() => handleScannerSort('totalFee')}
+                      title={`کارمزد کل بر مبنای ${entryCommissionPercent}٪ ورود و ${exitCommissionPercent}٪ خروج`}
+                    >
+                      کارمزد کل ({commissionPercent}%) {renderScannerSortArrow('totalFee')}
+                    </th>
+                    <th
+                      className="py-2.5 px-3 text-center cursor-pointer hover:text-white transition-colors"
+                      onClick={() => handleScannerSort('profitFactor')}
+                      title="مرتب‌سازی بر اساس Profit Factor"
+                    >
+                      Profit Factor {renderScannerSortArrow('profitFactor')}
+                    </th>
+                    <th
+                      className="py-2.5 px-3 text-center cursor-pointer hover:text-white transition-colors"
+                      onClick={() => handleScannerSort('maxDrawdownPercent')}
+                      title="مرتب‌سازی بر اساس درودان"
+                    >
+                      درصد درودان {renderScannerSortArrow('maxDrawdownPercent')}
+                    </th>
+                    <th
+                      className="py-2.5 px-3 text-center text-emerald-400 font-bold cursor-pointer hover:text-emerald-300 transition-colors"
+                      onClick={() => handleScannerSort('optimalRiskForDD20')}
+                      title="ریسک بهینه به درصد برای مهار درودان زیر ۲۰٪"
+                    >
+                      ریسک بهینه (DD &lt; 20%) {renderScannerSortArrow('optimalRiskForDD20')}
+                    </th>
                     <th className="py-2.5 px-3 text-center">عملیات</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#1e2736] font-mono">
                   {filteredScannerResults.map((item, idx) => (
-                    <tr key={item.pair.symbol} className="hover:bg-[#161c28]">
+                    <tr key={item.pair.symbol} className="hover:bg-[#161c28] transition-colors">
                       <td className="py-2.5 px-3 text-gray-500 text-[11px]">{idx + 1}</td>
-                      <td className="py-2.5 px-3 font-sans font-bold text-white">{item.pair.baseAsset}/USDT</td>
+                      <td className="py-2.5 px-3 font-sans font-bold text-white">
+                        <div className="flex items-center gap-1.5">
+                          <span>{item.pair.baseAsset}/USDT</span>
+                          <span className="px-1.5 py-0.2 rounded text-[9px] font-mono bg-cyan-950/80 text-cyan-400 border border-cyan-800/40">
+                            Futures
+                          </span>
+                        </div>
+                      </td>
                       <td className="py-2.5 px-3 text-center">
                         <span className="font-bold">{item.totalTrades}</span>
                         <span className="text-[10px] text-gray-500 ml-1">({item.winTrades}W / {item.lossTrades}L)</span>
                       </td>
                       <td className="py-2.5 px-3 text-center text-sky-400 font-bold">{item.winRate}%</td>
                       <td className={`py-2.5 px-3 text-center font-bold ${item.netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                        {item.netProfit >= 0 ? '+' : ''}{item.netProfit.toLocaleString()} ({item.netProfitPercent}%)
+                        <div>{item.netProfit >= 0 ? '+' : ''}{(item.netProfit ?? 0).toLocaleString()} ({item.netProfitPercent ?? 0}%)</div>
+                      </td>
+                      <td className="py-2.5 px-3 text-center text-amber-400 font-bold">
+                        -${(item.totalFee ?? 0).toLocaleString()}
                       </td>
                       <td className="py-2.5 px-3 text-center">{item.profitFactor}</td>
                       <td className="py-2.5 px-3 text-center text-amber-400">{item.maxDrawdownPercent}%</td>
@@ -1735,7 +2626,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                         <button
                           type="button"
                           onClick={() => onSelectPairAndClose(item.pair)}
-                          className="px-2 py-1 rounded bg-[#202738] hover:bg-amber-400 hover:text-black font-sans text-[11px] font-bold"
+                          className="px-2 py-1 rounded bg-[#202738] hover:bg-amber-400 hover:text-black font-sans text-[11px] font-bold cursor-pointer transition-colors"
                         >
                           مشاهده چارت
                         </button>
@@ -1805,16 +2696,16 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                   <span>بارگذاری JSON</span>
                 </button>
 
-                {top10Trials.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={handleResetOptimizer}
-                    className="p-1.5 rounded-xl bg-[#1b2230] hover:bg-rose-950/40 text-gray-400 hover:text-rose-400 border border-[#2b3548] cursor-pointer"
-                    title="بازنشانی جدول ۱۰ تست برتر و رنج‌ها"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={handleResetOptimizer}
+                  disabled={isOptimizing}
+                  className="px-3 py-1.5 rounded-xl bg-[#1b2230] hover:bg-rose-950/50 text-rose-300 hover:text-rose-200 border border-rose-500/30 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="پاک کردن تمامی آزمایش‌ها، ترکیب‌ها و بازنشانی رنج‌های بهینه‌ساز"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 text-rose-400" />
+                  <span>Reset (پاک کردن آزمایش‌ها)</span>
+                </button>
               </div>
             </div>
 
@@ -2178,6 +3069,17 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                     <Clock className="w-3.5 h-3.5 text-amber-400" />
                     <span>زمان باقی‌مانده سشن: {formatTimer(sessionSecondsLeft)}</span>
                   </div>
+
+                  <button
+                    type="button"
+                    onClick={handleResetOptimizer}
+                    disabled={isOptimizing}
+                    className="px-3 py-1.5 rounded-xl bg-[#171d2b] hover:bg-rose-950/40 text-gray-300 hover:text-rose-400 border border-[#2b374c] hover:border-rose-500/40 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="پاک کردن تمامی آزمایش‌ها و ترکیب‌های قبلی"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Reset</span>
+                  </button>
                 </div>
 
                 {bestWinningRow && (

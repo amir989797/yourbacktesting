@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Search, ChevronDown, Check, TrendingUp, TrendingDown, Star, Sparkles } from 'lucide-react';
 import { CryptoPair, Ticker24h } from '../types/crypto';
-import { POPULAR_PAIRS, fetchUSDTMarketPairs } from '../services/binance';
+import { POPULAR_PAIRS, fetchFuturesMarketPairs, fetchUSDTMarketPairs } from '../services/binance';
 import { formatPrice } from '../utils/indicators';
 
 interface PairSelectorProps {
@@ -21,21 +21,28 @@ export const PairSelector: React.FC<PairSelectorProps> = ({
   const [availablePairs, setAvailablePairs] = useState<CryptoPair[]>(POPULAR_PAIRS);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Fetch all market pairs with >$1M 24h volume
+  // دریافت پیش‌فرض جفت‌ارزهای فیوچرز بایننس (USDT-M Futures)
   useEffect(() => {
     let isMounted = true;
-    fetchUSDTMarketPairs(1_000_000).then((pairs) => {
-      if (isMounted && pairs.length > 0) {
-        // Merge with POPULAR_PAIRS ensuring unique symbols
+    fetchFuturesMarketPairs(200_000).then((futuresPairs) => {
+      if (isMounted && futuresPairs.length > 0) {
+        // ادغام با جفت‌ارزهای محبوب جهت حفظ دسته‌بندی‌ها
         const map = new Map<string, CryptoPair>();
         for (const p of POPULAR_PAIRS) map.set(p.symbol, p);
-        for (const p of pairs) {
+        for (const p of futuresPairs) {
           if (!map.has(p.symbol)) {
             map.set(p.symbol, p);
           }
         }
         setAvailablePairs(Array.from(map.values()));
       }
+    }).catch(() => {
+      // Fallback
+      fetchUSDTMarketPairs(1_000_000).then((pairs) => {
+        if (isMounted && pairs.length > 0) {
+          setAvailablePairs(pairs);
+        }
+      });
     });
     return () => {
       isMounted = false;
@@ -53,7 +60,7 @@ export const PairSelector: React.FC<PairSelectorProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const categories = ['All', 'Popular', 'Layer 1', 'DeFi', 'Meme', 'AI & Tech'];
+  const categories = ['All', 'Futures', 'Popular', 'Layer 1', 'DeFi', 'Meme', 'AI & Tech'];
 
   const filteredPairs = availablePairs.filter((pair) => {
     const matchesSearch =
@@ -61,7 +68,10 @@ export const PairSelector: React.FC<PairSelectorProps> = ({
       pair.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       pair.baseAsset.toLowerCase().includes(searchQuery.toLowerCase());
 
-    const matchesCategory = activeCategory === 'All' || pair.category === activeCategory;
+    const matchesCategory =
+      activeCategory === 'All' ||
+      pair.category === activeCategory ||
+      (activeCategory === 'Futures' && (pair.category === 'Futures' || pair.symbol.endsWith('USDT')));
 
     return matchesSearch && matchesCategory;
   });
