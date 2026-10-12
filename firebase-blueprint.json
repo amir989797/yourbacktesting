@@ -1,0 +1,43 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with custom strategy and backtester configurations",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "settings": { "type": "object" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["uid"]
+    },
+    "BacktestDataset": {
+      "title": "BacktestDataset",
+      "description": "Saved candlestick backtesting dataset metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "userId": { "type": "string" },
+        "timeframe": { "type": "string" },
+        "symbolCount": { "type": "number" },
+        "totalCandles": { "type": "number" },
+        "symbols": { "type": "array" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name", "userId", "timeframe"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Stores individual user preferences, strategy weights, and test settings"
+    },
+    "/datasets/{datasetId}": {
+      "schema": { "$ref": "#/entities/BacktestDataset" },
+      "description": "Stores user backtesting datasets metadata"
+    }
+  }
+}

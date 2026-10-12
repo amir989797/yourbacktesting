@@ -7,5 +7,6 @@
   "storageBucket": "primordial-standard-4mzf6.firebasestorage.app",
   "messagingSenderId": "249681899089",
   "measurementId": "",
-  "oAuthClientId": "249681899089-6h1var9ll8o9vovi8fdt3qdp9g2qr4hq.apps.googleusercontent.com"
+  "oAuthClientId": "249681899089-6h1var9ll8o9vovi8fdt3qdp9g2qr4hq.apps.googleusercontent.com",
+  "recaptchaSiteKey": ""
 }
