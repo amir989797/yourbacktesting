@@ -465,7 +465,7 @@ app.post('/api/market/server-scan-download', async (req, res) => {
         await db.delete(candleChunks).where(eq(candleChunks.datasetId, tempId)).catch(() => {});
         await db.delete(candleDatasets).where(eq(candleDatasets.id, tempId)).catch(() => {});
 
-        await db.insert(candleDatasets).values({
+        await (db.insert(candleDatasets) as any).values({
           id: tempId,
           name: `پیش‌نویس موقت اسکن اخیر (${timeframe})`,
           userId,
@@ -491,7 +491,7 @@ app.post('/api/market/server-scan-download', async (req, res) => {
             tuples: e.candles.map((c) => [c.time, c.open, c.high, c.low, c.close, c.volume]),
           }));
 
-          await db.insert(candleChunks).values({
+          await (db.insert(candleChunks) as any).values({
             datasetId: tempId,
             chunkIndex: Math.floor(i / CHUNK_SIZE),
             itemsJson: JSON.stringify(items),
@@ -617,7 +617,7 @@ app.post('/api/cloudsql/save-dataset', async (req, res) => {
     await db.delete(candleDatasets).where(eq(candleDatasets.id, datasetId)).catch(() => {});
 
     // 2. Insert metadata
-    await db.insert(candleDatasets).values({
+    await (db.insert(candleDatasets) as any).values({
       id: datasetId,
       name,
       userId,
@@ -644,7 +644,7 @@ app.post('/api/cloudsql/save-dataset', async (req, res) => {
         tuples: e.candles.map((c) => [c.time, c.open, c.high, c.low, c.close, c.volume]),
       }));
 
-      await db.insert(candleChunks).values({
+      await (db.insert(candleChunks) as any).values({
         datasetId,
         chunkIndex: Math.floor(i / CHUNK_SIZE),
         itemsJson: JSON.stringify(items),
@@ -754,8 +754,7 @@ app.post('/api/cloudsql/promote-dataset', async (req, res) => {
     const { candleDatasets } = await import('./src/db/schema.ts');
     const { eq } = await import('drizzle-orm');
 
-    await db
-      .update(candleDatasets)
+    await (db.update(candleDatasets) as any)
       .set({ name: newName, isTemporary: false, updatedAt: new Date() })
       .where(eq(candleDatasets.id, datasetId));
 

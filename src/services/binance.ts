@@ -730,3 +730,34 @@ export async function performServerSideMarketDownload(
   return null;
 }
 
+export async function fetchServerPairs(isFutures: boolean = true, minVolume: number = 200000): Promise<CryptoPair[]> {
+  try {
+    const res = await fetch(`/api/market-pairs?futures=${isFutures}&minVolume=${minVolume}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) return data;
+    }
+  } catch (err) {
+    console.warn('Failed to fetch pairs from server API, falling back to direct:', err);
+  }
+  return isFutures ? fetchFuturesMarketPairs(minVolume) : fetchUSDTMarketPairs(minVolume);
+}
+
+export async function fetchServerKlines(
+  symbol: string,
+  interval: string = '5m',
+  limit: number = 1000,
+  isFutures: boolean = true
+): Promise<CandleData[]> {
+  try {
+    const res = await fetch(`/api/klines?symbol=${symbol}&interval=${interval}&limit=${limit}&isFutures=${isFutures}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) return data;
+    }
+  } catch (err) {
+    console.warn('Failed to fetch klines from server API, falling back to direct:', err);
+  }
+  const direct = await fetchKlines(symbol, interval as any, limit, isFutures);
+  return direct.candles;
+}

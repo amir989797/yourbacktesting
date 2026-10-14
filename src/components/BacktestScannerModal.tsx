@@ -636,21 +636,46 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     showToast(`🎯 رنج‌های پارامترها با موفقیت بر اساس تایم‌فریم ${timeframe} و استراتژی هوشمندانه کالیبره شدند.`);
   };
 
-  // ویرایش دستی محدوده حداقل و حداکثر برای هر پارامتر
+  // ویرایش دستی محدوده حداقل و حداکثر برای هر پارامتر (بدون محدودیت سقف تصنعی)
   const handleUpdateParamRange = (key: keyof AdaptiveRanges, field: 'min' | 'max', value: number) => {
     setAdaptiveRanges((prev) => {
       const cur = { ...prev[key] };
+      const safeVal = isNaN(value) ? 0 : value;
+
       if (field === 'min') {
-        const nextMin = Math.max(cur.globalMin, Math.min(cur.max - cur.step, value));
-        cur.min = parseFloat(nextMin.toFixed(2));
+        const nextMin = Math.max(0, parseFloat(safeVal.toFixed(2)));
+        cur.min = nextMin;
+        // در صورت عبور حداقل از حداکثر، سقف به جلو رانده می‌شود تا پارامتر مسدود نشود
+        if (cur.min >= cur.max) {
+          cur.max = parseFloat((cur.min + cur.step).toFixed(2));
+        }
+        if (cur.min < cur.globalMin) {
+          cur.globalMin = cur.min;
+        }
+        if (cur.max > cur.globalMax) {
+          cur.globalMax = cur.max;
+        }
       } else {
-        const nextMax = Math.min(cur.globalMax, Math.max(cur.min + cur.step, value));
-        cur.max = parseFloat(nextMax.toFixed(2));
+        // فیلد حداکثر: بدون هیچ‌گونه سقف یا محدودیت بالا؛ کاربر می‌تواند به هر میزان دلخواه آن را افزایش دهد
+        const nextMax = Math.max(0, parseFloat(safeVal.toFixed(2)));
+        cur.max = nextMax;
+        // در صورت کاهش حداکثر به کمتر از حداقل، حداقل تنظیم می‌شود
+        if (cur.max <= cur.min) {
+          cur.min = Math.max(0, parseFloat((cur.max - cur.step).toFixed(2)));
+        }
+        // گسترش خودکار دامنه کلی جهت پوشش کامل رنج دلخواه کاربر
+        if (cur.max > cur.globalMax) {
+          cur.globalMax = cur.max;
+        }
+        if (cur.min < cur.globalMin) {
+          cur.globalMin = cur.min;
+        }
       }
+
       cur.isManualOverride = true;
-      const span = cur.max - cur.min;
-      const globalSpan = cur.globalMax - cur.globalMin;
-      cur.convergence = Math.round(Math.max(0, Math.min(100, (1 - span / globalSpan) * 100)));
+      const span = Math.max(0, cur.max - cur.min);
+      const globalSpan = Math.max(span, cur.globalMax - cur.globalMin);
+      cur.convergence = globalSpan > 0 ? Math.round(Math.max(0, Math.min(100, (1 - span / globalSpan) * 100))) : 50;
       return { ...prev, [key]: cur };
     });
   };
@@ -3499,11 +3524,14 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
         return parseFloat(Math.min(r.max, Math.max(r.min, val)).toFixed(2));
       }
 
-      // ۱۵٪ جهش بیزی/ژنتیک (Annealing Mutation) در کل دامنه مجاز جهانی برای کشف خوشه‌های جدید
-      const globalCount = Math.max(1, Math.round((r.globalMax - r.globalMin) / r.step));
+      // ۱۵٪ جهش بیزی/ژنتیک (Annealing Mutation) در کل دامنه مجاز کاربر برای کشف خوشه‌های جدید
+      const effectiveMin = Math.min(r.min, r.globalMin);
+      const effectiveMax = Math.max(r.max, r.globalMax);
+      const globalSpan = Math.max(r.step, effectiveMax - effectiveMin);
+      const globalCount = Math.max(1, Math.round(globalSpan / r.step));
       const gIdx = Math.floor(Math.random() * (globalCount + 1));
-      const gVal = r.globalMin + gIdx * r.step;
-      return parseFloat(Math.min(r.globalMax, Math.max(r.globalMin, gVal)).toFixed(2));
+      const gVal = effectiveMin + gIdx * r.step;
+      return parseFloat(Math.min(effectiveMax, Math.max(effectiveMin, gVal)).toFixed(2));
     };
 
     for (let attempts = 0; attempts < 350; attempts++) {
@@ -4820,12 +4848,11 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       <input
                         type="number"
                         step={adaptiveRanges.atrPeriod.step}
-                        min={adaptiveRanges.atrPeriod.globalMin}
-                        max={adaptiveRanges.atrPeriod.max}
+                        min={1}
                         value={adaptiveRanges.atrPeriod.min}
                         disabled={isOptimizing || lockAtrPeriod}
                         onChange={(e) => handleUpdateParamRange('atrPeriod', 'min', parseFloat(e.target.value) || 0)}
-                        className="w-14 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
                       />
                     </div>
                     <div className="flex items-center gap-1">
@@ -4833,12 +4860,11 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       <input
                         type="number"
                         step={adaptiveRanges.atrPeriod.step}
-                        min={adaptiveRanges.atrPeriod.min}
-                        max={adaptiveRanges.atrPeriod.globalMax}
+                        min={1}
                         value={adaptiveRanges.atrPeriod.max}
                         disabled={isOptimizing || lockAtrPeriod}
                         onChange={(e) => handleUpdateParamRange('atrPeriod', 'max', parseFloat(e.target.value) || 0)}
-                        className="w-14 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
                       />
                     </div>
                   </div>
@@ -4862,12 +4888,11 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       <input
                         type="number"
                         step={adaptiveRanges.minCandles.step}
-                        min={adaptiveRanges.minCandles.globalMin}
-                        max={adaptiveRanges.minCandles.max}
+                        min={1}
                         value={adaptiveRanges.minCandles.min}
                         disabled={isOptimizing || lockMinCandles}
                         onChange={(e) => handleUpdateParamRange('minCandles', 'min', parseFloat(e.target.value) || 0)}
-                        className="w-14 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
                       />
                     </div>
                     <div className="flex items-center gap-1">
@@ -4875,12 +4900,11 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       <input
                         type="number"
                         step={adaptiveRanges.minCandles.step}
-                        min={adaptiveRanges.minCandles.min}
-                        max={adaptiveRanges.minCandles.globalMax}
+                        min={1}
                         value={adaptiveRanges.minCandles.max}
                         disabled={isOptimizing || lockMinCandles}
                         onChange={(e) => handleUpdateParamRange('minCandles', 'max', parseFloat(e.target.value) || 0)}
-                        className="w-14 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
                       />
                     </div>
                   </div>
@@ -4904,12 +4928,11 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       <input
                         type="number"
                         step={adaptiveRanges.minCandlesForLongLeg.step}
-                        min={adaptiveRanges.minCandlesForLongLeg.globalMin}
-                        max={adaptiveRanges.minCandlesForLongLeg.max}
+                        min={1}
                         value={adaptiveRanges.minCandlesForLongLeg.min}
                         disabled={isOptimizing || lockMinCandlesLong}
                         onChange={(e) => handleUpdateParamRange('minCandlesForLongLeg', 'min', parseFloat(e.target.value) || 0)}
-                        className="w-14 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
                       />
                     </div>
                     <div className="flex items-center gap-1">
@@ -4917,12 +4940,11 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       <input
                         type="number"
                         step={adaptiveRanges.minCandlesForLongLeg.step}
-                        min={adaptiveRanges.minCandlesForLongLeg.min}
-                        max={adaptiveRanges.minCandlesForLongLeg.globalMax}
+                        min={1}
                         value={adaptiveRanges.minCandlesForLongLeg.max}
                         disabled={isOptimizing || lockMinCandlesLong}
                         onChange={(e) => handleUpdateParamRange('minCandlesForLongLeg', 'max', parseFloat(e.target.value) || 0)}
-                        className="w-14 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
                       />
                     </div>
                   </div>
@@ -4946,12 +4968,11 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       <input
                         type="number"
                         step={adaptiveRanges.atrMultiplier.step}
-                        min={adaptiveRanges.atrMultiplier.globalMin}
-                        max={adaptiveRanges.atrMultiplier.max}
+                        min={0.1}
                         value={adaptiveRanges.atrMultiplier.min}
                         disabled={isOptimizing || lockAtrMultiplier}
                         onChange={(e) => handleUpdateParamRange('atrMultiplier', 'min', parseFloat(e.target.value) || 0)}
-                        className="w-14 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
                       />
                     </div>
                     <div className="flex items-center gap-1">
@@ -4959,12 +4980,11 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       <input
                         type="number"
                         step={adaptiveRanges.atrMultiplier.step}
-                        min={adaptiveRanges.atrMultiplier.min}
-                        max={adaptiveRanges.atrMultiplier.globalMax}
+                        min={0.1}
                         value={adaptiveRanges.atrMultiplier.max}
                         disabled={isOptimizing || lockAtrMultiplier}
                         onChange={(e) => handleUpdateParamRange('atrMultiplier', 'max', parseFloat(e.target.value) || 0)}
-                        className="w-14 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
                       />
                     </div>
                   </div>
@@ -4988,12 +5008,11 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       <input
                         type="number"
                         step={adaptiveRanges.longLegAtrMultiplier.step}
-                        min={adaptiveRanges.longLegAtrMultiplier.globalMin}
-                        max={adaptiveRanges.longLegAtrMultiplier.max}
+                        min={0.1}
                         value={adaptiveRanges.longLegAtrMultiplier.min}
                         disabled={isOptimizing || lockLongLegAtrMult}
                         onChange={(e) => handleUpdateParamRange('longLegAtrMultiplier', 'min', parseFloat(e.target.value) || 0)}
-                        className="w-14 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
                       />
                     </div>
                     <div className="flex items-center gap-1">
@@ -5001,12 +5020,11 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       <input
                         type="number"
                         step={adaptiveRanges.longLegAtrMultiplier.step}
-                        min={adaptiveRanges.longLegAtrMultiplier.min}
-                        max={adaptiveRanges.longLegAtrMultiplier.globalMax}
+                        min={0.1}
                         value={adaptiveRanges.longLegAtrMultiplier.max}
                         disabled={isOptimizing || lockLongLegAtrMult}
                         onChange={(e) => handleUpdateParamRange('longLegAtrMultiplier', 'max', parseFloat(e.target.value) || 0)}
-                        className="w-14 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
                       />
                     </div>
                   </div>
@@ -5030,12 +5048,11 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       <input
                         type="number"
                         step={adaptiveRanges.maxBlueLegPercent.step}
-                        min={adaptiveRanges.maxBlueLegPercent.globalMin}
-                        max={adaptiveRanges.maxBlueLegPercent.max}
+                        min={1}
                         value={adaptiveRanges.maxBlueLegPercent.min}
                         disabled={isOptimizing || lockMaxBlueLegPercent}
                         onChange={(e) => handleUpdateParamRange('maxBlueLegPercent', 'min', parseFloat(e.target.value) || 0)}
-                        className="w-14 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
                       />
                     </div>
                     <div className="flex items-center gap-1">
@@ -5043,12 +5060,11 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       <input
                         type="number"
                         step={adaptiveRanges.maxBlueLegPercent.step}
-                        min={adaptiveRanges.maxBlueLegPercent.min}
-                        max={adaptiveRanges.maxBlueLegPercent.globalMax}
+                        min={1}
                         value={adaptiveRanges.maxBlueLegPercent.max}
                         disabled={isOptimizing || lockMaxBlueLegPercent}
                         onChange={(e) => handleUpdateParamRange('maxBlueLegPercent', 'max', parseFloat(e.target.value) || 0)}
-                        className="w-14 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
                       />
                     </div>
                   </div>
@@ -5072,12 +5088,11 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       <input
                         type="number"
                         step={adaptiveRanges.maxBreakoutAtrMultiplier.step}
-                        min={adaptiveRanges.maxBreakoutAtrMultiplier.globalMin}
-                        max={adaptiveRanges.maxBreakoutAtrMultiplier.max}
+                        min={0.1}
                         value={adaptiveRanges.maxBreakoutAtrMultiplier.min}
                         disabled={isOptimizing || lockMaxBreakoutAtr}
                         onChange={(e) => handleUpdateParamRange('maxBreakoutAtrMultiplier', 'min', parseFloat(e.target.value) || 0)}
-                        className="w-14 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
                       />
                     </div>
                     <div className="flex items-center gap-1">
@@ -5085,12 +5100,11 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       <input
                         type="number"
                         step={adaptiveRanges.maxBreakoutAtrMultiplier.step}
-                        min={adaptiveRanges.maxBreakoutAtrMultiplier.min}
-                        max={adaptiveRanges.maxBreakoutAtrMultiplier.globalMax}
+                        min={0.1}
                         value={adaptiveRanges.maxBreakoutAtrMultiplier.max}
                         disabled={isOptimizing || lockMaxBreakoutAtr}
                         onChange={(e) => handleUpdateParamRange('maxBreakoutAtrMultiplier', 'max', parseFloat(e.target.value) || 0)}
-                        className="w-14 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
                       />
                     </div>
                   </div>
@@ -5114,12 +5128,11 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       <input
                         type="number"
                         step={adaptiveRanges.maxRiskReward.step}
-                        min={adaptiveRanges.maxRiskReward.globalMin}
-                        max={adaptiveRanges.maxRiskReward.max}
+                        min={0.1}
                         value={adaptiveRanges.maxRiskReward.min}
                         disabled={isOptimizing || lockMaxRiskReward}
                         onChange={(e) => handleUpdateParamRange('maxRiskReward', 'min', parseFloat(e.target.value) || 0)}
-                        className="w-14 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
                       />
                     </div>
                     <div className="flex items-center gap-1">
@@ -5127,12 +5140,11 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       <input
                         type="number"
                         step={adaptiveRanges.maxRiskReward.step}
-                        min={adaptiveRanges.maxRiskReward.min}
-                        max={adaptiveRanges.maxRiskReward.globalMax}
+                        min={0.1}
                         value={adaptiveRanges.maxRiskReward.max}
                         disabled={isOptimizing || lockMaxRiskReward}
                         onChange={(e) => handleUpdateParamRange('maxRiskReward', 'max', parseFloat(e.target.value) || 0)}
-                        className="w-14 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
                       />
                     </div>
                   </div>
