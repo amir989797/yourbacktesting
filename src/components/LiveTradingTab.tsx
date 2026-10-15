@@ -444,6 +444,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   const [isScanningNow, setIsScanningNow] = useState<boolean>(false);
   const [serverRunsCount, setServerRunsCount] = useState<number>(0);
   const [serverLastRunAt, setServerLastRunAt] = useState<string | null>(null);
+  const [serverLastDurationMs, setServerLastDurationMs] = useState<number | null>(null);
   const [isTogglingServer, setIsTogglingServer] = useState<boolean>(false);
 
   // History Tab Filter: 'all' | 'wins' | 'losses' | 'open'
@@ -659,6 +660,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   // Perform a single scan cycle across selected pairs
   const runScanCycle = useCallback(async () => {
     setIsScanningNow(true);
+    const scanStartTime = Date.now();
     // ارزهای مورد اسکن: دقیقاً ارزهایی که توسط کاربر تیک خورده و ذخیره شده‌اند
     const targetSymbols = selectedSymbols && selectedSymbols.length > 0
       ? selectedSymbols
@@ -794,8 +796,18 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       }
     }
 
+    const durationMs = Date.now() - scanStartTime;
+    const durationFormatted = durationMs >= 60000
+      ? `${Math.floor(durationMs / 60000)} دقیقه و ${((durationMs % 60000) / 1000).toFixed(1)} ثانیه`
+      : `${(durationMs / 1000).toFixed(1)} ثانیه`;
+
+    addLog(
+      'info',
+      `⏱️ یک دور اسکن کامل ${targetSymbols.length} ارز تکمیل شد. زمان سپری‌شده: ${durationFormatted} (${(durationMs / 1000).toFixed(2)} ثانیه).`
+    );
+
     if (candidateSignals.length === 0) {
-      addLog('info', `✅ اسکن پایان یافت. هیچ سیگنال شکست جدیدی در کندل فعلی تایم‌فریم ${tradeTimeframe} در بین ${targetSymbols.length} ارز فعال مشاهده نشد.`);
+      addLog('info', `✅ اسکن پایان یافت (مدت زمان: ${durationFormatted}). هیچ سیگنال شکست جدیدی در کندل فعلی تایم‌فریم ${tradeTimeframe} در بین ${targetSymbols.length} ارز فعال مشاهده نشد.`);
     } else {
       // قانون کاربر: وقتی چند ترید سیگنال اومد، اونی رو ترید میکنی که مارجین کمتری رو درگیر میکنه
       candidateSignals.sort((a, b) => a.requiredMargin - b.requiredMargin);
@@ -806,7 +818,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           .join(' ، ');
         addLog(
           'info',
-          `🎯 ${candidateSignals.length} سیگنال همزمان شناسایی شد: [${descList}]. طبق قانون حداقل مارجین درگیر، سیگنال ${fromXtSymbol(candidateSignals[0].sym)} انتخاب شد.`
+          `🎯 ${candidateSignals.length} سیگنال همزمان شناسایی شد (زمان اسکن: ${durationFormatted}): [${descList}]. طبق قانون حداقل مارجین درگیر، سیگنال ${fromXtSymbol(candidateSignals[0].sym)} انتخاب شد.`
         );
       }
 
@@ -954,6 +966,9 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         }
         setServerRunsCount(totalRunsCount || 0);
         setServerLastRunAt(lastRunAt || null);
+        if (data.state.lastResult && typeof data.state.lastResult.durationMs === 'number') {
+          setServerLastDurationMs(data.state.lastResult.durationMs);
+        }
 
         // Sync and append logs from server
         if (Array.isArray(logs) && logs.length > 0) {
@@ -1314,7 +1329,14 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 </span>
                 <span className="text-[10px] text-gray-400 block -mt-0.5">
                   {isAutoScanning ? (
-                    <span>تا اسکن بعدی • دور سرور: <strong className="text-cyan-300 font-mono">{serverRunsCount}</strong></span>
+                    <span>
+                      تا اسکن بعدی • دور: <strong className="text-cyan-300 font-mono">#{serverRunsCount}</strong>
+                      {serverLastDurationMs !== null && (
+                        <span className="text-gray-400 font-mono text-[10px] mr-1.5 inline-block">
+                          (مدت: <strong className="text-emerald-300">{(serverLastDurationMs / 1000).toFixed(1)}s</strong>)
+                        </span>
+                      )}
+                    </span>
                   ) : (
                     <span>آماده راه‌اندازی پس‌زمینه</span>
                   )}

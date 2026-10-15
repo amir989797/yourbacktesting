@@ -1370,8 +1370,19 @@ async function runServerScannerCycle() {
       await sleep(25);
     }
 
+    const durationMs = Date.now() - startTime;
+    const durationFormatted = durationMs >= 60000
+      ? `${Math.floor(durationMs / 60000)} دقیقه و ${((durationMs % 60000) / 1000).toFixed(1)} ثانیه`
+      : `${(durationMs / 1000).toFixed(1)} ثانیه`;
+    const runRoundNum = serverScannerState.totalRunsCount + 1;
+
+    addServerScannerLog(
+      'info',
+      `⏱️ یک دور اسکن کامل ${targetSymbols.length} ارز در سرور به پایان رسید. زمان سپری‌شده: ${durationFormatted} (${(durationMs / 1000).toFixed(2)} ثانیه).`
+    );
+
     if (candidateSignals.length === 0) {
-      addServerScannerLog('info', `✅ دور اسکن سرور به پایان رسید. هیچ سیگنال جدیدی در کندل جاری ${cfg.timeframe} یافت نشد.`);
+      addServerScannerLog('info', `✅ دور اسکن شماره ${runRoundNum} سرور به پایان رسید (مدت زمان: ${durationFormatted}). هیچ سیگنال جدیدی در کندل جاری ${cfg.timeframe} یافت نشد.`);
       serverScannerState.activeSignals = [];
     } else {
       // Sort signals by lowest required margin
@@ -1384,7 +1395,7 @@ async function runServerScannerCycle() {
 
       addServerScannerLog(
         'info',
-        `🎯 ${candidateSignals.length} سیگنال توسط سرور شناسایی شد: [${descList}]. سیگنال بهینه: ${candidateSignals[0].symbol.toUpperCase()}`
+        `🎯 دور اسکن شماره ${runRoundNum} در مدت زمان ${durationFormatted} به پایان رسید و ${candidateSignals.length} سیگنال توسط سرور شناسایی شد: [${descList}]. سیگنال بهینه: ${candidateSignals[0].symbol.toUpperCase()}`
       );
 
       const chosen = candidateSignals[0];
