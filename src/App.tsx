@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { CryptoPair, CandleData, Timeframe, ZigZagSettings } from './types/crypto';
+import { CryptoPair, CandleData, Timeframe, ZigZagSettings, ExchangeType } from './types/crypto';
 import { POPULAR_PAIRS, fetchKlines, subscribeToKlineStream } from './services/binance';
+import { fetchXtKlines } from './services/xt';
 import { calculateATR, calculateAtrZigZag, analyzeZigZagLegs } from './utils/indicators';
 import { StrategyConfig, DEFAULT_STRATEGY_CONFIG } from './types/strategy';
 import { runStrategyBacktest } from './utils/strategyEngine';
@@ -11,6 +12,7 @@ import { ZigZagSettingsModal, DEFAULT_ZIGZAG_SETTINGS } from './components/ZigZa
 import { ZigZagGuideModal } from './components/ZigZagGuideModal';
 import { BacktestScannerModal } from './components/BacktestScannerModal';
 import { StrategyPanel } from './components/StrategyPanel';
+import { LiveTradingTab } from './components/LiveTradingTab';
 import { LandingPage } from './components/LandingPage';
 import { LoginModal } from './components/LoginModal';
 import { Zap } from 'lucide-react';
@@ -28,7 +30,31 @@ export default function App() {
 
   const [isLoginModalOpen, setIsLoginModalOpen] = useState<boolean>(false);
 
-  const [selectedPair, setSelectedPair] = useState<CryptoPair>(POPULAR_PAIRS[0]);
+  // Selected Exchange: 'xt' (پیش‌فرض) or 'binance'
+  const [exchange, setExchange] = useState<ExchangeType>(() => {
+    try {
+      const saved = localStorage.getItem('trading_selected_exchange');
+      if (saved === 'xt' || saved === 'binance') return saved;
+    } catch {}
+    return 'xt'; // پیش‌فرض صرافی XT.COM
+  });
+
+  // Active Main Tab: 'chart' or 'trading'
+  const [activeTab, setActiveTab] = useState<'chart' | 'trading'>('chart');
+
+  const [selectedPair, setSelectedPair] = useState<CryptoPair>(() => {
+    try {
+      const savedEx = localStorage.getItem('trading_selected_exchange');
+      if (savedEx === 'binance') return POPULAR_PAIRS[0];
+    } catch {}
+    return {
+      symbol: 'btc_usdt',
+      baseAsset: 'BTC',
+      quoteAsset: 'USDT',
+      name: 'BTC/USDT',
+      category: 'Futures',
+    };
+  });
   const [timeframe, setTimeframe] = useState<Timeframe>('1h');
   const [candles, setCandles] = useState<CandleData[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -38,6 +64,26 @@ export default function App() {
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
   const [isGuideModalOpen, setIsGuideModalOpen] = useState<boolean>(false);
   const [isBacktestModalOpen, setIsBacktestModalOpen] = useState<boolean>(false);
+
+  // تغییر صرافی و تنظیم جفت‌ارز مناسب با صرافی
+  const handleSelectExchange = (newExchange: ExchangeType) => {
+    setExchange(newExchange);
+    try {
+      localStorage.setItem('trading_selected_exchange', newExchange);
+    } catch {}
+
+    if (newExchange === 'xt') {
+      setSelectedPair({
+        symbol: 'btc_usdt',
+        baseAsset: 'BTC',
+        quoteAsset: 'USDT',
+        name: 'BTC/USDT',
+        category: 'Futures',
+      });
+    } else {
+      setSelectedPair(POPULAR_PAIRS[0]);
+    }
+  };
 
   // Strategy Panel Open/Close state (persisted)
   const [isStrategyOpen, setIsStrategyOpen] = useState<boolean>(() => {
@@ -112,27 +158,65 @@ export default function App() {
     isHovering: boolean;
   } | null>(null);
 
-  // Load Klines from Binance
+  // Load Klines from selected exchange (Binance or XT.COM)
   const loadMarketData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const klineResult = await fetchKlines(selectedPair.symbol, timeframe, 5000);
-      setCandles(klineResult.candles);
-      setDataSource(klineResult.source);
+      if (exchange === 'xt') {
+        const xtCandles = await fetchXtKlines(selectedPair.symbol, timeframe, 1500);
+        setCandles(xtCandles);
+        setDataSource('live');
+      } else {
+        const klineResult = await fetchKlines(selectedPair.symbol, timeframe, 5000);
+        setCandles(klineResult.candles);
+        setDataSource(klineResult.source);
+      }
     } catch (err) {
       console.error('Failed to load market data', err);
     } finally {
       setIsLoading(false);
     }
-  }, [selectedPair.symbol, timeframe]);
+  }, [selectedPair.symbol, timeframe, exchange]);
 
-  // Initial and reactive load on symbol or timeframe switch
+  // Initial and reactive load on symbol, timeframe, or exchange switch
   useEffect(() => {
     loadMarketData();
   }, [loadMarketData]);
 
-  // Subscribe to real-time WebSocket Kline stream from Binance
+  // Subscribe to real-time Kline stream (Binance WebSocket or XT live polling)
   useEffect(() => {
+    if (exchange === 'xt') {
+      setWsStatus('connected');
+      // Live continuous refresh for XT current open candle
+      const interval = setInterval(async () => {
+        try {
+          const latest = await fetchXtKlines(selectedPair.symbol, timeframe, 5);
+          if (latest && latest.length > 0) {
+            const updatedCandle = latest[latest.length - 1];
+            setCandles((prevCandles) => {
+              if (prevCandles.length === 0) return [updatedCandle];
+              const last = prevCandles[prevCandles.length - 1];
+              if (last.time === updatedCandle.time) {
+                const next = [...prevCandles];
+                next[next.length - 1] = updatedCandle;
+                return next;
+              } else if (updatedCandle.time > last.time) {
+                return [...prevCandles.slice(1), updatedCandle];
+              }
+              return prevCandles;
+            });
+            setWsStatus('connected');
+          }
+        } catch {
+          setWsStatus('reconnecting');
+        }
+      }, 4000);
+
+      return () => {
+        clearInterval(interval);
+      };
+    }
+
     const unsubscribe = subscribeToKlineStream(
       selectedPair.symbol,
       timeframe,
@@ -160,7 +244,7 @@ export default function App() {
     return () => {
       unsubscribe();
     };
-  }, [selectedPair.symbol, timeframe]);
+  }, [selectedPair.symbol, timeframe, exchange]);
 
   // Calculate ATR(period), 2*ATR(period), 3*ATR(period) and ATR map in real-time
   const atrMetrics = useMemo(() => {
@@ -257,6 +341,10 @@ export default function App() {
         <Navbar
           selectedPair={selectedPair}
           onSelectPair={(p) => setSelectedPair(p)}
+          exchange={exchange}
+          onSelectExchange={handleSelectExchange}
+          activeTab={activeTab}
+          onSelectTab={setActiveTab}
           currentAtr={currentAtr}
           currentTwoAtr={currentTwoAtr}
           currentThreeAtr={currentThreeAtr}
@@ -276,64 +364,80 @@ export default function App() {
         />
       </div>
 
-      {/* 2. Main Workspace: Chart (2/3) + Strategy Panel (1/3) on the right */}
-      <div className="flex-1 w-full min-h-0 flex flex-col lg:flex-row overflow-hidden relative">
-        {/* Main Chart: takes ~2/3 (67%) when strategy is open, 100% when closed */}
-        <main
-          className={`h-full min-h-0 min-w-0 transition-all duration-200 flex flex-col p-1 sm:p-2 ${
-            isStrategyOpen ? 'w-full lg:w-[67%] xl:w-[70%]' : 'w-full'
-          }`}
-        >
-          <TradingChart
-            candles={candles}
-            symbol={selectedPair.symbol}
-            timeframe={timeframe}
-            onTimeframeChange={setTimeframe}
-            isLoading={isLoading}
-            dataSource={dataSource}
-            onRefresh={loadMarketData}
-            atrValues={atrMetrics.atrValues}
-            atrMap={atrMetrics.atrMap}
-            latestAtr={atrMetrics.currentATR}
-            onHoverAtr={(data) => setHoveredAtrData(data)}
-            zigzagSettings={zigzagSettings}
-            onUpdateZigZagSettings={handleUpdateZigZagSettings}
-            onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
-            strategyTrades={strategyResult.trades}
-            showStrategyTrades={strategyConfig.showOnChart}
-            onToggleStrategyPanel={handleToggleStrategy}
-            isStrategyPanelOpen={isStrategyOpen}
+      {/* 2. Main Workspace: یا اتاق معاملات زنده (تب ترید) یا چارت تحلیلی + پنل استراتژی */}
+      {activeTab === 'trading' ? (
+        <div className="flex-1 w-full min-h-0 overflow-hidden">
+          <LiveTradingTab
+            currentPair={selectedPair}
+            exchange={exchange}
+            onSelectExchange={handleSelectExchange}
+            onSelectPair={(p) => {
+              setSelectedPair(p);
+              setActiveTab('chart');
+            }}
+            onClose={() => setActiveTab('chart')}
+            currentUser={currentUser || 'amir'}
           />
-        </main>
-
-        {/* Quick Docked Button on the Right edge when Strategy Panel is closed */}
-        {!isStrategyOpen && (
-          <button
-            onClick={handleToggleStrategy}
-            className="hidden lg:flex absolute left-0 top-1/2 -translate-y-1/2 z-30 bg-[#1e2533] hover:bg-amber-400 text-amber-400 hover:text-black border-r border-y border-amber-500/40 rounded-r-xl px-2 py-3.5 shadow-2xl transition-all flex-col items-center gap-2 cursor-pointer group"
-            title="باز کردن پنل استراتژی معاملاتی (یک‌سوم صفحه)"
+        </div>
+      ) : (
+        <div className="flex-1 w-full min-h-0 flex flex-col lg:flex-row overflow-hidden relative">
+          {/* Main Chart: takes ~2/3 (67%) when strategy is open, 100% when closed */}
+          <main
+            className={`h-full min-h-0 min-w-0 transition-all duration-200 flex flex-col p-1 sm:p-2 ${
+              isStrategyOpen ? 'w-full lg:w-[67%] xl:w-[70%]' : 'w-full'
+            }`}
           >
-            <Zap className="w-4 h-4 fill-current group-hover:scale-110 transition-transform" />
-            <span className="text-[11px] font-bold [writing-mode:vertical-rl] tracking-widest font-sans">
-              استراتژی
-            </span>
-          </button>
-        )}
-
-        {/* Strategy Panel: Takes ~1/3 (33%) on the right side of the screen */}
-        {isStrategyOpen && (
-          <div className="w-full lg:w-[33%] xl:w-[30%] min-w-[320px] max-w-[500px] h-full shrink-0 min-h-0 overflow-hidden border-t lg:border-t-0 lg:border-r border-[#232b3a] z-20">
-            <StrategyPanel
-              isOpen={isStrategyOpen}
-              onClose={() => setIsStrategyOpen(false)}
-              config={strategyConfig}
-              onUpdateConfig={handleUpdateStrategyConfig}
-              trades={strategyResult.trades}
-              metrics={strategyResult.metrics}
+            <TradingChart
+              candles={candles}
+              symbol={selectedPair.symbol}
+              timeframe={timeframe}
+              onTimeframeChange={setTimeframe}
+              isLoading={isLoading}
+              dataSource={dataSource}
+              onRefresh={loadMarketData}
+              atrValues={atrMetrics.atrValues}
+              atrMap={atrMetrics.atrMap}
+              latestAtr={atrMetrics.currentATR}
+              onHoverAtr={(data) => setHoveredAtrData(data)}
+              zigzagSettings={zigzagSettings}
+              onUpdateZigZagSettings={handleUpdateZigZagSettings}
+              onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
+              strategyTrades={strategyResult.trades}
+              showStrategyTrades={strategyConfig.showOnChart}
+              onToggleStrategyPanel={handleToggleStrategy}
+              isStrategyPanelOpen={isStrategyOpen}
             />
-          </div>
-        )}
-      </div>
+          </main>
+
+          {/* Quick Docked Button on the Right edge when Strategy Panel is closed */}
+          {!isStrategyOpen && (
+            <button
+              onClick={handleToggleStrategy}
+              className="hidden lg:flex absolute left-0 top-1/2 -translate-y-1/2 z-30 bg-[#1e2533] hover:bg-amber-400 text-amber-400 hover:text-black border-r border-y border-amber-500/40 rounded-r-xl px-2 py-3.5 shadow-2xl transition-all flex-col items-center gap-2 cursor-pointer group"
+              title="باز کردن پنل استراتژی معاملاتی (یک‌سوم صفحه)"
+            >
+              <Zap className="w-4 h-4 fill-current group-hover:scale-110 transition-transform" />
+              <span className="text-[11px] font-bold [writing-mode:vertical-rl] tracking-widest font-sans">
+                استراتژی
+              </span>
+            </button>
+          )}
+
+          {/* Strategy Panel: Takes ~1/3 (33%) on the right side of the screen */}
+          {isStrategyOpen && (
+            <div className="w-full lg:w-[33%] xl:w-[30%] min-w-[320px] max-w-[500px] h-full shrink-0 min-h-0 overflow-hidden border-t lg:border-t-0 lg:border-r border-[#232b3a] z-20">
+              <StrategyPanel
+                isOpen={isStrategyOpen}
+                onClose={() => setIsStrategyOpen(false)}
+                config={strategyConfig}
+                onUpdateConfig={handleUpdateStrategyConfig}
+                trades={strategyResult.trades}
+                metrics={strategyResult.metrics}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 3. OHLCV Raw Data Inspector Modal */}
       <CandleDataModal
@@ -371,6 +475,8 @@ export default function App() {
           setIsBacktestModalOpen(false);
         }}
         currentUser={currentUser || 'amir'}
+        exchange={exchange}
+        onSelectExchange={handleSelectExchange}
       />
 
       {/* 7. Login Modal */}

@@ -47,21 +47,41 @@ export const LoginModal: React.FC<LoginModalProps> = ({
       return;
     }
 
-    // Verify against required user credentials
-    if (trimmedUser === 'amir' && password === '!#@Amir') {
-      setIsSubmitting(true);
-      try {
-        // Record login event in Firebase Firestore
-        await recordUserLoginInFirestore('amir');
-      } catch (err) {
-        console.warn('Firebase login audit note:', err);
-      } finally {
-        setIsSubmitting(false);
+    const expectedSecret = (import.meta as any).env?.VITE_ADMINPASS || '!#@Amir';
+    let isAuthorized = trimmedUser === 'amir' && (password === '!#@Amir' || password === expectedSecret);
+
+    setIsSubmitting(true);
+    try {
+      if (!isAuthorized) {
+        // Query server authentication endpoint to check AI Studio secrets
+        const resp = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: trimmedUser, password }),
+        }).catch(() => null);
+
+        if (resp && resp.ok) {
+          const data = await resp.json().catch(() => null);
+          if (data && data.success) {
+            isAuthorized = true;
+          }
+        }
       }
-      onLoginSuccess('amir');
-      onClose();
-    } else {
-      setErrorMsg('نام کاربری یا رمز عبور اشتباه است.');
+
+      if (isAuthorized) {
+        try {
+          // Record login event in Firebase Firestore
+          await recordUserLoginInFirestore('amir');
+        } catch (err) {
+          console.warn('Firebase login audit note:', err);
+        }
+        onLoginSuccess('amir');
+        onClose();
+      } else {
+        setErrorMsg('نام کاربری یا رمز عبور اشتباه است.');
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 

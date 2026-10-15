@@ -8,14 +8,20 @@ import {
   LogOut,
   UserCheck,
   Database,
+  Activity,
+  ArrowRightLeft,
 } from 'lucide-react';
-import { CryptoPair } from '../types/crypto';
+import { CryptoPair, ExchangeType } from '../types/crypto';
 import { PairSelector } from './PairSelector';
 import { formatPoints } from '../utils/indicators';
 
 interface NavbarProps {
   selectedPair: CryptoPair;
   onSelectPair: (pair: CryptoPair) => void;
+  exchange: ExchangeType;
+  onSelectExchange: (exchange: ExchangeType) => void;
+  activeTab: 'chart' | 'trading';
+  onSelectTab: (tab: 'chart' | 'trading') => void;
   currentAtr: number;
   currentTwoAtr?: number;
   currentThreeAtr?: number;
@@ -37,6 +43,10 @@ interface NavbarProps {
 export const Navbar: React.FC<NavbarProps> = ({
   selectedPair,
   onSelectPair,
+  exchange,
+  onSelectExchange,
+  activeTab,
+  onSelectTab,
   currentAtr,
   currentCandleRange = 0,
   atrPeriod = 55,
@@ -58,10 +68,10 @@ export const Navbar: React.FC<NavbarProps> = ({
   return (
     <header className="bg-[#181d26] border-b border-[#2b313a] px-3 sm:px-4 py-2">
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-        {/* Left side: Brand + Pair Selector + ATR Metrics */}
-        <div className="flex flex-wrap items-center gap-3 sm:gap-4">
+        {/* Left side: Brand + Exchange Switcher + Pair Selector + ATR Metrics */}
+        <div className="flex flex-wrap items-center gap-2.5 sm:gap-3.5">
           {/* Logo / Brand */}
-          <div className="flex items-center gap-2 pr-3 border-r border-[#2d3443]">
+          <div className="flex items-center gap-2 pr-2 border-r border-[#2d3443]">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-amber-600 flex items-center justify-center shadow-lg shadow-amber-500/20">
               <BarChart3 className="w-5 h-5 text-black" />
             </div>
@@ -70,19 +80,82 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <span className="font-extrabold text-white text-sm tracking-wider">STRATEGY</span>
                 <span className="font-black text-amber-400 text-sm">LAB</span>
               </div>
-              <span className="text-[10px] text-gray-400 block -mt-0.5">Binance Market Data</span>
+              <span className="text-[10px] text-gray-400 block -mt-0.5">
+                {exchange === 'xt' ? 'XT.COM Futures API' : 'Binance Market Data'}
+              </span>
             </div>
           </div>
 
-          {/* Top-Left Currency Selector (بالا سمت چپ انتخاب ارز) */}
+          {/* ۱. انتخابگر صرافی (Exchange Switcher) */}
+          <div className="flex items-center bg-[#10141d] p-0.5 rounded-xl border border-[#273244] shadow-inner text-xs">
+            <button
+              type="button"
+              onClick={() => onSelectExchange('binance')}
+              className={`px-2.5 py-1 rounded-lg font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                exchange === 'binance'
+                  ? 'bg-amber-400 text-black shadow-md shadow-amber-500/20'
+                  : 'text-gray-400 hover:text-white'
+              }`}
+              title="دریافت چارت و بازار از بایننس"
+            >
+              <span className={`w-2 h-2 rounded-full ${exchange === 'binance' ? 'bg-black' : 'bg-amber-400'}`} />
+              <span>Binance</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onSelectExchange('xt')}
+              className={`px-2.5 py-1 rounded-lg font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                exchange === 'xt'
+                  ? 'bg-amber-400 text-black shadow-md shadow-amber-500/20'
+                  : 'text-gray-400 hover:text-white'
+              }`}
+              title="دریافت چارت و بازار فیوچرز از صرافی XT.COM با اتصال زنده API"
+            >
+              <span className={`w-2 h-2 rounded-full ${exchange === 'xt' ? 'bg-black' : 'bg-cyan-400'}`} />
+              <span>XT.COM</span>
+              <span className={`text-[9px] px-1 py-0.2 rounded font-mono ${exchange === 'xt' ? 'bg-black/20 text-black' : 'bg-cyan-950 text-cyan-300'}`}>Live</span>
+            </button>
+          </div>
+
+          {/* ۲. سوییچ تب بین «چارت تحلیلی» و «اتاق ترید زنده» */}
+          <div className="flex items-center bg-[#10141d] p-0.5 rounded-xl border border-[#273244] text-xs">
+            <button
+              type="button"
+              onClick={() => onSelectTab('chart')}
+              className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                activeTab === 'chart'
+                  ? 'bg-[#20293a] text-amber-300 border border-amber-500/30 shadow-xs'
+                  : 'text-gray-400 hover:text-gray-200'
+              }`}
+            >
+              <BarChart3 className="w-3.5 h-3.5" />
+              <span>چارت تحلیلی</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onSelectTab('trading')}
+              className={`px-3 py-1.5 rounded-lg font-black transition-all flex items-center gap-1.5 cursor-pointer ${
+                activeTab === 'trading'
+                  ? 'bg-gradient-to-r from-amber-500 to-amber-400 text-black shadow-md shadow-amber-500/30 ring-1 ring-amber-300'
+                  : 'text-amber-400/90 hover:text-amber-300 hover:bg-[#1a2332]'
+              }`}
+            >
+              <Activity className="w-3.5 h-3.5" />
+              <span>اتاق ترید زنده</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            </button>
+          </div>
+
+          {/* Top-Left Currency Selector (بالا سمت چپ انتخاب ارز مطابق با صرافی) */}
           <PairSelector
             selectedPair={selectedPair}
             onSelectPair={onSelectPair}
             ticker={null}
+            exchange={exchange}
           />
 
           {/* ATR Metrics Bar: باکس ATR بر اساس pts و باکس کندل به درصد */}
-          <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 text-xs">
+          <div className="hidden sm:flex flex-wrap items-center gap-2 sm:gap-2.5 text-xs">
             {/* باکس اول: ATR(period) فقط بر اساس pts */}
             <div
               className={`flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#1f2633] border transition-all shadow-xs ${

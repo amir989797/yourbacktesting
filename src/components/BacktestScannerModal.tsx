@@ -57,7 +57,7 @@ import {
   CloudDownload,
   Loader2,
 } from 'lucide-react';
-import { CryptoPair, CandleData, Timeframe, ZigZagSettings } from '../types/crypto';
+import { CryptoPair, CandleData, Timeframe, ZigZagSettings, ExchangeType } from '../types/crypto';
 import { StrategyConfig, StrategyTrade } from '../types/strategy';
 import {
   fetchUSDTMarketPairs,
@@ -65,6 +65,7 @@ import {
   fetchKlines,
   performServerSideMarketDownload,
 } from '../services/binance';
+import { fetchXtPairs } from '../services/xt';
 import { calculateATR, calculateAtrZigZag, analyzeZigZagLegs } from '../utils/indicators';
 import { runStrategy1Backtest, runStrategy2Backtest } from '../utils/strategyEngine';
 import {
@@ -382,6 +383,8 @@ export interface BacktestScannerModalProps {
   currentTimeframe: Timeframe;
   onSelectPairAndClose: (pair: CryptoPair) => void;
   currentUser?: string;
+  exchange?: ExchangeType;
+  onSelectExchange?: (exchange: ExchangeType) => void;
 }
 
 export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
@@ -392,7 +395,37 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   currentTimeframe,
   onSelectPairAndClose,
   currentUser = 'amir',
+  exchange,
+  onSelectExchange,
 }) => {
+  // صرافی انتخابی برای اسکن بک‌تست (پیش‌فرض XT.COM مطابق با درخواست کاربر)
+  const [selectedExchange, setSelectedExchange] = useState<ExchangeType>(() => {
+    return exchange || 'xt';
+  });
+
+  useEffect(() => {
+    if (exchange) {
+      setSelectedExchange(exchange);
+    }
+  }, [exchange]);
+
+  // چک‌باکس عدم ورود به معامله جدید در صورت وجود پوزیشن باز (تک‌پوزیشن)
+  const [noConcurrentPositions, setNoConcurrentPositions] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('backtest_no_concurrent_positions');
+      return saved !== null ? saved === 'true' : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const handleToggleNoConcurrentPositions = (val: boolean) => {
+    setNoConcurrentPositions(val);
+    try {
+      localStorage.setItem('backtest_no_concurrent_positions', String(val));
+    } catch {}
+  };
+
   // Navigation Tabs: 'scanner' (اسکن دستی بازار) | 'optimizer' (بهینه‌ساز بیزی رنج‌محور) | 'stats' (آمار و اعتبارسنجی داده‌ها)
   const [activeTab, setActiveTab] = useState<'scanner' | 'optimizer' | 'stats'>('scanner');
 
@@ -792,18 +825,25 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
       const isFuturesUniverse = universeParam !== 'spot';
 
-      // ۱. دریافت سریع لیست جفت‌ارزهای معتبر بازار از سرور (کمتر از ۱۵۰ میلی‌ثانیه)
-      setProgress({ current: 0, total: 0, currentSymbol: 'در حال دریافت لیست ارزهای فعال بازار...' });
-      const pairsRes = await fetch(`/api/market/pairs?universe=${universeParam}&limit=${maxCount}&minVolume=1000000`)
-        .then((r) => r.json())
-        .catch(() => null);
+      // ۱. دریافت سریع لیست جفت‌ارزهای معتبر بازار از سرور یا XT (پیش‌فرض صرافی XT)
+      setProgress({ current: 0, total: 0, currentSymbol: `در حال دریافت لیست ارزهای فعال (${selectedExchange.toUpperCase()})...` });
+      
+      let targetPairs: CryptoPair[] = [];
+      if (selectedExchange === 'xt') {
+        const xtPairs = await fetchXtPairs();
+        targetPairs = xtPairs.slice(0, maxCount);
+      } else {
+        const pairsRes = await fetch(`/api/market/pairs?exchange=binance&universe=${universeParam}&limit=${maxCount}&minVolume=1000000`)
+          .then((r) => r.json())
+          .catch(() => null);
 
-      const targetPairs: CryptoPair[] =
-        pairsRes && pairsRes.success && Array.isArray(pairsRes.pairs) && pairsRes.pairs.length > 0
-          ? pairsRes.pairs
-          : universeParam === 'spot'
-          ? await fetchUSDTMarketPairs(1000000)
-          : await fetchFuturesMarketPairs(200000);
+        targetPairs =
+          pairsRes && pairsRes.success && Array.isArray(pairsRes.pairs) && pairsRes.pairs.length > 0
+            ? pairsRes.pairs
+            : universeParam === 'spot'
+            ? await fetchUSDTMarketPairs(1000000)
+            : await fetchFuturesMarketPairs(200000);
+      }
 
       const total = targetPairs.length;
       if (total === 0) {
@@ -812,7 +852,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         return;
       }
 
-      setProgress({ current: 0, total, currentSymbol: 'شروع اسکن و دانلود زنده موازی...' });
+      setProgress({ current: 0, total, currentSymbol: `شروع اسکن و دانلود زنده از ${selectedExchange.toUpperCase()}...` });
 
       const collectedResults: BacktestResultItem[] = [];
       const collectedTrades: StrategyTrade[] = [];
@@ -835,22 +875,23 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           if (!pair) break;
 
           try {
-            // ۱. بررسی حافظه کش کندل‌ها
+            // ۱. بررسی حافظه کش کندل‌ها بر اساس صرافی و نماد
+            const cacheKey = `${selectedExchange}_${pair.symbol}_${timeframe}`;
             let candles: CandleData[] = [];
-            const cached = GLOBAL_CANDLE_CACHE.get(pair.symbol);
+            const cached = GLOBAL_CANDLE_CACHE.get(cacheKey);
             if (cached && cached.candles && cached.candles.length >= 50 && cached.timeframe === timeframe) {
               candles = cached.candles;
             } else {
-              // ۲. دانلود سریع از اندپوینت سرور با میرورهای پرسرعت
+              // ۲. دانلود سریع از اندپوینت سرور بر اساس صرافی انتخابی
               const klineRes = await fetch(
-                `/api/market/klines?symbol=${encodeURIComponent(pair.symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${candleHistoryLimit}&isFutures=${isFuturesUniverse}`
+                `/api/market/klines?exchange=${selectedExchange}&symbol=${encodeURIComponent(pair.symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${candleHistoryLimit}&isFutures=${isFuturesUniverse}`
               )
                 .then((r) => r.json())
                 .catch(() => null);
 
               if (klineRes && klineRes.success && Array.isArray(klineRes.candles) && klineRes.candles.length >= 50) {
                 candles = klineRes.candles;
-                GLOBAL_CANDLE_CACHE.set(pair.symbol, { pair, candles, timeframe });
+                GLOBAL_CANDLE_CACHE.set(cacheKey, { pair, candles, timeframe });
                 setCachedCount(GLOBAL_CANDLE_CACHE.size);
               }
             }
@@ -882,6 +923,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                 maxCandlesToEnter,
                 maxTradesPerLeg: 1,
                 showOnChart: true,
+                noConcurrentPositions, // رعایت عدم تداخل و ورود تک‌پوزیشن
               };
 
               let backtestRes;
@@ -1051,6 +1093,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             maxCandlesToEnter,
             maxTradesPerLeg: 1,
             showOnChart: true,
+            noConcurrentPositions,
           };
 
           let backtestRes;
@@ -1147,12 +1190,40 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   // =========================================================
   const totalScanned = results.length;
   const profitableCount = results.filter((r) => r.netProfit > 0).length;
-  const totalTradesSum = results.reduce((acc, r) => acc + r.totalTrades, 0);
-  const totalWinTradesSum = results.reduce((acc, r) => acc + r.winTrades, 0);
-  const totalNetProfitSum = results.reduce((acc, r) => acc + r.netProfit, 0);
-  const totalProfitSum = results.reduce((acc, r) => acc + r.totalProfit, 0);
-  const totalLossSum = results.reduce((acc, r) => acc + r.totalLoss, 0);
-  const totalFeeSum = results.reduce((acc, r) => acc + (r.totalFee || 0), 0);
+
+  // شبیه‌سازی و فیلتر عدم محاسبه معاملات همزمان در سطح کل پرتفوی (در صورت فعال بودن چک‌باکس)
+  const effectivePortfolioTrades = useMemo(() => {
+    if (!noConcurrentPositions || allCollectedTrades.length === 0) {
+      return allCollectedTrades;
+    }
+    // مرتب‌سازی بر اساس زمان ورود: فقط ورود به پوزیشن جدید بعد از بسته‌شدن پوزیشن قبلی
+    const sorted = [...allCollectedTrades].sort((a, b) => (a.entryTime || a.timeF || 0) - (b.entryTime || b.timeF || 0));
+    const nonConcurrent: StrategyTrade[] = [];
+    let lastExitTime = 0;
+    for (const t of sorted) {
+      const eTime = t.entryTime || t.timeF || 0;
+      const xTime = t.exitTime || eTime;
+      if (eTime >= lastExitTime) {
+        nonConcurrent.push(t);
+        lastExitTime = Math.max(lastExitTime, xTime);
+      }
+    }
+    return nonConcurrent;
+  }, [allCollectedTrades, noConcurrentPositions]);
+
+  const rawTotalTradesSum = results.reduce((acc, r) => acc + r.totalTrades, 0);
+  const rawTotalWinTradesSum = results.reduce((acc, r) => acc + r.winTrades, 0);
+  const rawTotalNetProfitSum = results.reduce((acc, r) => acc + r.netProfit, 0);
+  const rawTotalProfitSum = results.reduce((acc, r) => acc + r.totalProfit, 0);
+  const rawTotalLossSum = results.reduce((acc, r) => acc + r.totalLoss, 0);
+  const rawTotalFeeSum = results.reduce((acc, r) => acc + (r.totalFee || 0), 0);
+
+  const totalTradesSum = noConcurrentPositions && effectivePortfolioTrades.length > 0 ? effectivePortfolioTrades.length : rawTotalTradesSum;
+  const totalWinTradesSum = noConcurrentPositions && effectivePortfolioTrades.length > 0 ? effectivePortfolioTrades.filter((t) => t.status === 'WIN').length : rawTotalWinTradesSum;
+  const totalNetProfitSum = noConcurrentPositions && effectivePortfolioTrades.length > 0 ? parseFloat(effectivePortfolioTrades.reduce((acc, t) => acc + t.pnl, 0).toFixed(2)) : rawTotalNetProfitSum;
+  const totalProfitSum = noConcurrentPositions && effectivePortfolioTrades.length > 0 ? parseFloat(effectivePortfolioTrades.filter((t) => t.pnl > 0).reduce((acc, t) => acc + t.pnl, 0).toFixed(2)) : rawTotalProfitSum;
+  const totalLossSum = noConcurrentPositions && effectivePortfolioTrades.length > 0 ? parseFloat(effectivePortfolioTrades.filter((t) => t.pnl < 0).reduce((acc, t) => acc + Math.abs(t.pnl), 0).toFixed(2)) : rawTotalLossSum;
+  const totalFeeSum = rawTotalFeeSum;
 
   const portfolioProfitFactor =
     totalLossSum > 0
@@ -1167,8 +1238,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       : 0;
 
   const equityPoints = useMemo(() => {
-    if (allCollectedTrades.length === 0) return [];
-    const sortedTrades = [...allCollectedTrades].sort((a, b) => (a.exitTime || a.entryTime || 0) - (b.exitTime || b.entryTime || 0));
+    if (effectivePortfolioTrades.length === 0) return [];
+    const sortedTrades = [...effectivePortfolioTrades].sort((a, b) => (a.exitTime || a.entryTime || 0) - (b.exitTime || b.entryTime || 0));
 
     let currentEquity = capital;
     let peakEquity = capital;
@@ -1203,7 +1274,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         status: t.status,
       };
     });
-  }, [allCollectedTrades, capital]);
+  }, [effectivePortfolioTrades, capital]);
 
   const chartStats = useMemo(() => {
     if (equityPoints.length === 0) {
@@ -1658,8 +1729,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     const allAssetsList = Array.from(resultPairsMap.values());
     const numberOfAssets = allAssetsList.length;
 
-    // ۲. تعداد معاملات
-    const numberOfTrades = allCollectedTrades.length;
+    // ۲. تعداد معاملات (با لحاظ وضعیت عدم محاسبه معاملات همزمان در کل پرتفوی)
+    const auditedTrades = effectivePortfolioTrades;
+    const numberOfTrades = auditedTrades.length;
 
     // ۳. تعداد کندل‌ها و بازرسی سلامت کندل‌ها
     let totalCandles = 0;
@@ -1859,7 +1931,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     let duplicatedTradesCount = 0;
     const seenTradeHashes = new Set<string>();
 
-    for (const t of allCollectedTrades) {
+    for (const t of auditedTrades) {
       if (
         t.entryPrice === undefined ||
         t.stopLoss === undefined ||
@@ -1880,6 +1952,20 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         inconsistentTimestampsCount++;
       }
     }
+
+    // تفکیک دقیق معاملات خرید (BUY) و فروش (SELL)
+    const buyTrades = auditedTrades.filter((t) => t.direction === 'BUY' || t.type === 'BUY');
+    const sellTrades = auditedTrades.filter((t) => t.direction === 'SELL' || t.type === 'SELL');
+    const buyTradesCount = buyTrades.length;
+    const sellTradesCount = sellTrades.length;
+    const buyPercentage = numberOfTrades > 0 ? ((buyTradesCount / numberOfTrades) * 100).toFixed(1) : '0';
+    const sellPercentage = numberOfTrades > 0 ? ((sellTradesCount / numberOfTrades) * 100).toFixed(1) : '0';
+    const buyWinCount = buyTrades.filter((t) => t.status === 'WIN').length;
+    const buyLossCount = buyTrades.filter((t) => t.status === 'LOSS').length;
+    const sellWinCount = sellTrades.filter((t) => t.status === 'WIN').length;
+    const sellLossCount = sellTrades.filter((t) => t.status === 'LOSS').length;
+    const buyWinRate = buyTradesCount > 0 ? ((buyWinCount / buyTradesCount) * 100).toFixed(1) : '0';
+    const sellWinRate = sellTradesCount > 0 ? ((sellWinCount / sellTradesCount) * 100).toFixed(1) : '0';
 
     // تاریخ‌های دقیق تاریخی
     const formatDate = (ts: number | null) => {
@@ -1947,6 +2033,16 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     return {
       numberOfAssets,
       numberOfTrades,
+      buyTradesCount,
+      sellTradesCount,
+      buyPercentage,
+      sellPercentage,
+      buyWinCount,
+      buyLossCount,
+      sellWinCount,
+      sellLossCount,
+      buyWinRate,
+      sellWinRate,
       totalCandles,
       avgCandlesPerAsset,
       minCandles,
@@ -1973,7 +2069,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       dataHealthScore,
       perAssetCandleCounts,
     };
-  }, [results, allCollectedTrades, candleHistoryLimit, timeframe, cachedCount]);
+  }, [results, allCollectedTrades, effectivePortfolioTrades, candleHistoryLimit, timeframe, cachedCount]);
 
   // ۲. صحه‌گذاری سلامت بک‌تست (Check for backtest integrity)
   const backtestIntegrityAudit = useMemo(() => {
@@ -2799,18 +2895,19 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 -----------------------------------------------------
 ۱. تعداد دارایی‌ها (number of assets): ${datasetAudit.numberOfAssets} جفت‌ارز
 ۲. تعداد کل معاملات (number of trades): ${datasetAudit.numberOfTrades} معامله
-۳. تعداد کل کندل‌ها (number of candles): ${datasetAudit.totalCandles.toLocaleString()} کندل (میانگین ${datasetAudit.avgCandlesPerAsset.toLocaleString()} به ازای هر ارز)
-۴. تاریخ دقیق شروع تاریخی (exact historical start date): ${datasetAudit.exactHistoricalStartDate}
-۵. تاریخ دقیق پایان تاریخی (exact historical end date): ${datasetAudit.exactHistoricalEndDate}
-۶. مدت زمان واقعی پوشش‌داده‌شده (actual duration covered): ${datasetAudit.actualDurationCoveredText}
-۷. دامنه سقف ۵,۰۰۰ کندل (whether 5,000 candles refers to each asset or entire dataset): به ازای هر دارایی (Per Asset) است و نه کل دیتاست. حجم کل دیتاست تا ${datasetAudit.totalTheoreticalDatasetCapacity.toLocaleString()} کندل است.
-۸. داده‌های مفقود (missing data): ${datasetAudit.missingDataCount} مورد
-۹. رکوردهای تکراری (duplicated records): ${datasetAudit.duplicatedCandlesCount} کندل تکراری | ${datasetAudit.duplicatedTradesCount} معامله تکراری
-۱۰. شکاف‌های داده / گپ‌ها (data gaps): ${datasetAudit.dataGapsCount} کندل گپ در تایم‌فریم ${timeframe}
-۱۱. قیمت‌های مفقود یا نامعتبر (missing prices): ${datasetAudit.missingPricesCount} مورد
-۱۲. فیلدهای مفقود در معامله (missing trade fields): ${datasetAudit.missingTradeFieldsCount} مورد
-۱۳. برچسب‌های زمانی ناسازگار (inconsistent timestamps): ${datasetAudit.inconsistentTimestampsCount} مورد
-۱۴. نمادهای ناسازگار (inconsistent symbols): ${datasetAudit.inconsistentSymbolsCount} مورد
+۳. تعداد معاملات خرید و فروش (buy and sell trades count): ${datasetAudit.buyTradesCount} خرید (Buy) [${datasetAudit.buyWinRate}% Win] | ${datasetAudit.sellTradesCount} فروش (Sell) [${datasetAudit.sellWinRate}% Win]
+۴. تعداد کل کندل‌ها (number of candles): ${datasetAudit.totalCandles.toLocaleString()} کندل (میانگین ${datasetAudit.avgCandlesPerAsset.toLocaleString()} به ازای هر ارز)
+۵. تاریخ دقیق شروع تاریخی (exact historical start date): ${datasetAudit.exactHistoricalStartDate}
+۶. تاریخ دقیق پایان تاریخی (exact historical end date): ${datasetAudit.exactHistoricalEndDate}
+۷. مدت زمان واقعی پوشش‌داده‌شده (actual duration covered): ${datasetAudit.actualDurationCoveredText}
+۸. دامنه سقف ۵,۰۰۰ کندل (whether 5,000 candles refers to each asset or entire dataset): به ازای هر دارایی (Per Asset) است و نه کل دیتاست. حجم کل دیتاست تا ${datasetAudit.totalTheoreticalDatasetCapacity.toLocaleString()} کندل است.
+۹. داده‌های مفقود (missing data): ${datasetAudit.missingDataCount} مورد
+۱۰. رکوردهای تکراری (duplicated records): ${datasetAudit.duplicatedCandlesCount} کندل تکراری | ${datasetAudit.duplicatedTradesCount} معامله تکراری
+۱۱. شکاف‌های داده / گپ‌ها (data gaps): ${datasetAudit.dataGapsCount} کندل گپ در تایم‌فریم ${timeframe}
+۱۲. قیمت‌های مفقود یا نامعتبر (missing prices): ${datasetAudit.missingPricesCount} مورد
+۱۳. فیلدهای مفقود در معامله (missing trade fields): ${datasetAudit.missingTradeFieldsCount} مورد
+۱۴. برچسب‌های زمانی ناسازگار (inconsistent timestamps): ${datasetAudit.inconsistentTimestampsCount} مورد
+۱۵. نمادهای ناسازگار (inconsistent symbols): ${datasetAudit.inconsistentSymbolsCount} مورد
 نمره سلامت دیتاست: ${datasetAudit.dataHealthScore}% (صداقت ارزیابی: بدون ایجاد داده ساختگی - Do Not Fabricate Missing Values)
 
 بخش دوم: جدول صحه‌گذاری سلامت بک‌تست (2. Check for backtest integrity):
@@ -2923,6 +3020,7 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
       ['شاخص بازرسی دیتاست', 'نتیجه بازرسی و مقدار دقیق', 'وضعیت سلامت', 'توضیحات فنی و متدولوژی'],
       ['تعداد دارایی‌ها (Number of Assets)', `${datasetAudit.numberOfAssets} جفت‌ارز`, 'تاییدشده', 'تعداد نمادهای فعال در کش و اسکن بازار'],
       ['تعداد معاملات (Number of Trades)', `${datasetAudit.numberOfTrades} معامله`, 'تاییدشده', 'مجموع معاملات اجراشده توسط استراتژی'],
+      ['تعداد معاملات خرید و فروش (Buy & Sell Trades Count)', `خرید (Buy): ${datasetAudit.buyTradesCount} (${datasetAudit.buyPercentage}%) | فروش (Sell): ${datasetAudit.sellTradesCount} (${datasetAudit.sellPercentage}%)`, 'تاییدشده', `وین‌ریت خرید: ${datasetAudit.buyWinRate}% | وین‌ریت فروش: ${datasetAudit.sellWinRate}%`],
       ['تعداد کل کندل‌ها (Number of Candles)', `${datasetAudit.totalCandles} کندل`, 'تاییدشده', `میانگین ${datasetAudit.avgCandlesPerAsset} کندل به ازای هر ارز (حداقل ${datasetAudit.minCandles}، حداکثر ${datasetAudit.maxCandles})`],
       ['تاریخ دقیق شروع تاریخی (Exact Start Date)', datasetAudit.exactHistoricalStartDate, 'تاییدشده', 'قدیمی‌ترین مهر زمانی موجود در دیتاست'],
       ['تاریخ دقیق پایان تاریخی (Exact End Date)', datasetAudit.exactHistoricalEndDate, 'تاییدشده', 'جدیدترین مهر زمانی موجود در دیتاست'],
@@ -3410,6 +3508,7 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
       maxCandlesToEnter,
       maxTradesPerLeg: 1,
       showOnChart: false,
+      noConcurrentPositions,
     };
 
     for (const item of cachedEntries) {
@@ -3455,11 +3554,34 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
       allTrades.push(...closed);
     }
 
-    allTrades.sort((a, b) => (a.exitTime || a.entryTime || 0) - (b.exitTime || b.entryTime || 0));
+    let evaluatedTrades = allTrades;
+    if (noConcurrentPositions) {
+      // اعمال دقیق عدم محاسبه معاملات همزمان در بهینه‌ساز در سطح کل پرتفوی
+      const sortedByEntry = [...allTrades].sort((a, b) => (a.entryTime || a.timeF || 0) - (b.entryTime || b.timeF || 0));
+      const nonConcurrent: StrategyTrade[] = [];
+      let lastExitTime = 0;
+      for (const t of sortedByEntry) {
+        const eTime = t.entryTime || t.timeF || 0;
+        const xTime = t.exitTime || eTime;
+        if (eTime >= lastExitTime) {
+          nonConcurrent.push(t);
+          lastExitTime = Math.max(lastExitTime, xTime);
+        }
+      }
+      evaluatedTrades = nonConcurrent;
+      totalTradesSum = evaluatedTrades.length;
+      winTradesSum = evaluatedTrades.filter((t) => t.status === 'WIN').length;
+      lossTradesSum = evaluatedTrades.filter((t) => t.status === 'LOSS').length;
+      grossProfitSum = evaluatedTrades.filter((t) => t.pnl > 0).reduce((acc, t) => acc + t.pnl, 0);
+      grossLossSum = evaluatedTrades.filter((t) => t.pnl < 0).reduce((acc, t) => acc + Math.abs(t.pnl), 0);
+      netProfitSum = evaluatedTrades.reduce((acc, t) => acc + t.pnl, 0);
+    }
+
+    evaluatedTrades.sort((a, b) => (a.exitTime || a.entryTime || 0) - (b.exitTime || b.entryTime || 0));
     let curEq = capital;
     let peakEq = capital;
     let maxDd = 0;
-    for (const t of allTrades) {
+    for (const t of evaluatedTrades) {
       curEq += t.pnl;
       if (curEq > peakEq) peakEq = curEq;
       const dd = peakEq > 0 ? ((peakEq - curEq) / peakEq) * 100 : 0;
@@ -3860,6 +3982,43 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
 
           {/* Tab Selector & Cloud DB Buttons */}
           <div className="flex items-center gap-2 flex-wrap">
+            {/* انتخابگر صرافی بک‌تست: XT.COM (پیش‌فرض) یا Binance */}
+            <div className="flex items-center bg-[#131824] p-0.5 rounded-xl border border-[#2b374c] text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedExchange('xt');
+                  onSelectExchange?.('xt');
+                }}
+                className={`px-2.5 py-1 rounded-lg font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                  selectedExchange === 'xt'
+                    ? 'bg-amber-400 text-black shadow-md shadow-amber-500/20'
+                    : 'text-gray-400 hover:text-white'
+                }`}
+                title="اسکن و بک‌تست با مارکت فیوچرز صرافی XT.COM (پیش‌فرض)"
+              >
+                <span className={`w-2 h-2 rounded-full ${selectedExchange === 'xt' ? 'bg-black' : 'bg-cyan-400'}`} />
+                <span>صرافی XT.COM</span>
+                <span className={`text-[9px] px-1 py-0.2 rounded font-mono ${selectedExchange === 'xt' ? 'bg-black/20 text-black' : 'bg-cyan-950 text-cyan-300'}`}>پیش‌فرض</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedExchange('binance');
+                  onSelectExchange?.('binance');
+                }}
+                className={`px-2.5 py-1 rounded-lg font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                  selectedExchange === 'binance'
+                    ? 'bg-amber-400 text-black shadow-md shadow-amber-500/20'
+                    : 'text-gray-400 hover:text-white'
+                }`}
+                title="اسکن و بک‌تست با مارکت بایننس"
+              >
+                <span className={`w-2 h-2 rounded-full ${selectedExchange === 'binance' ? 'bg-black' : 'bg-amber-400'}`} />
+                <span>Binance</span>
+              </button>
+            </div>
+
             <div className="flex items-center gap-1 bg-[#181f2f] p-1 rounded-xl border border-[#2d384c]">
               <button
                 type="button"
@@ -4080,6 +4239,33 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-emerald-400 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
                     />
                   </div>
+                </div>
+
+                {/* چک‌باکس عدم محاسبه معاملات همزمان در اسکن دستی */}
+                <div className="flex flex-wrap items-center justify-between p-2.5 rounded-xl bg-[#0e121a] border border-[#283244] gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-6 h-6 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                      <ShieldAlert className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <span className="text-amber-400 font-bold text-xs">مدیریت معاملات همزمان:</span>
+                      <span className="text-[11px] text-gray-300 mr-1.5">
+                        عدم محاسبه معاملات همزمان (عدم ورود به معامله جدید در صورت وجود پوزیشن باز / تک‌پوزیشن)
+                      </span>
+                    </div>
+                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer select-none px-2.5 py-1 rounded-lg bg-[#141a26] border border-[#2e394e] hover:border-amber-500/40 transition-colors">
+                    <input
+                      type="checkbox"
+                      checked={noConcurrentPositions}
+                      onChange={(e) => handleToggleNoConcurrentPositions(e.target.checked)}
+                      disabled={isScanning}
+                      className="w-4 h-4 rounded text-amber-500 bg-[#171d28] border-[#2e394e] focus:ring-amber-500 cursor-pointer disabled:opacity-50"
+                    />
+                    <span className="text-xs font-bold text-amber-300 font-mono">
+                      {noConcurrentPositions ? 'فعال (تک‌پوزیشن)' : 'غیرفعال (معاملات همزمان)'}
+                    </span>
+                  </label>
                 </div>
               </div>
 
@@ -5214,6 +5400,33 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                 </div>
               </div>
 
+              {/* چک‌باکس عدم محاسبه معاملات همزمان در بهینه‌ساز */}
+              <div className="flex flex-wrap items-center justify-between p-2.5 rounded-xl bg-[#0e121a] border border-[#283244] gap-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-6 h-6 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                    <ShieldAlert className="w-3.5 h-3.5" />
+                  </div>
+                  <div>
+                    <span className="text-amber-400 font-bold text-xs">مدیریت معاملات همزمان در بهینه‌ساز:</span>
+                    <span className="text-[11px] text-gray-300 mr-1.5">
+                      عدم محاسبه معاملات همزمان (عدم ورود به معامله جدید در صورت وجود پوزیشن باز / تک‌پوزیشن)
+                    </span>
+                  </div>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer select-none px-2.5 py-1 rounded-lg bg-[#151b26] border border-[#2d384c] hover:border-amber-500/40 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={noConcurrentPositions}
+                    onChange={(e) => handleToggleNoConcurrentPositions(e.target.checked)}
+                    disabled={isOptimizing}
+                    className="w-4 h-4 rounded text-amber-500 bg-[#171d28] border-[#2e394e] focus:ring-amber-500 cursor-pointer disabled:opacity-50"
+                  />
+                  <span className="text-xs font-bold text-amber-300 font-mono">
+                    {noConcurrentPositions ? 'فعال (تک‌پوزیشن)' : 'غیرفعال (معاملات همزمان)'}
+                  </span>
+                </label>
+              </div>
+
               {/* گزینه‌های قفل پارامترها */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pt-1 border-t border-[#222d3e]">
                 <div className={`p-2 rounded-xl border ${lockAtrPeriod ? 'bg-[#0e1117] border-gray-700/60 opacity-60' : 'bg-[#171e2b] border-[#2a364a]'}`}>
@@ -5768,7 +5981,7 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                   </h5>
                 </div>
                 <span className="text-[11px] text-gray-400 font-mono">
-                  ۱۴ شاخص کلیدی • بازرسی خودکار بدون دیتای ساختگی
+                  ۱۵ شاخص کلیدی • بازرسی خودکار بدون دیتای ساختگی
                 </span>
               </div>
 
@@ -5826,7 +6039,7 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                     <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
                       <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۲</td>
                       <td className="py-3 px-3">
-                        <div className="font-extrabold text-white">تعداد معاملات</div>
+                        <div className="font-extrabold text-white">تعداد کل معاملات</div>
                         <div className="text-[10px] text-gray-400 font-mono">number of trades</div>
                       </td>
                       <td className="py-3 px-3 text-gray-300">کلیه معاملات شبیه‌سازی‌شده توسط استراتژی انتخابی</td>
@@ -5845,9 +6058,9 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       <td className="py-3 px-3 text-gray-300 leading-relaxed text-[11px]">
                         {datasetAudit.numberOfTrades > 0 ? (
                           <span>
-                            شامل <strong className="text-emerald-400">{allCollectedTrades.filter(t => t.status === 'WIN').length}</strong> معامله سودده،{' '}
-                            <strong className="text-rose-400">{allCollectedTrades.filter(t => t.status === 'LOSS').length}</strong> معامله ضررده و{' '}
-                            <strong className="text-amber-400">{allCollectedTrades.filter(t => t.status === 'ACTIVE').length}</strong> پوزیشن باز با محاسبه کارمزد ورود/خروج.
+                            شامل <strong className="text-emerald-400">{datasetAudit.buyWinCount + datasetAudit.sellWinCount}</strong> معامله سودده،{' '}
+                            <strong className="text-rose-400">{datasetAudit.buyLossCount + datasetAudit.sellLossCount}</strong> معامله ضررده و{' '}
+                            <strong className="text-amber-400">{effectivePortfolioTrades.filter(t => t.status === 'ACTIVE').length}</strong> پوزیشن باز با محاسبه دقیق کارمزد ورود/خروج.
                           </span>
                         ) : (
                           <span className="text-gray-400">تعداد معاملات پس از اجرای اسکن بر مبنای قوانین نقطه E و فیبوناچی ثبت می‌گردد.</span>
@@ -5855,9 +6068,47 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       </td>
                     </tr>
 
-                    {/* ۳. number of candles */}
+                    {/* ۳. buy and sell trades count */}
                     <tr className="hover:bg-[#151c28] transition-colors">
                       <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۳</td>
+                      <td className="py-3 px-3">
+                        <div className="font-extrabold text-white">تعداد معاملات خرید و فروش</div>
+                        <div className="text-[10px] text-gray-400 font-mono">buy & sell trades count</div>
+                      </td>
+                      <td className="py-3 px-3 text-gray-300">تفکیک دقیق جهت پوزیشن‌های لانگ (BUY) و شورت (SELL) در دیتاست</td>
+                      <td className="py-3 px-3 font-mono font-bold text-xs">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">
+                            خرید (Buy): {datasetAudit.buyTradesCount.toLocaleString()} ({datasetAudit.buyPercentage}%)
+                          </span>
+                          <span className="px-2 py-0.5 rounded bg-rose-500/15 text-rose-400 border border-rose-500/25">
+                            فروش (Sell): {datasetAudit.sellTradesCount.toLocaleString()} ({datasetAudit.sellPercentage}%)
+                          </span>
+                        </div>
+                      </td>
+                      <td className="py-3 px-3 text-center">
+                        <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold border inline-flex items-center gap-1 ${
+                          datasetAudit.numberOfTrades > 0
+                            ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                            : 'bg-gray-500/20 text-gray-400 border-gray-500/30'
+                        }`}>
+                          {datasetAudit.numberOfTrades > 0 ? '✅ تفکیک دوطرفه ثبت‌شده' : 'ℹ️ بدون معامله'}
+                        </span>
+                      </td>
+                      <td className="py-3 px-3 text-gray-300 leading-relaxed text-[11px]">
+                        {datasetAudit.numberOfTrades > 0 ? (
+                          <span>
+                            از کل {datasetAudit.numberOfTrades.toLocaleString()} معامله، <strong className="text-emerald-400 font-mono">{datasetAudit.buyTradesCount.toLocaleString()}</strong> پوزیشن لانگ (وین‌ریت {datasetAudit.buyWinRate}٪) و <strong className="text-rose-400 font-mono">{datasetAudit.sellTradesCount.toLocaleString()}</strong> پوزیشن شورت (وین‌ریت {datasetAudit.sellWinRate}٪) در ژورنال ثبت و صحه‌گذاری شده است.
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">پس از اتمام اسکن، تعداد دقیق و درصد معاملات خرید و فروش درج می‌گردد.</span>
+                        )}
+                      </td>
+                    </tr>
+
+                    {/* ۴. number of candles */}
+                    <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
+                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۴</td>
                       <td className="py-3 px-3">
                         <div className="font-extrabold text-white">تعداد کندل‌ها</div>
                         <div className="text-[10px] text-gray-400 font-mono">number of candles</div>
@@ -5876,9 +6127,9 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       </td>
                     </tr>
 
-                    {/* ۴. exact historical start date */}
-                    <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
-                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۴</td>
+                    {/* ۵. exact historical start date */}
+                    <tr className="hover:bg-[#151c28] transition-colors">
+                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۵</td>
                       <td className="py-3 px-3">
                         <div className="font-extrabold text-white">تاریخ دقیق شروع تاریخی</div>
                         <div className="text-[10px] text-gray-400 font-mono">exact historical start date</div>
@@ -5907,9 +6158,9 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       </td>
                     </tr>
 
-                    {/* ۵. exact historical end date */}
-                    <tr className="hover:bg-[#151c28] transition-colors">
-                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۵</td>
+                    {/* ۶. exact historical end date */}
+                    <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
+                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۶</td>
                       <td className="py-3 px-3">
                         <div className="font-extrabold text-white">تاریخ دقیق پایان تاریخی</div>
                         <div className="text-[10px] text-gray-400 font-mono">exact historical end date</div>
@@ -5938,9 +6189,9 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       </td>
                     </tr>
 
-                    {/* ۶. actual duration covered */}
-                    <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
-                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۶</td>
+                    {/* ۷. actual duration covered */}
+                    <tr className="hover:bg-[#151c28] transition-colors">
+                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۷</td>
                       <td className="py-3 px-3">
                         <div className="font-extrabold text-white">مدت زمان واقعی پوشش‌داده‌شده</div>
                         <div className="text-[10px] text-gray-400 font-mono">actual duration covered</div>
@@ -5963,9 +6214,9 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       </td>
                     </tr>
 
-                    {/* ۷. whether 5,000 candles refers to each asset or the entire dataset */}
+                    {/* ۸. whether 5,000 candles refers to each asset or the entire dataset */}
                     <tr className="hover:bg-[#151c28] transition-colors bg-cyan-950/20 border-r-4 border-cyan-400">
-                      <td className="py-3 px-3 text-center font-mono font-bold text-cyan-400">۷</td>
+                      <td className="py-3 px-3 text-center font-mono font-bold text-cyan-400">۸</td>
                       <td className="py-3 px-3">
                         <div className="font-extrabold text-cyan-300">دامنه سقف ۵,۰۰۰ کندل</div>
                         <div className="text-[10px] text-cyan-400/80 font-mono">whether 5,000 candles refers to each asset or entire dataset</div>
@@ -5984,9 +6235,9 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       </td>
                     </tr>
 
-                    {/* ۸. missing data */}
-                    <tr className="hover:bg-[#151c28] transition-colors">
-                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۸</td>
+                    {/* ۹. missing data */}
+                    <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
+                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۹</td>
                       <td className="py-3 px-3">
                         <div className="font-extrabold text-white">داده‌های مفقود</div>
                         <div className="text-[10px] text-gray-400 font-mono">missing data</div>
@@ -6019,9 +6270,9 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       </td>
                     </tr>
 
-                    {/* ۹. duplicated records */}
-                    <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
-                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۹</td>
+                    {/* ۱۰. duplicated records */}
+                    <tr className="hover:bg-[#151c28] transition-colors">
+                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۱۰</td>
                       <td className="py-3 px-3">
                         <div className="font-extrabold text-white">رکوردهای تکراری</div>
                         <div className="text-[10px] text-gray-400 font-mono">duplicated records</div>
@@ -6046,9 +6297,9 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       </td>
                     </tr>
 
-                    {/* ۱۰. data gaps */}
-                    <tr className="hover:bg-[#151c28] transition-colors">
-                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۱۰</td>
+                    {/* ۱۱. data gaps */}
+                    <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
+                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۱۱</td>
                       <td className="py-3 px-3">
                         <div className="font-extrabold text-white">شکاف‌های داده / گپ‌های زمانی</div>
                         <div className="text-[10px] text-gray-400 font-mono">data gaps</div>
@@ -6077,9 +6328,9 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       </td>
                     </tr>
 
-                    {/* ۱۱. missing prices */}
-                    <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
-                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۱۱</td>
+                    {/* ۱۲. missing prices */}
+                    <tr className="hover:bg-[#151c28] transition-colors">
+                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۱۲</td>
                       <td className="py-3 px-3">
                         <div className="font-extrabold text-white">قیمت‌های مفقود یا نامعتبر</div>
                         <div className="text-[10px] text-gray-400 font-mono">missing prices</div>
@@ -6104,9 +6355,9 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       </td>
                     </tr>
 
-                    {/* ۱۲. missing trade fields */}
-                    <tr className="hover:bg-[#151c28] transition-colors">
-                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۱۲</td>
+                    {/* ۱۳. missing trade fields */}
+                    <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
+                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۱۳</td>
                       <td className="py-3 px-3">
                         <div className="font-extrabold text-white">فیلدهای مفقود در معامله</div>
                         <div className="text-[10px] text-gray-400 font-mono">missing trade fields</div>
@@ -6131,9 +6382,9 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       </td>
                     </tr>
 
-                    {/* ۱۳. inconsistent timestamps */}
-                    <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
-                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۱۳</td>
+                    {/* ۱۴. inconsistent timestamps */}
+                    <tr className="hover:bg-[#151c28] transition-colors">
+                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۱۴</td>
                       <td className="py-3 px-3">
                         <div className="font-extrabold text-white">برچسب‌های زمانی ناسازگار</div>
                         <div className="text-[10px] text-gray-400 font-mono">inconsistent timestamps</div>
@@ -6158,9 +6409,9 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       </td>
                     </tr>
 
-                    {/* ۱۴. inconsistent symbols */}
-                    <tr className="hover:bg-[#151c28] transition-colors">
-                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۱۴</td>
+                    {/* ۱۵. inconsistent symbols */}
+                    <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
+                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۱۵</td>
                       <td className="py-3 px-3">
                         <div className="font-extrabold text-white">نمادهای ناسازگار</div>
                         <div className="text-[10px] text-gray-400 font-mono">inconsistent symbols</div>

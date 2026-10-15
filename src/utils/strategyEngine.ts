@@ -52,6 +52,7 @@ export function runStrategy1Backtest(
 
   // Find all complete cycles: A-B (Giant) -> C-D (Light Blue) -> E-F (Dark Blue)
   let currentGiant: ZigZagLeg | null = null;
+  let lastTradeExitCandleIdx = -1;
 
   for (let i = 0; i < legs.length; i++) {
     const leg = legs[i];
@@ -142,6 +143,11 @@ export function runStrategy1Backtest(
 
           if (entryCandleIdx === undefined) {
             // No break of E occurred in this window
+            break;
+          }
+
+          // عدم ورود به معامله جدید در صورت وجود پوزیشن باز
+          if (config.noConcurrentPositions && entryCandleIdx <= lastTradeExitCandleIdx) {
             break;
           }
 
@@ -294,6 +300,11 @@ export function runStrategy1Backtest(
             pnlPercent: parseFloat(pnlPercent.toFixed(2)),
           });
 
+          lastTradeExitCandleIdx = Math.max(
+            lastTradeExitCandleIdx,
+            exitCandleIdx !== undefined ? exitCandleIdx : candles.length
+          );
+
           // User Rule: فقط یکبار دیگر میتواند پس از استاپ در صورت شرایطی که گفته شد وارد شود.
           // (حداکثر ۱ بار ورود مجدد پس از استاپ)
           if (status === 'LOSS' && exitCandleIdx !== undefined && attempt < 2) {
@@ -366,6 +377,7 @@ export function runStrategy2Backtest(
   const effectiveAtrMult = atrMultiplier > 0 ? atrMultiplier : 3;
 
   let currentGiant: ZigZagLeg | null = null;
+  let lastTradeExitCandleIdx = -1;
 
   for (let i = 0; i < legs.length; i++) {
     const leg = legs[i];
@@ -415,6 +427,10 @@ export function runStrategy2Backtest(
             const entryCandleIdx = cIdx;
             const stopLoss = parseFloat(currentFVal.toFixed(4));
             const stopDistance = Math.abs(entryPrice - stopLoss);
+
+            if (config.noConcurrentPositions && entryCandleIdx <= lastTradeExitCandleIdx) {
+              break;
+            }
 
             if (stopDistance > 0.000001) {
               const direction: 'BUY' | 'SELL' = 'SELL'; // ریزش از سقف F
@@ -535,6 +551,11 @@ export function runStrategy2Backtest(
                 pnl: parseFloat(pnl.toFixed(2)),
                 pnlPercent: parseFloat(pnlPercent.toFixed(2)),
               });
+
+              lastTradeExitCandleIdx = Math.max(
+                lastTradeExitCandleIdx,
+                exitCandleIdx !== undefined ? exitCandleIdx : candles.length
+              );
             }
             break; // برای هر F فقط یکبار وارد می‌شویم
           }
@@ -558,6 +579,10 @@ export function runStrategy2Backtest(
             const entryCandleIdx = cIdx;
             const stopLoss = parseFloat(currentFVal.toFixed(4));
             const stopDistance = Math.abs(entryPrice - stopLoss);
+
+            if (config.noConcurrentPositions && entryCandleIdx <= lastTradeExitCandleIdx) {
+              break;
+            }
 
             if (stopDistance > 0.000001) {
               const direction: 'BUY' | 'SELL' = 'BUY'; // صعود از کف F
@@ -678,6 +703,11 @@ export function runStrategy2Backtest(
                 pnl: parseFloat(pnl.toFixed(2)),
                 pnlPercent: parseFloat(pnlPercent.toFixed(2)),
               });
+
+              lastTradeExitCandleIdx = Math.max(
+                lastTradeExitCandleIdx,
+                exitCandleIdx !== undefined ? exitCandleIdx : candles.length
+              );
             }
             break; // برای هر F فقط یکبار وارد می‌شویم
           }

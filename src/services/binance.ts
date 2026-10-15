@@ -69,10 +69,13 @@ export const POPULAR_PAIRS: CryptoPair[] = [
 /**
  * Fetch all active Binance USDT-M Futures pairs with 24h quote volume >= minVolumeUsd
  */
-export async function fetchFuturesMarketPairs(minVolumeUsd: number = 200000): Promise<CryptoPair[]> {
-  // 1. Try server-side pairs API first (bypasses browser CORS & geo-restrictions, no artificial 80 limit)
+export async function fetchFuturesMarketPairs(
+  minVolumeUsd: number = 200000,
+  exchange: 'binance' | 'xt' = 'binance'
+): Promise<CryptoPair[]> {
+  // 1. Try server-side pairs API first (bypasses browser CORS & geo-restrictions)
   try {
-    const res = await fetch(`/api/market/pairs?universe=futures&limit=1500&minVolume=${minVolumeUsd}`, {
+    const res = await fetch(`/api/market/pairs?exchange=${exchange}&universe=futures&limit=1500&minVolume=${minVolumeUsd}`, {
       signal: AbortSignal.timeout(8000),
     });
     if (res.ok) {
@@ -360,11 +363,12 @@ export async function fetchKlines(
   symbol: string,
   interval: string,
   limit: number = 5000,
-  isFutures: boolean = true
+  isFutures: boolean = true,
+  exchange: 'binance' | 'xt' = 'binance'
 ): Promise<{ candles: CandleData[]; source: 'live' | 'fallback' }> {
   // 1. Try server-side fast klines endpoint first
   try {
-    const res = await fetch(`/api/market/klines?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(interval)}&limit=${limit}&isFutures=${isFutures}`, {
+    const res = await fetch(`/api/market/klines?exchange=${exchange}&symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(interval)}&limit=${limit}&isFutures=${isFutures}`, {
       signal: AbortSignal.timeout(8000),
     });
     if (res.ok) {

@@ -1,19 +1,22 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Search, ChevronDown, Check, TrendingUp, TrendingDown, Star, Sparkles } from 'lucide-react';
-import { CryptoPair, Ticker24h } from '../types/crypto';
+import { CryptoPair, Ticker24h, ExchangeType } from '../types/crypto';
 import { POPULAR_PAIRS, fetchFuturesMarketPairs, fetchUSDTMarketPairs } from '../services/binance';
+import { fetchXtPairs } from '../services/xt';
 import { formatPrice } from '../utils/indicators';
 
 interface PairSelectorProps {
   selectedPair: CryptoPair;
   onSelectPair: (pair: CryptoPair) => void;
   ticker?: Ticker24h | null;
+  exchange?: ExchangeType;
 }
 
 export const PairSelector: React.FC<PairSelectorProps> = ({
   selectedPair,
   onSelectPair,
   ticker,
+  exchange = 'binance',
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -21,12 +24,23 @@ export const PairSelector: React.FC<PairSelectorProps> = ({
   const [availablePairs, setAvailablePairs] = useState<CryptoPair[]>(POPULAR_PAIRS);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // دریافت پیش‌فرض جفت‌ارزهای فیوچرز بایننس (USDT-M Futures)
+  // دریافت جفت‌ارزها بر مبنای صرافی انتخاب‌شده (Binance یا XT.COM)
   useEffect(() => {
     let isMounted = true;
-    fetchFuturesMarketPairs(200_000).then((futuresPairs) => {
+    if (exchange === 'xt') {
+      fetchXtPairs().then((xtPairs) => {
+        if (isMounted && xtPairs.length > 0) {
+          setAvailablePairs(xtPairs);
+        }
+      });
+      return () => {
+        isMounted = false;
+      };
+    }
+
+    // Binance default
+    fetchFuturesMarketPairs(200_000, 'binance').then((futuresPairs) => {
       if (isMounted && futuresPairs.length > 0) {
-        // ادغام با جفت‌ارزهای محبوب جهت حفظ دسته‌بندی‌ها
         const map = new Map<string, CryptoPair>();
         for (const p of POPULAR_PAIRS) map.set(p.symbol, p);
         for (const p of futuresPairs) {
@@ -37,17 +51,17 @@ export const PairSelector: React.FC<PairSelectorProps> = ({
         setAvailablePairs(Array.from(map.values()));
       }
     }).catch(() => {
-      // Fallback
       fetchUSDTMarketPairs(1_000_000).then((pairs) => {
         if (isMounted && pairs.length > 0) {
           setAvailablePairs(pairs);
         }
       });
     });
+
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [exchange]);
 
   // Close dropdown on outside click
   useEffect(() => {

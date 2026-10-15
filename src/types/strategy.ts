@@ -13,6 +13,7 @@ export interface StrategyParams {
   maxCandlesToEnter: number;
   maxTradesPerLeg: number;
   showOnChart: boolean;
+  noConcurrentPositions?: boolean; // عدم ورود به معامله جدید در صورت وجود پوزیشن باز
 }
 
 export type StrategyConfig = StrategyParams;
@@ -25,6 +26,7 @@ export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
   maxRiskReward: 2,
   maxTradesPerLeg: 3,
   showOnChart: true,
+  noConcurrentPositions: false,
   commissionPercent: 0.12, // مجموع ورود و خروج: 0.06% + 0.06% = 0.12%
   entryCommissionPercent: 0.06, // 0.06% ورود
   exitCommissionPercent: 0.06, // 0.06% خروج

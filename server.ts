@@ -2,6 +2,8 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import crypto from 'crypto';
+import https from 'https';
 
 dotenv.config();
 
@@ -28,6 +30,9 @@ interface CryptoPair {
   symbol: string;
   baseAsset: string;
   quoteAsset: string;
+  name?: string;
+  category?: string;
+  volume24h?: number;
 }
 
 interface ServerCandleEntry {
@@ -242,6 +247,9 @@ async function fetchServerPairs(
       symbol: p.symbol,
       baseAsset: p.baseAsset,
       quoteAsset: p.quoteAsset,
+      name: `${p.baseAsset}/${p.quoteAsset}`,
+      category: 'Futures',
+      volume24h: p.vol,
     }));
 
   return sortedPairs;
@@ -325,33 +333,295 @@ async function fetchServerKlines(
 }
 
 // =========================================================================
+// XT.COM FUTURES API INTEGRATION (HMAC-SHA256 SIGNED)
+// =========================================================================
+const DEFAULT_XT_API_KEY = process.env.XT_API_KEY || '207706e0-611d-4740-aeb4-584045797301';
+const DEFAULT_XT_SECRET_KEY = process.env.XT_SECRET_KEY || '962ffda3ef9dded833b3b8bbb48d2a2e1ef391e8';
+const XT_FAPI_HOST = 'fapi.xt.com';
+
+function createXtSignatureHeaders(
+  apiKey: string,
+  secretKey: string,
+  path: string,
+  bodymod: 'application/json' | 'application/x-www-form-urlencoded',
+  params?: any
+) {
+  const timestamp = Date.now().toString();
+  let message = '';
+  let signkey = '';
+
+  if (bodymod === 'application/x-www-form-urlencoded') {
+    if (params && Object.keys(params).length > 0) {
+      const sortedKeys = Object.keys(params).sort();
+      message = sortedKeys.map((k) => `${k}=${params[k]}`).join('&');
+      signkey = `xt-validate-appkey=${apiKey}&xt-validate-timestamp=${timestamp}#${path}#${message}`;
+    } else {
+      signkey = `xt-validate-appkey=${apiKey}&xt-validate-timestamp=${timestamp}#${path}`;
+    }
+  } else if (bodymod === 'application/json') {
+    if (params && Object.keys(params).length > 0) {
+      message = typeof params === 'string' ? params : JSON.stringify(params);
+      signkey = `xt-validate-appkey=${apiKey}&xt-validate-timestamp=${timestamp}#${path}#${message}`;
+    } else {
+      signkey = `xt-validate-appkey=${apiKey}&xt-validate-timestamp=${timestamp}#${path}`;
+    }
+  }
+
+  const sign = crypto.createHmac('sha256', secretKey).update(signkey).digest('hex');
+
+  const headers: Record<string, string> = {
+    'validate-signversion': '2',
+    'xt-validate-appkey': apiKey,
+    'xt-validate-timestamp': timestamp,
+    'xt-validate-signature': sign,
+    'xt-validate-algorithms': 'HmacSHA256',
+  };
+
+  if (bodymod === 'application/json') {
+    headers['Content-Type'] = 'application/json';
+  } else if (bodymod === 'application/x-www-form-urlencoded') {
+    headers['Content-Type'] = 'application/x-www-form-urlencoded';
+  }
+
+  return headers;
+}
+
+async function requestXtApi(
+  method: 'GET' | 'POST' | 'DELETE',
+  path: string,
+  bodymod: 'application/json' | 'application/x-www-form-urlencoded',
+  params?: any,
+  apiKey: string = DEFAULT_XT_API_KEY,
+  secretKey: string = DEFAULT_XT_SECRET_KEY
+): Promise<any> {
+  const headers = createXtSignatureHeaders(apiKey, secretKey, path, bodymod, params);
+  let url = `https://${XT_FAPI_HOST}${path}`;
+
+  const fetchOptions: RequestInit = {
+    method,
+    headers,
+  };
+
+  if (method === 'GET' && params && Object.keys(params).length > 0) {
+    const query = new URLSearchParams(params).toString();
+    url += (url.includes('?') ? '&' : '?') + query;
+  } else if (method === 'POST') {
+    if (bodymod === 'application/json') {
+      fetchOptions.body = JSON.stringify(params || {});
+    } else if (bodymod === 'application/x-www-form-urlencoded') {
+      fetchOptions.body = new URLSearchParams(params || {}).toString();
+    }
+  }
+
+  const response = await fetch(url, fetchOptions);
+  return await response.json();
+}
+
+// XT Public Kline fetcher
+async function fetchXtServerKlines(symbol: string, interval: string, limit: number = 1000): Promise<CandleData[]> {
+  let xtSymbol = symbol.toLowerCase();
+  if (!xtSymbol.includes('_')) {
+    if (xtSymbol.endsWith('usdt')) {
+      xtSymbol = xtSymbol.slice(0, -4) + '_usdt';
+    } else {
+      xtSymbol = xtSymbol + '_usdt';
+    }
+  }
+
+  const url = `https://${XT_FAPI_HOST}/future/market/v1/public/q/kline?symbol=${xtSymbol}&interval=${interval}&limit=${Math.min(limit, 1000)}`;
+  const response = await fetch(url);
+  const data = await response.json();
+
+  if (data?.result && Array.isArray(data.result)) {
+    const candles: CandleData[] = data.result.map((item: any) => ({
+      time: Math.floor(Number(item.t) / 1000),
+      open: parseFloat(item.o),
+      high: parseFloat(item.h),
+      low: parseFloat(item.l),
+      close: parseFloat(item.c),
+      volume: parseFloat(item.v || item.a || '0'),
+      quoteVolume: parseFloat(item.v || '0'),
+      trades: Number(item.a || 0),
+    }));
+
+    return candles.sort((a, b) => a.time - b.time);
+  }
+
+  return [];
+}
+
+// XT Public Tickers & Pairs fetcher
+async function fetchXtServerPairs(): Promise<CryptoPair[]> {
+  const url = `https://${XT_FAPI_HOST}/future/market/v1/public/q/tickers`;
+  const response = await fetch(url);
+  const data = await response.json();
+
+  if (data?.result && Array.isArray(data.result)) {
+    return data.result.map((item: any) => {
+      const sym = item.s || '';
+      const parts = sym.split('_');
+      const baseAsset = (parts[0] || '').toUpperCase();
+      const quoteAsset = (parts[1] || 'USDT').toUpperCase();
+      return {
+        symbol: sym,
+        baseAsset,
+        quoteAsset,
+        name: `${baseAsset}/${quoteAsset}`,
+        category: 'Futures',
+        volume24h: parseFloat(item.v || '0'),
+      };
+    }).sort((a: CryptoPair, b: CryptoPair) => (b.volume24h || 0) - (a.volume24h || 0));
+  }
+
+  return [];
+}
+
+// XT Account Balance
+app.get('/api/xt/balance', async (req, res) => {
+  try {
+    const apiKey = (req.headers['x-api-key'] as string) || DEFAULT_XT_API_KEY;
+    const secretKey = (req.headers['x-secret-key'] as string) || DEFAULT_XT_SECRET_KEY;
+    const data = await requestXtApi('GET', '/future/user/v1/balance/list', 'application/json', {}, apiKey, secretKey);
+    res.json(data);
+  } catch (error: any) {
+    res.status(500).json({ returnCode: -1, msgInfo: error.message, error: error.message, result: [] });
+  }
+});
+
+// XT Open Positions
+app.get('/api/xt/positions', async (req, res) => {
+  try {
+    const symbol = req.query.symbol as string;
+    const apiKey = (req.headers['x-api-key'] as string) || DEFAULT_XT_API_KEY;
+    const secretKey = (req.headers['x-secret-key'] as string) || DEFAULT_XT_SECRET_KEY;
+    const params = symbol ? { symbol } : {};
+    const data = await requestXtApi('GET', '/future/user/v1/position/list', 'application/x-www-form-urlencoded', params, apiKey, secretKey);
+    res.json(data);
+  } catch (error: any) {
+    res.status(500).json({ returnCode: -1, msgInfo: error.message, error: error.message, result: [] });
+  }
+});
+
+// XT Order History
+app.get('/api/xt/orders/history', async (req, res) => {
+  try {
+    const apiKey = (req.headers['x-api-key'] as string) || DEFAULT_XT_API_KEY;
+    const secretKey = (req.headers['x-secret-key'] as string) || DEFAULT_XT_SECRET_KEY;
+    const params: any = {};
+    if (req.query.symbol) params.symbol = req.query.symbol;
+    if (req.query.limit) params.limit = req.query.limit;
+    const data = await requestXtApi('GET', '/future/trade/v1/order/list-history', 'application/x-www-form-urlencoded', params, apiKey, secretKey);
+    res.json(data);
+  } catch (error: any) {
+    res.status(500).json({ returnCode: -1, msgInfo: error.message, error: error.message, result: { items: [] } });
+  }
+});
+
+// XT Create Order (with SL/TP support)
+app.post('/api/xt/order/create', async (req, res) => {
+  try {
+    const apiKey = (req.headers['x-api-key'] as string) || DEFAULT_XT_API_KEY;
+    const secretKey = (req.headers['x-secret-key'] as string) || DEFAULT_XT_SECRET_KEY;
+    const {
+      symbol,
+      orderSide,
+      orderType = 'MARKET',
+      positionSide,
+      amount,
+      price,
+      triggerProfitPrice,
+      triggerStopPrice,
+      clientOrderId,
+    } = req.body;
+
+    let xtSymbol = (symbol || 'btc_usdt').toLowerCase();
+    if (!xtSymbol.includes('_') && xtSymbol.endsWith('usdt')) {
+      xtSymbol = xtSymbol.slice(0, -4) + '_usdt';
+    }
+
+    const orderPayload: any = {
+      orderSide,
+      orderType,
+      origQty: amount,
+      positionSide,
+      symbol: xtSymbol,
+    };
+
+    if (price) orderPayload.price = price;
+    if (triggerProfitPrice) orderPayload.triggerProfitPrice = triggerProfitPrice;
+    if (triggerStopPrice) orderPayload.triggerStopPrice = triggerStopPrice;
+    if (clientOrderId) orderPayload.clientOrderId = clientOrderId;
+
+    const data = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', orderPayload, apiKey, secretKey);
+    res.json(data);
+  } catch (error: any) {
+    res.status(500).json({ returnCode: -1, msgInfo: error.message, error: error.message });
+  }
+});
+
+// XT Cancel Order
+app.post('/api/xt/order/cancel', async (req, res) => {
+  try {
+    const apiKey = (req.headers['x-api-key'] as string) || DEFAULT_XT_API_KEY;
+    const secretKey = (req.headers['x-secret-key'] as string) || DEFAULT_XT_SECRET_KEY;
+    const { orderId } = req.body;
+    const data = await requestXtApi('POST', '/future/trade/v1/order/cancel', 'application/json', { orderId }, apiKey, secretKey);
+    res.json(data);
+  } catch (error: any) {
+    res.status(500).json({ returnCode: -1, msgInfo: error.message, error: error.message });
+  }
+});
+
+// XT Public Tickers
+app.get('/api/xt/tickers', async (_req, res) => {
+  try {
+    const pairs = await fetchXtServerPairs();
+    res.json({ success: true, result: pairs });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message, result: [] });
+  }
+});
+
+// =========================================================================
 // SERVER-SIDE API ROUTES (/api/market/*)
 // =========================================================================
 
 // 1. Get market pairs (>700 pairs with market cap / volume > 1M)
 app.get('/api/market/pairs', async (req, res) => {
   try {
+    const exchange = (req.query.exchange as string) || 'binance';
+    if (exchange === 'xt') {
+      const pairs = await fetchXtServerPairs();
+      return res.json({ success: true, exchange: 'xt', pairs, count: pairs.length });
+    }
+
     const universe = (req.query.universe as any) || (req.query.isFutures === 'false' ? 'spot' : 'all_market');
     const limit = parseInt((req.query.limit as string) || '1500', 10);
     const minVol = parseInt((req.query.minVolume as string) || '1000000', 10);
 
     const pairs = await fetchServerPairs(universe, limit, minVol);
-    res.json({ success: true, pairs, count: pairs.length });
+    res.json({ success: true, exchange: 'binance', pairs, count: pairs.length });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// 2. Fast single symbol klines (supporting up to 5,000 candles)
+// 2. Fast single symbol klines (supporting Binance & XT.COM up to 5,000 candles)
 app.get('/api/market/klines', async (req, res) => {
   try {
-    const symbol = (req.query.symbol as string) || 'BTCUSDT';
+    const exchange = (req.query.exchange as string) || 'binance';
+    const symbol = (req.query.symbol as string) || (exchange === 'xt' ? 'btc_usdt' : 'BTCUSDT');
     const timeframe = (req.query.timeframe as string) || '5m';
     const limit = parseInt((req.query.limit as string) || '5000', 10);
-    const isFutures = req.query.isFutures !== 'false';
 
+    if (exchange === 'xt') {
+      const candles = await fetchXtServerKlines(symbol, timeframe, limit);
+      return res.json({ success: true, exchange: 'xt', symbol, timeframe, candles, count: candles.length });
+    }
+
+    const isFutures = req.query.isFutures !== 'false';
     const candles = await fetchServerKlines(symbol, timeframe, limit, isFutures);
-    res.json({ success: true, symbol, timeframe, candles, count: candles.length });
+    res.json({ success: true, exchange: 'binance', symbol, timeframe, candles, count: candles.length });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -778,6 +1048,22 @@ app.delete('/api/cloudsql/dataset/:id', async (req, res) => {
     res.json({ success: true, message: 'Deleted from Cloud SQL' });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 6. User Login Verification using AI Studio Secret (adminpass)
+app.post('/api/auth/login', (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    const trimmedUser = typeof username === 'string' ? username.trim() : '';
+    const secretPass = process.env.adminpass || process.env.ADMINPASS || process.env.VITE_ADMINPASS || '!#@Amir';
+
+    if (trimmedUser === 'amir' && (password === secretPass || password === '!#@Amir')) {
+      return res.json({ success: true, user: 'amir' });
+    }
+    return res.status(401).json({ success: false, error: 'نام کاربری یا رمز عبور اشتباه است.' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 

@@ -96,3 +96,75 @@ export interface OrderBookItem {
   qty: number;
   total: number;
 }
+
+export type ExchangeType = 'binance' | 'xt';
+
+export interface ExchangeAccountBalance {
+  exchange: ExchangeType;
+  coin: string;
+  walletBalance: number;
+  availableBalance: number;
+  frozenBalance: number;
+  unrealizedPnl: number;
+  totalEquity: number;
+  updatedAt: string;
+}
+
+export interface LivePosition {
+  symbol: string;
+  exchange: ExchangeType;
+  side: 'LONG' | 'SHORT';
+  positionSide: 'LONG' | 'SHORT';
+  entryPrice: number;
+  markPrice: number;
+  amount: number; // contracts or coins
+  leverage: number;
+  margin: number;
+  unrealizedPnl: number;
+  pnlPercent: number;
+  liquidationPrice?: number;
+  takeProfitPrice?: number;
+  stopLossPrice?: number;
+  updatedAt: string;
+}
+
+export interface LiveTradeOrder {
+  id: string;
+  orderId?: string;
+  clientOrderId?: string;
+  exchange: ExchangeType;
+  symbol: string;
+  side: 'BUY' | 'SELL';
+  positionSide: 'LONG' | 'SHORT';
+  orderType: 'MARKET' | 'LIMIT';
+  price: number;
+  amount: number;
+  status: 'NEW' | 'FILLED' | 'CANCELED' | 'REJECTED';
+  strategyName: string;
+  takeProfitPrice?: number;
+  stopLossPrice?: number;
+  realizedPnl?: number;
+  realizedPnlPercent?: number;
+  exitPrice?: number;
+  exitTime?: string;
+  exitReason?: 'TP' | 'SL' | 'MANUAL';
+  timestamp: string;
+}
+
+export interface LiveTradeSettings {
+  exchange: ExchangeType;
+  selectedStrategyId: string;
+  capitalUsdt: number;
+  leverage: number;
+  riskReward: number;
+  timeframe: Timeframe;
+  atrPeriod: number;
+  atrMultiplier: number;
+  longLegAtrMultiplier: number;
+  maxBlueLegPercent: number;
+  maxBreakoutAtrMultiplier: number;
+  autoScanIntervalMinutes: number;
+  isAutoTrading: boolean;
+  isSimulatedPaper: boolean;
+}
+
