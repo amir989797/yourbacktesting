@@ -4,6 +4,9 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import https from 'https';
+import { calculateATR, calculateAtrZigZag, analyzeZigZagLegs } from './src/utils/indicators.ts';
+import { runStrategy1Backtest, runStrategy2Backtest } from './src/utils/strategyEngine.ts';
+import { DEFAULT_STRATEGY_CONFIG, StrategyConfig } from './src/types/strategy.ts';
 
 dotenv.config();
 
@@ -1065,6 +1068,469 @@ app.post('/api/auth/login', (req, res) => {
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
+});
+
+// =========================================================================
+// 7. CONTINUOUS BACKGROUND LIVE SCANNER SCHEDULER & CONTROL ENDPOINTS
+// =========================================================================
+
+interface ServerScannerLog {
+  id: string;
+  time: string;
+  type: 'info' | 'success' | 'warning' | 'error' | 'trade';
+  message: string;
+  symbol?: string;
+}
+
+interface ServerActiveSignal {
+  symbol: string;
+  posSide: 'LONG' | 'SHORT';
+  side: 'BUY' | 'SELL';
+  curPrice: number;
+  stopLoss: number;
+  takeProfit: number;
+  requiredMargin: number;
+  maxLeverage: number;
+  contractQty: number;
+  notionalUsdt: number;
+  riskUsdt: number;
+  strategyName: string;
+  discoveredAt: string;
+}
+
+interface ServerLiveScannerConfig {
+  timeframe: string;
+  exchange: 'xt' | 'binance';
+  strategyId: string;
+  symbols: string[];
+  isFutures: boolean;
+  intervalMs: number;
+  atrPeriod: number;
+  atrMultiplier: number;
+  minCandles: number;
+  minCandlesForLongLeg: number;
+  longLegAtrMultiplier: number;
+  maxBlueLegPercent: number;
+  maxBreakoutAtrMultiplier: number;
+  riskRewardRatio: number;
+  riskPercent: number;
+  capital: number;
+  noConcurrentPositions: boolean;
+  isLiveExecution?: boolean;
+  userId: string;
+}
+
+function getTimeframeMs(tf: string): number {
+  switch (tf) {
+    case '1m': return 60 * 1000;
+    case '3m': return 3 * 60 * 1000;
+    case '5m': return 5 * 60 * 1000;
+    case '15m': return 15 * 60 * 1000;
+    case '30m': return 30 * 60 * 1000;
+    case '1h': return 60 * 60 * 1000;
+    case '2h': return 2 * 60 * 60 * 1000;
+    case '4h': return 4 * 60 * 60 * 1000;
+    case '1d': return 24 * 60 * 60 * 1000;
+    default: return 5 * 60 * 1000;
+  }
+}
+
+function getMaxLeverageForSymbol(rawSymbol: string): number {
+  const base = rawSymbol.replace('_', '').replace('USDT', '').toUpperCase();
+  if (base === 'BTC') return 100;
+  if (base === 'ETH') return 75;
+  if (['SOL', 'XRP', 'DOGE', 'BNB', 'ADA', 'LTC', 'BCH'].includes(base)) return 50;
+  if (['SUI', 'NEAR', 'AVAX', 'LINK', 'PEPE', 'SHIB', 'DOT', 'APT', 'FET', 'RENDER'].includes(base)) return 25;
+  return 20;
+}
+
+let serverScannerTimer: NodeJS.Timeout | null = null;
+const serverScannerState = {
+  isRunning: false,
+  isScanning: false, // Concurrency lock to prevent overlapping executions
+  config: {
+    timeframe: '5m',
+    exchange: 'xt' as 'xt' | 'binance',
+    strategyId: 'strategy_1_e_breakout',
+    symbols: [
+      'btc_usdt', 'eth_usdt', 'sol_usdt', 'xrp_usdt', 'doge_usdt',
+      'sui_usdt', 'ada_usdt', 'near_usdt', 'avax_usdt', 'link_usdt',
+      'pepe_usdt', 'shib_usdt', 'dot_usdt', 'ltc_usdt', 'apt_usdt',
+    ],
+    isFutures: true,
+    intervalMs: 5 * 60 * 1000,
+    atrPeriod: 14,
+    atrMultiplier: 2.0,
+    minCandles: 5,
+    minCandlesForLongLeg: 5,
+    longLegAtrMultiplier: 3.0,
+    maxBlueLegPercent: 70,
+    maxBreakoutAtrMultiplier: 3.0,
+    riskRewardRatio: 2.0,
+    riskPercent: 1.0,
+    capital: 1000,
+    noConcurrentPositions: true,
+    isLiveExecution: false,
+    userId: 'amir',
+  } as ServerLiveScannerConfig,
+  lastRunAt: null as string | null,
+  nextRunAt: null as string | null,
+  totalRunsCount: 0,
+  lastResult: null as any,
+  activeSignals: [] as ServerActiveSignal[],
+  logs: [] as ServerScannerLog[],
+};
+
+function addServerScannerLog(
+  type: 'info' | 'success' | 'warning' | 'error' | 'trade',
+  message: string,
+  symbol?: string
+) {
+  const logItem: ServerScannerLog = {
+    id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    time: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+    type,
+    message,
+    symbol,
+  };
+  serverScannerState.logs = [logItem, ...serverScannerState.logs].slice(0, 100);
+  console.log(`[ServerLiveScanner] [${type.toUpperCase()}] ${message}`);
+}
+
+function getScannerPublicState() {
+  let secondsUntilNextRun = 0;
+  if (serverScannerState.isRunning && serverScannerState.nextRunAt) {
+    secondsUntilNextRun = Math.max(0, Math.round((new Date(serverScannerState.nextRunAt).getTime() - Date.now()) / 1000));
+  }
+  return {
+    isRunning: serverScannerState.isRunning,
+    isScanning: serverScannerState.isScanning,
+    config: serverScannerState.config,
+    lastRunAt: serverScannerState.lastRunAt,
+    nextRunAt: serverScannerState.nextRunAt,
+    secondsUntilNextRun,
+    totalRunsCount: serverScannerState.totalRunsCount,
+    lastResult: serverScannerState.lastResult,
+    activeSignals: serverScannerState.activeSignals,
+    logs: serverScannerState.logs.slice(0, 50),
+  };
+}
+
+async function runServerScannerCycle() {
+  if (serverScannerState.isScanning) {
+    addServerScannerLog('warning', '⚠️ اسکن قبلی هنوز در حال اجراست؛ از تداخل جلوگیری شد.');
+    return;
+  }
+
+  serverScannerState.isScanning = true;
+  const startTime = Date.now();
+  const cfg = serverScannerState.config;
+  const targetSymbols = cfg.symbols && cfg.symbols.length > 0
+    ? cfg.symbols
+    : ['btc_usdt', 'eth_usdt', 'sol_usdt', 'xrp_usdt', 'doge_usdt'];
+
+  addServerScannerLog(
+    'info',
+    `🔍 شروع اسکن پس‌زمینه سرور روی ${targetSymbols.length} ارز در تایم‌فریم ${cfg.timeframe} (${cfg.exchange.toUpperCase()})...`
+  );
+
+  const candidateSignals: ServerActiveSignal[] = [];
+
+  try {
+    let openPositionsCount = 0;
+    let availableBalance = cfg.capital || 1000;
+
+    if (cfg.exchange === 'xt') {
+      try {
+        const balRes = await requestXtApi('GET', '/future/user/v1/balance/detail', 'application/x-www-form-urlencoded');
+        if (balRes && balRes.returnCode === 0 && Array.isArray(balRes.result)) {
+          const usdtBal = balRes.result.find((b: any) => (b.coin || '').toLowerCase() === 'usdt');
+          if (usdtBal) {
+            const avail = parseFloat(usdtBal.availableBalance || '0');
+            if (avail > 0) availableBalance = avail;
+          }
+        }
+      } catch (e) {
+        // use fallback availableBalance
+      }
+
+      if (cfg.noConcurrentPositions) {
+        try {
+          const posRes = await requestXtApi('GET', '/future/user/v1/position/list', 'application/x-www-form-urlencoded');
+          if (posRes && posRes.returnCode === 0 && Array.isArray(posRes.result)) {
+            openPositionsCount = posRes.result.filter((p: any) => parseFloat(p.positionSize || p.amount || '0') > 0).length;
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+    }
+
+    if (cfg.noConcurrentPositions && openPositionsCount > 0) {
+      addServerScannerLog('warning', `⚠️ حالت تک‌پوزیشن فعال است: ${openPositionsCount} پوزیشن باز در صرافی موجود است.`);
+    }
+
+    for (const sym of targetSymbols) {
+      try {
+        let candles: CandleData[] = [];
+        if (cfg.exchange === 'xt') {
+          candles = await fetchXtServerKlines(sym, cfg.timeframe, 300);
+        } else {
+          const cleanSym = sym.replace('_', '').toUpperCase();
+          candles = await fetchServerKlines(cleanSym, cfg.timeframe, 300, cfg.isFutures);
+        }
+
+        if (!candles || candles.length < 50) continue;
+
+        // Run technical indicators
+        const atrResult = calculateATR(candles, cfg.atrPeriod || 14);
+        const zzResult = calculateAtrZigZag(
+          candles,
+          atrResult.atrValues,
+          cfg.atrMultiplier || 2.0,
+          cfg.minCandles || 5
+        );
+        const analyzedLegs = analyzeZigZagLegs(
+          zzResult.points,
+          cfg.minCandlesForLongLeg || 5,
+          cfg.longLegAtrMultiplier || 3.0,
+          cfg.maxBlueLegPercent || 70,
+          cfg.maxBreakoutAtrMultiplier || 3.0
+        );
+
+        const stratConfig: StrategyConfig = {
+          ...DEFAULT_STRATEGY_CONFIG,
+          capital: availableBalance,
+          riskPercent: cfg.riskPercent || 1,
+          maxRiskReward: cfg.riskRewardRatio || 2,
+          selectedStrategyId: cfg.strategyId || 'strategy_1_e_breakout',
+          maxCandlesToEnter: 35,
+          noConcurrentPositions: Boolean(cfg.noConcurrentPositions),
+        };
+
+        let evalTrades: any[] = [];
+        if (cfg.strategyId === 'strategy_2_next_pivot') {
+          const res = runStrategy2Backtest(
+            candles,
+            zzResult.points,
+            analyzedLegs,
+            stratConfig,
+            atrResult.atrValues,
+            cfg.atrMultiplier || 2.0,
+            cfg.minCandles || 5
+          );
+          evalTrades = res.trades;
+        } else {
+          const res = runStrategy1Backtest(candles, zzResult.points, analyzedLegs, stratConfig);
+          evalTrades = res.trades;
+        }
+
+        if (evalTrades.length > 0) {
+          const lastTrade = evalTrades[evalTrades.length - 1];
+          const isCurrentCandleEntry = lastTrade.entryCandleIdx >= candles.length - 2;
+
+          if (isCurrentCandleEntry && (lastTrade.status === 'ACTIVE' || lastTrade.status === 'OPEN')) {
+            const side = lastTrade.direction === 'BUY' ? 'BUY' : 'SELL';
+            const posSide = lastTrade.direction === 'BUY' ? 'LONG' : 'SHORT';
+            const curPrice = candles[candles.length - 1].close;
+            const stopLoss = parseFloat(Number(lastTrade.stopLoss || curPrice * (posSide === 'LONG' ? 0.98 : 1.02)).toFixed(4));
+            const takeProfit = parseFloat(Number(lastTrade.takeProfit || curPrice * (posSide === 'LONG' ? 1.06 : 0.94)).toFixed(4));
+            const maxLev = getMaxLeverageForSymbol(sym);
+
+            const riskAmountUsdt = availableBalance * ((cfg.riskPercent || 1) / 100);
+            const priceDistance = Math.abs(curPrice - stopLoss);
+            const safeDistance = priceDistance > 0 ? priceDistance : curPrice * 0.02;
+            const lossFraction = safeDistance / curPrice;
+
+            const notionalUsdt = riskAmountUsdt / (lossFraction > 0 ? lossFraction : 0.02);
+            const approxQty = curPrice > 0 ? notionalUsdt / curPrice : 1;
+            const contractQty = Math.max(1, Math.round(approxQty * 1000) / 1000);
+            const requiredMargin = parseFloat((notionalUsdt / maxLev).toFixed(2));
+
+            candidateSignals.push({
+              symbol: sym,
+              posSide,
+              side,
+              curPrice,
+              stopLoss,
+              takeProfit,
+              contractQty,
+              maxLeverage: maxLev,
+              requiredMargin,
+              notionalUsdt: parseFloat(notionalUsdt.toFixed(2)),
+              riskUsdt: parseFloat(riskAmountUsdt.toFixed(2)),
+              strategyName: cfg.strategyId === 'strategy_2_next_pivot' ? 'استراتژی ۲ (Next-Pivot)' : 'استراتژی ۱ (E-Breakout)',
+              discoveredAt: new Date().toISOString(),
+            });
+          }
+        }
+      } catch (err: any) {
+        // continue scanning other pairs
+      }
+      await sleep(25);
+    }
+
+    if (candidateSignals.length === 0) {
+      addServerScannerLog('info', `✅ دور اسکن سرور به پایان رسید. هیچ سیگنال جدیدی در کندل جاری ${cfg.timeframe} یافت نشد.`);
+      serverScannerState.activeSignals = [];
+    } else {
+      // Sort signals by lowest required margin
+      candidateSignals.sort((a, b) => a.requiredMargin - b.requiredMargin);
+      serverScannerState.activeSignals = candidateSignals;
+
+      const descList = candidateSignals
+        .map((c) => `${c.symbol.toUpperCase()} (مارجین: ${c.requiredMargin}$ | اهرم ${c.maxLeverage}x)`)
+        .join(' ، ');
+
+      addServerScannerLog(
+        'info',
+        `🎯 ${candidateSignals.length} سیگنال توسط سرور شناسایی شد: [${descList}]. سیگنال بهینه: ${candidateSignals[0].symbol.toUpperCase()}`
+      );
+
+      const chosen = candidateSignals[0];
+
+      if (cfg.noConcurrentPositions && openPositionsCount > 0) {
+        addServerScannerLog(
+          'warning',
+          `⚠️ سیگنال ورود برای ${chosen.symbol.toUpperCase()} کشف شد اما به دلیل فعال بودن تک‌پوزیشن و داشتن ${openPositionsCount} پوزیشن باز، معامله جدید ارسال نشد.`,
+          chosen.symbol
+        );
+      } else {
+        const MIN_MARGIN = 2.0;
+        if (availableBalance < chosen.requiredMargin || chosen.requiredMargin < MIN_MARGIN) {
+          addServerScannerLog(
+            'warning',
+            `⚠️ مارجین به حد نصاب نرسید! مارجین مورد نیاز برای ${chosen.symbol.toUpperCase()}: ${chosen.requiredMargin}$ | موجودی آزاد: ${availableBalance.toFixed(2)}$`,
+            chosen.symbol
+          );
+        } else {
+          addServerScannerLog(
+            'trade',
+            `⚡ سیگنال برگزیده ${chosen.posSide} برای ${chosen.symbol.toUpperCase()} با بیشترین اهرم (${chosen.maxLeverage}x) و حداقل مارجین درگیر (${chosen.requiredMargin} USDT) ثبت گردید. حجم: ${chosen.notionalUsdt}$ | ورود: ${chosen.curPrice} | استاپ: ${chosen.stopLoss} | تارگت: ${chosen.takeProfit}`,
+            chosen.symbol
+          );
+
+          if (cfg.isLiveExecution && cfg.exchange === 'xt') {
+            addServerScannerLog('info', `🚀 در حال ارسال سفارش زنده فیوچرز به XT.COM...`, chosen.symbol);
+            try {
+              const orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', {
+                symbol: chosen.symbol,
+                orderSide: chosen.side,
+                orderType: 'MARKET',
+                positionSide: chosen.posSide,
+                origQty: chosen.contractQty,
+                triggerProfitPrice: chosen.takeProfit,
+                triggerStopPrice: chosen.stopLoss,
+              });
+
+              if (orderRes && orderRes.returnCode === 0) {
+                addServerScannerLog('success', `✅ سفارش زنده فیوچرز با موفقیت در صرافی ثبت شد (Order ID: ${orderRes.result?.orderId || 'ثبت شد'})`, chosen.symbol);
+              } else {
+                addServerScannerLog('warning', `⚠️ پیام صرافی: ${orderRes?.msg || 'خطا در ثبت سفارش'}`, chosen.symbol);
+              }
+            } catch (orderErr: any) {
+              addServerScannerLog('error', `❌ خطا در ارسال سفارش به صرافی: ${orderErr.message}`, chosen.symbol);
+            }
+          }
+        }
+      }
+    }
+
+    serverScannerState.totalRunsCount++;
+    serverScannerState.lastRunAt = new Date().toISOString();
+    serverScannerState.nextRunAt = new Date(Date.now() + cfg.intervalMs).toISOString();
+    serverScannerState.lastResult = {
+      scannedCount: targetSymbols.length,
+      signalsFound: candidateSignals.length,
+      durationMs: Date.now() - startTime,
+      chosenSignal: candidateSignals[0] || null,
+      status: 'SUCCESS',
+    };
+  } catch (error: any) {
+    addServerScannerLog('error', `❌ خطای سراسری در چرخه اسکن سرور: ${error.message}`);
+  } finally {
+    serverScannerState.isScanning = false;
+  }
+}
+
+// 7.1 Start Live Scanner on Server
+app.post('/api/live-scanner/start', async (req, res) => {
+  try {
+    const userCfg = req.body?.config || {};
+    serverScannerState.config = {
+      ...serverScannerState.config,
+      ...userCfg,
+    };
+    if (!userCfg.intervalMs && serverScannerState.config.timeframe) {
+      serverScannerState.config.intervalMs = getTimeframeMs(serverScannerState.config.timeframe);
+    }
+
+    if (serverScannerTimer) {
+      clearInterval(serverScannerTimer);
+      serverScannerTimer = null;
+    }
+
+    serverScannerState.isRunning = true;
+    serverScannerState.nextRunAt = new Date(Date.now() + serverScannerState.config.intervalMs).toISOString();
+
+    addServerScannerLog(
+      'success',
+      `🚀 اتوپایلوت مداوم سرور فعال شد: دوره تکرار هر ${Math.round(serverScannerState.config.intervalMs / 60000)} دقیقه (${serverScannerState.config.symbols.length} ارز). اسکن اول فوراً آغاز شد.`
+    );
+
+    // Setup periodic interval timer on Node backend
+    serverScannerTimer = setInterval(() => {
+      runServerScannerCycle().catch((err) => {
+        addServerScannerLog('error', `خطا در اجرای اسکن دوره‌ای سرور: ${err.message}`);
+        serverScannerState.isScanning = false;
+      });
+    }, serverScannerState.config.intervalMs);
+
+    // Trigger immediate first run in background
+    runServerScannerCycle().catch((err) => {
+      addServerScannerLog('error', `خطا در اجرای اسکن اولیه: ${err.message}`);
+      serverScannerState.isScanning = false;
+    });
+
+    res.json({
+      success: true,
+      message: 'Server live scanner started successfully',
+      state: getScannerPublicState(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 7.2 Stop Live Scanner on Server
+app.post('/api/live-scanner/stop', (_req, res) => {
+  try {
+    if (serverScannerTimer) {
+      clearInterval(serverScannerTimer);
+      serverScannerTimer = null;
+    }
+    serverScannerState.isRunning = false;
+    serverScannerState.nextRunAt = null;
+    serverScannerState.isScanning = false;
+
+    addServerScannerLog('warning', '⏸️ اتوپایلوت مداوم در پس‌زمینه سرور متوقف گردید.');
+
+    res.json({
+      success: true,
+      message: 'Server live scanner stopped',
+      state: getScannerPublicState(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 7.3 Get Live Scanner Status from Server
+app.get('/api/live-scanner/status', (_req, res) => {
+  res.json({
+    success: true,
+    state: getScannerPublicState(),
+  });
 });
 
 // =========================================================================

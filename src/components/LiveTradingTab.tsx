@@ -442,6 +442,9 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   const [scanScope, setScanScope] = useState<'watchlist' | 'current' | 'all'>('watchlist');
   const [scanLogs, setScanLogs] = useState<ScanLogItem[]>([]);
   const [isScanningNow, setIsScanningNow] = useState<boolean>(false);
+  const [serverRunsCount, setServerRunsCount] = useState<number>(0);
+  const [serverLastRunAt, setServerLastRunAt] = useState<string | null>(null);
+  const [isTogglingServer, setIsTogglingServer] = useState<boolean>(false);
 
   // History Tab Filter: 'all' | 'wins' | 'losses' | 'open'
   const [historyFilter, setHistoryFilter] = useState<'all' | 'wins' | 'losses' | 'open'>('all');
@@ -932,33 +935,124 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     handleRefreshBalance,
   ]);
 
-  // 5-minute Auto-Scan countdown & runner
+  // =========================================================================
+  // PERSISTENT SERVER-SIDE BACKGROUND AUTO-SCANNER SYNC & CONTROLS
+  // =========================================================================
+
+  // Fetch status of background scanner running on server.ts
+  const fetchServerScannerStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/live-scanner/status');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.success && data.state) {
+        const { isRunning, isScanning, secondsUntilNextRun, totalRunsCount, lastRunAt, activeSignals, logs } = data.state;
+        setIsAutoScanning(isRunning);
+        setIsScanningNow(isScanning);
+        if (typeof secondsUntilNextRun === 'number') {
+          setScanSecondsLeft(secondsUntilNextRun);
+        }
+        setServerRunsCount(totalRunsCount || 0);
+        setServerLastRunAt(lastRunAt || null);
+
+        // Sync and append logs from server
+        if (Array.isArray(logs) && logs.length > 0) {
+          setScanLogs((prev) => {
+            const existingIds = new Set(prev.map((l) => l.id));
+            const newLogs = logs.filter((l: any) => !existingIds.has(l.id));
+            if (newLogs.length === 0) return prev;
+            return [...newLogs, ...prev].slice(0, 150);
+          });
+        }
+      }
+    } catch {
+      // transient network error
+    }
+  }, []);
+
+  // Poll server status every 3 seconds to keep UI in sync even after refresh
+  useEffect(() => {
+    fetchServerScannerStatus();
+    const poller = setInterval(fetchServerScannerStatus, 3000);
+    return () => clearInterval(poller);
+  }, [fetchServerScannerStatus]);
+
+  // Smooth local countdown ticker between server polling intervals
   useEffect(() => {
     if (!isAutoScanning) return;
-
-    const timer = setInterval(() => {
-      setScanSecondsLeft((prev) => {
-        if (prev <= 1) {
-          runScanCycle();
-          return 300; // Reset to 5 minutes
-        }
-        return prev - 1;
-      });
+    const ticker = setInterval(() => {
+      setScanSecondsLeft((prev) => (prev > 0 ? prev - 1 : 0));
     }, 1000);
+    return () => clearInterval(ticker);
+  }, [isAutoScanning]);
 
-    return () => clearInterval(timer);
-  }, [isAutoScanning, runScanCycle]);
+  // Toggle Continuous Background Scanner on Node.js Server
+  const handleToggleAutoScan = async () => {
+    if (isTogglingServer) return;
+    setIsTogglingServer(true);
 
-  // Manual Trigger
-  const handleToggleAutoScan = () => {
-    if (!isAutoScanning) {
-      setIsAutoScanning(true);
-      setScanSecondsLeft(300);
-      addLog('success', '▶️ اتوپایلوت فعال شد: اسکن و بررسی خودکار هر ۵ دقیقه یکبار آغاز گردید.');
-      runScanCycle(); // Run immediately on start
-    } else {
-      setIsAutoScanning(false);
-      addLog('warning', '⏸️ اسکن خودکار متوقف شد.');
+    try {
+      if (!isAutoScanning) {
+        const targetSymbols = selectedSymbols && selectedSymbols.length > 0
+          ? selectedSymbols
+          : DEFAULT_POPULAR_WATCHLIST;
+
+        const configPayload = {
+          timeframe: tradeTimeframe,
+          exchange,
+          strategyId: selectedStrategy,
+          symbols: targetSymbols,
+          isFutures: true,
+          atrPeriod,
+          atrMultiplier,
+          minCandles,
+          minCandlesForLongLeg,
+          longLegAtrMultiplier,
+          maxBlueLegPercent,
+          maxBreakoutAtrMultiplier,
+          riskRewardRatio,
+          riskPercent,
+          capital: balance.availableBalance > 0 ? balance.availableBalance : 1000,
+          noConcurrentPositions,
+          isLiveExecution,
+          userId: currentUser || 'amir',
+        };
+
+        const res = await fetch('/api/live-scanner/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ config: configPayload }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          setIsAutoScanning(true);
+          setScanSecondsLeft(data.state?.secondsUntilNextRun || 300);
+          setIsScanningNow(true);
+          showToast('🚀 اتوپایلوت مداوم سرور فعال شد: اسکن و بررسی خودکار در پس‌زمینه سرور Node.js آغاز گردید.');
+          addLog('success', `🚀 اتوپایلوت سرور فعال شد: اسکن مداوم ${targetSymbols.length} ارز در سرور به راه افتاد (پایدار حتی با بستن مرورگر).`);
+        } else {
+          showToast('❌ خطا در فعال‌سازی اسکنر سرور.');
+        }
+      } else {
+        const res = await fetch('/api/live-scanner/stop', {
+          method: 'POST',
+        });
+
+        if (res.ok) {
+          setIsAutoScanning(false);
+          setIsScanningNow(false);
+          showToast('⏸️ اسکنر پس‌زمینه سرور متوقف گردید.');
+          addLog('warning', '⏸️ اتوپایلوت سرور متوقف شد.');
+        } else {
+          showToast('❌ خطا در متوقف‌سازی اسکنر سرور.');
+        }
+      }
+    } catch (err: any) {
+      showToast(`❌ خطای شبکه: ${err.message}`);
+    } finally {
+      setIsTogglingServer(false);
+      fetchServerScannerStatus();
     }
   };
 
@@ -1190,18 +1284,27 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
             </div>
           </div>
 
-          {/* کارت ۴: تایمر و کنترلر اتوپایلوت ۵ دقیقه‌ای */}
+          {/* کارت ۴: تایمر و کنترلر اتوپایلوت مداوم سرور */}
           <div className={`p-3.5 rounded-2xl border transition-all ${
-            isAutoScanning ? 'bg-emerald-950/20 border-emerald-500/40 shadow-lg shadow-emerald-500/10' : 'bg-[#10141d] border-[#212a3a]'
+            isAutoScanning ? 'bg-emerald-950/25 border-emerald-500/50 shadow-lg shadow-emerald-500/10' : 'bg-[#10141d] border-[#212a3a]'
           }`}>
             <div className="flex items-center justify-between text-xs text-gray-400 mb-1">
               <span className="flex items-center gap-1.5 font-bold text-white">
                 <Clock className="w-4 h-4 text-emerald-400" />
-                اسکنر ۵ دقیقه‌ای خودکار
+                <span>اتوپایلوت مداوم سرور (Server 24/7)</span>
               </span>
-              {isAutoScanning && (
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
-              )}
+              <div className="flex items-center gap-1.5">
+                {isAutoScanning ? (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    سرور فعال
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-800 text-gray-400 border border-gray-700">
+                    متوقف
+                  </span>
+                )}
+              </div>
             </div>
 
             <div className="flex items-center justify-between mt-1">
@@ -1209,28 +1312,38 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 <span className="text-2xl font-black font-mono text-emerald-300 tracking-wider">
                   {timeFormatted}
                 </span>
-                <span className="text-[10px] text-gray-400 block -mt-0.5">تا اسکن بعدی</span>
+                <span className="text-[10px] text-gray-400 block -mt-0.5">
+                  {isAutoScanning ? (
+                    <span>تا اسکن بعدی • دور سرور: <strong className="text-cyan-300 font-mono">{serverRunsCount}</strong></span>
+                  ) : (
+                    <span>آماده راه‌اندازی پس‌زمینه</span>
+                  )}
+                </span>
               </div>
 
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
                   onClick={handleToggleAutoScan}
-                  className={`px-3.5 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-md ${
+                  disabled={isTogglingServer}
+                  className={`px-3.5 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-md disabled:opacity-50 ${
                     isAutoScanning
                       ? 'bg-rose-500 hover:bg-rose-600 text-white shadow-rose-500/30'
                       : 'bg-emerald-500 hover:bg-emerald-600 text-black shadow-emerald-500/30'
                   }`}
+                  title={isAutoScanning ? 'توقف اسکن خودکار پس‌زمینه در سرور' : 'راه‌اندازی اسکن خودکار مداوم روی سرور Node.js'}
                 >
-                  {isAutoScanning ? (
+                  {isTogglingServer ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : isAutoScanning ? (
                     <>
                       <Pause className="w-3.5 h-3.5 fill-current" />
-                      <span>توقف اسکن</span>
+                      <span>توقف سرور</span>
                     </>
                   ) : (
                     <>
                       <Play className="w-3.5 h-3.5 fill-current" />
-                      <span>شروع اسکن ۵m</span>
+                      <span>شروع اتوپایلوت سرور</span>
                     </>
                   )}
                 </button>
@@ -1240,19 +1353,31 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                   onClick={runScanCycle}
                   disabled={isScanningNow}
                   className="p-2 rounded-xl bg-[#1b2230] hover:bg-[#252f42] text-cyan-300 border border-[#2d3a50] transition-all cursor-pointer disabled:opacity-40"
-                  title="اجرای فوری اسکن همین حالا"
+                  title="اجرای فوری اسکن دستی همین حالا"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isScanningNow ? 'animate-spin' : ''}`} />
                 </button>
               </div>
             </div>
 
-            {/* نوار پیشرفت زمان ۵ دقیقه */}
+            {/* نوار پیشرفت زمان اسکن */}
             <div className="w-full bg-[#171f2d] h-1.5 rounded-full overflow-hidden mt-2.5">
               <div
-                className="bg-gradient-to-r from-emerald-500 to-cyan-400 h-full transition-all duration-1000"
-                style={{ width: `${((300 - scanSecondsLeft) / 300) * 100}%` }}
+                className="bg-gradient-to-r from-emerald-500 via-teal-400 to-cyan-400 h-full transition-all duration-1000"
+                style={{ width: `${Math.min(100, Math.max(0, ((300 - scanSecondsLeft) / 300) * 100))}%` }}
               />
+            </div>
+
+            <div className="mt-2 text-[10px] text-gray-400 flex items-center justify-between border-t border-[#1a2333] pt-1.5">
+              <span className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400"></span>
+                <span>پایداری مداوم در سرور (حتی با بستن مرورگر)</span>
+              </span>
+              {serverLastRunAt && (
+                <span className="font-mono text-gray-500 text-[9px]">
+                  آخرین اسکن: {new Date(serverLastRunAt).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              )}
             </div>
           </div>
         </div>

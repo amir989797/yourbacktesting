@@ -13,18 +13,18 @@ import { ZigZagGuideModal } from './components/ZigZagGuideModal';
 import { BacktestScannerModal } from './components/BacktestScannerModal';
 import { StrategyPanel } from './components/StrategyPanel';
 import { LiveTradingTab } from './components/LiveTradingTab';
-import { LandingPage } from './components/LandingPage';
+import { LoginPage } from './components/LoginPage';
 import { LoginModal } from './components/LoginModal';
 import { Zap } from 'lucide-react';
 
 export default function App() {
-  // Current authenticated user (defaults to 'amir' for immediate access to full platform)
+  // Authenticated user state: requires amir to enter username & password to enter the app
   const [currentUser, setCurrentUser] = useState<string | null>(() => {
     try {
-      const saved = localStorage.getItem('trading_user');
-      return saved !== null ? saved : 'amir';
+      const sessionUser = sessionStorage.getItem('trading_active_user');
+      return sessionUser && sessionUser === 'amir' ? sessionUser : null;
     } catch {
-      return 'amir';
+      return null;
     }
   });
 
@@ -299,6 +299,7 @@ export default function App() {
   const handleSignOut = () => {
     setCurrentUser(null);
     try {
+      sessionStorage.removeItem('trading_active_user');
       localStorage.removeItem('trading_user');
     } catch {}
   };
@@ -306,6 +307,7 @@ export default function App() {
   const handleLoginSuccess = (user: string) => {
     setCurrentUser(user);
     try {
+      sessionStorage.setItem('trading_active_user', user);
       localStorage.setItem('trading_user', user);
     } catch {}
     setIsLoginModalOpen(false);
@@ -320,18 +322,9 @@ export default function App() {
     ? hoveredAtrData!.candleRange
     : (lastCandle ? Math.max(0, lastCandle.high - lastCandle.low) : 0);
 
-  // If user explicitly signed out, show LandingPage with login option
+  // If user is not authenticated, show the LoginPage so amir must enter username & password
   if (!currentUser) {
-    return (
-      <>
-        <LandingPage onOpenLogin={() => setIsLoginModalOpen(true)} />
-        <LoginModal
-          isOpen={isLoginModalOpen}
-          onClose={() => setIsLoginModalOpen(false)}
-          onLoginSuccess={handleLoginSuccess}
-        />
-      </>
-    );
+    return <LoginPage onLoginSuccess={handleLoginSuccess} />;
   }
 
   return (
