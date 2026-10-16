@@ -1,6 +1,7 @@
 import { CandleData, Leg, ZigZagPoint as CryptoZigZagPoint } from '../types/crypto.ts';
 import { ZigZagLeg, ZigZagPoint } from './indicators';
 import { StrategyConfig, StrategyMetrics, StrategyTrade, TradeStatus, BacktestMetrics, StrategyParams, Trade } from '../types/strategy.ts';
+import { calculateExactTradeSizing } from './exchangePrecision.ts';
 
 /**
  * Runs Backtest and Live Analysis for Strategy 1:
@@ -53,6 +54,7 @@ export function runStrategy1Backtest(
   // Find all complete cycles: A-B (Giant) -> C-D (Light Blue) -> E-F (Dark Blue)
   let currentGiant: ZigZagLeg | null = null;
   let lastTradeExitCandleIdx = -1;
+  let rollingCapital = config.capital;
 
   for (let i = 0; i < legs.length; i++) {
     const leg = legs[i];
@@ -96,10 +98,6 @@ export function runStrategy1Backtest(
             ? entryPrice + stopDistance * maxRR
             : entryPrice - stopDistance * maxRR;
       }
-
-      const riskAmount = (config.capital * config.riskPercent) / 100;
-      const positionSize = stopDistance > 0 ? riskAmount / stopDistance : 0;
-      const positionValue = positionSize * entryPrice;
 
       const timeF = darkBlueLeg.endTime;
       const candleIdxF = findCandleIndex(timeF);
@@ -160,6 +158,11 @@ export function runStrategy1Backtest(
           let pnl = 0;
           let pnlPercent = 0;
 
+          // ریسک پویا: در حالت درصد بر اساس موجودی شناور حساب و در حالت ثابت همیشه مقدار معین دلاری
+          const riskBudget =
+            config.riskMode === 'fixed' && config.riskAmountFixed && config.riskAmountFixed > 0
+              ? config.riskAmountFixed
+              : (rollingCapital * (config.riskPercent || 1.0)) / 100;
           const entryFeeRate =
             (config.entryCommissionPercent ??
               (config.commissionPercent !== undefined ? config.commissionPercent / 2 : 0.06)) / 100;
@@ -167,7 +170,22 @@ export function runStrategy1Backtest(
             (config.exitCommissionPercent ??
               (config.commissionPercent !== undefined ? config.commissionPercent / 2 : 0.06)) / 100;
 
-          const entryFee = positionValue * entryFeeRate;
+          // محاسبه حجم دقیق با اعمال قوانین اعشار و حداقل گام حجم صرافی (stepSize / LOT_SIZE) و لحاظ کارمزدها
+          // گرد کردن به سمت پایین (Floor) تضمین می‌کند ضرر واقعی در استاپ هرگز از بودجه ریسک ($100) تجاوز نکند
+          const sizing = calculateExactTradeSizing(
+            riskBudget,
+            entryPrice,
+            stopLoss,
+            takeProfit,
+            entryFeeRate,
+            exitFeeRate,
+            config.symbol
+          );
+          const positionSize = sizing.quantizedPositionSize;
+          const positionValue = sizing.positionValue;
+          const entryFee = sizing.entryFee;
+          const riskAmount = riskBudget;
+          const realizedRisk = sizing.actualLossAtSL;
 
           for (let k = entryCandleIdx; k < candles.length; k++) {
             const ck = candles[k];
@@ -186,7 +204,7 @@ export function runStrategy1Backtest(
                 const tradeFee = entryFee + exitFee;
                 const grossTradePnl = positionSize * (exitPrice - entryPrice);
                 pnl = grossTradePnl - tradeFee;
-                pnlPercent = (pnl / config.capital) * 100;
+                pnlPercent = (pnl / rollingCapital) * 100;
                 break;
               } else if (hitTP) {
                 status = 'WIN';
@@ -197,7 +215,7 @@ export function runStrategy1Backtest(
                 const tradeFee = entryFee + exitFee;
                 const grossTradePnl = positionSize * (exitPrice - entryPrice);
                 pnl = grossTradePnl - tradeFee;
-                pnlPercent = (pnl / config.capital) * 100;
+                pnlPercent = (pnl / rollingCapital) * 100;
                 break;
               } else if (hitSL) {
                 status = 'LOSS';
@@ -208,7 +226,7 @@ export function runStrategy1Backtest(
                 const tradeFee = entryFee + exitFee;
                 const grossTradePnl = positionSize * (exitPrice - entryPrice);
                 pnl = grossTradePnl - tradeFee;
-                pnlPercent = (pnl / config.capital) * 100;
+                pnlPercent = (pnl / rollingCapital) * 100;
                 break;
               }
             } else {
@@ -225,7 +243,7 @@ export function runStrategy1Backtest(
                 const tradeFee = entryFee + exitFee;
                 const grossTradePnl = positionSize * (entryPrice - exitPrice);
                 pnl = grossTradePnl - tradeFee;
-                pnlPercent = (pnl / config.capital) * 100;
+                pnlPercent = (pnl / rollingCapital) * 100;
                 break;
               } else if (hitTP) {
                 status = 'WIN';
@@ -236,7 +254,7 @@ export function runStrategy1Backtest(
                 const tradeFee = entryFee + exitFee;
                 const grossTradePnl = positionSize * (entryPrice - exitPrice);
                 pnl = grossTradePnl - tradeFee;
-                pnlPercent = (pnl / config.capital) * 100;
+                pnlPercent = (pnl / rollingCapital) * 100;
                 break;
               } else if (hitSL) {
                 status = 'LOSS';
@@ -247,7 +265,7 @@ export function runStrategy1Backtest(
                 const tradeFee = entryFee + exitFee;
                 const grossTradePnl = positionSize * (entryPrice - exitPrice);
                 pnl = grossTradePnl - tradeFee;
-                pnlPercent = (pnl / config.capital) * 100;
+                pnlPercent = (pnl / rollingCapital) * 100;
                 break;
               }
             }
@@ -263,13 +281,18 @@ export function runStrategy1Backtest(
             const exitFee = (positionSize * exitPrice) * exitFeeRate;
             const tradeFee = entryFee + exitFee;
             pnl = grossMovePnl - tradeFee;
-            pnlPercent = (pnl / config.capital) * 100;
+            pnlPercent = (pnl / rollingCapital) * 100;
           }
 
           const elapsed = entryCandleIdx - candleIdxF;
           const actualExitPrice = exitPrice ?? entryPrice;
           const tradeExitFee = (positionSize * actualExitPrice) * exitFeeRate;
           const tradeTotalFee = entryFee + tradeExitFee;
+          pnl = parseFloat(pnl.toFixed(2));
+          pnlPercent = parseFloat(pnlPercent.toFixed(2));
+
+          // ارتقای بالانس پویا برای معامله بعدی
+          rollingCapital = Math.max(10, parseFloat((rollingCapital + pnl).toFixed(2)));
 
           trades.push({
             id: `trade-${trades.length + 1}-${darkBlueLeg.index}-att${attempt}`,
@@ -283,9 +306,13 @@ export function runStrategy1Backtest(
             entryPrice,
             stopLoss,
             takeProfit,
-            riskAmount,
+            riskAmount: parseFloat(riskAmount.toFixed(2)),
+            targetRiskAmount: parseFloat(riskAmount.toFixed(2)),
+            realizedRisk: parseFloat(realizedRisk.toFixed(2)),
+            stepSize: sizing.stepSize,
+            qtyPrecision: sizing.qtyPrecision,
             positionSize,
-            positionValue,
+            positionValue: parseFloat(positionValue.toFixed(2)),
             riskReward: parseFloat(riskReward.toFixed(2)),
             timeF,
             candleIdxF,
@@ -303,8 +330,11 @@ export function runStrategy1Backtest(
             entryFee: parseFloat(entryFee.toFixed(2)),
             exitFee: parseFloat(tradeExitFee.toFixed(2)),
             fee: parseFloat(tradeTotalFee.toFixed(2)),
-            pnl: parseFloat(pnl.toFixed(2)),
-            pnlPercent: parseFloat(pnlPercent.toFixed(2)),
+            commission: parseFloat(tradeTotalFee.toFixed(2)),
+            pnl,
+            pnlPercent,
+            returnR: riskAmount > 0 ? parseFloat((pnl / riskAmount).toFixed(2)) : 0,
+            capitalAfterTrade: rollingCapital,
           });
 
           lastTradeExitCandleIdx = Math.max(
@@ -385,6 +415,7 @@ export function runStrategy2Backtest(
 
   let currentGiant: ZigZagLeg | null = null;
   let lastTradeExitCandleIdx = -1;
+  let rollingCapital = config.capital;
 
   for (let i = 0; i < legs.length; i++) {
     const leg = legs[i];
@@ -447,17 +478,10 @@ export function runStrategy2Backtest(
               const riskReward = maxRR;
               const takeProfit = entryPrice - stopDistance * maxRR;
 
-              const riskAmount = (config.capital * config.riskPercent) / 100;
-              const positionSize = riskAmount / stopDistance;
-              const positionValue = positionSize * entryPrice;
-
-              let status: TradeStatus = 'ACTIVE';
-              let exitTime: number | undefined;
-              let exitCandleIdx: number | undefined;
-              let exitPrice: number | undefined;
-              let pnl = 0;
-              let pnlPercent = 0;
-
+              const riskBudget =
+                config.riskMode === 'fixed' && config.riskAmountFixed && config.riskAmountFixed > 0
+                  ? config.riskAmountFixed
+                  : (rollingCapital * (config.riskPercent || 1.0)) / 100;
               const entryFeeRate =
                 (config.entryCommissionPercent ??
                   (config.commissionPercent !== undefined ? config.commissionPercent / 2 : 0.06)) / 100;
@@ -465,7 +489,28 @@ export function runStrategy2Backtest(
                 (config.exitCommissionPercent ??
                   (config.commissionPercent !== undefined ? config.commissionPercent / 2 : 0.06)) / 100;
 
-              const entryFee = positionValue * entryFeeRate;
+              // محاسبه حجم دقیق با اعمال استپ سایز صرافی و لحاظ کارمزدها (رند به پایین تا ضرر هرگز بیش از بودجه نشود)
+              const sizing = calculateExactTradeSizing(
+                riskBudget,
+                entryPrice,
+                stopLoss,
+                takeProfit,
+                entryFeeRate,
+                exitFeeRate,
+                config.symbol
+              );
+              const positionSize = sizing.quantizedPositionSize;
+              const positionValue = sizing.positionValue;
+              const entryFee = sizing.entryFee;
+              const riskAmount = riskBudget;
+              const realizedRisk = sizing.actualLossAtSL;
+
+              let status: TradeStatus = 'ACTIVE';
+              let exitTime: number | undefined;
+              let exitCandleIdx: number | undefined;
+              let exitPrice: number | undefined;
+              let pnl = 0;
+              let pnlPercent = 0;
 
               for (let k = entryCandleIdx; k < candles.length; k++) {
                 const ck = candles[k];
@@ -539,6 +584,10 @@ export function runStrategy2Backtest(
                 stopLoss,
                 takeProfit,
                 riskAmount: parseFloat(riskAmount.toFixed(2)),
+                targetRiskAmount: parseFloat(riskAmount.toFixed(2)),
+                realizedRisk: parseFloat(realizedRisk.toFixed(2)),
+                stepSize: sizing.stepSize,
+                qtyPrecision: sizing.qtyPrecision,
                 positionSize,
                 positionValue: parseFloat(positionValue.toFixed(2)),
                 riskReward: parseFloat(riskReward.toFixed(2)),
@@ -558,9 +607,14 @@ export function runStrategy2Backtest(
                 entryFee: parseFloat(entryFee.toFixed(2)),
                 exitFee: parseFloat(tradeExitFee.toFixed(2)),
                 fee: parseFloat(tradeTotalFee.toFixed(2)),
+                commission: parseFloat(tradeTotalFee.toFixed(2)),
                 pnl: parseFloat((positionSize * (entryPrice - actualExitPrice) - tradeTotalFee).toFixed(2)),
-                pnlPercent: parseFloat((((positionSize * (entryPrice - actualExitPrice) - tradeTotalFee) / config.capital) * 100).toFixed(2)),
+                pnlPercent: parseFloat((((positionSize * (entryPrice - actualExitPrice) - tradeTotalFee) / rollingCapital) * 100).toFixed(2)),
+                returnR: riskAmount > 0 ? parseFloat(((positionSize * (entryPrice - actualExitPrice) - tradeTotalFee) / riskAmount).toFixed(2)) : 0,
+                capitalAfterTrade: Math.max(10, parseFloat((rollingCapital + (positionSize * (entryPrice - actualExitPrice) - tradeTotalFee)).toFixed(2))),
               });
+
+              rollingCapital = Math.max(10, parseFloat((rollingCapital + (positionSize * (entryPrice - actualExitPrice) - tradeTotalFee)).toFixed(2)));
 
               lastTradeExitCandleIdx = Math.max(
                 lastTradeExitCandleIdx,
@@ -602,17 +656,10 @@ export function runStrategy2Backtest(
               const riskReward = maxRR;
               const takeProfit = entryPrice + stopDistance * maxRR;
 
-              const riskAmount = (config.capital * config.riskPercent) / 100;
-              const positionSize = riskAmount / stopDistance;
-              const positionValue = positionSize * entryPrice;
-
-              let status: TradeStatus = 'ACTIVE';
-              let exitTime: number | undefined;
-              let exitCandleIdx: number | undefined;
-              let exitPrice: number | undefined;
-              let pnl = 0;
-              let pnlPercent = 0;
-
+              const riskBudget =
+                config.riskMode === 'fixed' && config.riskAmountFixed && config.riskAmountFixed > 0
+                  ? config.riskAmountFixed
+                  : (rollingCapital * (config.riskPercent || 1.0)) / 100;
               const entryFeeRate =
                 (config.entryCommissionPercent ??
                   (config.commissionPercent !== undefined ? config.commissionPercent / 2 : 0.06)) / 100;
@@ -620,7 +667,28 @@ export function runStrategy2Backtest(
                 (config.exitCommissionPercent ??
                   (config.commissionPercent !== undefined ? config.commissionPercent / 2 : 0.06)) / 100;
 
-              const entryFee = positionValue * entryFeeRate;
+              // محاسبه حجم دقیق با اعمال استپ سایز صرافی و لحاظ کارمزدها (رند به پایین تا ضرر هرگز بیش از بودجه نشود)
+              const sizing = calculateExactTradeSizing(
+                riskBudget,
+                entryPrice,
+                stopLoss,
+                takeProfit,
+                entryFeeRate,
+                exitFeeRate,
+                config.symbol
+              );
+              const positionSize = sizing.quantizedPositionSize;
+              const positionValue = sizing.positionValue;
+              const entryFee = sizing.entryFee;
+              const riskAmount = riskBudget;
+              const realizedRisk = sizing.actualLossAtSL;
+
+              let status: TradeStatus = 'ACTIVE';
+              let exitTime: number | undefined;
+              let exitCandleIdx: number | undefined;
+              let exitPrice: number | undefined;
+              let pnl = 0;
+              let pnlPercent = 0;
 
               for (let k = entryCandleIdx; k < candles.length; k++) {
                 const ck = candles[k];
@@ -636,7 +704,7 @@ export function runStrategy2Backtest(
                   const tradeFee = entryFee + exitFee;
                   const grossTradePnl = positionSize * (exitPrice - entryPrice);
                   pnl = grossTradePnl - tradeFee;
-                  pnlPercent = (pnl / config.capital) * 100;
+                  pnlPercent = (pnl / rollingCapital) * 100;
                   break;
                 } else if (hitTP) {
                   status = 'WIN';
@@ -647,7 +715,7 @@ export function runStrategy2Backtest(
                   const tradeFee = entryFee + exitFee;
                   const grossTradePnl = positionSize * (exitPrice - entryPrice);
                   pnl = grossTradePnl - tradeFee;
-                  pnlPercent = (pnl / config.capital) * 100;
+                  pnlPercent = (pnl / rollingCapital) * 100;
                   break;
                 } else if (hitSL) {
                   status = 'LOSS';
@@ -658,7 +726,7 @@ export function runStrategy2Backtest(
                   const tradeFee = entryFee + exitFee;
                   const grossTradePnl = positionSize * (exitPrice - entryPrice);
                   pnl = grossTradePnl - tradeFee;
-                  pnlPercent = (pnl / config.capital) * 100;
+                  pnlPercent = (pnl / rollingCapital) * 100;
                   break;
                 }
               }
@@ -672,7 +740,7 @@ export function runStrategy2Backtest(
                 const exitFee = (positionSize * exitPrice) * exitFeeRate;
                 const tradeFee = entryFee + exitFee;
                 pnl = grossMovePnl - tradeFee;
-                pnlPercent = (pnl / config.capital) * 100;
+                pnlPercent = (pnl / rollingCapital) * 100;
               }
 
               const actualExitPrice = exitPrice ?? entryPrice;
@@ -713,9 +781,14 @@ export function runStrategy2Backtest(
                 entryFee: parseFloat(entryFee.toFixed(2)),
                 exitFee: parseFloat(tradeExitFee.toFixed(2)),
                 fee: parseFloat(tradeTotalFee.toFixed(2)),
+                commission: parseFloat(tradeTotalFee.toFixed(2)),
                 pnl: parseFloat((positionSize * (actualExitPrice - entryPrice) - tradeTotalFee).toFixed(2)),
-                pnlPercent: parseFloat((((positionSize * (actualExitPrice - entryPrice) - tradeTotalFee) / config.capital) * 100).toFixed(2)),
+                pnlPercent: parseFloat((((positionSize * (actualExitPrice - entryPrice) - tradeTotalFee) / rollingCapital) * 100).toFixed(2)),
+                returnR: riskAmount > 0 ? parseFloat(((positionSize * (actualExitPrice - entryPrice) - tradeTotalFee) / riskAmount).toFixed(2)) : 0,
+                capitalAfterTrade: Math.max(10, parseFloat((rollingCapital + (positionSize * (actualExitPrice - entryPrice) - tradeTotalFee)).toFixed(2))),
               });
+
+              rollingCapital = Math.max(10, parseFloat((rollingCapital + (positionSize * (actualExitPrice - entryPrice) - tradeTotalFee)).toFixed(2)));
 
               lastTradeExitCandleIdx = Math.max(
                 lastTradeExitCandleIdx,
@@ -800,9 +873,8 @@ function calculateMetrics(trades: StrategyTrade[], initialCapital: number): Stra
       expiredTrades++;
     }
 
-    if (t.fee) {
-      totalFee += t.fee;
-    }
+    const tradeFee = t.fee !== undefined ? t.fee : (t.commission !== undefined ? t.commission : 0);
+    totalFee += tradeFee;
 
     // تأثیر مالی معاملات بسته یا جاری بر سرمایه و درودان
     if (t.status === 'WIN' || t.status === 'LOSS' || t.status === 'ACTIVE') {
@@ -952,8 +1024,14 @@ export function runBreakoutStrategy(
       }
     }
 
-    const riskAmount = (capital * (params.riskPercent || 1)) / 100;
-    const positionSize = riskAmount / risk;
+    const riskAmount =
+      params.riskMode === 'fixed' && params.riskAmountFixed && params.riskAmountFixed > 0
+        ? params.riskAmountFixed
+        : (capital * (params.riskPercent || 1)) / 100;
+    const feeRate = ((params.commissionPercent || 0.08) / 2) / 100;
+    const feePerUnitAtSL = (entryPrice + stopLoss) * feeRate;
+    const effectiveRisk = risk + feePerUnitAtSL;
+    const positionSize = effectiveRisk > 0 ? riskAmount / effectiveRisk : 0;
     const pnl = isLong
       ? (exitPrice - entryPrice) * positionSize
       : (entryPrice - exitPrice) * positionSize;
@@ -974,9 +1052,15 @@ export function runBreakoutStrategy(
       exitTime,
       exitIndex,
       status,
+      grossPnl: pnl,
+      fee: commission,
+      commission,
+      positionSize,
+      positionValue: positionSize * entryPrice,
+      riskAmount,
       pnl: netPnl,
       pnlPercent: (netPnl / riskAmount) * 100,
-      commission,
+      returnR: riskAmount > 0 ? parseFloat((netPnl / riskAmount).toFixed(2)) : 0,
       riskReward: targetRR,
     });
   }

@@ -290,7 +290,27 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   const [tradeTimeframe, setTradeTimeframe] = useState<Timeframe>('5m');
   const [riskRewardRatio, setRiskRewardRatio] = useState<number>(3.0);
 
-  // درصد ریسک در هر معامله از کل حساب (حجم معامله بر مبنای فاصله استاپ لاس به گونه‌ای محاسبه می‌شود که در صورت استاپ فقط این درصد ضرر شود)
+  // نحوه محاسبه ریسک: درصدی از موجودی زنده ('percent') یا مبلغ ثابت دلاری ('fixed')
+  const [riskMode, setRiskMode] = useState<'percent' | 'fixed'>(() => {
+    try {
+      const saved = localStorage.getItem('livetrade_risk_mode');
+      return saved === 'fixed' ? 'fixed' : 'percent';
+    } catch {
+      return 'percent';
+    }
+  });
+
+  // مقدار ریسک ثابت دلاری (مثلاً ۱۰۰ دلار که در هر معامله در صورت استاپ فقط همین مقدار ضرر شود)
+  const [riskAmountFixed, setRiskAmountFixed] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('livetrade_risk_amount_fixed');
+      return saved !== null ? parseFloat(saved) : 50;
+    } catch {
+      return 50;
+    }
+  });
+
+  // درصد ریسک در هر معامله از کل حساب (در صورت استاپ، این درصد از موجودی به‌روز ضرر می‌شود)
   const [riskPercent, setRiskPercent] = useState<number>(() => {
     try {
       const saved = localStorage.getItem('livetrade_risk_percent');
@@ -712,6 +732,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         const cfg: StrategyConfig = {
           ...DEFAULT_STRATEGY_CONFIG,
           capital: balance.availableBalance > 0 ? balance.availableBalance : 100,
+          riskMode,
+          riskAmountFixed,
           riskPercent: riskPercent || 1,
           maxRiskReward: riskRewardRatio,
           selectedStrategyId: selectedStrategy,
@@ -761,14 +783,17 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
             const currentEquity = balance.availableBalance > 0
               ? balance.availableBalance
               : (balance.totalEquity > 0 ? balance.totalEquity : (balance.walletBalance > 0 ? balance.walletBalance : 100));
-            const riskAmountUsdt = currentEquity * ((riskPercent || 1) / 100);
+            const riskAmountUsdt = riskMode === 'fixed' && riskAmountFixed && riskAmountFixed > 0
+              ? riskAmountFixed
+              : currentEquity * ((riskPercent || 1) / 100);
             const priceDistance = Math.abs(curPrice - stopLoss);
             const safeDistance = priceDistance > 0 ? priceDistance : curPrice * 0.02;
-            const lossFraction = safeDistance / curPrice; // نسبت فاصله تا حد ضرر
+            // احتساب کارمزد ورود (0.06%) و خروج (0.06%) در نسبت زیان تا ضرر در استاپ لیمیت هرگز از ریسک تعیین‌شده فراتر نرود
+            const feeFraction = 0.0006 + (stopLoss / curPrice) * 0.0006;
+            const effectiveLossFraction = (safeDistance / curPrice) + feeFraction;
 
-            // ارزش دلاری کل پوزیشن (Notional):
-            // RiskAmount = Notional * lossFraction  =>  Notional = RiskAmount / lossFraction
-            const notionalUsdt = riskAmountUsdt / lossFraction;
+            // ارزش دلاری کل پوزیشن (Notional) با تضمین سقف ریسک شامل کارمزد:
+            const notionalUsdt = riskAmountUsdt / (effectiveLossFraction > 0 ? effectiveLossFraction : 0.02);
             const approxQty = curPrice > 0 ? notionalUsdt / curPrice : 1;
             const contractQty = Math.max(1, Math.round(approxQty * 1000) / 1000);
 
@@ -854,9 +879,13 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           );
         } else {
           // مارجین کافی است -> اجرای ترید با بیشترین اهرم و حداقل مارجین
+          const liveEquityVal = balance.availableBalance > 0 ? balance.availableBalance : (balance.totalEquity > 0 ? balance.totalEquity : 100);
+          const riskNotice = riskMode === 'fixed'
+            ? `ریسک ثابت: ${chosen.riskUsdt.toFixed(2)}$ (${((chosen.riskUsdt / liveEquityVal) * 100).toFixed(1)}%)`
+            : `ریسک استاپ (${riskPercent}%): ${chosen.riskUsdt.toFixed(2)}$`;
           addLog(
             'trade',
-            `⚡ سیگنال برگزیده ${chosen.posSide} برای ${chosenName} با بیشترین اهرم (${chosen.maxLeverage}x) و حداقل مارجین درگیر (${chosen.requiredMargin.toFixed(2)} USDT) اجرا می‌شود. حجم کل: ${chosen.notionalUsdt.toFixed(1)}$ (${chosen.contractQty} واحد) | ریسک استاپ (${riskPercent}%): ${chosen.riskUsdt.toFixed(2)}$ | ورود: ${formatPrice(chosen.curPrice)} | استاپ: ${formatPrice(chosen.stopLoss)} | تارگت: ${formatPrice(chosen.takeProfit)}`,
+            `⚡ سیگنال برگزیده ${chosen.posSide} برای ${chosenName} با بیشترین اهرم (${chosen.maxLeverage}x) و حداقل مارجین درگیر (${chosen.requiredMargin.toFixed(2)} USDT) اجرا می‌شود. حجم کل: ${chosen.notionalUsdt.toFixed(1)}$ (${chosen.contractQty} واحد) | ${riskNotice} | ورود: ${formatPrice(chosen.curPrice)} | استاپ: ${formatPrice(chosen.stopLoss)} | تارگت: ${formatPrice(chosen.takeProfit)}`,
             chosen.sym
           );
 
@@ -947,6 +976,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     balance.availableBalance,
     balance.totalEquity,
     balance.walletBalance,
+    riskMode,
+    riskAmountFixed,
     riskPercent,
     isLiveExecution,
     addLog,
@@ -1032,6 +1063,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           maxBlueLegPercent,
           maxBreakoutAtrMultiplier,
           riskRewardRatio,
+          riskMode,
+          riskAmountFixed,
           riskPercent,
           capital: balance.availableBalance > 0 ? balance.availableBalance : 1000,
           noConcurrentPositions,
@@ -1582,24 +1615,98 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 </div>
               </div>
 
-              <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42]">
-                <span className="text-[10px] text-gray-400 block">۷. ریسک حساب هر ترید (%):</span>
-                <input
-                  type="number"
-                  step={0.1}
-                  min={0.1}
-                  max={10}
-                  value={riskPercent}
-                  onChange={(e) => {
-                    const val = parseFloat(e.target.value) || 1.0;
-                    setRiskPercent(val);
-                    try {
-                      localStorage.setItem('livetrade_risk_percent', String(val));
-                    } catch {}
-                  }}
-                  className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-amber-400 font-mono text-center font-bold"
-                  title="در صورت اصابت به استاپ‌لاس، دقیقاً این درصد از کل حساب ضرر می‌شود"
-                />
+              <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42] flex flex-col justify-between">
+                <div className="flex items-center justify-between gap-1 mb-1">
+                  <span className="text-[10px] text-gray-400 font-bold">۷. مدیریت ریسک:</span>
+                  <div className="flex items-center bg-[#0e121a] p-0.5 rounded-md border border-[#263143] text-[9px] font-sans">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRiskMode('percent');
+                        try {
+                          localStorage.setItem('livetrade_risk_mode', 'percent');
+                        } catch {}
+                      }}
+                      className={`px-1.5 py-0.5 rounded transition-all cursor-pointer font-bold ${
+                        riskMode === 'percent'
+                          ? 'bg-amber-500 text-black shadow-xs'
+                          : 'text-gray-400 hover:text-gray-200'
+                      }`}
+                    >
+                      درصد %
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRiskMode('fixed');
+                        try {
+                          localStorage.setItem('livetrade_risk_mode', 'fixed');
+                        } catch {}
+                      }}
+                      className={`px-1.5 py-0.5 rounded transition-all cursor-pointer font-bold ${
+                        riskMode === 'fixed'
+                          ? 'bg-cyan-500 text-black shadow-xs'
+                          : 'text-gray-400 hover:text-gray-200'
+                      }`}
+                    >
+                      ثابت $
+                    </button>
+                  </div>
+                </div>
+
+                {riskMode === 'percent' ? (
+                  <div>
+                    <input
+                      type="number"
+                      step={0.1}
+                      min={0.1}
+                      max={10}
+                      value={riskPercent}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 1.0;
+                        setRiskPercent(val);
+                        try {
+                          localStorage.setItem('livetrade_risk_percent', String(val));
+                        } catch {}
+                      }}
+                      className="w-full px-2 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-amber-400 font-mono text-center font-bold text-xs"
+                      title="محاسبه ریسک بر اساس درصد از موجودی زنده در لحظه ورود (با رشد حساب، ریسک دلاری متناسباً افزایش می‌یابد)"
+                    />
+                    <div className="text-[9px] text-gray-400 text-center mt-1 flex items-center justify-center gap-1 font-mono">
+                      <span>معادل:</span>
+                      <strong className="text-amber-300">
+                        ${(((balance.availableBalance > 0 ? balance.availableBalance : balance.totalEquity > 0 ? balance.totalEquity : 100) * (riskPercent || 1)) / 100).toFixed(1)}
+                      </strong>
+                      <span>USDT</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <input
+                      type="number"
+                      step={5}
+                      min={1}
+                      max={50000}
+                      value={riskAmountFixed}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 50;
+                        setRiskAmountFixed(val);
+                        try {
+                          localStorage.setItem('livetrade_risk_amount_fixed', String(val));
+                        } catch {}
+                      }}
+                      className="w-full px-2 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-cyan-400 font-mono text-center font-bold text-xs"
+                      title="مبلغ ثابت دلاری که در صورت برخورد به حد ضرر در هر معامله دقیقاً همین مقدار ضرر می‌شود"
+                    />
+                    <div className="text-[9px] text-gray-400 text-center mt-1 flex items-center justify-center gap-1 font-mono">
+                      <span>معادل:</span>
+                      <strong className="text-cyan-300">
+                        {(((riskAmountFixed || 50) / (balance.availableBalance > 0 ? balance.availableBalance : balance.totalEquity > 0 ? balance.totalEquity : 100)) * 100).toFixed(1)}%
+                      </strong>
+                      <span>حساب</span>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42]">

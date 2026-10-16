@@ -67,6 +67,8 @@ export interface TestParameterConfigRecord {
   userId?: string;
   timeframe?: string;
   capital?: number;
+  riskMode?: 'percent' | 'fixed';
+  riskAmountFixed?: number;
   riskPercent?: number;
   selectedStrategyId?: string;
   entryCommissionPercent?: number;

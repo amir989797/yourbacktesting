@@ -1113,6 +1113,8 @@ interface ServerLiveScannerConfig {
   maxBlueLegPercent: number;
   maxBreakoutAtrMultiplier: number;
   riskRewardRatio: number;
+  riskMode?: 'percent' | 'fixed';
+  riskAmountFixed?: number;
   riskPercent: number;
   capital: number;
   noConcurrentPositions: boolean;
@@ -1167,6 +1169,8 @@ const serverScannerState = {
     maxBlueLegPercent: 70,
     maxBreakoutAtrMultiplier: 3.0,
     riskRewardRatio: 2.0,
+    riskMode: 'percent',
+    riskAmountFixed: 50,
     riskPercent: 1.0,
     capital: 1000,
     noConcurrentPositions: true,
@@ -1337,12 +1341,15 @@ async function runServerScannerCycle() {
             const takeProfit = parseFloat(Number(lastTrade.takeProfit || curPrice * (posSide === 'LONG' ? 1.06 : 0.94)).toFixed(4));
             const maxLev = getMaxLeverageForSymbol(sym);
 
-            const riskAmountUsdt = availableBalance * ((cfg.riskPercent || 1) / 100);
+            const riskAmountUsdt = cfg.riskMode === 'fixed' && cfg.riskAmountFixed && cfg.riskAmountFixed > 0
+              ? cfg.riskAmountFixed
+              : availableBalance * ((cfg.riskPercent || 1) / 100);
             const priceDistance = Math.abs(curPrice - stopLoss);
             const safeDistance = priceDistance > 0 ? priceDistance : curPrice * 0.02;
-            const lossFraction = safeDistance / curPrice;
+            const feeFraction = 0.0006 + (stopLoss / curPrice) * 0.0006;
+            const effectiveLossFraction = (safeDistance / curPrice) + feeFraction;
 
-            const notionalUsdt = riskAmountUsdt / (lossFraction > 0 ? lossFraction : 0.02);
+            const notionalUsdt = riskAmountUsdt / (effectiveLossFraction > 0 ? effectiveLossFraction : 0.02);
             const approxQty = curPrice > 0 ? notionalUsdt / curPrice : 1;
             const contractQty = Math.max(1, Math.round(approxQty * 1000) / 1000);
             const requiredMargin = parseFloat((notionalUsdt / maxLev).toFixed(2));

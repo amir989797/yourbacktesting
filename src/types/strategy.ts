@@ -5,6 +5,8 @@ export type ZigZagSettings = CryptoZigZagSettings;
 export interface StrategyParams {
   capital: number;
   selectedStrategyId: string;
+  riskMode?: 'percent' | 'fixed'; // 'percent' (درصد از کل سرمایه) | 'fixed' (مبلغ ثابت دلاری/تتر)
+  riskAmountFixed?: number; // مقدار ریسک ثابت بر حسب USDT
   riskPercent: number;
   entryCommissionPercent: number;
   exitCommissionPercent: number;
@@ -21,6 +23,8 @@ export type StrategyConfig = StrategyParams;
 export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
   capital: 10000,
   selectedStrategyId: 'strategy_1_e_breakout',
+  riskMode: 'percent',
+  riskAmountFixed: 10,
   riskPercent: 1.0,
   maxCandlesToEnter: 100,
   maxRiskReward: 2,
@@ -77,6 +81,7 @@ export interface Trade {
   entryFee?: number;
   exitFee?: number;
   fee?: number;
+  returnR?: number;
 }
 
 export interface StrategyTrade {
@@ -97,6 +102,10 @@ export interface StrategyTrade {
   stopLoss: number;
   takeProfit: number;
   riskAmount: number;
+  targetRiskAmount?: number; // بودجه ریسک هدف کاربر (مثلاً ۱۰۰ دلار یا ۱٪)
+  realizedRisk?: number; // ریسک واقعی دلاری پس از کوانتیزه‌کردن به استپ سایز صرافی (مثلاً ۹۸.۵$)
+  stepSize?: number; // حداقل گام حجم معامله در صرافی
+  qtyPrecision?: number; // تعداد ارقام اعشار مجاز حجم در صرافی
   positionSize: number;
   positionValue: number;
   riskReward: number;
@@ -122,6 +131,8 @@ export interface StrategyTrade {
   commission?: number;
   pnl: number; // سود/زیان خالص پس از کسر کارمزد
   pnlPercent: number;
+  returnR?: number; // بازدهی بر حسب R (نسبت سود/زیان خالص به ریسک)
+  capitalAfterTrade?: number; // موجودی شناور حساب پس از این معامله
   reason?: string;
 }
 
