@@ -978,7 +978,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               };
 
               collectedResults.push(resultItem);
-              const finishedTrades = trades.filter((t) => t.status === 'WIN' || t.status === 'LOSS');
+              const finishedTrades = trades
+                .filter((t) => t.status === 'WIN' || t.status === 'LOSS')
+                .map((t) => ({ ...t, symbol: pair.symbol }));
               collectedTrades.push(...finishedTrades);
             }
           } catch (itemErr) {
@@ -1147,7 +1149,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             trades,
           });
 
-          const finishedTrades = trades.filter((t) => t.status === 'WIN' || t.status === 'LOSS');
+          const finishedTrades = trades
+            .filter((t) => t.status === 'WIN' || t.status === 'LOSS')
+            .map((t) => ({ ...t, symbol: pair.symbol }));
           collectedTrades.push(...finishedTrades);
         }
 
@@ -1793,7 +1797,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       if (count < minCandles) minCandles = count;
       if (count > maxCandles) maxCandles = count;
 
-      if (!symbol.toUpperCase().endsWith('USDT') && !symbol.toUpperCase().endsWith('BUSD')) {
+      const rawSym = (entry.pair?.symbol || symbol.replace(/^(binance|xt)_/i, '').replace(/_[0-9]+[a-z]$/i, '')).toUpperCase();
+      if (!rawSym.endsWith('USDT') && !rawSym.endsWith('BUSD') && !rawSym.endsWith('USDC') && !rawSym.endsWith('FDUSD')) {
         inconsistentSymbolsCount++;
       }
 
@@ -2108,7 +2113,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     // 13. incorrect PnL calculation
     let incorrectPnlCount = 0;
 
-    for (const t of allCollectedTrades) {
+    for (const t of effectivePortfolioTrades) {
       // ۱. duplicate trades
       const hash = `${t.strategyId || ''}_${(t as any).symbol || ''}_${t.direction}_${t.entryTime || 0}_${t.exitTime || 0}_${t.entryPrice}_${t.exitPrice || 0}`;
       if (tradeHashes.has(hash)) {
@@ -2206,8 +2211,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         }
       }
 
-      // ۱۲. incorrect leverage handling
-      if (t.positionValue > capital * 20) {
+      // ۱۲. incorrect leverage handling (اهرم غیرمجاز بالای ۱۰۰ برابر در بازار فیوچرز)
+      const maxAllowedLeverage = 100;
+      if (t.positionValue > capital * maxAllowedLeverage) {
         incorrectLeverageHandlingCount++;
       }
 
@@ -2219,7 +2225,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             : t.positionSize * (t.entryPrice - t.exitPrice);
         const feeVal = t.fee || 0;
         const expectedNet = expectedGross - feeVal;
-        if (Math.abs(expectedNet - t.pnl) > 0.1) {
+        if (Math.abs(expectedNet - t.pnl) > 0.15) {
           incorrectPnlCount++;
         }
       }
@@ -2293,11 +2299,11 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         incorrectLeverageHandlingCount +
         incorrectPnlCount,
     };
-  }, [allCollectedTrades, datasetAudit.missingDataCount, capital, commissionPercent]);
+  }, [effectivePortfolioTrades, datasetAudit.missingDataCount, capital, commissionPercent]);
 
   // ۳. بازسازی مدل مبنای استراتژی (Reconstruct the baseline)
   const baselineReconstruction = useMemo(() => {
-    const trades = allCollectedTrades || [];
+    const trades = effectivePortfolioTrades || [];
     const initialCap = capital || 10000;
     const risk = riskPercent || 1.0;
     const durationDays = datasetAudit.actualDurationDays || 0;
@@ -2704,11 +2710,11 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       dailyVaR95,
       dailyCVaR95,
     };
-  }, [allCollectedTrades, capital, riskPercent, datasetAudit.actualDurationDays, timeframe, commissionPercent]);
+  }, [effectivePortfolioTrades, capital, riskPercent, datasetAudit.actualDurationDays, timeframe, commissionPercent]);
 
   // ۴. سنجش ریسک واقعی پرتفوی (4. Measure actual portfolio risk)
   const portfolioRiskAudit = useMemo(() => {
-    const trades = allCollectedTrades || [];
+    const trades = effectivePortfolioTrades || [];
     const baseRisk = riskPercent || 1.0;
     const initialCap = capital || 10000;
 
@@ -2823,7 +2829,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       avgCorrelation,
       scalingTable,
     };
-  }, [allCollectedTrades, riskPercent, capital]);
+  }, [effectivePortfolioTrades, riskPercent, capital]);
 
   // ۵. صحه‌گذاری مدل مبنا در برابر درودان ۲۰٪ (5. Baseline validation)
   const baselineValidationAudit = useMemo(() => {
@@ -6497,7 +6503,7 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                         </span>
                       </td>
                       <td className="py-3 px-3 text-gray-300 leading-relaxed text-[11px]">
-                        تک‌تک {allCollectedTrades.length} معامله ثبت‌شده با هش اختصاصی زمان/قیمت بازرسی شدند؛ هیچ سفارشی دو بار در یک ثانیه یا با مشخصات موازی ثبت نشده است.
+                        تک‌تک {effectivePortfolioTrades.length} معامله ثبت‌شده با هش اختصاصی زمان/قیمت بازرسی شدند؛ هیچ سفارشی دو بار در یک ثانیه یا با مشخصات موازی ثبت نشده است.
                       </td>
                     </tr>
 

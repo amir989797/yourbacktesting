@@ -88,7 +88,8 @@ export function runStrategy1Backtest(
       let takeProfit = priceA;
       let riskReward = naturalRR;
 
-      if (naturalRR > maxRR) {
+      const isTargetValidInDirection = direction === 'BUY' ? priceA > entryPrice : priceA < entryPrice;
+      if (!isTargetValidInDirection || naturalRR > maxRR || naturalRR <= 0.05) {
         riskReward = maxRR;
         takeProfit =
           direction === 'BUY'
@@ -183,7 +184,8 @@ export function runStrategy1Backtest(
                 exitCandleIdx = k;
                 const exitFee = (positionSize * exitPrice) * exitFeeRate;
                 const tradeFee = entryFee + exitFee;
-                pnl = -riskAmount - tradeFee;
+                const grossTradePnl = positionSize * (exitPrice - entryPrice);
+                pnl = grossTradePnl - tradeFee;
                 pnlPercent = (pnl / config.capital) * 100;
                 break;
               } else if (hitTP) {
@@ -193,7 +195,8 @@ export function runStrategy1Backtest(
                 exitCandleIdx = k;
                 const exitFee = (positionSize * exitPrice) * exitFeeRate;
                 const tradeFee = entryFee + exitFee;
-                pnl = (riskAmount * riskReward) - tradeFee;
+                const grossTradePnl = positionSize * (exitPrice - entryPrice);
+                pnl = grossTradePnl - tradeFee;
                 pnlPercent = (pnl / config.capital) * 100;
                 break;
               } else if (hitSL) {
@@ -203,7 +206,8 @@ export function runStrategy1Backtest(
                 exitCandleIdx = k;
                 const exitFee = (positionSize * exitPrice) * exitFeeRate;
                 const tradeFee = entryFee + exitFee;
-                pnl = -riskAmount - tradeFee;
+                const grossTradePnl = positionSize * (exitPrice - entryPrice);
+                pnl = grossTradePnl - tradeFee;
                 pnlPercent = (pnl / config.capital) * 100;
                 break;
               }
@@ -219,7 +223,8 @@ export function runStrategy1Backtest(
                 exitCandleIdx = k;
                 const exitFee = (positionSize * exitPrice) * exitFeeRate;
                 const tradeFee = entryFee + exitFee;
-                pnl = -riskAmount - tradeFee;
+                const grossTradePnl = positionSize * (entryPrice - exitPrice);
+                pnl = grossTradePnl - tradeFee;
                 pnlPercent = (pnl / config.capital) * 100;
                 break;
               } else if (hitTP) {
@@ -229,7 +234,8 @@ export function runStrategy1Backtest(
                 exitCandleIdx = k;
                 const exitFee = (positionSize * exitPrice) * exitFeeRate;
                 const tradeFee = entryFee + exitFee;
-                pnl = (riskAmount * riskReward) - tradeFee;
+                const grossTradePnl = positionSize * (entryPrice - exitPrice);
+                pnl = grossTradePnl - tradeFee;
                 pnlPercent = (pnl / config.capital) * 100;
                 break;
               } else if (hitSL) {
@@ -239,7 +245,8 @@ export function runStrategy1Backtest(
                 exitCandleIdx = k;
                 const exitFee = (positionSize * exitPrice) * exitFeeRate;
                 const tradeFee = entryFee + exitFee;
-                pnl = -riskAmount - tradeFee;
+                const grossTradePnl = positionSize * (entryPrice - exitPrice);
+                pnl = grossTradePnl - tradeFee;
                 pnlPercent = (pnl / config.capital) * 100;
                 break;
               }
@@ -422,10 +429,10 @@ export function runStrategy2Backtest(
           if (candleDist >= effectiveMinCandles && priceDist >= requiredDistance) {
             const thresholdPrice = currentFVal - requiredDistance;
             // در لحظه فعال‌شدن شرط، قیمت از thresholdPrice عبور کرده
-            const entryPrice = parseFloat(Math.min(c.open, thresholdPrice).toFixed(4));
+            const entryPrice = Math.min(c.open, thresholdPrice);
             const entryTime = c.time;
             const entryCandleIdx = cIdx;
-            const stopLoss = parseFloat(currentFVal.toFixed(4));
+            const stopLoss = currentFVal;
             const stopDistance = Math.abs(entryPrice - stopLoss);
 
             if (config.noConcurrentPositions && entryCandleIdx <= lastTradeExitCandleIdx) {
@@ -438,7 +445,7 @@ export function runStrategy2Backtest(
 
               const maxRR = config.maxRiskReward > 0 ? config.maxRiskReward : 5;
               const riskReward = maxRR;
-              const takeProfit = parseFloat((entryPrice - stopDistance * maxRR).toFixed(4));
+              const takeProfit = entryPrice - stopDistance * maxRR;
 
               const riskAmount = (config.capital * config.riskPercent) / 100;
               const positionSize = riskAmount / stopDistance;
@@ -472,7 +479,8 @@ export function runStrategy2Backtest(
                   exitCandleIdx = k;
                   const exitFee = (positionSize * exitPrice) * exitFeeRate;
                   const tradeFee = entryFee + exitFee;
-                  pnl = -riskAmount - tradeFee;
+                  const grossTradePnl = positionSize * (entryPrice - exitPrice);
+                  pnl = grossTradePnl - tradeFee;
                   pnlPercent = (pnl / config.capital) * 100;
                   break;
                 } else if (hitTP) {
@@ -482,7 +490,8 @@ export function runStrategy2Backtest(
                   exitCandleIdx = k;
                   const exitFee = (positionSize * exitPrice) * exitFeeRate;
                   const tradeFee = entryFee + exitFee;
-                  pnl = (riskAmount * riskReward) - tradeFee;
+                  const grossTradePnl = positionSize * (entryPrice - exitPrice);
+                  pnl = grossTradePnl - tradeFee;
                   pnlPercent = (pnl / config.capital) * 100;
                   break;
                 } else if (hitSL) {
@@ -492,7 +501,8 @@ export function runStrategy2Backtest(
                   exitCandleIdx = k;
                   const exitFee = (positionSize * exitPrice) * exitFeeRate;
                   const tradeFee = entryFee + exitFee;
-                  pnl = -riskAmount - tradeFee;
+                  const grossTradePnl = positionSize * (entryPrice - exitPrice);
+                  pnl = grossTradePnl - tradeFee;
                   pnlPercent = (pnl / config.capital) * 100;
                   break;
                 }
@@ -529,7 +539,7 @@ export function runStrategy2Backtest(
                 stopLoss,
                 takeProfit,
                 riskAmount: parseFloat(riskAmount.toFixed(2)),
-                positionSize: parseFloat(positionSize.toFixed(6)),
+                positionSize,
                 positionValue: parseFloat(positionValue.toFixed(2)),
                 riskReward: parseFloat(riskReward.toFixed(2)),
                 timeF,
@@ -538,18 +548,18 @@ export function runStrategy2Backtest(
                 entryCandleIdx,
                 exitTime,
                 exitCandleIdx,
-                exitPrice: exitPrice ? parseFloat(exitPrice.toFixed(4)) : undefined,
+                exitPrice: exitPrice,
                 candlesElapsedToEntry: entryCandleIdx - candleIdxF,
                 candlesRemainingToEnter: 0,
                 waitingForPostLeg: false,
                 hasPostLeg: true,
                 status,
-                grossPnl: parseFloat((pnl + tradeTotalFee).toFixed(2)),
+                grossPnl: parseFloat((positionSize * (entryPrice - actualExitPrice)).toFixed(2)),
                 entryFee: parseFloat(entryFee.toFixed(2)),
                 exitFee: parseFloat(tradeExitFee.toFixed(2)),
                 fee: parseFloat(tradeTotalFee.toFixed(2)),
-                pnl: parseFloat(pnl.toFixed(2)),
-                pnlPercent: parseFloat(pnlPercent.toFixed(2)),
+                pnl: parseFloat((positionSize * (entryPrice - actualExitPrice) - tradeTotalFee).toFixed(2)),
+                pnlPercent: parseFloat((((positionSize * (entryPrice - actualExitPrice) - tradeTotalFee) / config.capital) * 100).toFixed(2)),
               });
 
               lastTradeExitCandleIdx = Math.max(
@@ -574,10 +584,10 @@ export function runStrategy2Backtest(
           // حداقل minCandles کندل گذشته باشد و رشد قیمت حداقل برابر atrMultiplier * ATR باشد
           if (candleDist >= effectiveMinCandles && priceDist >= requiredDistance) {
             const thresholdPrice = currentFVal + requiredDistance;
-            const entryPrice = parseFloat(Math.max(c.open, thresholdPrice).toFixed(4));
+            const entryPrice = Math.max(c.open, thresholdPrice);
             const entryTime = c.time;
             const entryCandleIdx = cIdx;
-            const stopLoss = parseFloat(currentFVal.toFixed(4));
+            const stopLoss = currentFVal;
             const stopDistance = Math.abs(entryPrice - stopLoss);
 
             if (config.noConcurrentPositions && entryCandleIdx <= lastTradeExitCandleIdx) {
@@ -590,7 +600,7 @@ export function runStrategy2Backtest(
 
               const maxRR = config.maxRiskReward > 0 ? config.maxRiskReward : 5;
               const riskReward = maxRR;
-              const takeProfit = parseFloat((entryPrice + stopDistance * maxRR).toFixed(4));
+              const takeProfit = entryPrice + stopDistance * maxRR;
 
               const riskAmount = (config.capital * config.riskPercent) / 100;
               const positionSize = riskAmount / stopDistance;
@@ -624,7 +634,8 @@ export function runStrategy2Backtest(
                   exitCandleIdx = k;
                   const exitFee = (positionSize * exitPrice) * exitFeeRate;
                   const tradeFee = entryFee + exitFee;
-                  pnl = -riskAmount - tradeFee;
+                  const grossTradePnl = positionSize * (exitPrice - entryPrice);
+                  pnl = grossTradePnl - tradeFee;
                   pnlPercent = (pnl / config.capital) * 100;
                   break;
                 } else if (hitTP) {
@@ -634,7 +645,8 @@ export function runStrategy2Backtest(
                   exitCandleIdx = k;
                   const exitFee = (positionSize * exitPrice) * exitFeeRate;
                   const tradeFee = entryFee + exitFee;
-                  pnl = (riskAmount * riskReward) - tradeFee;
+                  const grossTradePnl = positionSize * (exitPrice - entryPrice);
+                  pnl = grossTradePnl - tradeFee;
                   pnlPercent = (pnl / config.capital) * 100;
                   break;
                 } else if (hitSL) {
@@ -644,7 +656,8 @@ export function runStrategy2Backtest(
                   exitCandleIdx = k;
                   const exitFee = (positionSize * exitPrice) * exitFeeRate;
                   const tradeFee = entryFee + exitFee;
-                  pnl = -riskAmount - tradeFee;
+                  const grossTradePnl = positionSize * (exitPrice - entryPrice);
+                  pnl = grossTradePnl - tradeFee;
                   pnlPercent = (pnl / config.capital) * 100;
                   break;
                 }
@@ -681,7 +694,7 @@ export function runStrategy2Backtest(
                 stopLoss,
                 takeProfit,
                 riskAmount: parseFloat(riskAmount.toFixed(2)),
-                positionSize: parseFloat(positionSize.toFixed(6)),
+                positionSize,
                 positionValue: parseFloat(positionValue.toFixed(2)),
                 riskReward: parseFloat(riskReward.toFixed(2)),
                 timeF,
@@ -690,18 +703,18 @@ export function runStrategy2Backtest(
                 entryCandleIdx,
                 exitTime,
                 exitCandleIdx,
-                exitPrice: exitPrice ? parseFloat(exitPrice.toFixed(4)) : undefined,
+                exitPrice: exitPrice,
                 candlesElapsedToEntry: entryCandleIdx - candleIdxF,
                 candlesRemainingToEnter: 0,
                 waitingForPostLeg: false,
                 hasPostLeg: true,
                 status,
-                grossPnl: parseFloat((pnl + tradeTotalFee).toFixed(2)),
+                grossPnl: parseFloat((positionSize * (actualExitPrice - entryPrice)).toFixed(2)),
                 entryFee: parseFloat(entryFee.toFixed(2)),
                 exitFee: parseFloat(tradeExitFee.toFixed(2)),
                 fee: parseFloat(tradeTotalFee.toFixed(2)),
-                pnl: parseFloat(pnl.toFixed(2)),
-                pnlPercent: parseFloat(pnlPercent.toFixed(2)),
+                pnl: parseFloat((positionSize * (actualExitPrice - entryPrice) - tradeTotalFee).toFixed(2)),
+                pnlPercent: parseFloat((((positionSize * (actualExitPrice - entryPrice) - tradeTotalFee) / config.capital) * 100).toFixed(2)),
               });
 
               lastTradeExitCandleIdx = Math.max(

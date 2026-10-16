@@ -838,16 +838,22 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         const availBal = balance.availableBalance > 0
           ? balance.availableBalance
           : (balance.totalEquity > 0 ? balance.totalEquity : balance.walletBalance);
-        const MIN_MARGIN_THRESHOLD = 2.0; // حداقل مارجین ۲ دلار برای معاملات فیوچرز
 
-        if (availBal < chosen.requiredMargin || chosen.requiredMargin < MIN_MARGIN_THRESHOLD) {
+        if (availBal < chosen.requiredMargin) {
           addLog(
             'warning',
-            `⚠️ مارجین به حد نصاب نرسید! مارجین مورد نیاز برای ${chosenName}: ${chosen.requiredMargin.toFixed(2)} USDT (اهرم ${chosen.maxLeverage}x) | موجودی آزاد حساب: ${availBal.toFixed(2)} USDT. از ورود به معامله صرف‌نظر شد.`,
+            `⚠️ موجودی آزاد ناکافی! مارجین مورد نیاز برای ${chosenName}: ${chosen.requiredMargin.toFixed(2)} USDT (اهرم ${chosen.maxLeverage}x) | موجودی آزاد حساب: ${availBal.toFixed(2)} USDT. از ورود به معامله صرف‌نظر شد.`,
+            chosen.sym
+          );
+        } else if (isLiveExecution && chosen.notionalUsdt < 5.0) {
+          // در معاملات لایو واقعی صرافی، حداقل ارزش سفارش (Notional) معمولاً ۵ دلار است
+          addLog(
+            'warning',
+            `⚠️ ارزش کل معامله (${chosen.notionalUsdt.toFixed(2)}$) کمتر از حداقل مجاز صرافی (5 USDT) است. از ارسال سفارش لایو برای ${chosenName} صرف‌نظر شد.`,
             chosen.sym
           );
         } else {
-          // مارجین به حد نصاب رسیده -> اجرای ترید با بیشترین اهرم و حداقل مارجین
+          // مارجین کافی است -> اجرای ترید با بیشترین اهرم و حداقل مارجین
           addLog(
             'trade',
             `⚡ سیگنال برگزیده ${chosen.posSide} برای ${chosenName} با بیشترین اهرم (${chosen.maxLeverage}x) و حداقل مارجین درگیر (${chosen.requiredMargin.toFixed(2)} USDT) اجرا می‌شود. حجم کل: ${chosen.notionalUsdt.toFixed(1)}$ (${chosen.contractQty} واحد) | ریسک استاپ (${riskPercent}%): ${chosen.riskUsdt.toFixed(2)}$ | ورود: ${formatPrice(chosen.curPrice)} | استاپ: ${formatPrice(chosen.stopLoss)} | تارگت: ${formatPrice(chosen.takeProfit)}`,

@@ -1406,18 +1406,23 @@ async function runServerScannerCycle() {
           `⚠️ سیگنال ورود برای ${chosen.symbol.toUpperCase()} کشف شد اما به دلیل فعال بودن تک‌پوزیشن و داشتن ${openPositionsCount} پوزیشن باز، معامله جدید ارسال نشد.`,
           chosen.symbol
         );
-      } else {
-        const MIN_MARGIN = 2.0;
-        if (availableBalance < chosen.requiredMargin || chosen.requiredMargin < MIN_MARGIN) {
+        if (availableBalance < chosen.requiredMargin) {
           addServerScannerLog(
             'warning',
-            `⚠️ مارجین به حد نصاب نرسید! مارجین مورد نیاز برای ${chosen.symbol.toUpperCase()}: ${chosen.requiredMargin}$ | موجودی آزاد: ${availableBalance.toFixed(2)}$`,
+            `⚠️ موجودی آزاد ناکافی! مارجین مورد نیاز برای ${chosen.symbol.toUpperCase()}: ${chosen.requiredMargin}$ | موجودی آزاد حساب: ${availableBalance.toFixed(2)}$`,
+            chosen.symbol
+          );
+        } else if (cfg.isLiveExecution && chosen.notionalUsdt < 5.0) {
+          // در معاملات لایو واقعی صرافی، حداقل ارزش سفارش (Notional) معمولاً ۵ دلار است
+          addServerScannerLog(
+            'warning',
+            `⚠️ ارزش کل معامله (${chosen.notionalUsdt}$) کمتر از حداقل مجاز صرافی (5 USDT) است. از ارسال سفارش لایو برای ${chosen.symbol.toUpperCase()} صرف‌نظر شد.`,
             chosen.symbol
           );
         } else {
           addServerScannerLog(
             'trade',
-            `⚡ سیگنال برگزیده ${chosen.posSide} برای ${chosen.symbol.toUpperCase()} با بیشترین اهرم (${chosen.maxLeverage}x) و حداقل مارجین درگیر (${chosen.requiredMargin} USDT) ثبت گردید. حجم: ${chosen.notionalUsdt}$ | ورود: ${chosen.curPrice} | استاپ: ${chosen.stopLoss} | تارگت: ${chosen.takeProfit}`,
+            `⚡ سیگنال برگزیده ${chosen.posSide} برای ${chosen.symbol.toUpperCase()} با بیشترین اهرم (${chosen.maxLeverage}x) و حداقل مارجین درگیر (${chosen.requiredMargin} USDT) تأیید شد. حجم: ${chosen.notionalUsdt}$ | ورود: ${chosen.curPrice} | استاپ: ${chosen.stopLoss} | تارگت: ${chosen.takeProfit}`,
             chosen.symbol
           );
 
