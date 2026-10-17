@@ -168,3 +168,23 @@ export interface LiveTradeSettings {
   isSimulatedPaper: boolean;
 }
 
+export interface ActiveChartOrder {
+  id?: string;
+  orderId?: string;
+  symbol: string;
+  side: 'BUY' | 'SELL' | 'LONG' | 'SHORT';
+  positionSide?: 'LONG' | 'SHORT';
+  price: number;
+  entryPrice?: number;
+  stopLossPrice?: number;
+  takeProfitPrice?: number;
+  amount?: number;
+  contractQty?: number;
+  nominalUsdt?: number;
+  leverage?: number;
+  unrealizedPnl?: number;
+  pnlPercent?: number;
+  status?: string;
+  time?: string | number;
+}
+

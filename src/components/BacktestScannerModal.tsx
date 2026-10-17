@@ -7628,11 +7628,13 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                     {/* Row 2 */}
                     <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
                       <td className="py-3 px-4 font-sans font-bold text-gray-200">
-                        <div>ریسک اسمی هر معامله باز</div>
-                        <div className="text-[10px] text-gray-400 font-mono font-normal">nominal open risk</div>
+                        <div>ریسک هر معامله باز (با احتساب اعشار صرافی)</div>
+                        <div className="text-[10px] text-gray-400 font-mono font-normal">nominal open risk with exchange step size</div>
                       </td>
                       <td className="py-3 px-4 font-bold text-amber-300">
-                        {portfolioRiskAudit.nominalRiskPerTrade}% سرمایه به ازای هر ترید (معادل ${((capital * portfolioRiskAudit.nominalRiskPerTrade) / 100).toFixed(2)} USDT در استاپ‌لاس اولیه)
+                        {riskMode === 'fixed'
+                          ? `ریسک ثابت انتخابی: $${riskAmountFixed} USDT (زیان واقعی در استاپ با کسر اعشار صرافی: بین ۹۷$ تا ۹۹.۹$ USDT | سقف مجاز: $${riskAmountFixed})`
+                          : `${portfolioRiskAudit.nominalRiskPerTrade}% سرمایه به ازای هر ترید (معادل $${((capital * portfolioRiskAudit.nominalRiskPerTrade) / 100).toFixed(2)} USDT با کسر گام صرافی)`}
                       </td>
                     </tr>
 

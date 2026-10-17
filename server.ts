@@ -4,9 +4,11 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import https from 'https';
+import fs from 'fs';
 import { calculateATR, calculateAtrZigZag, analyzeZigZagLegs } from './src/utils/indicators.ts';
 import { runStrategy1Backtest, runStrategy2Backtest } from './src/utils/strategyEngine.ts';
 import { DEFAULT_STRATEGY_CONFIG, StrategyConfig } from './src/types/strategy.ts';
+import { calculateExactTradeSizing, getSymbolLotRule, calculateXtContractQuantity } from './src/utils/exchangePrecision.ts';
 
 dotenv.config();
 
@@ -420,16 +422,19 @@ async function requestXtApi(
   return await response.json();
 }
 
+function toXtSymbol(symbol: string): string {
+  if (!symbol) return 'btc_usdt';
+  let s = symbol.toLowerCase().replace('/', '');
+  if (s.includes('_')) return s;
+  if (s.endsWith('usdt')) {
+    return s.slice(0, -4) + '_usdt';
+  }
+  return s + '_usdt';
+}
+
 // XT Public Kline fetcher
 async function fetchXtServerKlines(symbol: string, interval: string, limit: number = 1000): Promise<CandleData[]> {
-  let xtSymbol = symbol.toLowerCase();
-  if (!xtSymbol.includes('_')) {
-    if (xtSymbol.endsWith('usdt')) {
-      xtSymbol = xtSymbol.slice(0, -4) + '_usdt';
-    } else {
-      xtSymbol = xtSymbol + '_usdt';
-    }
-  }
+  const xtSymbol = toXtSymbol(symbol);
 
   const url = `https://${XT_FAPI_HOST}/future/market/v1/public/q/kline?symbol=${xtSymbol}&interval=${interval}&limit=${Math.min(limit, 1000)}`;
   const response = await fetch(url);
@@ -1092,8 +1097,11 @@ interface ServerActiveSignal {
   requiredMargin: number;
   maxLeverage: number;
   contractQty: number;
+  stepSize?: number;
+  qtyPrecision?: number;
   notionalUsdt: number;
   riskUsdt: number;
+  targetRiskUsdt?: number;
   strategyName: string;
   discoveredAt: string;
 }
@@ -1146,6 +1154,14 @@ function getMaxLeverageForSymbol(rawSymbol: string): number {
   return 20;
 }
 
+const CONFIG_FILE_PATH = path.resolve(__dirname, 'data', 'live-config.json');
+
+interface PersistentLiveScannerData {
+  config: ServerLiveScannerConfig;
+  isRunning: boolean;
+  updatedAt: string;
+}
+
 let serverScannerTimer: NodeJS.Timeout | null = null;
 const serverScannerState = {
   isRunning: false,
@@ -1153,7 +1169,7 @@ const serverScannerState = {
   config: {
     timeframe: '5m',
     exchange: 'xt' as 'xt' | 'binance',
-    strategyId: 'strategy_1_e_breakout',
+    strategyId: 'strategy_2_next_pivot',
     symbols: [
       'btc_usdt', 'eth_usdt', 'sol_usdt', 'xrp_usdt', 'doge_usdt',
       'sui_usdt', 'ada_usdt', 'near_usdt', 'avax_usdt', 'link_usdt',
@@ -1183,7 +1199,51 @@ const serverScannerState = {
   lastResult: null as any,
   activeSignals: [] as ServerActiveSignal[],
   logs: [] as ServerScannerLog[],
+  executionLogs: [] as any[], // Detailed history of all exchange order attempts and responses
 };
+
+function loadLiveConfigFromDisk(): PersistentLiveScannerData | null {
+  try {
+    if (fs.existsSync(CONFIG_FILE_PATH)) {
+      const raw = fs.readFileSync(CONFIG_FILE_PATH, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.config) {
+        return parsed;
+      }
+    }
+  } catch (err: any) {
+    console.warn('[ServerLiveScanner] Warning reading config from disk:', err.message);
+  }
+  return null;
+}
+
+function saveLiveConfigToDisk() {
+  try {
+    const dataDir = path.dirname(CONFIG_FILE_PATH);
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+    const data: PersistentLiveScannerData = {
+      config: serverScannerState.config,
+      isRunning: serverScannerState.isRunning,
+      updatedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(CONFIG_FILE_PATH, JSON.stringify(data, null, 2), 'utf-8');
+  } catch (err: any) {
+    console.error('[ServerLiveScanner] Failed to save live config to disk:', err.message);
+  }
+}
+
+// Initialize and resume persistent state from disk
+const savedDiskData = loadLiveConfigFromDisk();
+if (savedDiskData) {
+  serverScannerState.config = {
+    ...serverScannerState.config,
+    ...savedDiskData.config,
+  };
+  serverScannerState.isRunning = !!savedDiskData.isRunning;
+  console.log(`[ServerLiveScanner] ✅ Loaded persistent config from ${CONFIG_FILE_PATH} (Active: ${serverScannerState.isRunning})`);
+}
 
 function addServerScannerLog(
   type: 'info' | 'success' | 'warning' | 'error' | 'trade',
@@ -1216,7 +1276,8 @@ function getScannerPublicState() {
     totalRunsCount: serverScannerState.totalRunsCount,
     lastResult: serverScannerState.lastResult,
     activeSignals: serverScannerState.activeSignals,
-    logs: serverScannerState.logs.slice(0, 50),
+    logs: serverScannerState.logs.slice(0, 100),
+    executionLogs: serverScannerState.executionLogs.slice(0, 50),
   };
 }
 
@@ -1307,7 +1368,7 @@ async function runServerScannerCycle() {
           capital: availableBalance,
           riskPercent: cfg.riskPercent || 1,
           maxRiskReward: cfg.riskRewardRatio || 2,
-          selectedStrategyId: cfg.strategyId || 'strategy_1_e_breakout',
+          selectedStrategyId: cfg.strategyId || 'strategy_2_next_pivot',
           maxCandlesToEnter: 35,
           noConcurrentPositions: Boolean(cfg.noConcurrentPositions),
         };
@@ -1341,18 +1402,25 @@ async function runServerScannerCycle() {
             const takeProfit = parseFloat(Number(lastTrade.takeProfit || curPrice * (posSide === 'LONG' ? 1.06 : 0.94)).toFixed(4));
             const maxLev = getMaxLeverageForSymbol(sym);
 
-            const riskAmountUsdt = cfg.riskMode === 'fixed' && cfg.riskAmountFixed && cfg.riskAmountFixed > 0
+            const riskBudgetUsdt = cfg.riskMode === 'fixed' && cfg.riskAmountFixed && cfg.riskAmountFixed > 0
               ? cfg.riskAmountFixed
               : availableBalance * ((cfg.riskPercent || 1) / 100);
-            const priceDistance = Math.abs(curPrice - stopLoss);
-            const safeDistance = priceDistance > 0 ? priceDistance : curPrice * 0.02;
-            const feeFraction = 0.0006 + (stopLoss / curPrice) * 0.0006;
-            const effectiveLossFraction = (safeDistance / curPrice) + feeFraction;
 
-            const notionalUsdt = riskAmountUsdt / (effectiveLossFraction > 0 ? effectiveLossFraction : 0.02);
-            const approxQty = curPrice > 0 ? notionalUsdt / curPrice : 1;
-            const contractQty = Math.max(1, Math.round(approxQty * 1000) / 1000);
+            // محاسبه دقیق حجم و زیان استاپ بر مبنای اعشار و استپ‌سایز صرافی بایننس و XT
+            const sizing = calculateExactTradeSizing(
+              riskBudgetUsdt,
+              curPrice,
+              stopLoss,
+              takeProfit,
+              0.0006,
+              0.0006,
+              sym
+            );
+
+            const contractQty = sizing.quantizedPositionSize;
+            const notionalUsdt = sizing.positionValue;
             const requiredMargin = parseFloat((notionalUsdt / maxLev).toFixed(2));
+            const actualRiskUsdt = sizing.actualLossAtSL; // زیان واقعی با احتساب استپ‌سایز صرافی (مثلاً ۹۸.۵$)
 
             candidateSignals.push({
               symbol: sym,
@@ -1362,10 +1430,13 @@ async function runServerScannerCycle() {
               stopLoss,
               takeProfit,
               contractQty,
+              stepSize: sizing.stepSize,
+              qtyPrecision: sizing.qtyPrecision,
               maxLeverage: maxLev,
               requiredMargin,
               notionalUsdt: parseFloat(notionalUsdt.toFixed(2)),
-              riskUsdt: parseFloat(riskAmountUsdt.toFixed(2)),
+              riskUsdt: parseFloat(actualRiskUsdt.toFixed(2)),
+              targetRiskUsdt: parseFloat(riskBudgetUsdt.toFixed(2)),
               strategyName: cfg.strategyId === 'strategy_2_next_pivot' ? 'استراتژی ۲ (Next-Pivot)' : 'استراتژی ۱ (E-Breakout)',
               discoveredAt: new Date().toISOString(),
             });
@@ -1397,7 +1468,7 @@ async function runServerScannerCycle() {
       serverScannerState.activeSignals = candidateSignals;
 
       const descList = candidateSignals
-        .map((c) => `${c.symbol.toUpperCase()} (مارجین: ${c.requiredMargin}$ | اهرم ${c.maxLeverage}x)`)
+        .map((c) => `${c.symbol.toUpperCase()} (مارجین: ${c.requiredMargin}$ | اهرم ${c.maxLeverage}x | حجم: ${c.contractQty})`)
         .join(' ، ');
 
       addServerScannerLog(
@@ -1413,48 +1484,94 @@ async function runServerScannerCycle() {
           `⚠️ سیگنال ورود برای ${chosen.symbol.toUpperCase()} کشف شد اما به دلیل فعال بودن تک‌پوزیشن و داشتن ${openPositionsCount} پوزیشن باز، معامله جدید ارسال نشد.`,
           chosen.symbol
         );
-        if (availableBalance < chosen.requiredMargin) {
-          addServerScannerLog(
-            'warning',
-            `⚠️ موجودی آزاد ناکافی! مارجین مورد نیاز برای ${chosen.symbol.toUpperCase()}: ${chosen.requiredMargin}$ | موجودی آزاد حساب: ${availableBalance.toFixed(2)}$`,
-            chosen.symbol
-          );
-        } else if (cfg.isLiveExecution && chosen.notionalUsdt < 5.0) {
-          // در معاملات لایو واقعی صرافی، حداقل ارزش سفارش (Notional) معمولاً ۵ دلار است
-          addServerScannerLog(
-            'warning',
-            `⚠️ ارزش کل معامله (${chosen.notionalUsdt}$) کمتر از حداقل مجاز صرافی (5 USDT) است. از ارسال سفارش لایو برای ${chosen.symbol.toUpperCase()} صرف‌نظر شد.`,
-            chosen.symbol
-          );
-        } else {
-          addServerScannerLog(
-            'trade',
-            `⚡ سیگنال برگزیده ${chosen.posSide} برای ${chosen.symbol.toUpperCase()} با بیشترین اهرم (${chosen.maxLeverage}x) و حداقل مارجین درگیر (${chosen.requiredMargin} USDT) تأیید شد. حجم: ${chosen.notionalUsdt}$ | ورود: ${chosen.curPrice} | استاپ: ${chosen.stopLoss} | تارگت: ${chosen.takeProfit}`,
-            chosen.symbol
-          );
+      } else if (availableBalance < chosen.requiredMargin) {
+        addServerScannerLog(
+          'warning',
+          `⚠️ موجودی آزاد ناکافی! مارجین مورد نیاز برای ${chosen.symbol.toUpperCase()}: ${chosen.requiredMargin}$ | موجودی آزاد حساب: ${availableBalance.toFixed(2)}$`,
+          chosen.symbol
+        );
+      } else {
+        addServerScannerLog(
+          'trade',
+          `⚡ سیگنال برگزیده ${chosen.posSide} برای ${chosen.symbol.toUpperCase()} با بیشترین اهرم (${chosen.maxLeverage}x) و حداقل مارجین (${chosen.requiredMargin} USDT) تأیید شد. حجم مجاز صرافی: ${chosen.contractQty} (ارزش: ${chosen.notionalUsdt}$) | زیان استاپ با کسر اعشار: ${chosen.riskUsdt}$ از سقف ${chosen.targetRiskUsdt}$ | ورود: ${chosen.curPrice} | استاپ: ${chosen.stopLoss} | تارگت: ${chosen.takeProfit}`,
+          chosen.symbol
+        );
 
-          if (cfg.isLiveExecution && cfg.exchange === 'xt') {
-            addServerScannerLog('info', `🚀 در حال ارسال سفارش زنده فیوچرز به XT.COM...`, chosen.symbol);
-            try {
-              const orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', {
-                symbol: chosen.symbol,
-                orderSide: chosen.side,
-                orderType: 'MARKET',
-                positionSide: chosen.posSide,
-                origQty: chosen.contractQty,
-                triggerProfitPrice: chosen.takeProfit,
-                triggerStopPrice: chosen.stopLoss,
-              });
+        if (cfg.isLiveExecution && cfg.exchange === 'xt') {
+          const xtSymbol = toXtSymbol(chosen.symbol);
+          addServerScannerLog('info', `🚀 در حال ارسال سفارش زنده فیوچرز به XT.COM برای ${xtSymbol.toUpperCase()}...`, chosen.symbol);
+          
+          const xtSizing = calculateXtContractQuantity(chosen.contractQty, chosen.curPrice, xtSymbol, 10);
+          const orderQty = xtSizing.contractQty;
 
-              if (orderRes && orderRes.returnCode === 0) {
-                addServerScannerLog('success', `✅ سفارش زنده فیوچرز با موفقیت در صرافی ثبت شد (Order ID: ${orderRes.result?.orderId || 'ثبت شد'})`, chosen.symbol);
-              } else {
-                addServerScannerLog('warning', `⚠️ پیام صرافی: ${orderRes?.msg || 'خطا در ثبت سفارش'}`, chosen.symbol);
-              }
-            } catch (orderErr: any) {
-              addServerScannerLog('error', `❌ خطا در ارسال سفارش به صرافی: ${orderErr.message}`, chosen.symbol);
+          // Adjust leverage on XT first (swallow error if already set)
+          try {
+            await requestXtApi('POST', '/future/user/v1/position/adjust-leverage', 'application/json', {
+              symbol: xtSymbol,
+              leverage: chosen.maxLeverage,
+              positionSide: chosen.posSide,
+            });
+          } catch {}
+
+          const orderPayload = {
+            symbol: xtSymbol,
+            orderSide: chosen.side,
+            orderType: 'MARKET',
+            positionSide: chosen.posSide,
+            origQty: orderQty,
+            triggerProfitPrice: chosen.takeProfit,
+            triggerStopPrice: chosen.stopLoss,
+          };
+
+          const execRecord: any = {
+            id: `exec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            time: new Date().toISOString(),
+            timeFa: new Date().toLocaleTimeString('fa-IR'),
+            symbol: xtSymbol,
+            side: chosen.side,
+            posSide: chosen.posSide,
+            contractQty: orderQty,
+            contractSize: xtSizing.contractSize,
+            coinQty: xtSizing.effectiveCoinQty,
+            nominalUsdt: xtSizing.nominalUsdt,
+            curPrice: chosen.curPrice,
+            stopLoss: chosen.stopLoss,
+            takeProfit: chosen.takeProfit,
+            payload: orderPayload,
+          };
+
+          try {
+            const orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', orderPayload);
+            execRecord.response = orderRes;
+
+            if (orderRes && orderRes.returnCode === 0) {
+              const orderId = orderRes.result?.orderId || 'ثبت شد';
+              execRecord.status = 'SUCCESS';
+              execRecord.orderId = orderId;
+              addServerScannerLog(
+                'success',
+                `✅ سفارش زنده فیوچرز با موفقیت در صرافی XT ثبت شد (Order ID: ${orderId}) | حجم: ${orderQty} قرارداد (${xtSizing.effectiveCoinQty} واحد، ارزش: $${xtSizing.nominalUsdt}) | استاپ: ${chosen.stopLoss} | تارگت: ${chosen.takeProfit}`,
+                chosen.symbol
+              );
+            } else {
+              execRecord.status = 'FAILED';
+              const errDetail = orderRes?.error?.code
+                ? `${orderRes.error.code}${orderRes.error.msg ? ': ' + orderRes.error.msg : ''}`
+                : (orderRes?.msgInfo || orderRes?.msg || JSON.stringify(orderRes));
+              execRecord.error = errDetail;
+              addServerScannerLog('error', `❌ خطای صرافی XT در ثبت سفارش (${xtSymbol}): ${errDetail}`, chosen.symbol);
             }
+          } catch (orderErr: any) {
+            execRecord.status = 'FAILED';
+            execRecord.error = orderErr.message;
+            addServerScannerLog('error', `❌ استثنای شبکه در ارسال سفارش به صرافی XT: ${orderErr.message}`, chosen.symbol);
           }
+
+          serverScannerState.executionLogs = [execRecord, ...serverScannerState.executionLogs].slice(0, 100);
+        } else if (cfg.isLiveExecution && cfg.exchange === 'binance') {
+          addServerScannerLog('info', `🚀 سفارش بایننس لایو برای ${chosen.symbol} محاسبه شد (حجم: ${chosen.contractQty}، ارزش: $${chosen.notionalUsdt}).`, chosen.symbol);
+        } else {
+          addServerScannerLog('info', `📝 معامله در حالت شبیه‌ساز (Paper Trading) محاسبه شد. برای ارسال سفارش واقعی به صرافی، گزینه «معامله زنده (Auto-Trade)» را فعال کنید.`, chosen.symbol);
         }
       }
     }
@@ -1476,7 +1593,47 @@ async function runServerScannerCycle() {
   }
 }
 
-// 7.1 Start Live Scanner on Server
+// 7.1 Update and Persist Live Scanner Configuration
+app.post('/api/live-scanner/config', (req, res) => {
+  try {
+    const userCfg = req.body?.config || req.body || {};
+    serverScannerState.config = {
+      ...serverScannerState.config,
+      ...userCfg,
+    };
+    if (userCfg.timeframe && !userCfg.intervalMs) {
+      serverScannerState.config.intervalMs = getTimeframeMs(userCfg.timeframe);
+    }
+    
+    // Immediately persist to disk
+    saveLiveConfigToDisk();
+
+    // If autopilot is actively running and interval changed, update timer interval
+    if (serverScannerState.isRunning && userCfg.timeframe) {
+      if (serverScannerTimer) {
+        clearInterval(serverScannerTimer);
+      }
+      serverScannerTimer = setInterval(() => {
+        runServerScannerCycle().catch((err) => {
+          addServerScannerLog('error', `خطا در اجرای اسکن دوره‌ای سرور: ${err.message}`);
+          serverScannerState.isScanning = false;
+        });
+      }, serverScannerState.config.intervalMs);
+    }
+
+    addServerScannerLog('info', '💾 تنظیمات اسکنر و معاملات زنده با موفقیت در دیسک سرور پایدار شد.');
+    res.json({
+      success: true,
+      message: 'Server live scanner config updated and persisted',
+      config: serverScannerState.config,
+      isRunning: serverScannerState.isRunning,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 7.2 Start Live Scanner on Server
 app.post('/api/live-scanner/start', async (req, res) => {
   try {
     const userCfg = req.body?.config || {};
@@ -1496,9 +1653,13 @@ app.post('/api/live-scanner/start', async (req, res) => {
     serverScannerState.isRunning = true;
     serverScannerState.nextRunAt = new Date(Date.now() + serverScannerState.config.intervalMs).toISOString();
 
+    // Persist running state to disk
+    saveLiveConfigToDisk();
+
+    const tradeModeText = serverScannerState.config.isLiveExecution ? '⚡ معامله زنده صرافی (Real Orders)' : '📝 شبیه‌ساز (Paper Trading)';
     addServerScannerLog(
       'success',
-      `🚀 اتوپایلوت مداوم سرور فعال شد: دوره تکرار هر ${Math.round(serverScannerState.config.intervalMs / 60000)} دقیقه (${serverScannerState.config.symbols.length} ارز). اسکن اول فوراً آغاز شد.`
+      `🚀 اتوپایلوت مداوم سرور فعال شد [حالت: ${tradeModeText}]: دوره تکرار هر ${Math.round(serverScannerState.config.intervalMs / 60000)} دقیقه (${serverScannerState.config.symbols.length} ارز). اسکن اول فوراً آغاز شد.`
     );
 
     // Setup periodic interval timer on Node backend
@@ -1525,7 +1686,7 @@ app.post('/api/live-scanner/start', async (req, res) => {
   }
 });
 
-// 7.2 Stop Live Scanner on Server
+// 7.3 Stop Live Scanner on Server
 app.post('/api/live-scanner/stop', (_req, res) => {
   try {
     if (serverScannerTimer) {
@@ -1535,6 +1696,9 @@ app.post('/api/live-scanner/stop', (_req, res) => {
     serverScannerState.isRunning = false;
     serverScannerState.nextRunAt = null;
     serverScannerState.isScanning = false;
+
+    // Persist stopped state to disk
+    saveLiveConfigToDisk();
 
     addServerScannerLog('warning', '⏸️ اتوپایلوت مداوم در پس‌زمینه سرور متوقف گردید.');
 
@@ -1548,12 +1712,129 @@ app.post('/api/live-scanner/stop', (_req, res) => {
   }
 });
 
-// 7.3 Get Live Scanner Status from Server
+// 7.4 Get Live Scanner Status from Server
 app.get('/api/live-scanner/status', (_req, res) => {
   res.json({
     success: true,
     state: getScannerPublicState(),
   });
+});
+
+// 7.5 Execute Instant Test Live Trade ($0.10 Risk or Exchange Minimum)
+app.post('/api/live-scanner/test-trade', async (req, res) => {
+  try {
+    const rawSymbol = (req.body?.symbol || 'btc_usdt').toString();
+    const xtSymbol = toXtSymbol(rawSymbol);
+    const posSide = (req.body?.posSide === 'SHORT' ? 'SHORT' : 'LONG') as 'LONG' | 'SHORT';
+    const side = posSide === 'LONG' ? 'BUY' : 'SELL';
+    const targetRisk = parseFloat(String(req.body?.riskUsdt || 0.10));
+
+    // 1. Fetch current live market price of the symbol from XT
+    let curPrice = 0;
+    try {
+      const tickerRes = await fetch(`https://${XT_FAPI_HOST}/future/market/v1/public/q/ticker?symbol=${xtSymbol}`);
+      const tickerData = await tickerRes.json();
+      if (tickerData?.result?.c) {
+        curPrice = parseFloat(tickerData.result.c);
+      }
+    } catch {}
+
+    if (!curPrice || curPrice <= 0) {
+      curPrice = xtSymbol.startsWith('btc') ? 81500 : (xtSymbol.startsWith('eth') ? 2500 : 100);
+    }
+
+    // 2. Safe SL (0.3% distance) and TP (0.9% distance, 1:3 RR)
+    const slDistance = curPrice * 0.003;
+    const tpDistance = curPrice * 0.009;
+
+    const stopLoss = posSide === 'LONG'
+      ? parseFloat((curPrice - slDistance).toFixed(1))
+      : parseFloat((curPrice + slDistance).toFixed(1));
+    const takeProfit = posSide === 'LONG'
+      ? parseFloat((curPrice + tpDistance).toFixed(1))
+      : parseFloat((curPrice - tpDistance).toFixed(1));
+
+    // 3. Calculate minimum allowable contracts for XT (ensuring >= 10 USDT minNotional)
+    const xtSizing = calculateXtContractQuantity(0, curPrice, xtSymbol, 10);
+    const contractQty = xtSizing.contractQty;
+
+    // 4. Build order payload
+    const orderPayload = {
+      symbol: xtSymbol,
+      orderSide: side,
+      orderType: 'MARKET',
+      positionSide: posSide,
+      origQty: contractQty,
+      triggerProfitPrice: takeProfit,
+      triggerStopPrice: stopLoss,
+    };
+
+    addServerScannerLog('info', `🧪 در حال ارسال معامله آزمایشی زنده به XT (${xtSymbol.toUpperCase()} | ${contractQty} قرارداد)...`, xtSymbol);
+
+    // 5. Send order to XT API
+    const orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', orderPayload);
+
+    const execRecord: any = {
+      id: `test_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      time: new Date().toISOString(),
+      timeFa: new Date().toLocaleTimeString('fa-IR'),
+      symbol: xtSymbol,
+      side,
+      posSide,
+      contractQty,
+      contractSize: xtSizing.contractSize,
+      coinQty: xtSizing.effectiveCoinQty,
+      nominalUsdt: xtSizing.nominalUsdt,
+      curPrice,
+      stopLoss,
+      takeProfit,
+      isTestTrade: true,
+      payload: orderPayload,
+      response: orderRes,
+    };
+
+    if (orderRes && orderRes.returnCode === 0) {
+      execRecord.status = 'SUCCESS';
+      execRecord.orderId = orderRes.result?.orderId || 'ثبت شد';
+      addServerScannerLog(
+        'success',
+        `🧪 معامله تست زنده با موفقیت در صرافی XT ثبت شد! Order ID: ${execRecord.orderId} | نماد: ${xtSymbol.toUpperCase()} | حجم: ${contractQty} قرارداد (${xtSizing.effectiveCoinQty} واحد، ارزش: $${xtSizing.nominalUsdt}) | استاپ: ${stopLoss} | تارگت: ${takeProfit}`,
+        xtSymbol
+      );
+    } else {
+      execRecord.status = 'FAILED';
+      const errDetail = orderRes?.error?.code
+        ? `${orderRes.error.code}${orderRes.error.msg ? ': ' + orderRes.error.msg : ''}`
+        : (orderRes?.msgInfo || orderRes?.msg || JSON.stringify(orderRes));
+      execRecord.error = errDetail;
+      addServerScannerLog('error', `❌ تست معامله در صرافی با خطا مواجه شد: ${errDetail}`, xtSymbol);
+    }
+
+    serverScannerState.executionLogs = [execRecord, ...serverScannerState.executionLogs].slice(0, 100);
+
+    return res.json({
+      success: orderRes && orderRes.returnCode === 0,
+      orderId: orderRes?.result?.orderId || null,
+      orderPayload,
+      exchangeResponse: orderRes,
+      details: {
+        symbol: xtSymbol,
+        posSide,
+        side,
+        curPrice,
+        stopLoss,
+        takeProfit,
+        contractQty,
+        contractSize: xtSizing.contractSize,
+        coinQty: xtSizing.effectiveCoinQty,
+        nominalUsdt: xtSizing.nominalUsdt,
+        estimatedLossAtSL: parseFloat((xtSizing.effectiveCoinQty * slDistance).toFixed(3)),
+      },
+    });
+  } catch (err: any) {
+    addServerScannerLog('error', `❌ خطای سیستمی در اجرای تست معامله: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // =========================================================================

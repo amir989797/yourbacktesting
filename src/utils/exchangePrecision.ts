@@ -213,3 +213,89 @@ export function calculateExactTradeSizing(
     positionValue: parseFloat(positionValue.toFixed(2)),
   };
 }
+
+// =========================================================================
+// XT.COM FUTURES CONTRACT SIZING ENGINE
+// In XT.COM Futures, quantity is the number of contracts (integer, precision 0)
+// Each contract represents a fixed amount of the underlying coin (contractSize)
+// Minimum order notional is 10 USDT.
+// =========================================================================
+
+export const XT_CONTRACT_SIZES: Record<string, number> = {
+  btc_usdt: 0.0001,
+  eth_usdt: 0.01,
+  sol_usdt: 0.1,
+  bnb_usdt: 0.01,
+  xrp_usdt: 10,
+  doge_usdt: 100,
+  ada_usdt: 10,
+  sui_usdt: 1,
+  near_usdt: 1,
+  avax_usdt: 0.1,
+  link_usdt: 1,
+  pepe_usdt: 100000,
+  shib_usdt: 100000,
+  dot_usdt: 1,
+  ltc_usdt: 0.1,
+  apt_usdt: 0.1,
+  trx_usdt: 100,
+};
+
+export function getXtContractSize(symbol: string, currentPrice?: number): number {
+  const clean = symbol.toLowerCase().replace(/[^a-z0-9_]/g, '');
+  const key = clean.includes('_') ? clean : (clean.endsWith('usdt') ? clean.slice(0, -4) + '_usdt' : clean + '_usdt');
+  
+  if (XT_CONTRACT_SIZES[key]) {
+    return XT_CONTRACT_SIZES[key];
+  }
+
+  // Fallback heuristic based on price so 1 contract is worth approximately 5-20 USDT
+  const p = currentPrice && currentPrice > 0 ? currentPrice : 1.0;
+  if (p >= 50000) return 0.0001; // BTC
+  if (p >= 2000) return 0.01;   // ETH
+  if (p >= 100) return 0.1;     // SOL, BNB, AVAX
+  if (p >= 5) return 1;         // NEAR, SUI, LINK
+  if (p >= 0.1) return 10;      // XRP, ADA
+  if (p >= 0.01) return 100;    // DOGE
+  return 100000;                // PEPE, SHIB
+}
+
+export interface XtContractQuantityResult {
+  contractQty: number; // Integer quantity of contracts to send in origQty
+  contractSize: number; // Amount of coin per contract
+  effectiveCoinQty: number; // contractQty * contractSize
+  nominalUsdt: number; // effectiveCoinQty * currentPrice
+  isMinCapped: boolean; // True if bumped up to meet XT minNotional of 10 USDT
+}
+
+export function calculateXtContractQuantity(
+  targetCoinQty: number,
+  currentPrice: number,
+  symbol: string,
+  minNotional: number = 10
+): XtContractQuantityResult {
+  const contractSize = getXtContractSize(symbol, currentPrice);
+  const price = currentPrice > 0 ? currentPrice : 1.0;
+
+  // Raw theoretical number of contracts
+  const rawContracts = targetCoinQty > 0 ? Math.floor(targetCoinQty / contractSize) : 0;
+  
+  // Calculate minimum contracts required to satisfy XT 10 USDT minNotional
+  const notionalPerContract = contractSize * price;
+  const minRequiredContracts = notionalPerContract > 0 ? Math.ceil(minNotional / notionalPerContract) : 1;
+
+  let finalContracts = Math.max(minRequiredContracts, rawContracts);
+  // Ensure at least 1 contract
+  if (finalContracts < 1) finalContracts = 1;
+
+  const effectiveCoinQty = parseFloat((finalContracts * contractSize).toFixed(8));
+  const nominalUsdt = parseFloat((effectiveCoinQty * price).toFixed(2));
+
+  return {
+    contractQty: finalContracts,
+    contractSize,
+    effectiveCoinQty,
+    nominalUsdt,
+    isMinCapped: rawContracts < minRequiredContracts,
+  };
+}

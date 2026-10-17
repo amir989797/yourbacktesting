@@ -16,13 +16,14 @@ export interface StrategyParams {
   maxTradesPerLeg: number;
   showOnChart: boolean;
   noConcurrentPositions?: boolean; // عدم ورود به معامله جدید در صورت وجود پوزیشن باز
+  symbol?: string; // نماد جفت‌ارز اختیاری برای اعمال گام اعشار و استپ‌سایز صرافی
 }
 
 export type StrategyConfig = StrategyParams;
 
 export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
   capital: 10000,
-  selectedStrategyId: 'strategy_1_e_breakout',
+  selectedStrategyId: 'strategy_2_next_pivot',
   riskMode: 'percent',
   riskAmountFixed: 10,
   riskPercent: 1.0,
@@ -82,6 +83,10 @@ export interface Trade {
   exitFee?: number;
   fee?: number;
   returnR?: number;
+  targetRiskAmount?: number;
+  realizedRisk?: number;
+  stepSize?: number;
+  qtyPrecision?: number;
 }
 
 export interface StrategyTrade {

@@ -12,6 +12,8 @@ import {
   CrosshairMode,
   Logical,
   MouseEventParams,
+  LineStyle,
+  IPriceLine,
 } from 'lightweight-charts';
 import {
   Maximize2,
@@ -31,7 +33,7 @@ import {
   Settings,
   Zap,
 } from 'lucide-react';
-import { CandleData, ChartType, Timeframe, ZigZagSettings } from '../types/crypto';
+import { CandleData, ChartType, Timeframe, ZigZagSettings, ActiveChartOrder } from '../types/crypto';
 import { StrategyTrade, TradeStatus } from '../types/strategy';
 import {
   formatPrice,
@@ -108,6 +110,8 @@ interface TradingChartProps {
   showStrategyTrades?: boolean;
   onToggleStrategyPanel?: () => void;
   isStrategyPanelOpen?: boolean;
+  activeLiveOrder?: ActiveChartOrder | null;
+  onClearActiveLiveOrder?: () => void;
 }
 
 interface RenderedTrade {
@@ -147,10 +151,31 @@ export const TradingChart: React.FC<TradingChartProps> = ({
   showStrategyTrades = true,
   onToggleStrategyPanel,
   isStrategyPanelOpen,
+  activeLiveOrder,
+  onClearActiveLiveOrder,
 }) => {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const lastLoadedKeyRef = useRef<string>('');
+
+  // Live order price lines & overlay states
+  const liveEntryLineRef = useRef<IPriceLine | null>(null);
+  const liveSlLineRef = useRef<IPriceLine | null>(null);
+  const liveTpLineRef = useRef<IPriceLine | null>(null);
+  const [renderedLiveOrder, setRenderedLiveOrder] = useState<{
+    yEntry: number;
+    ySL: number | null;
+    yTP: number | null;
+    entryPrice: number;
+    stopLoss: number | null;
+    takeProfit: number | null;
+    side: 'BUY' | 'SELL' | 'LONG' | 'SHORT';
+    pnl?: number;
+    pnlPercent?: number;
+    rr: number;
+    tpDistancePct: number;
+    slDistancePct: number;
+  } | null>(null);
 
   // Series refs
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -802,13 +827,122 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         }
         setRenderedTrades(projs);
       }
+
+      // Live Order projection update on zoom/scroll
+      if (activeLiveOrder && activeLiveOrder.price > 0 && series) {
+        const yEntry = series.priceToCoordinate(activeLiveOrder.price);
+        if (yEntry !== null) {
+          const ySL = activeLiveOrder.stopLossPrice ? series.priceToCoordinate(activeLiveOrder.stopLossPrice) : null;
+          const yTP = activeLiveOrder.takeProfitPrice ? series.priceToCoordinate(activeLiveOrder.takeProfitPrice) : null;
+          const slDist = activeLiveOrder.stopLossPrice ? Math.abs(activeLiveOrder.price - activeLiveOrder.stopLossPrice) : 0;
+          const tpDist = activeLiveOrder.takeProfitPrice ? Math.abs(activeLiveOrder.price - activeLiveOrder.takeProfitPrice) : 0;
+          setRenderedLiveOrder({
+            yEntry,
+            ySL,
+            yTP,
+            entryPrice: activeLiveOrder.price,
+            stopLoss: activeLiveOrder.stopLossPrice || null,
+            takeProfit: activeLiveOrder.takeProfitPrice || null,
+            side: activeLiveOrder.side,
+            pnl: activeLiveOrder.unrealizedPnl,
+            pnlPercent: activeLiveOrder.pnlPercent,
+            rr: slDist > 0 ? parseFloat((tpDist / slDist).toFixed(2)) : 0,
+            tpDistancePct: activeLiveOrder.price > 0 ? (tpDist / activeLiveOrder.price) * 100 : 0,
+            slDistancePct: activeLiveOrder.price > 0 ? (slDist / activeLiveOrder.price) * 100 : 0,
+          });
+        }
+      }
     };
 
     chartRef.current.timeScale().subscribeVisibleLogicalRangeChange(handleRangeOrScaleChange);
     return () => {
       chartRef.current?.timeScale().unsubscribeVisibleLogicalRangeChange(handleRangeOrScaleChange);
     };
-  }, [measurement, rectangles, showZigZag, zigzagPoints, zigzagLegs, showStrategyTrades, strategyTrades, candles]);
+  }, [measurement, rectangles, showZigZag, zigzagPoints, zigzagLegs, showStrategyTrades, strategyTrades, candles, activeLiveOrder]);
+
+  // Manage Active Live Order Price Lines & Visual Overlays (TradingView style)
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    if (!series) return;
+
+    if (liveEntryLineRef.current) {
+      try { series.removePriceLine(liveEntryLineRef.current); } catch {}
+      liveEntryLineRef.current = null;
+    }
+    if (liveSlLineRef.current) {
+      try { series.removePriceLine(liveSlLineRef.current); } catch {}
+      liveSlLineRef.current = null;
+    }
+    if (liveTpLineRef.current) {
+      try { series.removePriceLine(liveTpLineRef.current); } catch {}
+      liveTpLineRef.current = null;
+    }
+
+    if (!activeLiveOrder || !activeLiveOrder.price || activeLiveOrder.price <= 0) {
+      setRenderedLiveOrder(null);
+      return;
+    }
+
+    const isLong = activeLiveOrder.side === 'BUY' || activeLiveOrder.positionSide === 'LONG';
+    const sideText = isLong ? 'خرید (LONG)' : 'فروش (SHORT)';
+
+    try {
+      liveEntryLineRef.current = series.createPriceLine({
+        price: activeLiveOrder.price,
+        color: '#f59e0b',
+        lineWidth: 2,
+        lineStyle: LineStyle.Solid,
+        axisLabelVisible: true,
+        title: `ورود: ${sideText}`,
+      });
+
+      if (activeLiveOrder.stopLossPrice && activeLiveOrder.stopLossPrice > 0) {
+        liveSlLineRef.current = series.createPriceLine({
+          price: activeLiveOrder.stopLossPrice,
+          color: '#ef4444',
+          lineWidth: 2,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: 'حد ضرر (SL)',
+        });
+      }
+
+      if (activeLiveOrder.takeProfitPrice && activeLiveOrder.takeProfitPrice > 0) {
+        liveTpLineRef.current = series.createPriceLine({
+          price: activeLiveOrder.takeProfitPrice,
+          color: '#10b981',
+          lineWidth: 2,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: 'حد سود (TP)',
+        });
+      }
+
+      const yEntry = series.priceToCoordinate(activeLiveOrder.price);
+      if (yEntry !== null) {
+        const ySL = activeLiveOrder.stopLossPrice ? series.priceToCoordinate(activeLiveOrder.stopLossPrice) : null;
+        const yTP = activeLiveOrder.takeProfitPrice ? series.priceToCoordinate(activeLiveOrder.takeProfitPrice) : null;
+        const slDist = activeLiveOrder.stopLossPrice ? Math.abs(activeLiveOrder.price - activeLiveOrder.stopLossPrice) : 0;
+        const tpDist = activeLiveOrder.takeProfitPrice ? Math.abs(activeLiveOrder.price - activeLiveOrder.takeProfitPrice) : 0;
+        setRenderedLiveOrder({
+          yEntry,
+          ySL,
+          yTP,
+          entryPrice: activeLiveOrder.price,
+          stopLoss: activeLiveOrder.stopLossPrice || null,
+          takeProfit: activeLiveOrder.takeProfitPrice || null,
+          side: activeLiveOrder.side,
+          pnl: activeLiveOrder.unrealizedPnl,
+          pnlPercent: activeLiveOrder.pnlPercent,
+          rr: slDist > 0 ? parseFloat((tpDist / slDist).toFixed(2)) : 0,
+          tpDistancePct: activeLiveOrder.price > 0 ? (tpDist / activeLiveOrder.price) * 100 : 0,
+          slDistancePct: activeLiveOrder.price > 0 ? (slDist / activeLiveOrder.price) * 100 : 0,
+        });
+      }
+    } catch (e) {
+      console.warn('Error setting price lines:', e);
+    }
+  }, [activeLiveOrder, candles]);
 
   // Keep ZigZag visuals updated when points or visibility changes
   useEffect(() => {
@@ -1899,7 +2033,232 @@ export const TradingChart: React.FC<TradingChartProps> = ({
                     </g>
                   );
                 })}
+
+              {/* TradingView-style Long/Short Position Visual Overlay */}
+              {renderedLiveOrder && (
+                <g className="live-order-tradingview-overlay animate-in fade-in duration-300">
+                  {/* Take Profit (Target) Shaded Zone - Green */}
+                  {renderedLiveOrder.yTP !== null && (
+                    <g>
+                      <rect
+                        x={0}
+                        y={Math.min(renderedLiveOrder.yEntry, renderedLiveOrder.yTP)}
+                        width="100%"
+                        height={Math.max(2, Math.abs(renderedLiveOrder.yTP - renderedLiveOrder.yEntry))}
+                        fill="rgba(16, 185, 129, 0.12)"
+                        stroke="#10b981"
+                        strokeWidth="1"
+                        strokeDasharray="4 2"
+                      />
+                      {/* TP Label badge on the right */}
+                      <line
+                        x1={0}
+                        y1={renderedLiveOrder.yTP}
+                        x2="100%"
+                        y2={renderedLiveOrder.yTP}
+                        stroke="#10b981"
+                        strokeWidth="1.5"
+                        strokeDasharray="4 2"
+                      />
+                      <g transform={`translate(${Math.max(20, (chartContainerRef.current?.clientWidth ?? 800) - 200)}, ${renderedLiveOrder.yTP - 12})`}>
+                        <rect
+                          x={0}
+                          y={0}
+                          width={150}
+                          height={24}
+                          rx={5}
+                          fill="#064e3b"
+                          stroke="#10b981"
+                          strokeWidth="1.2"
+                          fillOpacity="0.95"
+                        />
+                        <text
+                          x={75}
+                          y={16}
+                          textAnchor="middle"
+                          fill="#6ee7b7"
+                          fontSize="10"
+                          fontWeight="bold"
+                          fontFamily="monospace"
+                        >
+                          TP: ${formatPrice(renderedLiveOrder.takeProfit || 0)} (+{renderedLiveOrder.tpDistancePct.toFixed(1)}%)
+                        </text>
+                      </g>
+                    </g>
+                  )}
+
+                  {/* Stop Loss Shaded Zone - Red */}
+                  {renderedLiveOrder.ySL !== null && (
+                    <g>
+                      <rect
+                        x={0}
+                        y={Math.min(renderedLiveOrder.yEntry, renderedLiveOrder.ySL)}
+                        width="100%"
+                        height={Math.max(2, Math.abs(renderedLiveOrder.ySL - renderedLiveOrder.yEntry))}
+                        fill="rgba(239, 68, 68, 0.12)"
+                        stroke="#ef4444"
+                        strokeWidth="1"
+                        strokeDasharray="4 2"
+                      />
+                      <line
+                        x1={0}
+                        y1={renderedLiveOrder.ySL}
+                        x2="100%"
+                        y2={renderedLiveOrder.ySL}
+                        stroke="#ef4444"
+                        strokeWidth="1.5"
+                        strokeDasharray="4 2"
+                      />
+                      {/* SL Label badge on the right */}
+                      <g transform={`translate(${Math.max(20, (chartContainerRef.current?.clientWidth ?? 800) - 200)}, ${renderedLiveOrder.ySL - 12})`}>
+                        <rect
+                          x={0}
+                          y={0}
+                          width={150}
+                          height={24}
+                          rx={5}
+                          fill="#7f1d1d"
+                          stroke="#ef4444"
+                          strokeWidth="1.2"
+                          fillOpacity="0.95"
+                        />
+                        <text
+                          x={75}
+                          y={16}
+                          textAnchor="middle"
+                          fill="#fca5a5"
+                          fontSize="10"
+                          fontWeight="bold"
+                          fontFamily="monospace"
+                        >
+                          SL: ${formatPrice(renderedLiveOrder.stopLoss || 0)} (-{renderedLiveOrder.slDistancePct.toFixed(1)}%)
+                        </text>
+                      </g>
+                    </g>
+                  )}
+
+                  {/* Entry Price Line (Amber) with Badge */}
+                  <line
+                    x1={0}
+                    y1={renderedLiveOrder.yEntry}
+                    x2="100%"
+                    y2={renderedLiveOrder.yEntry}
+                    stroke="#f59e0b"
+                    strokeWidth="2"
+                    strokeDasharray="5 3"
+                  />
+                  <g transform={`translate(${Math.max(20, (chartContainerRef.current?.clientWidth ?? 800) - 190)}, ${renderedLiveOrder.yEntry - 12})`}>
+                    <rect
+                      x={0}
+                      y={0}
+                      width={140}
+                      height={24}
+                      rx={6}
+                      fill="#78350f"
+                      stroke="#f59e0b"
+                      strokeWidth="1.5"
+                      fillOpacity="0.95"
+                    />
+                    <text
+                      x={70}
+                      y={16}
+                      textAnchor="middle"
+                      fill="#fef3c7"
+                      fontSize="10"
+                      fontWeight="bold"
+                      fontFamily="monospace"
+                    >
+                      ورود: ${formatPrice(renderedLiveOrder.entryPrice)}
+                    </text>
+                  </g>
+                </g>
+              )}
             </svg>
+
+            {/* TradingView-style Floating Position HUD (Corner Badge) */}
+            {activeLiveOrder && (
+              <div
+                className="absolute top-3 left-3 z-30 bg-[#0e141f]/95 border border-[#2b3a4f] rounded-2xl p-3 shadow-2xl backdrop-blur-md text-xs font-mono select-none max-w-xs animate-in fade-in slide-in-from-top-2"
+                dir="rtl"
+              >
+                <div className="flex items-center justify-between pb-2 border-b border-[#212d3e] gap-3">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-extrabold uppercase ${
+                        activeLiveOrder.side === 'BUY' || activeLiveOrder.positionSide === 'LONG'
+                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                          : 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
+                      }`}
+                    >
+                      {activeLiveOrder.side === 'BUY' || activeLiveOrder.positionSide === 'LONG' ? 'LONG 🟢' : 'SHORT 🔴'}
+                    </span>
+                    <strong className="text-white text-xs font-sans font-bold">
+                      {activeLiveOrder.symbol.toUpperCase()}
+                    </strong>
+                  </div>
+                  {onClearActiveLiveOrder && (
+                    <button
+                      type="button"
+                      onClick={onClearActiveLiveOrder}
+                      className="p-1 rounded-lg hover:bg-[#1f2a3a] text-gray-400 hover:text-white transition-colors cursor-pointer"
+                      title="بستن نمایش ستاپ روی چارت"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 mt-2 text-[11px]">
+                  <div>
+                    <span className="text-gray-400 block text-[10px]">قیمت ورود:</span>
+                    <strong className="text-amber-400 font-bold">${formatPrice(activeLiveOrder.price)}</strong>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block text-[10px]">نسبت R:R:</span>
+                    <strong className="text-cyan-300 font-bold">
+                      {activeLiveOrder.takeProfitPrice && activeLiveOrder.stopLossPrice
+                        ? `1 : ${(Math.abs(activeLiveOrder.takeProfitPrice - activeLiveOrder.price) / Math.max(0.0001, Math.abs(activeLiveOrder.price - activeLiveOrder.stopLossPrice))).toFixed(2)}`
+                        : '1 : 3.0'}
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block text-[10px]">حد سود (TP):</span>
+                    <strong className="text-emerald-400 font-bold">
+                      {activeLiveOrder.takeProfitPrice ? `$${formatPrice(activeLiveOrder.takeProfitPrice)}` : '---'}
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block text-[10px]">حد ضرر (SL):</span>
+                    <strong className="text-rose-400 font-bold">
+                      {activeLiveOrder.stopLossPrice ? `$${formatPrice(activeLiveOrder.stopLossPrice)}` : '---'}
+                    </strong>
+                  </div>
+                </div>
+
+                {/* وضعیت و سود و زیان زنده */}
+                {(() => {
+                  const lastC = candles.length > 0 ? candles[candles.length - 1].close : activeLiveOrder.price;
+                  const isLong = activeLiveOrder.side === 'BUY' || activeLiveOrder.positionSide === 'LONG';
+                  const livePnlVal = activeLiveOrder.unrealizedPnl !== undefined
+                    ? activeLiveOrder.unrealizedPnl
+                    : (activeLiveOrder.price > 0 ? (lastC - activeLiveOrder.price) * (isLong ? 1 : -1) * (activeLiveOrder.amount || 1) : 0);
+                  const pnlPctVal = activeLiveOrder.price > 0 ? ((lastC - activeLiveOrder.price) / activeLiveOrder.price) * (isLong ? 1 : -1) * 100 * (activeLiveOrder.leverage || 10) : 0;
+
+                  return (
+                    <div className="mt-2.5 pt-2 border-t border-[#212d3e] flex items-center justify-between text-[11px]">
+                      <span className="text-gray-400 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        سود/زیان لحظه‌ای:
+                      </span>
+                      <strong className={`font-bold ${livePnlVal >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {livePnlVal >= 0 ? `+$${livePnlVal.toFixed(2)}` : `-$${Math.abs(livePnlVal).toFixed(2)}`}
+                        <span className="text-[10px] mr-1 opacity-80">({pnlPctVal >= 0 ? `+${pnlPctVal.toFixed(1)}%` : `${pnlPctVal.toFixed(1)}%`})</span>
+                      </strong>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
 
             {/* EXACT 4-ITEM INFO BOX - 100% IN ENGLISH */}
             {measurement && (

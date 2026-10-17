@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { CryptoPair, CandleData, Timeframe, ZigZagSettings, ExchangeType } from './types/crypto';
 import { POPULAR_PAIRS, fetchKlines, subscribeToKlineStream } from './services/binance';
-import { fetchXtKlines } from './services/xt';
+import { fetchXtKlines, toXtSymbol, fromXtSymbol } from './services/xt';
 import { calculateATR, calculateAtrZigZag, analyzeZigZagLegs } from './utils/indicators';
 import { StrategyConfig, DEFAULT_STRATEGY_CONFIG } from './types/strategy';
 import { runStrategyBacktest } from './utils/strategyEngine';
@@ -64,6 +64,7 @@ export default function App() {
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
   const [isGuideModalOpen, setIsGuideModalOpen] = useState<boolean>(false);
   const [isBacktestModalOpen, setIsBacktestModalOpen] = useState<boolean>(false);
+  const [activeLiveOrder, setActiveLiveOrder] = useState<any | null>(null);
 
   // تغییر صرافی و تنظیم جفت‌ارز مناسب با صرافی
   const handleSelectExchange = (newExchange: ExchangeType) => {
@@ -368,6 +369,21 @@ export default function App() {
               setSelectedPair(p);
               setActiveTab('chart');
             }}
+            onSelectLiveOrder={(order) => {
+              setActiveLiveOrder(order);
+              if (order && order.symbol) {
+                const clean = exchange === 'xt' ? toXtSymbol(order.symbol) : order.symbol.replace('_', '').toUpperCase();
+                const base = clean.includes('_') ? clean.split('_')[0].toUpperCase() : clean.replace(/USDT$/i, '');
+                setSelectedPair({
+                  symbol: clean,
+                  baseAsset: base,
+                  quoteAsset: 'USDT',
+                  name: fromXtSymbol(clean),
+                  category: 'Futures',
+                });
+              }
+              setActiveTab('chart');
+            }}
             onClose={() => setActiveTab('chart')}
             currentUser={currentUser || 'amir'}
           />
@@ -399,6 +415,8 @@ export default function App() {
               showStrategyTrades={strategyConfig.showOnChart}
               onToggleStrategyPanel={handleToggleStrategy}
               isStrategyPanelOpen={isStrategyOpen}
+              activeLiveOrder={activeLiveOrder}
+              onClearActiveLiveOrder={() => setActiveLiveOrder(null)}
             />
           </main>
 

@@ -70,12 +70,14 @@ import {
 } from '../services/firebase';
 import { calculateATR, calculateAtrZigZag, analyzeZigZagLegs, formatPrice } from '../utils/indicators';
 import { runStrategy1Backtest, runStrategy2Backtest } from '../utils/strategyEngine';
+import { calculateExactTradeSizing, getSymbolLotRule } from '../utils/exchangePrecision';
 
 interface LiveTradingTabProps {
   currentPair: CryptoPair;
   exchange: ExchangeType;
   onSelectExchange: (exchange: ExchangeType) => void;
   onSelectPair?: (pair: CryptoPair) => void;
+  onSelectLiveOrder?: (order: any) => void;
   onClose?: () => void;
   currentUser?: string;
 }
@@ -180,10 +182,13 @@ interface CandidateSignal {
   stopLoss: number;
   takeProfit: number;
   contractQty: number;
+  stepSize?: number;
+  qtyPrecision?: number;
   maxLeverage: number;
   requiredMargin: number;
   notionalUsdt: number;
   riskUsdt: number;
+  targetRiskUsdt?: number;
   strategyName: string;
 }
 
@@ -249,6 +254,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   exchange,
   onSelectExchange,
   onSelectPair,
+  onSelectLiveOrder,
   onClose,
   currentUser = 'amir',
 }) => {
@@ -285,8 +291,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   // 3. Execution Mode: Live on XT vs Paper Simulation
   const [isLiveExecution, setIsLiveExecution] = useState<boolean>(true);
 
-  // 4. Strategy & Order Execution Settings
-  const [selectedStrategy, setSelectedStrategy] = useState<'strategy_1_e_breakout' | 'strategy_2_next_pivot'>('strategy_1_e_breakout');
+  // 4. Strategy & Order Execution Settings (پیش‌فرض: استراتژی دوم Next-Pivot)
+  const [selectedStrategy, setSelectedStrategy] = useState<'strategy_1_e_breakout' | 'strategy_2_next_pivot'>('strategy_2_next_pivot');
   const [tradeTimeframe, setTradeTimeframe] = useState<Timeframe>('5m');
   const [riskRewardRatio, setRiskRewardRatio] = useState<number>(3.0);
 
@@ -421,8 +427,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     }
   });
 
-  // کلیک روی ردیف پوزیشن یا تاریخچه برای نمایش چارت جفت‌ارز در تب اصلی چارت
-  const handleNavigateToChart = (rawSymbol: string) => {
+  // کلیک روی ردیف پوزیشن یا تاریخچه برای نمایش چارت جفت‌ارز و ستاپ معامله در تب اصلی چارت (مشابه تریدینگ‌ویو)
+  const handleNavigateToChart = (rawSymbol: string, orderData?: any) => {
     const clean = exchange === 'xt' ? toXtSymbol(rawSymbol) : rawSymbol.replace('_', '').toUpperCase();
     const base = clean.includes('_') ? clean.split('_')[0].toUpperCase() : clean.replace(/USDT$/i, '');
     const pair: CryptoPair = {
@@ -432,9 +438,21 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       name: fromXtSymbol(clean),
       category: 'Futures',
     };
-    showToast(`📊 انتقال به چارت نماد ${fromXtSymbol(clean)}`);
+    showToast(`📊 انتقال به چارت تحلیلی نماد ${fromXtSymbol(clean)}`);
     addLog('info', `📊 انتقال به تب چارت برای بررسی ${fromXtSymbol(clean)}`, clean);
-    onSelectPair?.(pair);
+    if (orderData && onSelectLiveOrder) {
+      onSelectLiveOrder({
+        ...orderData,
+        symbol: clean,
+        price: orderData.price || orderData.entryPrice || 0,
+        stopLossPrice: orderData.stopLossPrice || orderData.stopLoss || 0,
+        takeProfitPrice: orderData.takeProfitPrice || orderData.takeProfit || 0,
+        side: orderData.side || orderData.positionSide || 'BUY',
+        positionSide: orderData.positionSide || orderData.side || 'LONG',
+      });
+    } else {
+      onSelectPair?.(pair);
+    }
     onClose?.();
   };
 
@@ -455,6 +473,9 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   const [minCandlesForLongLeg, setMinCandlesForLongLeg] = useState<number>(10);
   const [maxBlueLegPercent, setMaxBlueLegPercent] = useState<number>(50);
   const [maxBreakoutAtrMultiplier, setMaxBreakoutAtrMultiplier] = useState<number>(3.0);
+  const [maxCandlesToEnter, setMaxCandlesToEnter] = useState<number>(35);
+  const [entryCommissionPercent, setEntryCommissionPercent] = useState<number>(0.06);
+  const [exitCommissionPercent, setExitCommissionPercent] = useState<number>(0.06);
 
   // 5. 5-Minute Auto-Scanner Loop State
   const [isAutoScanning, setIsAutoScanning] = useState<boolean>(false);
@@ -466,6 +487,14 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   const [serverLastRunAt, setServerLastRunAt] = useState<string | null>(null);
   const [serverLastDurationMs, setServerLastDurationMs] = useState<number | null>(null);
   const [isTogglingServer, setIsTogglingServer] = useState<boolean>(false);
+  const [serverActiveConfig, setServerActiveConfig] = useState<any | null>(null);
+  const [serverExecutionLogs, setServerExecutionLogs] = useState<any[]>([]);
+  const [activeLogTab, setActiveLogTab] = useState<'scanner' | 'execution'>('scanner');
+  const [isTestTradeLoading, setIsTestTradeLoading] = useState<boolean>(false);
+  const [testTradeResult, setTestTradeResult] = useState<any | null>(null);
+  const [showTestTradeModal, setShowTestTradeModal] = useState<boolean>(false);
+  const [selectedExecDetail, setSelectedExecDetail] = useState<any | null>(null);
+  const hasInitializedConfigFromServer = useRef<boolean>(false);
 
   // History Tab Filter: 'all' | 'wins' | 'losses' | 'open'
   const [historyFilter, setHistoryFilter] = useState<'all' | 'wins' | 'losses' | 'open'>('all');
@@ -488,9 +517,9 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     } catch {}
   }, [tradeHistory]);
 
-  // Sync Balance from XT API
-  const handleRefreshBalance = useCallback(async () => {
-    setIsRefreshingBalance(true);
+  // Sync Balance & Positions from XT API
+  const handleRefreshBalance = useCallback(async (isManual: boolean = false) => {
+    if (isManual) setIsRefreshingBalance(true);
     try {
       const data = await fetchXtBalance();
       setBalance(data);
@@ -499,14 +528,14 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     } catch (err) {
       console.error(err);
     } finally {
-      setIsRefreshingBalance(false);
+      if (isManual) setIsRefreshingBalance(false);
     }
   }, []);
 
-  // Load Balance on mount
+  // Poll balance & open positions every 5s for real-time live PnL
   useEffect(() => {
-    handleRefreshBalance();
-    const interval = setInterval(handleRefreshBalance, 20000);
+    handleRefreshBalance(true);
+    const interval = setInterval(() => handleRefreshBalance(false), 5000);
     return () => clearInterval(interval);
   }, [handleRefreshBalance]);
 
@@ -778,27 +807,28 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
             // بیشترین اهرم مجاز برای این ارز
             const maxLev = getMaxLeverageForSymbol(sym);
 
-            // محاسبه حجم و مارجین بر مبنای درصد ریسک حساب:
-            // اگر به استاپ بخورد، دقیقاً riskPercent% از موجودی ضرر می‌شود
+            // محاسبه حجم و مارجین بر مبنای بودجه ریسک و قوانین اعشار و استپ‌سایز صرافی
             const currentEquity = balance.availableBalance > 0
               ? balance.availableBalance
               : (balance.totalEquity > 0 ? balance.totalEquity : (balance.walletBalance > 0 ? balance.walletBalance : 100));
-            const riskAmountUsdt = riskMode === 'fixed' && riskAmountFixed && riskAmountFixed > 0
+            const riskBudgetUsdt = riskMode === 'fixed' && riskAmountFixed && riskAmountFixed > 0
               ? riskAmountFixed
               : currentEquity * ((riskPercent || 1) / 100);
-            const priceDistance = Math.abs(curPrice - stopLoss);
-            const safeDistance = priceDistance > 0 ? priceDistance : curPrice * 0.02;
-            // احتساب کارمزد ورود (0.06%) و خروج (0.06%) در نسبت زیان تا ضرر در استاپ لیمیت هرگز از ریسک تعیین‌شده فراتر نرود
-            const feeFraction = 0.0006 + (stopLoss / curPrice) * 0.0006;
-            const effectiveLossFraction = (safeDistance / curPrice) + feeFraction;
 
-            // ارزش دلاری کل پوزیشن (Notional) با تضمین سقف ریسک شامل کارمزد:
-            const notionalUsdt = riskAmountUsdt / (effectiveLossFraction > 0 ? effectiveLossFraction : 0.02);
-            const approxQty = curPrice > 0 ? notionalUsdt / curPrice : 1;
-            const contractQty = Math.max(1, Math.round(approxQty * 1000) / 1000);
+            const sizing = calculateExactTradeSizing(
+              riskBudgetUsdt,
+              curPrice,
+              stopLoss,
+              takeProfit,
+              0.0006,
+              0.0006,
+              sym
+            );
 
-            // مارجین مورد نیاز با استفاده از بیشترین اهرم مجاز
+            const contractQty = sizing.quantizedPositionSize;
+            const notionalUsdt = sizing.positionValue;
             const requiredMargin = parseFloat((notionalUsdt / maxLev).toFixed(2));
+            const actualRiskUsdt = sizing.actualLossAtSL; // زیان واقعی با کوانتیزه‌کردن به استپ‌سایز صرافی
 
             candidateSignals.push({
               sym,
@@ -808,10 +838,13 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
               stopLoss,
               takeProfit,
               contractQty,
+              stepSize: sizing.stepSize,
+              qtyPrecision: sizing.qtyPrecision,
               maxLeverage: maxLev,
               requiredMargin,
               notionalUsdt,
-              riskUsdt: riskAmountUsdt,
+              riskUsdt: actualRiskUsdt,
+              targetRiskUsdt: riskBudgetUsdt,
               strategyName: selectedStrategy === 'strategy_1_e_breakout' ? 'استراتژی ۱ (E-Breakout)' : 'استراتژی ۲ (Next-Pivot)',
             });
           }
@@ -881,11 +914,11 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           // مارجین کافی است -> اجرای ترید با بیشترین اهرم و حداقل مارجین
           const liveEquityVal = balance.availableBalance > 0 ? balance.availableBalance : (balance.totalEquity > 0 ? balance.totalEquity : 100);
           const riskNotice = riskMode === 'fixed'
-            ? `ریسک ثابت: ${chosen.riskUsdt.toFixed(2)}$ (${((chosen.riskUsdt / liveEquityVal) * 100).toFixed(1)}%)`
-            : `ریسک استاپ (${riskPercent}%): ${chosen.riskUsdt.toFixed(2)}$`;
+            ? `زیان واقعی در استاپ: ${chosen.riskUsdt.toFixed(2)}$ (سقف بودجه: ${chosen.targetRiskUsdt || riskAmountFixed}$ | استپ صرافی: ${chosen.stepSize ?? '-'})`
+            : `زیان واقعی در استاپ (${riskPercent}%): ${chosen.riskUsdt.toFixed(2)}$ (استپ صرافی: ${chosen.stepSize ?? '-'})`;
           addLog(
             'trade',
-            `⚡ سیگنال برگزیده ${chosen.posSide} برای ${chosenName} با بیشترین اهرم (${chosen.maxLeverage}x) و حداقل مارجین درگیر (${chosen.requiredMargin.toFixed(2)} USDT) اجرا می‌شود. حجم کل: ${chosen.notionalUsdt.toFixed(1)}$ (${chosen.contractQty} واحد) | ${riskNotice} | ورود: ${formatPrice(chosen.curPrice)} | استاپ: ${formatPrice(chosen.stopLoss)} | تارگت: ${formatPrice(chosen.takeProfit)}`,
+            `⚡ سیگنال برگزیده ${chosen.posSide} برای ${chosenName} با بیشترین اهرم (${chosen.maxLeverage}x) و حداقل مارجین درگیر (${chosen.requiredMargin.toFixed(2)} USDT) اجرا می‌شود. حجم مجاز صرافی: ${chosen.contractQty} (${chosen.notionalUsdt.toFixed(1)}$) | ${riskNotice} | ورود: ${formatPrice(chosen.curPrice)} | استاپ: ${formatPrice(chosen.stopLoss)} | تارگت: ${formatPrice(chosen.takeProfit)}`,
             chosen.sym
           );
 
@@ -995,7 +1028,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       if (!res.ok) return;
       const data = await res.json();
       if (data.success && data.state) {
-        const { isRunning, isScanning, secondsUntilNextRun, totalRunsCount, lastRunAt, activeSignals, logs } = data.state;
+        const { isRunning, isScanning, secondsUntilNextRun, totalRunsCount, lastRunAt, activeSignals, logs, config, executionLogs } = data.state;
         setIsAutoScanning(isRunning);
         setIsScanningNow(isScanning);
         if (typeof secondsUntilNextRun === 'number') {
@@ -1005,6 +1038,36 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         setServerLastRunAt(lastRunAt || null);
         if (data.state.lastResult && typeof data.state.lastResult.durationMs === 'number') {
           setServerLastDurationMs(data.state.lastResult.durationMs);
+        }
+
+        if (Array.isArray(executionLogs)) {
+          setServerExecutionLogs(executionLogs);
+        }
+
+        if (config) {
+          setServerActiveConfig(config);
+          // Only initialize local UI controls once on initial load from server config
+          if (!hasInitializedConfigFromServer.current) {
+            hasInitializedConfigFromServer.current = true;
+            if (config.strategyId) setSelectedStrategy(config.strategyId);
+            if (config.timeframe) setTradeTimeframe(config.timeframe);
+            if (config.exchange && typeof onSelectExchange === 'function') onSelectExchange(config.exchange);
+            if (Array.isArray(config.symbols) && config.symbols.length > 0) setSelectedSymbols(config.symbols);
+            if (config.riskMode) setRiskMode(config.riskMode);
+            if (typeof config.riskAmountFixed === 'number') setRiskAmountFixed(config.riskAmountFixed);
+            if (typeof config.riskPercent === 'number') setRiskPercent(config.riskPercent);
+            if (typeof config.riskRewardRatio === 'number') setRiskRewardRatio(config.riskRewardRatio);
+            if (typeof config.noConcurrentPositions === 'boolean') setNoConcurrentPositions(config.noConcurrentPositions);
+            if (typeof config.isLiveExecution === 'boolean') setIsLiveExecution(config.isLiveExecution);
+            if (typeof config.atrPeriod === 'number') setAtrPeriod(config.atrPeriod);
+            if (typeof config.atrMultiplier === 'number') setAtrMultiplier(config.atrMultiplier);
+            if (typeof config.minCandles === 'number') setMinCandles(config.minCandles);
+            if (typeof config.minCandlesForLongLeg === 'number') setMinCandlesForLongLeg(config.minCandlesForLongLeg);
+            if (typeof config.longLegAtrMultiplier === 'number') setLongLegAtrMultiplier(config.longLegAtrMultiplier);
+            if (typeof config.maxBlueLegPercent === 'number') setMaxBlueLegPercent(config.maxBlueLegPercent);
+            if (typeof config.maxBreakoutAtrMultiplier === 'number') setMaxBreakoutAtrMultiplier(config.maxBreakoutAtrMultiplier);
+            if (typeof config.maxCandlesToEnter === 'number') setMaxCandlesToEnter(config.maxCandlesToEnter);
+          }
         }
 
         // Sync and append logs from server
@@ -1021,6 +1084,112 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       // transient network error
     }
   }, []);
+
+  // Save changes directly to server backend
+  const syncConfigToServer = useCallback(async (partialConfig: any) => {
+    try {
+      const res = await fetch('/api/live-scanner/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: partialConfig }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.config) {
+          setServerActiveConfig(data.config);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to sync config to server:', err);
+    }
+  }, []);
+
+  // Run instant Test Live Trade with $0.10 Risk on exchange
+  const handleRunTestTrade = async (symbolToTest?: string) => {
+    setIsTestTradeLoading(true);
+    try {
+      const sym = symbolToTest || (selectedSymbols && selectedSymbols[0]) || 'btc_usdt';
+      const res = await fetch('/api/live-scanner/test-trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol: sym,
+          posSide: 'LONG',
+          riskUsdt: 0.10,
+        }),
+      });
+      const data = await res.json();
+      setTestTradeResult(data);
+      setShowTestTradeModal(true);
+      if (data.success) {
+        showToast(`🧪 سفارش تستی با موفقیت ثبت شد (Order ID: ${data.orderId || 'ثبت شد'})`);
+      } else {
+        const err = data.exchangeResponse?.msgInfo || data.exchangeResponse?.error?.msg || data.error || 'خطا در ثبت سفارش';
+        showToast(`❌ پیام صرافی: ${err}`);
+      }
+      fetchServerScannerStatus();
+    } catch (err: any) {
+      showToast(`❌ خطای شبکه در ارسال سفارش تستی: ${err.message}`);
+    } finally {
+      setIsTestTradeLoading(false);
+    }
+  };
+
+  // Debounced auto-sync: whenever user modifies any configuration, persist to backend server
+  const hasMountedSync = useRef(false);
+  useEffect(() => {
+    if (!hasMountedSync.current) {
+      hasMountedSync.current = true;
+      return;
+    }
+    const timer = setTimeout(() => {
+      syncConfigToServer({
+        strategyId: selectedStrategy,
+        timeframe: tradeTimeframe,
+        exchange,
+        symbols: selectedSymbols,
+        riskMode,
+        riskAmountFixed,
+        riskPercent,
+        riskRewardRatio,
+        noConcurrentPositions,
+        isLiveExecution,
+        atrPeriod,
+        atrMultiplier,
+        minCandles,
+        minCandlesForLongLeg,
+        longLegAtrMultiplier,
+        maxBlueLegPercent,
+        maxBreakoutAtrMultiplier,
+        maxCandlesToEnter,
+        entryCommissionPercent,
+        exitCommissionPercent,
+      });
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [
+    selectedStrategy,
+    tradeTimeframe,
+    exchange,
+    selectedSymbols,
+    riskMode,
+    riskAmountFixed,
+    riskPercent,
+    riskRewardRatio,
+    noConcurrentPositions,
+    isLiveExecution,
+    atrPeriod,
+    atrMultiplier,
+    minCandles,
+    minCandlesForLongLeg,
+    longLegAtrMultiplier,
+    maxBlueLegPercent,
+    maxBreakoutAtrMultiplier,
+    maxCandlesToEnter,
+    entryCommissionPercent,
+    exitCommissionPercent,
+    syncConfigToServer,
+  ]);
 
   // Poll server status every 3 seconds to keep UI in sync even after refresh
   useEffect(() => {
@@ -1246,6 +1415,22 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
             <span>{isLiveExecution ? 'اجرای سفارشات واقعی (Live XT)' : 'حالت آزمایشی (Paper Mode)'}</span>
           </button>
 
+          {/* دکمه تست معامله لایو با ریسک ۰.۱۰ دلار */}
+          <button
+            type="button"
+            onClick={() => handleRunTestTrade()}
+            disabled={isTestTradeLoading}
+            className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-black text-xs font-extrabold transition-all flex items-center gap-1.5 cursor-pointer shadow-md shadow-amber-500/20 disabled:opacity-50"
+            title="ارسال یک پوزیشن آزمایشی زنده واقعی به صرافی XT با حداقل سایز و ریسک ۰.۱۰ دلار جهت تست سلامت ارتباط با API"
+          >
+            {isTestTradeLoading ? (
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Zap className="w-3.5 h-3.5 fill-current" />
+            )}
+            <span>تست معامله لایو ($0.1 Risk)</span>
+          </button>
+
           {onClose && (
             <button
               type="button"
@@ -1260,6 +1445,64 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
 
       {/* ۲. کارت‌های اصلی: موجودی حساب، وضعیت سود و ضرر، کنترل اسکنر ۵ دقیقه‌ای */}
       <div className="p-4 space-y-4">
+        {/* خلاصه وضعیت و کانفیگ فعال سرور (Server Single Source of Truth) */}
+        {serverActiveConfig && (
+          <div className="bg-[#101520] border border-[#223046] rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs shadow-md">
+            <div className="flex items-center gap-3">
+              <div className="relative flex items-center justify-center">
+                <div className={`w-3.5 h-3.5 rounded-full ${isAutoScanning ? 'bg-emerald-400' : 'bg-gray-500'}`} />
+                {isAutoScanning && (
+                  <div className="absolute w-5 h-5 rounded-full bg-emerald-400/40 animate-ping" />
+                )}
+              </div>
+              <div>
+                <div className="text-white font-extrabold flex flex-wrap items-center gap-2">
+                  <span>کانفیگ فعال در بک‌اند سرور (Server Active Config):</span>
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${
+                      isAutoScanning
+                        ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/30'
+                        : 'bg-gray-800 text-gray-400 border border-gray-700'
+                    }`}
+                  >
+                    {isAutoScanning ? '🟢 حلقه پس‌زمینه سرور فعال است' : '⏸️ متوقف'}
+                  </span>
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                      serverActiveConfig.isLiveExecution
+                        ? 'bg-amber-950 text-amber-300 border border-amber-500/40'
+                        : 'bg-indigo-950 text-indigo-300 border border-indigo-500/30'
+                    }`}
+                  >
+                    {serverActiveConfig.isLiveExecution ? '⚡ اجرای خودکار در صرافی (Real Auto-Trade)' : '📝 شبیه‌ساز (Paper Trading)'}
+                  </span>
+                </div>
+                <div className="text-[11px] text-gray-400 flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 font-mono">
+                  <span>صرافی: <strong className="text-white uppercase">{serverActiveConfig.exchange || exchange}</strong></span>
+                  <span>• تایم‌فریم: <strong className="text-cyan-300">{serverActiveConfig.timeframe || tradeTimeframe}</strong></span>
+                  <span>• استراتژی: <strong className="text-amber-300">{serverActiveConfig.strategyId === 'strategy_2_next_pivot' ? 'Next-Pivot (۲)' : 'E-Breakout (۱)'}</strong></span>
+                  <span>• بودجه ریسک: <strong className="text-emerald-300">{serverActiveConfig.riskMode === 'fixed' ? `$${serverActiveConfig.riskAmountFixed || 50} ثابت (با احتساب اعشار و کارمزد صرافی)` : `${serverActiveConfig.riskPercent || 1}% بالانس`}</strong></span>
+                  <span>• تک‌پوزیشن: <strong className={serverActiveConfig.noConcurrentPositions ? 'text-amber-300' : 'text-gray-400'}>{serverActiveConfig.noConcurrentPositions ? 'فعال' : 'غیرفعال'}</strong></span>
+                  <span>• واچ‌لیست: <strong className="text-cyan-300">{serverActiveConfig.symbols?.length || selectedSymbols?.length || 0} جفت‌ارز</strong></span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => handleRunTestTrade()}
+                disabled={isTestTradeLoading}
+                className="px-3 py-1.5 rounded-xl bg-[#1a2333] hover:bg-[#253249] text-amber-300 border border-amber-500/30 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                title="تست اتصال و ارسال سفارش آزمایشی با $0.10 ریسک"
+              >
+                {isTestTradeLoading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5 text-amber-400" />}
+                <span>تست سفارش لایو ($0.1)</span>
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           {/* کارت ۱: موجودی کل والت */}
           <div className="bg-[#10141d] p-3.5 rounded-2xl border border-[#212a3a] relative overflow-hidden">
@@ -1270,7 +1513,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
               </span>
               <button
                 type="button"
-                onClick={handleRefreshBalance}
+                onClick={() => handleRefreshBalance(true)}
                 disabled={isRefreshingBalance}
                 className="p-1 rounded-lg hover:bg-[#1a2332] text-gray-400 hover:text-white transition-all cursor-pointer"
                 title="به‌روزرسانی موجودی از صرافی"
@@ -1505,8 +1748,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                   onChange={(e) => setSelectedStrategy(e.target.value as any)}
                   className="w-full px-2.5 py-1.5 bg-[#141924] border border-[#283346] rounded-xl text-white font-bold text-xs focus:outline-none focus:border-amber-400 cursor-pointer"
                 >
+                  <option value="strategy_2_next_pivot">استراتژی ۲: ستاپ پیوت بعدی (Next-Pivot / تاییدیه پولبک) [پیش‌فرض]</option>
                   <option value="strategy_1_e_breakout">استراتژی ۱: شکست نقطه E (E-Breakout)</option>
-                  <option value="strategy_2_next_pivot">استراتژی ۲: ستاپ پیوت بعدی (Next-Pivot)</option>
                 </select>
               </div>
 
@@ -1549,8 +1792,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
               </div>
             </div>
 
-            {/* گرید پارامترهای فنی ۸ گانه */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1 text-xs">
+            {/* گرید پارامترهای جامع ۱۲ گانه استراتژی ۲ و ۱ */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5 pt-1 text-xs">
               <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42]">
                 <span className="text-[10px] text-gray-400 block">۱. دوره ATR:</span>
                 <input
@@ -1573,7 +1816,28 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
               </div>
 
               <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42]">
-                <span className="text-[10px] text-gray-400 block">۳. ضریب لگ بزرگ:</span>
+                <span className="text-[10px] text-gray-400 block">۳. حداقل کندل لگ:</span>
+                <input
+                  type="number"
+                  value={minCandles}
+                  onChange={(e) => setMinCandles(parseInt(e.target.value, 10) || 2)}
+                  className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-cyan-300 font-mono text-center font-bold"
+                />
+              </div>
+
+              <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42]">
+                <span className="text-[10px] text-amber-300/90 block font-bold">۴. کندل لگ بلند:</span>
+                <input
+                  type="number"
+                  value={minCandlesForLongLeg}
+                  onChange={(e) => setMinCandlesForLongLeg(parseInt(e.target.value, 10) || 10)}
+                  className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-amber-300 font-mono text-center font-bold"
+                  title="حداقل تعداد کندل‌های تشکیل‌دهنده لگ اصلی/مادر"
+                />
+              </div>
+
+              <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42]">
+                <span className="text-[10px] text-gray-400 block">۵. ضریب لگ بزرگ:</span>
                 <input
                   type="number"
                   step={0.5}
@@ -1584,17 +1848,41 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
               </div>
 
               <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42]">
-                <span className="text-[10px] text-gray-400 block">۴. حداقل کندل لگ:</span>
+                <span className="text-[10px] text-gray-400 block">۶. سقف لگ آبی (%):</span>
                 <input
                   type="number"
-                  value={minCandles}
-                  onChange={(e) => setMinCandles(parseInt(e.target.value, 10) || 2)}
+                  value={maxBlueLegPercent}
+                  onChange={(e) => setMaxBlueLegPercent(parseInt(e.target.value, 10) || 50)}
                   className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-cyan-300 font-mono text-center font-bold"
+                  title="سقف درصد نفوذ لگ برگشتی نسبت به لگ مادر"
                 />
               </div>
 
               <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42]">
-                <span className="text-[10px] text-gray-400 block">۵. ریسک به ریوارد (R:R):</span>
+                <span className="text-[10px] text-amber-300/90 block font-bold">۷. سقف شکست ATR:</span>
+                <input
+                  type="number"
+                  step={0.1}
+                  value={maxBreakoutAtrMultiplier}
+                  onChange={(e) => setMaxBreakoutAtrMultiplier(parseFloat(e.target.value) || 3.0)}
+                  className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-amber-300 font-mono text-center font-bold"
+                  title="سقف مجاز نفوذ شکست قیمت در نقطه E نسبت به ATR"
+                />
+              </div>
+
+              <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42]">
+                <span className="text-[10px] text-amber-300/90 block font-bold">۸. سقف کندل ورود:</span>
+                <input
+                  type="number"
+                  value={maxCandlesToEnter}
+                  onChange={(e) => setMaxCandlesToEnter(parseInt(e.target.value, 10) || 35)}
+                  className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-amber-300 font-mono text-center font-bold"
+                  title="حداکثر کندل‌های معتبر برای ورود پس از تایید ستاپ قبل از انقضا"
+                />
+              </div>
+
+              <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42]">
+                <span className="text-[10px] text-gray-400 block">۹. ریسک به ریوارد (R:R):</span>
                 <input
                   type="number"
                   step={0.1}
@@ -1605,7 +1893,30 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
               </div>
 
               <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42]">
-                <span className="text-[10px] text-gray-400 block">۶. اهرم معاملاتی:</span>
+                <span className="text-[10px] text-gray-400 block">۱۰. کارمزد ورود/خروج (%):</span>
+                <div className="flex items-center gap-1 mt-1">
+                  <input
+                    type="number"
+                    step={0.01}
+                    value={entryCommissionPercent}
+                    onChange={(e) => setEntryCommissionPercent(parseFloat(e.target.value) || 0.06)}
+                    className="w-1/2 px-1.5 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-cyan-300 font-mono text-center font-bold text-[11px]"
+                    title="کارمزد ورود درصد"
+                  />
+                  <span className="text-gray-500">/</span>
+                  <input
+                    type="number"
+                    step={0.01}
+                    value={exitCommissionPercent}
+                    onChange={(e) => setExitCommissionPercent(parseFloat(e.target.value) || 0.06)}
+                    className="w-1/2 px-1.5 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-cyan-300 font-mono text-center font-bold text-[11px]"
+                    title="کارمزد خروج درصد"
+                  />
+                </div>
+              </div>
+
+              <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42]">
+                <span className="text-[10px] text-gray-400 block">۱۱. اهرم معاملاتی:</span>
                 <div
                   className="w-full mt-1 px-2 py-1 bg-[#0e121a] border border-[#2c374c] rounded text-emerald-300 font-mono text-center font-bold text-[11px] flex items-center justify-center gap-1 cursor-default"
                   title="بیشترین اهرم مجاز صرافی برای هر ارز به صورت خودکار اعمال می‌شود (BTC: 100x, SOL: 50x, ...)"
@@ -1617,7 +1928,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
 
               <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42] flex flex-col justify-between">
                 <div className="flex items-center justify-between gap-1 mb-1">
-                  <span className="text-[10px] text-gray-400 font-bold">۷. مدیریت ریسک:</span>
+                  <span className="text-[10px] text-gray-400 font-bold">۱۲. مدیریت ریسک:</span>
                   <div className="flex items-center bg-[#0e121a] p-0.5 rounded-md border border-[#263143] text-[9px] font-sans">
                     <button
                       type="button"
@@ -1708,16 +2019,6 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                   </div>
                 )}
               </div>
-
-              <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42]">
-                <span className="text-[10px] text-gray-400 block">۸. سقف لگ آبی (%):</span>
-                <input
-                  type="number"
-                  value={maxBlueLegPercent}
-                  onChange={(e) => setMaxBlueLegPercent(parseInt(e.target.value, 10) || 50)}
-                  className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-cyan-300 font-mono text-center font-bold"
-                />
-              </div>
             </div>
 
             {/* چک‌باکس عدم ورود به معامله جدید در صورت وجود پوزیشن باز (تک‌پوزیشن) */}
@@ -1751,50 +2052,164 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 </span>
               </label>
             </div>
+
+            {/* راهنمای نحوه محاسبه دقیق حجم بر اساس Step Size صرافی بایننس و XT */}
+            <div className="p-2.5 rounded-xl bg-cyan-950/25 border border-cyan-800/35 text-[11px] space-y-1 text-cyan-200">
+              <div className="font-bold flex items-center gap-1.5 text-cyan-300">
+                <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-cyan-400" />
+                <span>محاسبه دقیق حجم بر اساس حداقل اعشار (Step Size) و کارمزد صرافی:</span>
+              </div>
+              <p className="text-gray-300 leading-relaxed text-[10px]">
+                صرافی‌های بایننس و XT به دلیل قوانین گام حجم (Lot Size Step)، اجازه اعشار نامحدود نمی‌دهند (مثلاً ۰.۰۰۱ برای BTC و ۱ برای DOGE). موتور مدیریت ریسک برنامه، حجم سفارش را دقیقاً به پایین (Floor) گرد می‌کند تا در صورت فعال‌شدن Stop Loss، زیان محقق‌شده شما هرگز از سقف بودجه ریسک (مثلاً ۱۰۰ دلار) بیشتر نشود (مثلاً ۹۸.۵$ یا ۹۹.۱$ با احتساب کارمزد ورود و خروج).
+              </p>
+            </div>
           </div>
 
-          {/* ستون ۳: کنسول مانیتورینگ زنده اسکنر و لاگ‌های بلادرنگ */}
+          {/* ستون ۳: کنسول مانیتورینگ زنده اسکنر و تاریخچه سفارشات زنده صرافی */}
           <div className="bg-[#10141d] p-4 rounded-2xl border border-[#222b3c] flex flex-col h-full space-y-2.5">
-            <div className="flex items-center justify-between pb-2 border-b border-[#1c2433]">
-              <div className="flex items-center gap-1.5 text-xs font-bold text-white">
-                <TerminalIcon className="w-4 h-4 text-emerald-400" />
-                <span>رادار اسکن و لاگ زنده بازار</span>
+            <div className="flex flex-wrap items-center justify-between pb-2 border-b border-[#1c2433] gap-2">
+              <div className="flex items-center bg-[#0d121c] p-0.5 rounded-xl border border-[#242f42] text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => setActiveLogTab('scanner')}
+                  className={`px-2.5 py-1 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                    activeLogTab === 'scanner'
+                      ? 'bg-emerald-500 text-black shadow-xs'
+                      : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  <TerminalIcon className="w-3.5 h-3.5" />
+                  <span>لاگ‌های اسکنر ({scanLogs.length})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveLogTab('execution')}
+                  className={`px-2.5 py-1 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                    activeLogTab === 'execution'
+                      ? 'bg-amber-500 text-black shadow-xs'
+                      : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                  <span>سفارشات صرافی XT ({serverExecutionLogs.length})</span>
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setScanLogs([])}
-                className="text-[10px] text-gray-400 hover:text-rose-400 transition-colors"
-                title="پاکسازی لاگ‌ها"
-              >
-                پاکسازی
-              </button>
-            </div>
 
-            <div className="flex-1 bg-[#0b0e14] p-2.5 rounded-xl border border-[#1b2230] font-mono text-[11px] overflow-y-auto max-h-[220px] space-y-1.5">
-              {scanLogs.length === 0 ? (
-                <div className="text-gray-500 text-center py-8">
-                  اسکنر آماده است. برای شروع، دکمه «شروع اسکن ۵m» را بزنید.
-                </div>
-              ) : (
-                scanLogs.map((log) => (
-                  <div
-                    key={log.id}
-                    className={`leading-relaxed flex items-start gap-1.5 ${
-                      log.type === 'trade'
-                        ? 'text-amber-300 bg-amber-950/30 p-1 rounded'
-                        : log.type === 'success'
-                        ? 'text-emerald-400'
-                        : log.type === 'warning'
-                        ? 'text-rose-400'
-                        : 'text-gray-400'
-                    }`}
-                  >
-                    <span className="text-[10px] text-gray-500 whitespace-nowrap">[{log.time}]</span>
-                    <span>{log.message}</span>
-                  </div>
-                ))
+              {activeLogTab === 'scanner' && (
+                <button
+                  type="button"
+                  onClick={() => setScanLogs([])}
+                  className="text-[10px] text-gray-400 hover:text-rose-400 transition-colors cursor-pointer"
+                  title="پاکسازی لاگ‌ها"
+                >
+                  پاکسازی
+                </button>
               )}
             </div>
+
+            {/* تب ۱: لاگ‌های اسکنر زنده */}
+            {activeLogTab === 'scanner' && (
+              <div className="flex-1 bg-[#0b0e14] p-2.5 rounded-xl border border-[#1b2230] font-mono text-[11px] overflow-y-auto max-h-[260px] space-y-1.5">
+                {scanLogs.length === 0 ? (
+                  <div className="text-gray-500 text-center py-8">
+                    اسکنر آماده است. برای شروع مداوم در سرور، دکمه «شروع اتوپایلوت سرور» را بزنید.
+                  </div>
+                ) : (
+                  scanLogs.map((log) => (
+                    <div
+                      key={log.id}
+                      className={`leading-relaxed flex items-start gap-1.5 ${
+                        log.type === 'trade'
+                          ? 'text-amber-300 bg-amber-950/30 p-1 rounded'
+                          : log.type === 'success'
+                          ? 'text-emerald-400'
+                          : log.type === 'warning'
+                          ? 'text-rose-400'
+                          : 'text-gray-400'
+                      }`}
+                    >
+                      <span className="text-[10px] text-gray-500 whitespace-nowrap">[{log.time}]</span>
+                      <span>{log.message}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+
+            {/* تب ۲: تاریخچه سفارشات زنده ارسال‌شده به صرافی XT */}
+            {activeLogTab === 'execution' && (
+              <div className="flex-1 bg-[#0b0e14] p-2 rounded-xl border border-[#1b2230] overflow-y-auto max-h-[260px] space-y-2">
+                {serverExecutionLogs.length === 0 ? (
+                  <div className="text-gray-500 text-center py-8 text-xs">
+                    هنوز سفارشی به صرافی ارسال نشده است. برای راستی‌آزمایی اتصال، روی «تست معامله لایو ($0.1 Risk)» کلیک کنید.
+                  </div>
+                ) : (
+                  serverExecutionLogs.map((item) => (
+                    <div
+                      key={item.id}
+                      className={`p-2.5 rounded-xl border text-xs space-y-1.5 transition-all ${
+                        item.status === 'SUCCESS'
+                          ? 'bg-[#0f1717] border-emerald-500/40'
+                          : 'bg-[#1a1114] border-rose-500/40'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-extrabold uppercase ${
+                              item.posSide === 'LONG'
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                            }`}
+                          >
+                            {item.posSide || item.side}
+                          </span>
+                          <strong className="text-white uppercase font-mono">{item.symbol}</strong>
+                          {item.isTestTrade && (
+                            <span className="px-1 py-0.2 bg-amber-500/20 text-amber-300 rounded text-[9px]">تست $0.1</span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              item.status === 'SUCCESS'
+                                ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/30'
+                                : 'bg-rose-950 text-rose-300 border border-rose-500/30'
+                            }`}
+                          >
+                            {item.status === 'SUCCESS' ? '✅ موفق' : '❌ ناموفق'}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedExecDetail(item)}
+                            className="p-1 rounded bg-[#1f2937] hover:bg-[#374151] text-gray-300 hover:text-white transition-colors cursor-pointer"
+                            title="مشاهده جزییات پاسخ JSON صرافی"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="text-[11px] text-gray-300 grid grid-cols-2 sm:grid-cols-3 gap-1 font-mono pt-1 border-t border-[#1e293b]">
+                        <div>حجم: <strong className="text-cyan-300">{item.contractQty}</strong> قرارداد ({item.coinQty} کوین)</div>
+                        <div>ارزش اسمی: <strong className="text-white">${item.nominalUsdt}</strong></div>
+                        <div>زمان: <span className="text-gray-400">{item.timeFa || item.time?.slice(11, 19)}</span></div>
+                        {item.stopLoss && <div>استاپ: <span className="text-rose-400">{item.stopLoss}</span></div>}
+                        {item.takeProfit && <div>تارگت: <span className="text-emerald-400">{item.takeProfit}</span></div>}
+                        {item.orderId && <div>Order ID: <span className="text-amber-300">{item.orderId}</span></div>}
+                      </div>
+
+                      {item.error && (
+                        <div className="text-[10px] text-rose-400 bg-rose-950/40 p-1.5 rounded border border-rose-800/40">
+                          <strong>خطای صرافی:</strong> {item.error}
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -1810,8 +2225,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
             </div>
             <button
               type="button"
-              onClick={handleRefreshBalance}
-              className="text-xs text-gray-400 hover:text-white flex items-center gap-1 transition-colors"
+              onClick={() => handleRefreshBalance(true)}
+              className="text-xs text-gray-400 hover:text-white flex items-center gap-1 transition-colors cursor-pointer"
             >
               <RefreshCw className="w-3 h-3" />
               <span>به‌روزرسانی</span>
@@ -1840,61 +2255,81 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#18202d] font-mono">
-                  {positions.map((pos, idx) => (
-                    <tr
-                      key={`${pos.symbol}-${idx}`}
-                      onClick={() => handleNavigateToChart(pos.symbol)}
-                      className="hover:bg-[#182335] transition-colors cursor-pointer group"
-                      title="کلیک روی سطر برای نمایش چارت این جفت‌ارز در تب تحلیل"
-                    >
-                      <td className="py-2.5 px-3 font-bold text-white flex items-center gap-1.5">
-                        <Flame className="w-3.5 h-3.5 text-amber-400 group-hover:scale-110 transition-transform" />
-                        <span className="group-hover:text-amber-300 transition-colors">{fromXtSymbol(pos.symbol)}</span>
-                      </td>
-                      <td className="py-2.5 px-3 text-center">
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            pos.side === 'LONG'
-                              ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-500/40'
-                              : 'bg-rose-950/80 text-rose-400 border border-rose-500/40'
-                          }`}
-                        >
-                          {pos.side}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-3 text-center text-amber-300 font-bold">{pos.leverage}x</td>
-                      <td className="py-2.5 px-3 text-gray-300">{pos.amount}</td>
-                      <td className="py-2.5 px-3 text-white font-bold">${formatPrice(pos.entryPrice)}</td>
-                      <td className="py-2.5 px-3 text-cyan-300">${formatPrice(pos.markPrice)}</td>
-                      <td className="py-2.5 px-3 text-emerald-400">${pos.takeProfitPrice ? formatPrice(pos.takeProfitPrice) : '---'}</td>
-                      <td className="py-2.5 px-3 text-rose-400">${pos.stopLossPrice ? formatPrice(pos.stopLossPrice) : '---'}</td>
-                      <td className="py-2.5 px-3 text-center">
-                        <span className={`font-bold ${pos.unrealizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          {pos.unrealizedPnl >= 0 ? `+$${pos.unrealizedPnl.toFixed(2)}` : `-$${Math.abs(pos.unrealizedPnl).toFixed(2)}`}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => handleNavigateToChart(pos.symbol)}
-                            className="px-2 py-1 rounded-lg bg-cyan-950/70 hover:bg-cyan-900/90 text-cyan-300 border border-cyan-500/40 text-[10px] font-bold cursor-pointer transition-all flex items-center gap-1 shadow-xs"
-                            title="مشاهده چارت زنده این معامله در تب اصلی"
+                  {positions.map((pos, idx) => {
+                    const isLong = pos.side === 'LONG';
+                    const calculatedPnl = pos.unrealizedPnl !== 0
+                      ? pos.unrealizedPnl
+                      : (pos.markPrice > 0 && pos.entryPrice > 0 && pos.amount > 0
+                          ? (pos.markPrice - pos.entryPrice) * (isLong ? 1 : -1) * pos.amount
+                          : 0);
+                    const calculatedPct = pos.pnlPercent !== 0
+                      ? pos.pnlPercent
+                      : (pos.entryPrice > 0 && pos.markPrice > 0
+                          ? ((pos.markPrice - pos.entryPrice) / pos.entryPrice) * (isLong ? 1 : -1) * (pos.leverage || 10) * 100
+                          : 0);
+
+                    return (
+                      <tr
+                        key={`${pos.symbol}-${idx}`}
+                        onClick={() => handleNavigateToChart(pos.symbol, pos)}
+                        className="hover:bg-[#182335] transition-colors cursor-pointer group"
+                        title="کلیک روی سطر برای نمایش چارت این جفت‌ارز و خطوط ورود، حد سود و ضرر مشابه تریدینگ‌ویو"
+                      >
+                        <td className="py-2.5 px-3 font-bold text-white flex items-center gap-1.5">
+                          <Flame className="w-3.5 h-3.5 text-amber-400 group-hover:scale-110 transition-transform" />
+                          <span className="group-hover:text-amber-300 transition-colors">{fromXtSymbol(pos.symbol)}</span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              pos.side === 'LONG'
+                                ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-500/40'
+                                : 'bg-rose-950/80 text-rose-400 border border-rose-500/40'
+                            }`}
                           >
-                            <LineChart className="w-3 h-3 text-cyan-400" />
-                            <span>چارت</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleClosePosition(pos)}
-                            className="px-2 py-1 rounded-lg bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 border border-rose-500/40 text-[10px] font-bold cursor-pointer transition-all"
-                          >
-                            بستن
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                            {pos.side}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center text-amber-300 font-bold">{pos.leverage}x</td>
+                        <td className="py-2.5 px-3 text-gray-300">{pos.amount}</td>
+                        <td className="py-2.5 px-3 text-white font-bold">${formatPrice(pos.entryPrice)}</td>
+                        <td className="py-2.5 px-3 text-cyan-300">${formatPrice(pos.markPrice)}</td>
+                        <td className="py-2.5 px-3 text-emerald-400">${pos.takeProfitPrice ? formatPrice(pos.takeProfitPrice) : '---'}</td>
+                        <td className="py-2.5 px-3 text-rose-400">${pos.stopLossPrice ? formatPrice(pos.stopLossPrice) : '---'}</td>
+                        <td className="py-2.5 px-3 text-center">
+                          <div className="inline-flex flex-col items-center">
+                            <div className={`flex items-center gap-1.5 font-bold text-xs ${calculatedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              <span className={`w-2 h-2 rounded-full ${calculatedPnl >= 0 ? 'bg-emerald-400 shadow-[0_0_8px_#10b981]' : 'bg-rose-400 shadow-[0_0_8px_#ef4444]'} animate-pulse`} />
+                              <span>{calculatedPnl >= 0 ? `+$${calculatedPnl.toFixed(2)}` : `-$${Math.abs(calculatedPnl).toFixed(2)}`}</span>
+                            </div>
+                            <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded mt-0.5 font-bold ${calculatedPct >= 0 ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-500/30' : 'bg-rose-950/80 text-rose-300 border border-rose-500/30'}`}>
+                              {calculatedPct >= 0 ? `+${calculatedPct.toFixed(2)}%` : `${calculatedPct.toFixed(2)}%`}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="py-2.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleNavigateToChart(pos.symbol, pos)}
+                              className="px-2 py-1 rounded-lg bg-cyan-950/70 hover:bg-cyan-900/90 text-cyan-300 border border-cyan-500/40 text-[10px] font-bold cursor-pointer transition-all flex items-center gap-1 shadow-xs"
+                              title="مشاهده چارت زنده و خطوط ورود، استاپ و تارگت مشابه تریدینگ‌ویو"
+                            >
+                              <LineChart className="w-3 h-3 text-cyan-400" />
+                              <span>چارت</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleClosePosition(pos)}
+                              className="px-2 py-1 rounded-lg bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 border border-rose-500/40 text-[10px] font-bold cursor-pointer transition-all"
+                            >
+                              بستن
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1972,9 +2407,9 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                   {filteredHistory.map((order) => (
                     <tr
                       key={order.id}
-                      onClick={() => handleNavigateToChart(order.symbol)}
+                      onClick={() => handleNavigateToChart(order.symbol, order)}
                       className="hover:bg-[#182335] transition-colors cursor-pointer group"
-                      title="کلیک روی سطر برای نمایش چارت و ستاپ این معامله در تب اصلی"
+                      title="کلیک روی سطر برای نمایش چارت و خطوط ورود، استاپ و تارگت این معامله در تب تحلیل"
                     >
                       <td className="py-2.5 px-3 text-gray-400 text-[11px]">{order.timestamp}</td>
                       <td className="py-2.5 px-3 font-bold text-white flex items-center gap-1.5">
@@ -2001,9 +2436,16 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                       <td className="py-2.5 px-3 text-gray-300">{order.amount}</td>
                       <td className="py-2.5 px-3 text-center">
                         {order.realizedPnl !== undefined ? (
-                          <span className={`font-bold ${order.realizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {order.realizedPnl >= 0 ? `+$${order.realizedPnl.toFixed(2)}` : `-$${Math.abs(order.realizedPnl).toFixed(2)}`}
-                          </span>
+                          <div className="inline-flex flex-col items-center">
+                            <span className={`font-bold text-xs ${order.realizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {order.realizedPnl >= 0 ? `+$${order.realizedPnl.toFixed(2)}` : `-$${Math.abs(order.realizedPnl).toFixed(2)}`}
+                            </span>
+                            {order.realizedPnlPercent !== undefined && (
+                              <span className={`text-[10px] font-mono px-1 rounded mt-0.5 ${order.realizedPnlPercent >= 0 ? 'bg-emerald-950/60 text-emerald-300' : 'bg-rose-950/60 text-rose-300'}`}>
+                                {order.realizedPnlPercent >= 0 ? `+${order.realizedPnlPercent.toFixed(1)}%` : `${order.realizedPnlPercent.toFixed(1)}%`}
+                              </span>
+                            )}
+                          </div>
                         ) : (
                           <span className="text-gray-500">در جریان</span>
                         )}
@@ -2016,9 +2458,9 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                       <td className="py-2.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
                         <button
                           type="button"
-                          onClick={() => handleNavigateToChart(order.symbol)}
-                          className="px-2 py-0.5 rounded-lg bg-[#141b27] hover:bg-cyan-950/80 text-gray-300 hover:text-cyan-300 border border-[#253246] hover:border-cyan-500/40 text-[10px] font-bold cursor-pointer transition-all flex items-center gap-1 mx-auto"
-                          title="نمایش ستاپ و کندل‌ها در تب چارت"
+                          onClick={() => handleNavigateToChart(order.symbol, order)}
+                          className="px-2.5 py-1 rounded-lg bg-cyan-950/80 hover:bg-cyan-900 text-cyan-300 border border-cyan-500/40 text-[10px] font-bold cursor-pointer transition-all flex items-center gap-1 mx-auto shadow-xs"
+                          title="نمایش ستاپ و خطوط روی چارت مشابه تریدینگ‌ویو"
                         >
                           <LineChart className="w-3 h-3 text-cyan-400" />
                           <span>چارت</span>
@@ -2431,6 +2873,176 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                   <span>ذخیره و اعمال (Save)</span>
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* مودال مشاهده جزییات اجرای سفارش در صرافی XT */}
+      {selectedExecDetail && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/85 backdrop-blur-sm animate-in fade-in duration-200"
+          dir="rtl"
+          onClick={() => setSelectedExecDetail(null)}
+        >
+          <div
+            className="relative w-full max-w-2xl bg-[#0d121c] border border-[#233146] rounded-3xl shadow-2xl p-5 space-y-4 text-gray-200 max-h-[90vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-[#1f283a] pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${selectedExecDetail.status === 'SUCCESS' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
+                  {selectedExecDetail.status === 'SUCCESS' ? <Check className="w-5 h-5" /> : <AlertTriangle className="w-5 h-5" />}
+                </div>
+                <div>
+                  <h4 className="text-sm font-extrabold text-white flex items-center gap-2">
+                    <span>جزییات ارسال سفارش زنده به صرافی XT</span>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${selectedExecDetail.status === 'SUCCESS' ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/30' : 'bg-rose-950 text-rose-300 border border-rose-500/30'}`}>
+                      {selectedExecDetail.status === 'SUCCESS' ? 'موفق' : 'ناموفق'}
+                    </span>
+                  </h4>
+                  <p className="text-[11px] text-gray-400 font-mono">
+                    نماد: <strong className="text-white uppercase">{selectedExecDetail.symbol}</strong> • زمان: {selectedExecDetail.timeFa || selectedExecDetail.time}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedExecDetail(null)}
+                className="p-1.5 rounded-xl text-gray-400 hover:text-white hover:bg-[#1a2335] transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 overflow-y-auto max-h-[60vh] pr-1">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 bg-[#121824] p-3 rounded-2xl border border-[#223044] text-xs font-mono">
+                <div>جهت: <strong className="text-amber-300 uppercase">{selectedExecDetail.posSide || selectedExecDetail.side}</strong></div>
+                <div>تعداد قرارداد: <strong className="text-cyan-300">{selectedExecDetail.contractQty}</strong></div>
+                <div>مقدار کوین: <strong className="text-white">{selectedExecDetail.coinQty}</strong></div>
+                <div>ارزش اسمی: <strong className="text-emerald-300">${selectedExecDetail.nominalUsdt}</strong></div>
+                <div>استاپ‌لاس: <strong className="text-rose-400">{selectedExecDetail.stopLoss}</strong></div>
+                <div>تیک‌پروفیت: <strong className="text-emerald-400">{selectedExecDetail.takeProfit}</strong></div>
+                {selectedExecDetail.orderId && (
+                  <div className="col-span-2 sm:col-span-3">Order ID صرافی: <strong className="text-amber-300 font-bold">{selectedExecDetail.orderId}</strong></div>
+                )}
+              </div>
+
+              {selectedExecDetail.error && (
+                <div className="p-3 rounded-xl bg-rose-950/40 border border-rose-800/40 text-xs text-rose-300 space-y-1">
+                  <div className="font-bold flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 text-rose-400" />
+                    <span>پیام خطای بازگشتی از API صرافی XT:</span>
+                  </div>
+                  <div className="font-mono text-[11px] break-all">{selectedExecDetail.error}</div>
+                </div>
+              )}
+
+              {/* Request Payload */}
+              <div className="space-y-1">
+                <span className="text-xs font-bold text-gray-300 block">بسته ارسالی به API صرافی (Request Payload):</span>
+                <pre className="p-3 bg-[#0a0d14] border border-[#1d2737] rounded-xl text-[11px] font-mono text-cyan-300 overflow-x-auto text-left" dir="ltr">
+                  {JSON.stringify(selectedExecDetail.payload, null, 2)}
+                </pre>
+              </div>
+
+              {/* Exchange Response */}
+              <div className="space-y-1">
+                <span className="text-xs font-bold text-gray-300 block">پاسخ کامل دریافت شده از صرافی (Exchange Response):</span>
+                <pre className="p-3 bg-[#0a0d14] border border-[#1d2737] rounded-xl text-[11px] font-mono text-emerald-300 overflow-x-auto text-left" dir="ltr">
+                  {JSON.stringify(selectedExecDetail.response, null, 2)}
+                </pre>
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-[#1f283a] flex justify-end">
+              <button
+                type="button"
+                onClick={() => setSelectedExecDetail(null)}
+                className="px-4 py-2 rounded-xl bg-[#1a2335] hover:bg-[#25324b] text-white text-xs font-bold transition-colors cursor-pointer"
+              >
+                بستن پنجره
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* مودال نتیجه تست معامله لایو با ریسک $0.10 */}
+      {showTestTradeModal && testTradeResult && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/85 backdrop-blur-sm animate-in fade-in duration-200"
+          dir="rtl"
+          onClick={() => setShowTestTradeModal(false)}
+        >
+          <div
+            className="relative w-full max-w-xl bg-[#0d121c] border border-[#233146] rounded-3xl shadow-2xl p-5 space-y-4 text-gray-200 max-h-[90vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-[#1f283a] pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className={`w-10 h-10 rounded-2xl flex items-center justify-center ${testTradeResult.success ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
+                  {testTradeResult.success ? <CheckCircle2 className="w-5 h-5" /> : <AlertTriangle className="w-5 h-5" />}
+                </div>
+                <div>
+                  <h4 className="text-sm font-extrabold text-white flex items-center gap-2">
+                    <span>نتیجه تست معامله لایو در صرافی XT</span>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${testTradeResult.success ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/30' : 'bg-rose-950 text-rose-300 border border-rose-500/30'}`}>
+                      {testTradeResult.success ? 'سفارش ثبت شد ✅' : 'خطا در ثبت ❌'}
+                    </span>
+                  </h4>
+                  <p className="text-[11px] text-gray-400">
+                    راستی‌آزمایی برقراری ارتباط کلیدهای API و موتور ارسال سفارشات زنده
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowTestTradeModal(false)}
+                className="p-1.5 rounded-xl text-gray-400 hover:text-white hover:bg-[#1a2335] transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 overflow-y-auto max-h-[60vh] pr-1">
+              {testTradeResult.details && (
+                <div className="grid grid-cols-2 gap-2 bg-[#121824] p-3 rounded-2xl border border-[#223044] text-xs font-mono">
+                  <div>نماد: <strong className="text-white uppercase">{testTradeResult.details.symbol}</strong></div>
+                  <div>جهت: <strong className="text-amber-300 uppercase">{testTradeResult.details.posSide} ({testTradeResult.details.side})</strong></div>
+                  <div>قیمت ورود: <strong className="text-cyan-300">${testTradeResult.details.curPrice}</strong></div>
+                  <div>حجم سفارش: <strong className="text-emerald-300">{testTradeResult.details.contractQty} قرارداد</strong></div>
+                  <div>استاپ‌لاس: <strong className="text-rose-400">${testTradeResult.details.stopLoss}</strong></div>
+                  <div>تارگت (TP): <strong className="text-emerald-400">${testTradeResult.details.takeProfit}</strong></div>
+                  {testTradeResult.orderId && (
+                    <div className="col-span-2">شناسه سفارش (Order ID): <strong className="text-amber-300 font-bold">{testTradeResult.orderId}</strong></div>
+                  )}
+                </div>
+              )}
+
+              {testTradeResult.exchangeResponse?.msgInfo && (
+                <div className="p-2.5 rounded-xl bg-amber-950/30 border border-amber-800/40 text-xs text-amber-200">
+                  <strong>پیام صرافی:</strong> {testTradeResult.exchangeResponse.msgInfo}
+                </div>
+              )}
+
+              {/* Raw JSON */}
+              <div className="space-y-1">
+                <span className="text-xs font-bold text-gray-400 block">پاسخ خام سرور و صرافی XT:</span>
+                <pre className="p-3 bg-[#0a0d14] border border-[#1d2737] rounded-xl text-[11px] font-mono text-cyan-300 overflow-x-auto text-left max-h-[160px]" dir="ltr">
+                  {JSON.stringify(testTradeResult.exchangeResponse || testTradeResult, null, 2)}
+                </pre>
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-[#1f283a] flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowTestTradeModal(false)}
+                className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-black text-xs font-extrabold transition-all cursor-pointer shadow-md"
+              >
+                متوجه شدم
+              </button>
             </div>
           </div>
         </div>

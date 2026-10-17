@@ -762,6 +762,10 @@ export function runStrategy2Backtest(
                 stopLoss,
                 takeProfit,
                 riskAmount: parseFloat(riskAmount.toFixed(2)),
+                targetRiskAmount: parseFloat(riskAmount.toFixed(2)),
+                realizedRisk: parseFloat(realizedRisk.toFixed(2)),
+                stepSize: sizing.stepSize,
+                qtyPrecision: sizing.qtyPrecision,
                 positionSize,
                 positionValue: parseFloat(positionValue.toFixed(2)),
                 riskReward: parseFloat(riskReward.toFixed(2)),
@@ -1024,18 +1028,27 @@ export function runBreakoutStrategy(
       }
     }
 
-    const riskAmount =
+    const riskBudget =
       params.riskMode === 'fixed' && params.riskAmountFixed && params.riskAmountFixed > 0
         ? params.riskAmountFixed
         : (capital * (params.riskPercent || 1)) / 100;
     const feeRate = ((params.commissionPercent || 0.08) / 2) / 100;
-    const feePerUnitAtSL = (entryPrice + stopLoss) * feeRate;
-    const effectiveRisk = risk + feePerUnitAtSL;
-    const positionSize = effectiveRisk > 0 ? riskAmount / effectiveRisk : 0;
+
+    const sizing = calculateExactTradeSizing(
+      riskBudget,
+      entryPrice,
+      stopLoss,
+      takeProfit,
+      feeRate,
+      feeRate,
+      params.symbol
+    );
+    const positionSize = sizing.quantizedPositionSize;
+    const riskAmount = riskBudget;
     const pnl = isLong
       ? (exitPrice - entryPrice) * positionSize
       : (entryPrice - exitPrice) * positionSize;
-    const commission = (entryPrice * positionSize + exitPrice * positionSize) * ((params.commissionPercent || 0.08) / 100);
+    const commission = (entryPrice * positionSize + exitPrice * positionSize) * feeRate;
     const netPnl = pnl - commission;
     capital += netPnl;
 
@@ -1058,6 +1071,10 @@ export function runBreakoutStrategy(
       positionSize,
       positionValue: positionSize * entryPrice,
       riskAmount,
+      targetRiskAmount: riskAmount,
+      realizedRisk: sizing.actualLossAtSL,
+      stepSize: sizing.stepSize,
+      qtyPrecision: sizing.qtyPrecision,
       pnl: netPnl,
       pnlPercent: (netPnl / riskAmount) * 100,
       returnR: riskAmount > 0 ? parseFloat((netPnl / riskAmount).toFixed(2)) : 0,
