@@ -93,12 +93,19 @@ export async function fetchXtPositions(symbol?: string): Promise<LivePosition[]>
       return data.result.map((item: any) => {
         const entryPrice = parseFloat(item.entryPrice || item.openPrice || '0');
         const markPrice = parseFloat(item.markPrice || item.curPrice || entryPrice.toString());
-        const amount = parseFloat(item.positionSize || item.holdAmount || '0');
+        const contractQty = parseFloat(item.contractQty || item.positionSize || item.holdAmount || '0');
+        const contractSize = parseFloat(item.contractSize || '1');
+        const coinQty = item.coinQty !== undefined ? parseFloat(item.coinQty) : parseFloat((contractQty * contractSize).toFixed(8));
         const leverage = parseInt(item.leverage || '10', 10);
         const margin = parseFloat(item.isolatedMargin || item.margin || '0');
         const side = (item.positionSide || 'LONG').toUpperCase() as 'LONG' | 'SHORT';
-        const pnl = parseFloat(item.unrealizedPnl || item.floatingProfit || '0');
-        const pnlPct = margin > 0 ? (pnl / margin) * 100 : 0;
+        
+        // Exact live floating PnL and ROI from XT exchange API
+        const pnl = parseFloat(item.floatingPL !== undefined ? item.floatingPL : (item.unrealizedPnl || item.floatingProfit || '0'));
+        const pnlPct = item.pnlPercent !== undefined ? parseFloat(item.pnlPercent) : (item.roi !== undefined ? parseFloat(item.roi) : (margin > 0 ? (pnl / margin) * 100 : 0));
+
+        const takeProfitPrice = item.triggerProfitPrice ? parseFloat(item.triggerProfitPrice) : undefined;
+        const stopLossPrice = item.triggerStopPrice ? parseFloat(item.triggerStopPrice) : undefined;
 
         return {
           symbol: item.symbol || 'btc_usdt',
@@ -107,14 +114,19 @@ export async function fetchXtPositions(symbol?: string): Promise<LivePosition[]>
           positionSide: side,
           entryPrice,
           markPrice,
-          amount,
+          amount: contractQty, // contract quantity
+          contractQty,
+          contractSize,
+          coinQty,
+          notionalUsdt: item.notionalUsdt || parseFloat((coinQty * markPrice).toFixed(2)),
           leverage,
           margin,
           unrealizedPnl: pnl,
           pnlPercent: parseFloat(pnlPct.toFixed(2)),
           liquidationPrice: parseFloat(item.liquidationPrice || '0'),
-          takeProfitPrice: parseFloat(item.triggerProfitPrice || '0') || undefined,
-          stopLossPrice: parseFloat(item.triggerStopPrice || '0') || undefined,
+          takeProfitPrice,
+          stopLossPrice,
+          profitId: item.profitId || undefined,
           updatedAt: new Date().toLocaleTimeString('fa-IR'),
         };
       });
@@ -124,6 +136,50 @@ export async function fetchXtPositions(symbol?: string): Promise<LivePosition[]>
   }
 
   return [];
+}
+
+/**
+ * Close Position on XT Futures via server endpoint
+ */
+export async function closeXtPosition(params: {
+  symbol: string;
+  positionSide?: 'LONG' | 'SHORT';
+  contractQty?: number;
+  profitId?: string;
+}): Promise<{ success: boolean; error?: string; message?: string }> {
+  try {
+    const res = await fetch('/api/xt/position/close', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    const data = await res.json();
+    if (data?.returnCode === 0 || data?.success) {
+      return { success: true, message: data?.message || 'پوزیشن با موفقیت بسته شد' };
+    }
+    return { success: false, error: data?.error || data?.msgInfo || 'خطا در بستن پوزیشن در صرافی XT' };
+  } catch (err: any) {
+    return { success: false, error: err.message || 'خطای شبکه در اتصال به صرافی' };
+  }
+}
+
+/**
+ * Close All Open Positions on XT Futures via native exchange endpoint (/future/user/v1/position/close-all)
+ */
+export async function closeAllXtPositions(): Promise<{ success: boolean; error?: string; message?: string }> {
+  try {
+    const res = await fetch('/api/xt/position/close-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await res.json();
+    if (data?.returnCode === 0 || data?.success) {
+      return { success: true, message: data?.message || 'تمام پوزیشن‌ها با موفقیت در صرافی بسته شدند' };
+    }
+    return { success: false, error: data?.error || data?.msgInfo || 'خطا در بستن تمام پوزیشن‌ها' };
+  } catch (err: any) {
+    return { success: false, error: err.message || 'خطای شبکه در اتصال به صرافی' };
+  }
 }
 
 /**
@@ -150,7 +206,7 @@ export async function fetchXtOrderHistory(symbol?: string, limit: number = 30): 
           side,
           positionSide: posSide,
           orderType: (item.orderType || 'MARKET').toUpperCase() as 'MARKET' | 'LIMIT',
-          price: parseFloat(item.price || item.avgPrice || '0'),
+          price: parseFloat(item.avgPrice && parseFloat(item.avgPrice) > 0 ? item.avgPrice : (item.price || '0')),
           amount: parseFloat(item.origQty || item.executedQty || '0'),
           status: (item.state === 'FILLED' ? 'FILLED' : item.state === 'CANCELED' ? 'CANCELED' : 'NEW'),
           strategyName: 'ZigZag Strategy',

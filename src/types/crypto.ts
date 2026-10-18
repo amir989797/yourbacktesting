@@ -117,7 +117,11 @@ export interface LivePosition {
   positionSide: 'LONG' | 'SHORT';
   entryPrice: number;
   markPrice: number;
-  amount: number; // contracts or coins
+  amount: number; // contracts
+  contractQty?: number;
+  contractSize?: number;
+  coinQty?: number;
+  notionalUsdt?: number;
   leverage: number;
   margin: number;
   unrealizedPnl: number;
@@ -125,6 +129,7 @@ export interface LivePosition {
   liquidationPrice?: number;
   takeProfitPrice?: number;
   stopLossPrice?: number;
+  profitId?: string;
   updatedAt: string;
 }
 

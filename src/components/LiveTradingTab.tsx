@@ -56,6 +56,8 @@ import {
   fetchXtPositions,
   fetchXtOrderHistory,
   createXtOrder,
+  closeXtPosition,
+  closeAllXtPositions,
   cancelXtOrder,
   fetchXtKlines,
   toXtSymbol,
@@ -71,6 +73,14 @@ import {
 import { calculateATR, calculateAtrZigZag, analyzeZigZagLegs, formatPrice } from '../utils/indicators';
 import { runStrategy1Backtest, runStrategy2Backtest } from '../utils/strategyEngine';
 import { calculateExactTradeSizing, getSymbolLotRule } from '../utils/exchangePrecision';
+
+export function formatLivePnl(val: number): string {
+  if (!val || val === 0) return '0.00';
+  const abs = Math.abs(val);
+  if (abs < 0.0001) return val.toFixed(6);
+  if (abs < 0.01) return val.toFixed(4);
+  return val.toFixed(2);
+}
 
 interface LiveTradingTabProps {
   currentPair: CryptoPair;
@@ -280,6 +290,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
 
   // 2. Open Positions & Trade History
   const [positions, setPositions] = useState<LivePosition[]>([]);
+  const [closingPosSymbol, setClosingPosSymbol] = useState<string | null>(null);
+  const [isClosingAll, setIsClosingAll] = useState<boolean>(false);
   const [tradeHistory, setTradeHistory] = useState<LiveTradeOrder[]>(() => {
     try {
       const saved = localStorage.getItem('live_trade_history_v1');
@@ -1281,44 +1293,96 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
 
   // Close Position
   const handleClosePosition = async (pos: LivePosition) => {
-    addLog('info', `در حال بستن پوزیشن ${pos.side} روی ${pos.symbol}...`);
-    if (exchange === 'xt' && isLiveExecution) {
-      const exitSide = pos.side === 'LONG' ? 'SELL' : 'BUY';
-      await createXtOrder({
-        symbol: pos.symbol,
-        orderSide: exitSide,
-        orderType: 'MARKET',
-        positionSide: pos.side,
-        amount: pos.amount,
-      });
+    const pairName = fromXtSymbol(pos.symbol);
+    addLog('info', `در حال ارسال درخواست بستن پوزیشن ${pos.side} روی ${pairName} به صرافی...`, pos.symbol);
+    setClosingPosSymbol(pos.symbol);
+
+    try {
+      const isRealXtPosition = pos.exchange === 'xt' || exchange === 'xt';
+      if (isRealXtPosition) {
+        const res = await closeXtPosition({
+          symbol: pos.symbol,
+          positionSide: pos.side,
+          contractQty: pos.contractQty || pos.amount,
+          profitId: pos.profitId,
+        });
+
+        if (!res.success) {
+          addLog('warning', `❌ خطا در بستن پوزیشن در صرافی XT: ${res.error || 'پاسخ ناموفق صرافی'}`, pos.symbol);
+          showToast(`❌ خطا در بستن پوزیشن: ${res.error || 'پاسخ ناموفق صرافی'}`);
+          setClosingPosSymbol(null);
+          return; // Do NOT remove from UI if it failed to close on the exchange!
+        }
+
+        addLog('success', `✅ پوزیشن ${pos.side} برای ${pairName} با موفقیت در صرافی XT بسته شد.`, pos.symbol);
+      } else {
+        addLog('success', `📝 پوزیشن شبیه‌ساز ${pos.side} برای ${pairName} بسته شد.`, pos.symbol);
+      }
+
+      // Move to history
+      const closePnl = pos.unrealizedPnl;
+      const closePct = pos.pnlPercent;
+      setTradeHistory((prev) => [
+        {
+          id: `close-${Date.now()}`,
+          exchange: pos.exchange,
+          symbol: pos.symbol,
+          side: pos.side === 'LONG' ? 'SELL' : 'BUY',
+          positionSide: pos.side,
+          orderType: 'MARKET',
+          price: pos.markPrice,
+          amount: pos.contractQty || pos.amount,
+          status: 'FILLED',
+          strategyName: 'ZigZag Strategy',
+          takeProfitPrice: pos.takeProfitPrice,
+          stopLossPrice: pos.stopLossPrice,
+          realizedPnl: closePnl,
+          realizedPnlPercent: closePct,
+          exitPrice: pos.markPrice,
+          exitTime: new Date().toLocaleTimeString('fa-IR'),
+          exitReason: 'MANUAL',
+          timestamp: new Date().toLocaleTimeString('fa-IR'),
+        },
+        ...prev,
+      ]);
+
+      // Remove from active positions
+      setPositions((prev) => prev.filter((p) => p.symbol !== pos.symbol));
+      showToast(`✅ پوزیشن ${pairName} با موفقیت در صرافی بسته شد.`);
+
+      // Sync fresh balance and positions from XT after 1 second
+      setTimeout(() => {
+        handleRefreshBalance(true);
+      }, 1000);
+    } catch (err: any) {
+      addLog('warning', `❌ خطای غیرمنتظره در بستن پوزیشن: ${err.message}`, pos.symbol);
+      showToast(`❌ خطا: ${err.message}`);
+    } finally {
+      setClosingPosSymbol(null);
     }
+  };
 
-    // Move to history
-    const closePnl = pos.unrealizedPnl;
-    setTradeHistory((prev) => [
-      {
-        id: `close-${Date.now()}`,
-        exchange: pos.exchange,
-        symbol: pos.symbol,
-        side: pos.side === 'LONG' ? 'SELL' : 'BUY',
-        positionSide: pos.side,
-        orderType: 'MARKET',
-        price: pos.markPrice,
-        amount: pos.amount,
-        status: 'FILLED',
-        strategyName: 'ZigZag Strategy',
-        realizedPnl: closePnl,
-        exitPrice: pos.markPrice,
-        exitTime: new Date().toLocaleTimeString('fa-IR'),
-        exitReason: 'MANUAL',
-        timestamp: new Date().toLocaleTimeString('fa-IR'),
-      },
-      ...prev,
-    ]);
-
-    setPositions((prev) => prev.filter((p) => p.symbol !== pos.symbol));
-    addLog('success', `پوزیشن ${pos.symbol} با موفقیت بسته شد.`);
-    handleRefreshBalance();
+  // Close All Open Positions on XT Futures (/future/user/v1/position/close-all)
+  const handleCloseAllPositions = async () => {
+    if (positions.length === 0) return;
+    setIsClosingAll(true);
+    addLog('info', 'در حال بستن تمام پوزیشن‌های باز در صرافی XT با قیمت مارکت (/future/user/v1/position/close-all)...');
+    try {
+      const res = await closeAllXtPositions();
+      if (res.success) {
+        showToast('✅ تمام پوزیشن‌های باز با موفقیت در صرافی بسته شدند.');
+        addLog('success', '✅ تمام پوزیشن‌های باز در صرافی XT با قیمت مارکت بسته شدند.');
+        setPositions([]);
+        setTimeout(() => handleRefreshBalance(true), 1200);
+      } else {
+        showToast(`❌ خطا در بستن پوزیشن‌ها: ${res.error}`);
+        addLog('warning', `❌ خطا در بستن تمام پوزیشن‌ها: ${res.error}`);
+      }
+    } catch (err: any) {
+      showToast(`❌ خطای شبکه: ${err.message}`);
+    } finally {
+      setIsClosingAll(false);
+    }
   };
 
   // Metrics summary
@@ -2223,14 +2287,37 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 {positions.length} فعال
               </span>
             </div>
-            <button
-              type="button"
-              onClick={() => handleRefreshBalance(true)}
-              className="text-xs text-gray-400 hover:text-white flex items-center gap-1 transition-colors cursor-pointer"
-            >
-              <RefreshCw className="w-3 h-3" />
-              <span>به‌روزرسانی</span>
-            </button>
+            <div className="flex items-center gap-2">
+              {positions.length > 0 && (
+                <button
+                  type="button"
+                  disabled={isClosingAll}
+                  onClick={handleCloseAllPositions}
+                  className="px-2.5 py-1 rounded-lg bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-500/40 text-[10px] font-bold flex items-center gap-1 transition-all cursor-pointer shadow-xs disabled:opacity-50"
+                  title="بستن فوری تمام پوزیشن‌های باز با قیمت مارکت در صرافی XT (/future/user/v1/position/close-all)"
+                >
+                  {isClosingAll ? (
+                    <>
+                      <RefreshCw className="w-3 h-3 animate-spin text-rose-400" />
+                      <span>در حال بستن همه...</span>
+                    </>
+                  ) : (
+                    <>
+                      <ShieldAlert className="w-3 h-3 text-rose-400" />
+                      <span>بستن همه پوزیشن‌ها</span>
+                    </>
+                  )}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => handleRefreshBalance(true)}
+                className="text-xs text-gray-400 hover:text-white flex items-center gap-1 transition-colors cursor-pointer"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span>به‌روزرسانی</span>
+              </button>
+            </div>
           </div>
 
           {positions.length === 0 ? (
@@ -2245,28 +2332,37 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                     <th className="py-2 px-3">جفت‌ارز</th>
                     <th className="py-2 px-3 text-center">جهت</th>
                     <th className="py-2 px-3 text-center">اهرم</th>
-                    <th className="py-2 px-3">حجم</th>
+                    <th className="py-2 px-3">حجم معامله</th>
                     <th className="py-2 px-3">قیمت ورود</th>
                     <th className="py-2 px-3">قیمت فعلی</th>
                     <th className="py-2 px-3">حد سود (TP)</th>
                     <th className="py-2 px-3">حد ضرر (SL)</th>
-                    <th className="py-2 px-3 text-center">سود/زیان شناور</th>
+                    <th className="py-2 px-3 text-center">سود/زیان و ROI شناور</th>
                     <th className="py-2 px-3 text-center">عملیات</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#18202d] font-mono">
                   {positions.map((pos, idx) => {
                     const isLong = pos.side === 'LONG';
-                    const calculatedPnl = pos.unrealizedPnl !== 0
+                    const effectiveCoinQty = pos.coinQty && pos.coinQty > 0
+                      ? pos.coinQty
+                      : (pos.contractQty ? pos.contractQty * (pos.contractSize || 1) : pos.amount);
+
+                    const calculatedPnl = pos.unrealizedPnl !== undefined && pos.unrealizedPnl !== null
                       ? pos.unrealizedPnl
-                      : (pos.markPrice > 0 && pos.entryPrice > 0 && pos.amount > 0
-                          ? (pos.markPrice - pos.entryPrice) * (isLong ? 1 : -1) * pos.amount
+                      : (pos.markPrice > 0 && pos.entryPrice > 0 && effectiveCoinQty > 0
+                          ? (pos.markPrice - pos.entryPrice) * (isLong ? 1 : -1) * effectiveCoinQty
                           : 0);
-                    const calculatedPct = pos.pnlPercent !== 0
+
+                    const calculatedPct = pos.pnlPercent !== undefined && pos.pnlPercent !== null
                       ? pos.pnlPercent
-                      : (pos.entryPrice > 0 && pos.markPrice > 0
-                          ? ((pos.markPrice - pos.entryPrice) / pos.entryPrice) * (isLong ? 1 : -1) * (pos.leverage || 10) * 100
-                          : 0);
+                      : (pos.margin > 0
+                          ? (calculatedPnl / pos.margin) * 100
+                          : (pos.entryPrice > 0 && pos.markPrice > 0
+                              ? ((pos.markPrice - pos.entryPrice) / pos.entryPrice) * (isLong ? 1 : -1) * (pos.leverage || 10) * 100
+                              : 0));
+
+                    const isClosing = closingPosSymbol === pos.symbol;
 
                     return (
                       <tr
@@ -2291,19 +2387,48 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                           </span>
                         </td>
                         <td className="py-2.5 px-3 text-center text-amber-300 font-bold">{pos.leverage}x</td>
-                        <td className="py-2.5 px-3 text-gray-300">{pos.amount}</td>
+                        <td className="py-2.5 px-3">
+                          <div className="flex flex-col">
+                            <div className="font-bold text-white flex items-center gap-1 font-mono">
+                              <span>{pos.contractQty ?? pos.amount}</span>
+                              <span className="text-[10px] text-gray-400 font-sans">قرارداد</span>
+                            </div>
+                            <div className="text-[10px] text-cyan-300 font-mono">
+                              {pos.coinQty !== undefined ? `${pos.coinQty} ${fromXtSymbol(pos.symbol).split('/')[0]}` : ''}
+                              {pos.notionalUsdt ? ` ($${pos.notionalUsdt})` : ''}
+                            </div>
+                          </div>
+                        </td>
                         <td className="py-2.5 px-3 text-white font-bold">${formatPrice(pos.entryPrice)}</td>
-                        <td className="py-2.5 px-3 text-cyan-300">${formatPrice(pos.markPrice)}</td>
-                        <td className="py-2.5 px-3 text-emerald-400">${pos.takeProfitPrice ? formatPrice(pos.takeProfitPrice) : '---'}</td>
-                        <td className="py-2.5 px-3 text-rose-400">${pos.stopLossPrice ? formatPrice(pos.stopLossPrice) : '---'}</td>
+                        <td className="py-2.5 px-3 text-cyan-300 font-bold">${formatPrice(pos.markPrice)}</td>
+                        <td className="py-2.5 px-3 font-mono">
+                          {pos.takeProfitPrice ? (
+                            <div className="flex items-center gap-1 text-emerald-400 font-bold">
+                              <Target className="w-3 h-3 text-emerald-400 shrink-0" />
+                              <span>${formatPrice(pos.takeProfitPrice)}</span>
+                            </div>
+                          ) : (
+                            <span className="text-gray-500 text-[11px]">---</span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono">
+                          {pos.stopLossPrice ? (
+                            <div className="flex items-center gap-1 text-rose-400 font-bold">
+                              <ShieldAlert className="w-3 h-3 text-rose-400 shrink-0" />
+                              <span>${formatPrice(pos.stopLossPrice)}</span>
+                            </div>
+                          ) : (
+                            <span className="text-gray-500 text-[11px]">---</span>
+                          )}
+                        </td>
                         <td className="py-2.5 px-3 text-center">
                           <div className="inline-flex flex-col items-center">
-                            <div className={`flex items-center gap-1.5 font-bold text-xs ${calculatedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            <div className={`flex items-center gap-1.5 font-bold text-xs font-mono ${calculatedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                               <span className={`w-2 h-2 rounded-full ${calculatedPnl >= 0 ? 'bg-emerald-400 shadow-[0_0_8px_#10b981]' : 'bg-rose-400 shadow-[0_0_8px_#ef4444]'} animate-pulse`} />
-                              <span>{calculatedPnl >= 0 ? `+$${calculatedPnl.toFixed(2)}` : `-$${Math.abs(calculatedPnl).toFixed(2)}`}</span>
+                              <span>{calculatedPnl >= 0 ? `+$${formatLivePnl(calculatedPnl)}` : `-$${formatLivePnl(Math.abs(calculatedPnl))}`}</span>
                             </div>
                             <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded mt-0.5 font-bold ${calculatedPct >= 0 ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-500/30' : 'bg-rose-950/80 text-rose-300 border border-rose-500/30'}`}>
-                              {calculatedPct >= 0 ? `+${calculatedPct.toFixed(2)}%` : `${calculatedPct.toFixed(2)}%`}
+                              {calculatedPct >= 0 ? `+${calculatedPct.toFixed(2)}%` : `${calculatedPct.toFixed(2)}%`} ROI
                             </span>
                           </div>
                         </td>
@@ -2320,10 +2445,23 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                             </button>
                             <button
                               type="button"
+                              disabled={isClosing}
                               onClick={() => handleClosePosition(pos)}
-                              className="px-2 py-1 rounded-lg bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 border border-rose-500/40 text-[10px] font-bold cursor-pointer transition-all"
+                              className={`px-2.5 py-1 rounded-lg text-[10px] font-bold cursor-pointer transition-all flex items-center gap-1 ${
+                                isClosing
+                                  ? 'bg-gray-800 text-gray-500 border border-gray-700 cursor-not-allowed'
+                                  : 'bg-rose-950/70 hover:bg-rose-900/80 text-rose-300 border border-rose-500/40 hover:scale-105 active:scale-95'
+                              }`}
+                              title="بستن این پوزیشن با قیمت مارکت و لغو خودکار استاپ و تارگت در صرافی XT"
                             >
-                              بستن
+                              {isClosing ? (
+                                <>
+                                  <RefreshCw className="w-3 h-3 animate-spin text-rose-400" />
+                                  <span>در حال بستن...</span>
+                                </>
+                              ) : (
+                                <span>بستن</span>
+                              )}
                             </button>
                           </div>
                         </td>
@@ -2433,12 +2571,15 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                       <td className="py-2.5 px-3 text-white font-bold">${formatPrice(order.price)}</td>
                       <td className="py-2.5 px-3 text-emerald-400">${order.takeProfitPrice ? formatPrice(order.takeProfitPrice) : '---'}</td>
                       <td className="py-2.5 px-3 text-rose-400">${order.stopLossPrice ? formatPrice(order.stopLossPrice) : '---'}</td>
-                      <td className="py-2.5 px-3 text-gray-300">{order.amount}</td>
+                      <td className="py-2.5 px-3 text-gray-300 font-mono">
+                        <span>{order.amount}</span>
+                        <span className="text-[10px] text-gray-500 mr-1 font-sans">قرارداد</span>
+                      </td>
                       <td className="py-2.5 px-3 text-center">
                         {order.realizedPnl !== undefined ? (
                           <div className="inline-flex flex-col items-center">
-                            <span className={`font-bold text-xs ${order.realizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                              {order.realizedPnl >= 0 ? `+$${order.realizedPnl.toFixed(2)}` : `-$${Math.abs(order.realizedPnl).toFixed(2)}`}
+                            <span className={`font-bold text-xs font-mono ${order.realizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {order.realizedPnl >= 0 ? `+$${formatLivePnl(order.realizedPnl)}` : `-$${formatLivePnl(Math.abs(order.realizedPnl))}`}
                             </span>
                             {order.realizedPnlPercent !== undefined && (
                               <span className={`text-[10px] font-mono px-1 rounded mt-0.5 ${order.realizedPnlPercent >= 0 ? 'bg-emerald-950/60 text-emerald-300' : 'bg-rose-950/60 text-rose-300'}`}>

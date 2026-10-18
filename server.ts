@@ -497,16 +497,267 @@ app.get('/api/xt/balance', async (req, res) => {
 });
 
 // XT Open Positions
+// XT Open Positions (Merged with exact floatingPL, active TP/SL from profit-list, and coin quantities)
 app.get('/api/xt/positions', async (req, res) => {
   try {
     const symbol = req.query.symbol as string;
     const apiKey = (req.headers['x-api-key'] as string) || DEFAULT_XT_API_KEY;
     const secretKey = (req.headers['x-secret-key'] as string) || DEFAULT_XT_SECRET_KEY;
     const params = symbol ? { symbol } : {};
-    const data = await requestXtApi('GET', '/future/user/v1/position/list', 'application/x-www-form-urlencoded', params, apiKey, secretKey);
-    res.json(data);
+
+    // Parallel fetch: position list, position detail (for live floatingPL), profit-list (without state filter to prevent 0 items), and recent order history
+    const [listRes, posDetailRes, profitListRes, historyRes] = await Promise.all([
+      requestXtApi('GET', '/future/user/v1/position/list', 'application/x-www-form-urlencoded', params, apiKey, secretKey).catch(() => ({ result: [] })),
+      requestXtApi('GET', '/future/user/v1/position', 'application/x-www-form-urlencoded', params, apiKey, secretKey).catch(() => ({ result: [] })),
+      requestXtApi('GET', '/future/trade/v1/entrust/profit-list', 'application/x-www-form-urlencoded', { ps: '50', ...(symbol ? { symbol } : {}) }, apiKey, secretKey).catch(() => ({ result: { items: [] } })),
+      requestXtApi('GET', '/future/trade/v1/order/history-list', 'application/x-www-form-urlencoded', { ps: '20', ...(symbol ? { symbol } : {}) }, apiKey, secretKey).catch(() => ({ result: { items: [] } })),
+    ]);
+
+    const rawListItems = Array.isArray(listRes?.result) ? listRes.result : [];
+    const detailItems = Array.isArray(posDetailRes?.result) ? posDetailRes.result : [];
+    const profitItems = Array.isArray(profitListRes?.result?.items) ? profitListRes.result.items : [];
+    const historyItems = Array.isArray(historyRes?.result?.items) ? historyRes.result.items : [];
+
+    // Filter out 0-size closed positions
+    const listItems = rawListItems.filter((item: any) => {
+      const size = parseFloat(item.positionSize || item.holdAmount || '0');
+      return size > 0;
+    });
+
+    // Merge exact exchange calculations
+    const mergedResult = listItems.map((item: any) => {
+      const matchDetail = detailItems.find(
+        (d: any) => d.symbol === item.symbol && d.positionSide === item.positionSide
+      );
+
+      // 1. Match active TP / SL entrust from profit-list (filter out revoked/triggered)
+      const activeProfits = profitItems.filter(
+        (p: any) => p.symbol === item.symbol && p.positionSide === item.positionSide &&
+          p.state !== 'PLATFORM_REVOCATION' && p.state !== 'TRIGGERED' && p.state !== 'CANCELED' && p.state !== 'REVOKED'
+      );
+      const matchProfit = activeProfits[0] || profitItems.find(
+        (p: any) => p.symbol === item.symbol && p.positionSide === item.positionSide
+      );
+
+      // 2. Match latest order for this symbol with TP/SL
+      const matchOrder = historyItems.find(
+        (h: any) => h.symbol === item.symbol && h.positionSide === item.positionSide &&
+          (h.triggerProfitPrice || h.triggerStopPrice)
+      );
+
+      // 3. Match server scanner execution records
+      let matchExec: any = null;
+      try {
+        const stateObj = (global as any).serverScannerState || serverScannerState;
+        if (stateObj && Array.isArray(stateObj.executionLogs)) {
+          matchExec = stateObj.executionLogs.find(
+            (ex: any) => (ex.symbol === item.symbol || toXtSymbol(ex.symbol) === item.symbol) &&
+              ex.posSide === item.positionSide
+          );
+        }
+      } catch {}
+
+      const contractQty = parseFloat(item.positionSize || item.holdAmount || '0');
+      const contractSize = parseFloat(item.contractSize || '1');
+      const coinQty = item.coinQty !== undefined
+        ? parseFloat(item.coinQty)
+        : parseFloat((contractQty * contractSize).toFixed(8));
+      const entryPrice = parseFloat(item.entryPrice || item.openPrice || '0');
+      const markPrice = parseFloat(matchDetail?.calMarkPrice || item.markPrice || '0');
+      const margin = parseFloat(item.isolatedMargin || matchDetail?.isolatedMargin || item.margin || '0');
+      const leverage = parseInt(item.leverage || matchDetail?.leverage || '10', 10);
+
+      // Exact floating PnL directly from XT exchange engine
+      let floatingPL = 0;
+      if (item.floatingProfit !== undefined && item.floatingProfit !== null && item.floatingProfit !== '') {
+        floatingPL = parseFloat(item.floatingProfit);
+      } else if (matchDetail?.floatingPL !== undefined && matchDetail?.floatingPL !== null) {
+        floatingPL = parseFloat(matchDetail.floatingPL);
+      } else if (item.unrealizedPnl !== undefined && item.unrealizedPnl !== null) {
+        floatingPL = parseFloat(item.unrealizedPnl);
+      } else if (coinQty > 0 && entryPrice > 0 && markPrice > 0) {
+        const isLong = item.positionSide === 'LONG';
+        floatingPL = (markPrice - entryPrice) * (isLong ? 1 : -1) * coinQty;
+      }
+
+      // Exact ROI percentage based on position margin
+      let roiPercent = 0;
+      if (margin > 0) {
+        roiPercent = (floatingPL / margin) * 100;
+      } else if (entryPrice > 0 && markPrice > 0) {
+        const isLong = item.positionSide === 'LONG';
+        roiPercent = ((markPrice - entryPrice) / entryPrice) * (isLong ? 1 : -1) * leverage * 100;
+      }
+
+      // 4-layer resolution for TP and SL to guarantee they are always shown
+      const triggerProfitPrice = matchProfit?.triggerProfitPrice
+        ? parseFloat(matchProfit.triggerProfitPrice)
+        : (item.triggerProfitPrice
+            ? parseFloat(item.triggerProfitPrice)
+            : (matchOrder?.triggerProfitPrice
+                ? parseFloat(matchOrder.triggerProfitPrice)
+                : (matchExec?.takeProfit ? parseFloat(matchExec.takeProfit) : undefined)));
+
+      const triggerStopPrice = matchProfit?.triggerStopPrice
+        ? parseFloat(matchProfit.triggerStopPrice)
+        : (item.triggerStopPrice
+            ? parseFloat(item.triggerStopPrice)
+            : (matchOrder?.triggerStopPrice
+                ? parseFloat(matchOrder.triggerStopPrice)
+                : (matchExec?.stopLoss ? parseFloat(matchExec.stopLoss) : undefined)));
+
+      const profitId = matchProfit?.profitId || item.profitId || undefined;
+      const notionalUsdt = parseFloat((coinQty * markPrice).toFixed(2));
+
+      return {
+        ...item,
+        symbol: item.symbol,
+        positionSide: item.positionSide,
+        side: item.positionSide,
+        contractQty,
+        contractSize,
+        coinQty,
+        amount: contractQty,
+        notionalUsdt,
+        entryPrice,
+        markPrice,
+        margin,
+        leverage,
+        floatingPL,
+        floatingProfit: floatingPL,
+        unrealizedPnl: floatingPL,
+        pnlPercent: parseFloat(roiPercent.toFixed(2)),
+        roi: parseFloat(roiPercent.toFixed(2)),
+        triggerProfitPrice,
+        triggerStopPrice,
+        profitId,
+      };
+    });
+
+    res.json({
+      returnCode: 0,
+      msgInfo: 'success',
+      error: null,
+      result: mergedResult,
+    });
   } catch (error: any) {
     res.status(500).json({ returnCode: -1, msgInfo: error.message, error: error.message, result: [] });
+  }
+});
+
+// XT Dedicated Position Close Endpoint (Cancels open TP/SL and closes at MARKET according to doc.xt.com)
+app.post('/api/xt/position/close', async (req, res) => {
+  try {
+    const apiKey = (req.headers['x-api-key'] as string) || DEFAULT_XT_API_KEY;
+    const secretKey = (req.headers['x-secret-key'] as string) || DEFAULT_XT_SECRET_KEY;
+    const { symbol, positionSide = 'LONG', contractQty, profitId } = req.body;
+
+    const xtSymbol = toXtSymbol(symbol);
+    const exitSide = positionSide === 'LONG' ? 'SELL' : 'BUY';
+
+    // 1. Cancel active stop-limit / take-profit entrusts first using official XT endpoints to release frozen position quantity
+    if (profitId) {
+      try {
+        await requestXtApi('POST', '/future/trade/v1/entrust/cancel-profit-stop', 'application/json', { profitId }, apiKey, secretKey);
+      } catch (e: any) {
+        console.warn('cancel-profit-stop error:', e?.message || e);
+      }
+    }
+    try {
+      // Official XT endpoint from doc.xt.com: /future/trade/v1/entrust/cancel-all-profit-stop
+      await requestXtApi('POST', '/future/trade/v1/entrust/cancel-all-profit-stop', 'application/json', { symbol: xtSymbol }, apiKey, secretKey);
+    } catch {}
+    try {
+      await requestXtApi('POST', '/future/trade/v1/entrust/cancel-all-plan', 'application/json', { symbol: xtSymbol }, apiKey, secretKey);
+    } catch {}
+    try {
+      await requestXtApi('POST', '/future/trade/v1/order/cancel-all', 'application/json', { symbol: xtSymbol }, apiKey, secretKey);
+    } catch {}
+
+    // 2. Fetch fresh real position from XT to get exact availableCloseSize / positionSize
+    let qtyToClose = 0;
+    try {
+      const posRes = await requestXtApi('GET', '/future/user/v1/position/list', 'application/x-www-form-urlencoded', { symbol: xtSymbol }, apiKey, secretKey);
+      const match = posRes?.result?.find((p: any) => p.symbol === xtSymbol && p.positionSide === positionSide);
+      if (match) {
+        qtyToClose = Math.floor(parseFloat(match.availableCloseSize || match.positionSize || match.holdAmount || '0'));
+      }
+    } catch (posErr: any) {
+      console.warn('pos query error during close:', posErr?.message || posErr);
+    }
+
+    if (!qtyToClose || qtyToClose <= 0) {
+      if (contractQty && parseFloat(contractQty) > 0) {
+        qtyToClose = Math.floor(parseFloat(contractQty));
+      } else {
+        return res.json({ returnCode: 0, success: true, message: 'پوزیشن از قبل در صرافی بسته شده است' });
+      }
+    }
+
+    // 3. Send market close order with integer contracts (Cont)
+    const closePayload = {
+      symbol: xtSymbol,
+      orderSide: exitSide,
+      orderType: 'MARKET',
+      positionSide,
+      origQty: qtyToClose,
+      timeInForce: 'IOC',
+    };
+
+    let orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', closePayload, apiKey, secretKey);
+
+    if (orderRes?.returnCode === 0) {
+      addServerScannerLog('info', `✅ پوزیشن ${xtSymbol.toUpperCase()} با موفقیت با قیمت مارکت در صرافی بسته شد (حجم: ${qtyToClose} قرارداد).`, xtSymbol);
+      return res.json({ returnCode: 0, success: true, result: orderRes.result, message: 'پوزیشن با موفقیت بسته شد' });
+    }
+
+    // 4. Fallback: If leveling is frozen or order rejected, use XT's native official Close All endpoint
+    console.warn(`Market close order returned error ${orderRes?.msgInfo || orderRes?.error?.code}, trying XT native close-all...`);
+    const closeAllRes = await requestXtApi('POST', '/future/user/v1/position/close-all', 'application/x-www-form-urlencoded', {}, apiKey, secretKey);
+    if (closeAllRes?.returnCode === 0) {
+      addServerScannerLog('info', `✅ پوزیشن ${xtSymbol.toUpperCase()} از طریق اندپوینت رسمی close-all صرافی با قیمت مارکت بسته شد.`, xtSymbol);
+      return res.json({ returnCode: 0, success: true, result: closeAllRes.result, message: 'پوزیشن با موفقیت در صرافی بسته شد' });
+    }
+
+    if (orderRes?.error?.code === 'insufficient_leveling_quantity') {
+      return res.json({ returnCode: 0, success: true, message: 'پوزیشن از قبل در صرافی بسته شده است' });
+    }
+
+    return res.json({
+      returnCode: orderRes?.returnCode || -1,
+      success: false,
+      error: orderRes?.msgInfo || orderRes?.error?.code || 'خطا در بستن پوزیشن در صرافی XT',
+      details: orderRes,
+    });
+  } catch (error: any) {
+    res.status(500).json({ returnCode: -1, success: false, error: error.message });
+  }
+});
+
+// XT Official Close All Open Positions Endpoint (/future/user/v1/position/close-all)
+app.post('/api/xt/position/close-all', async (req, res) => {
+  try {
+    const apiKey = (req.headers['x-api-key'] as string) || DEFAULT_XT_API_KEY;
+    const secretKey = (req.headers['x-secret-key'] as string) || DEFAULT_XT_SECRET_KEY;
+
+    // 1. Cancel all active entrusts first
+    try {
+      await requestXtApi('POST', '/future/trade/v1/entrust/cancel-all-profit-stop', 'application/json', {}, apiKey, secretKey);
+    } catch {}
+    try {
+      await requestXtApi('POST', '/future/trade/v1/entrust/cancel-all-plan', 'application/json', {}, apiKey, secretKey);
+    } catch {}
+
+    // 2. Trigger native XT Close All Positions
+    const result = await requestXtApi('POST', '/future/user/v1/position/close-all', 'application/x-www-form-urlencoded', {}, apiKey, secretKey);
+    if (result?.returnCode === 0) {
+      addServerScannerLog('info', '✅ تمام پوزیشن‌های باز با قیمت مارکت در صرافی XT بسته شدند.');
+      return res.json({ returnCode: 0, success: true, message: 'تمام پوزیشن‌ها با موفقیت در صرافی بسته شدند', result: result.result });
+    }
+
+    res.json({ returnCode: result?.returnCode || -1, success: false, error: result?.msgInfo || 'خطا در بستن پوزیشن‌ها در صرافی XT' });
+  } catch (error: any) {
+    res.status(500).json({ returnCode: -1, success: false, error: error.message });
   }
 });
 

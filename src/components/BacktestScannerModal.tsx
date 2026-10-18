@@ -930,7 +930,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       const queue = [...targetPairs];
       let completedCount = 0;
       let lastUiCommit = 0;
-      let rollingScanCapital = capital;
 
       const triggerThrottledCommit = (force: boolean = false) => {
         const now = Date.now();
@@ -984,8 +983,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                 optMaxBreakoutAtr
               );
 
+              // ارزیابی هر دارایی با سرمایه پایه کاربر به صورت کاملاً مستقل، تکرارپذیر و پایدار
               const tempConfig: StrategyConfig = {
-                capital: rollingScanCapital,
+                capital,
                 selectedStrategyId,
                 riskMode,
                 riskAmountFixed,
@@ -997,7 +997,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                 maxCandlesToEnter,
                 maxTradesPerLeg: 1,
                 showOnChart: true,
-                noConcurrentPositions, // رعایت عدم تداخل و ورود تک‌پوزیشن
+                noConcurrentPositions: true, // در تایم‌لاین یک ارز از ورود به معامله دوم قبل از بسته‌شدن اولی جلوگیری می‌شود
               };
 
               let backtestRes;
@@ -1016,7 +1016,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               }
 
               const { trades, metrics } = backtestRes;
-              rollingScanCapital = Math.max(10, parseFloat((rollingScanCapital + metrics.netProfit).toFixed(2)));
 
               let optimalRiskForDD20 = 0;
               if (metrics.maxDrawdownPercent > 0) {
@@ -1055,7 +1054,11 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               collectedResults.push(resultItem);
               const finishedTrades = trades
                 .filter((t) => t.status === 'WIN' || t.status === 'LOSS')
-                .map((t) => ({ ...t, symbol: pair.symbol }));
+                .map((t, tIdx) => ({
+                  ...t,
+                  id: `${pair.symbol}-${t.id || tIdx}`,
+                  symbol: pair.symbol,
+                }));
               collectedTrades.push(...finishedTrades);
             }
           } catch (itemErr) {
@@ -1134,7 +1137,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     const queue = [...cachedEntries];
     let completedCount = 0;
     let lastUiCommit = 0;
-    let rollingRerunCapital = capital;
 
     const triggerThrottledCommit = (force: boolean = false) => {
       const now = Date.now();
@@ -1169,7 +1171,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           );
 
           const tempConfig: StrategyConfig = {
-            capital: rollingRerunCapital,
+            capital,
             selectedStrategyId,
             riskMode,
             riskAmountFixed,
@@ -1181,7 +1183,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             maxCandlesToEnter,
             maxTradesPerLeg: 1,
             showOnChart: true,
-            noConcurrentPositions,
+            noConcurrentPositions: true,
           };
 
           let backtestRes;
@@ -1200,7 +1202,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           }
 
           const { trades, metrics } = backtestRes;
-          rollingRerunCapital = Math.max(10, parseFloat((rollingRerunCapital + metrics.netProfit).toFixed(2)));
 
           let optimalRiskForDD20 = 0;
           if (metrics.maxDrawdownPercent > 0) {
@@ -1238,7 +1239,11 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
           const finishedTrades = trades
             .filter((t) => t.status === 'WIN' || t.status === 'LOSS')
-            .map((t) => ({ ...t, symbol: pair.symbol }));
+            .map((t, tIdx) => ({
+              ...t,
+              id: `${pair.symbol}-${t.id || tIdx}`,
+              symbol: pair.symbol,
+            }));
           collectedTrades.push(...finishedTrades);
         }
 
@@ -1313,17 +1318,29 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
   const rawTotalTradesSum = results.reduce((acc, r) => acc + r.totalTrades, 0);
   const rawTotalWinTradesSum = results.reduce((acc, r) => acc + r.winTrades, 0);
-  const rawTotalNetProfitSum = results.reduce((acc, r) => acc + r.netProfit, 0);
-  const rawTotalProfitSum = results.reduce((acc, r) => acc + r.totalProfit, 0);
-  const rawTotalLossSum = results.reduce((acc, r) => acc + r.totalLoss, 0);
-  const rawTotalFeeSum = results.reduce((acc, r) => acc + (r.totalFee || 0), 0);
+  const rawTotalLossTradesSum = results.reduce((acc, r) => acc + r.lossTrades, 0);
+  const rawTotalNetProfitSum = parseFloat(results.reduce((acc, r) => acc + r.netProfit, 0).toFixed(2));
+  const rawTotalProfitSum = parseFloat(results.reduce((acc, r) => acc + r.totalProfit, 0).toFixed(2));
+  const rawTotalLossSum = parseFloat(results.reduce((acc, r) => acc + r.totalLoss, 0).toFixed(2));
+  const rawTotalFeeSum = parseFloat(results.reduce((acc, r) => acc + (r.totalFee || 0), 0).toFixed(2));
 
-  const totalTradesSum = noConcurrentPositions && effectivePortfolioTrades.length > 0 ? effectivePortfolioTrades.length : rawTotalTradesSum;
-  const totalWinTradesSum = noConcurrentPositions && effectivePortfolioTrades.length > 0 ? effectivePortfolioTrades.filter((t) => t.status === 'WIN').length : rawTotalWinTradesSum;
-  const totalNetProfitSum = noConcurrentPositions && effectivePortfolioTrades.length > 0 ? parseFloat(effectivePortfolioTrades.reduce((acc, t) => acc + t.pnl, 0).toFixed(2)) : rawTotalNetProfitSum;
-  const totalProfitSum = noConcurrentPositions && effectivePortfolioTrades.length > 0 ? parseFloat(effectivePortfolioTrades.filter((t) => t.pnl > 0).reduce((acc, t) => acc + t.pnl, 0).toFixed(2)) : rawTotalProfitSum;
-  const totalLossSum = noConcurrentPositions && effectivePortfolioTrades.length > 0 ? parseFloat(effectivePortfolioTrades.filter((t) => t.pnl < 0).reduce((acc, t) => acc + Math.abs(t.pnl), 0).toFixed(2)) : rawTotalLossSum;
-  const totalFeeSum = noConcurrentPositions && effectivePortfolioTrades.length > 0
+  // در زمان اسکن فعال، همواره مجموع افزایشی تمام ارزهای اسکن‌شده نمایش داده می‌شود تا وین‌ریت هرگز به عقب برنگردد
+  const isPortfolioFilterActive = noConcurrentPositions && !isScanning && effectivePortfolioTrades.length > 0;
+
+  const totalTradesSum = isPortfolioFilterActive ? effectivePortfolioTrades.length : rawTotalTradesSum;
+  const totalWinTradesSum = isPortfolioFilterActive
+    ? effectivePortfolioTrades.filter((t) => t.status === 'WIN').length
+    : rawTotalWinTradesSum;
+  const totalNetProfitSum = isPortfolioFilterActive
+    ? parseFloat(effectivePortfolioTrades.reduce((acc, t) => acc + t.pnl, 0).toFixed(2))
+    : rawTotalNetProfitSum;
+  const totalProfitSum = isPortfolioFilterActive
+    ? parseFloat(effectivePortfolioTrades.filter((t) => t.pnl > 0).reduce((acc, t) => acc + t.pnl, 0).toFixed(2))
+    : rawTotalProfitSum;
+  const totalLossSum = isPortfolioFilterActive
+    ? parseFloat(effectivePortfolioTrades.filter((t) => t.pnl < 0).reduce((acc, t) => acc + Math.abs(t.pnl), 0).toFixed(2))
+    : rawTotalLossSum;
+  const totalFeeSum = isPortfolioFilterActive
     ? parseFloat(effectivePortfolioTrades.reduce((acc, t) => acc + (t.fee || t.commission || 0), 0).toFixed(2))
     : parseFloat(rawTotalFeeSum.toFixed(2));
 
@@ -1343,9 +1360,16 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       ? parseFloat(((totalWinTradesSum / totalTradesSum) * 100).toFixed(1))
       : 0;
 
+  const rawMarketWinRate =
+    rawTotalTradesSum > 0
+      ? parseFloat(((rawTotalWinTradesSum / rawTotalTradesSum) * 100).toFixed(1))
+      : 0;
+
   const equityPoints = useMemo(() => {
     if (effectivePortfolioTrades.length === 0) return [];
-    const sortedTrades = [...effectivePortfolioTrades].sort((a, b) => (a.exitTime || a.entryTime || 0) - (b.exitTime || b.entryTime || 0));
+    const sortedTrades = [...effectivePortfolioTrades].sort(
+      (a, b) => (a.exitTime || a.entryTime || 0) - (b.exitTime || b.entryTime || 0)
+    );
 
     let currentEquity = capital;
     let peakEquity = capital;
@@ -1375,7 +1399,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         currentDrawdown: parseFloat(ddPercent.toFixed(2)), // درودان لحظه‌ای
         maxDrawdownDollars: parseFloat(runningMaxDrawdownDollars.toFixed(2)),
         pnl: t.pnl,
-        symbol: t.id.split('-')[2] || '',
+        symbol: t.symbol || (t.id ? t.id.split('-')[0] : ''),
         direction: t.direction,
         status: t.status,
       };
@@ -4760,7 +4784,9 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                   </div>
 
                   <div className="p-2.5 rounded-xl bg-[#141924] border border-[#263143]">
-                    <span className="text-[10px] text-gray-400 block mb-0.5">مجموع سود خالص (بازدهی)</span>
+                    <span className="text-[10px] text-gray-400 block mb-0.5">
+                      {isPortfolioFilterActive ? 'سود خالص (سبد تک‌پوزیشن)' : 'مجموع سود خالص (بازدهی)'}
+                    </span>
                     <div className="flex items-baseline gap-1.5 flex-wrap">
                       <span className={`text-base font-extrabold font-mono ${totalNetProfitSum >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                         {totalNetProfitSum >= 0 ? '+' : ''}
@@ -4770,6 +4796,11 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                         ({portfolioReturnPercent >= 0 ? '+' : ''}{portfolioReturnPercent}٪)
                       </span>
                     </div>
+                    {isPortfolioFilterActive && (
+                      <span className="text-[9px] text-gray-400 font-mono block mt-0.5">
+                        سود کل سیگنال‌ها: {rawTotalNetProfitSum >= 0 ? '+' : ''}{rawTotalNetProfitSum.toLocaleString()}
+                      </span>
+                    )}
                   </div>
 
                   <div className="p-2.5 rounded-xl bg-[#141924] border border-amber-500/30">
@@ -4783,9 +4814,14 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
 
                   <div className="p-2.5 rounded-xl bg-[#141924] border border-[#263143]">
                     <span className="text-[10px] text-gray-400 block mb-0.5">
-                      وین‌ریت کل ({totalWinTradesSum}/{totalTradesSum})
+                      {isPortfolioFilterActive ? `وین‌ریت سبد تک‌پوزیشن (${totalWinTradesSum}/${totalTradesSum})` : `وین‌ریت کل استراتژی (${totalWinTradesSum}/${totalTradesSum})`}
                     </span>
                     <span className="text-base font-extrabold text-sky-400 font-mono">{portfolioWinRate}%</span>
+                    {isPortfolioFilterActive && (
+                      <span className="text-[9px] text-gray-400 font-mono block mt-0.5" title="مجموع تمام سیگنال‌های تولیدشده بازار قبل از فیلتر تک‌پوزیشن">
+                        کل سیگنال‌ها: {rawTotalWinTradesSum}/{rawTotalTradesSum} ({rawMarketWinRate}%)
+                      </span>
+                    )}
                   </div>
 
                   <div className="p-2.5 rounded-xl bg-[#141924] border border-[#263143]">
