@@ -308,21 +308,12 @@ export async function fetchXtKlines(
     console.warn('Failed to fetch XT klines via server', err);
   }
 
-  // Direct fetch fallback if needed
+  // Server candle alias fallback if needed
   try {
-    const res = await fetch(`https://fapi.xt.com/future/market/v1/public/q/kline?symbol=${xtSymbol}&interval=${timeframe}&limit=${limit}`);
+    const res = await fetch(`/api/market/candles?exchange=xt&symbol=${encodeURIComponent(xtSymbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${limit}`);
     const data = await res.json();
-    if (data?.result && Array.isArray(data.result)) {
-      return data.result.map((item: any) => ({
-        time: Math.floor(Number(item.t) / 1000),
-        open: parseFloat(item.o),
-        high: parseFloat(item.h),
-        low: parseFloat(item.l),
-        close: parseFloat(item.c),
-        volume: parseFloat(item.v || item.a || '0'),
-        quoteVolume: parseFloat(item.v || '0'),
-        trades: Number(item.a || 0),
-      })).sort((a: CandleData, b: CandleData) => a.time - b.time);
+    if (data?.candles && Array.isArray(data.candles)) {
+      return data.candles;
     }
   } catch {}
 

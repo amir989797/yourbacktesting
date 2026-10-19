@@ -1,10 +1,12 @@
 import express from 'express';
+import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import https from 'https';
 import fs from 'fs';
+import { WebSocket, WebSocketServer } from 'ws';
 import { calculateATR, calculateAtrZigZag, analyzeZigZagLegs } from './src/utils/indicators.ts';
 import { runStrategy1Backtest, runStrategy2Backtest } from './src/utils/strategyEngine.ts';
 import { DEFAULT_STRATEGY_CONFIG, StrategyConfig } from './src/types/strategy.ts';
@@ -16,6 +18,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+const server = http.createServer(app);
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
 app.use(express.json({ limit: '100mb' }));
@@ -355,31 +358,34 @@ function createXtSignatureHeaders(
   let message = '';
   let signkey = '';
 
+  const fixedHeader = `validate-appkey=${apiKey}&validate-timestamp=${timestamp}`;
+
   if (bodymod === 'application/x-www-form-urlencoded') {
     if (params && Object.keys(params).length > 0) {
       const sortedKeys = Object.keys(params).sort();
       message = sortedKeys.map((k) => `${k}=${params[k]}`).join('&');
-      signkey = `xt-validate-appkey=${apiKey}&xt-validate-timestamp=${timestamp}#${path}#${message}`;
+      signkey = `${fixedHeader}#${path}#${message}`;
     } else {
-      signkey = `xt-validate-appkey=${apiKey}&xt-validate-timestamp=${timestamp}#${path}`;
+      signkey = `${fixedHeader}#${path}`;
     }
   } else if (bodymod === 'application/json') {
     if (params && Object.keys(params).length > 0) {
       message = typeof params === 'string' ? params : JSON.stringify(params);
-      signkey = `xt-validate-appkey=${apiKey}&xt-validate-timestamp=${timestamp}#${path}#${message}`;
+      signkey = `${fixedHeader}#${path}#${message}`;
     } else {
-      signkey = `xt-validate-appkey=${apiKey}&xt-validate-timestamp=${timestamp}#${path}`;
+      signkey = `${fixedHeader}#${path}`;
     }
   }
 
   const sign = crypto.createHmac('sha256', secretKey).update(signkey).digest('hex');
 
   const headers: Record<string, string> = {
-    'validate-signversion': '2',
-    'xt-validate-appkey': apiKey,
-    'xt-validate-timestamp': timestamp,
-    'xt-validate-signature': sign,
-    'xt-validate-algorithms': 'HmacSHA256',
+    'validate-appkey': apiKey,
+    'validate-timestamp': timestamp,
+    'validate-signature': sign,
+    'validate-singature': sign, // XT typo compatibility
+    'validate-recvwindow': '5000',
+    'validate-algorithms': 'HmacSHA256',
   };
 
   if (bodymod === 'application/json') {
@@ -664,58 +670,65 @@ app.post('/api/xt/position/close', async (req, res) => {
       }
     }
     try {
-      // Official XT endpoint from doc.xt.com: /future/trade/v1/entrust/cancel-all-profit-stop
-      await requestXtApi('POST', '/future/trade/v1/entrust/cancel-all-profit-stop', 'application/json', { symbol: xtSymbol }, apiKey, secretKey);
+      // Official XT endpoints from doc.xt.com (url-encoded format)
+      await requestXtApi('POST', '/future/trade/v1/entrust/cancel-all-profit-stop', 'application/x-www-form-urlencoded', { symbol: xtSymbol }, apiKey, secretKey);
     } catch {}
     try {
-      await requestXtApi('POST', '/future/trade/v1/entrust/cancel-all-plan', 'application/json', { symbol: xtSymbol }, apiKey, secretKey);
-    } catch {}
-    try {
-      await requestXtApi('POST', '/future/trade/v1/order/cancel-all', 'application/json', { symbol: xtSymbol }, apiKey, secretKey);
+      await requestXtApi('POST', '/future/trade/v1/order/cancel-all', 'application/x-www-form-urlencoded', { symbol: xtSymbol }, apiKey, secretKey);
     } catch {}
 
     // 2. Fetch fresh real position from XT to get exact availableCloseSize / positionSize
     let qtyToClose = 0;
     try {
-      const posRes = await requestXtApi('GET', '/future/user/v1/position/list', 'application/x-www-form-urlencoded', { symbol: xtSymbol }, apiKey, secretKey);
-      const match = posRes?.result?.find((p: any) => p.symbol === xtSymbol && p.positionSide === positionSide);
+      const posRes = await requestXtApi('GET', '/future/trade/v1/position/list/active', 'application/x-www-form-urlencoded', { symbol: xtSymbol }, apiKey, secretKey);
+      const match = posRes?.result?.find((p: any) => p.symbol === xtSymbol && (p.positionSide === positionSide || !p.positionSide));
       if (match) {
-        qtyToClose = Math.floor(parseFloat(match.availableCloseSize || match.positionSize || match.holdAmount || '0'));
+        qtyToClose = Math.floor(parseFloat(match.availableCloseSize || match.positionSize || match.holdAmount || match.amount || '0'));
       }
     } catch (posErr: any) {
-      console.warn('pos query error during close:', posErr?.message || posErr);
+      console.warn('active pos query error during close:', posErr?.message || posErr);
+    }
+
+    if (!qtyToClose || qtyToClose <= 0) {
+      try {
+        const posRes2 = await requestXtApi('GET', '/future/user/v1/position/list', 'application/x-www-form-urlencoded', { symbol: xtSymbol }, apiKey, secretKey);
+        const match2 = posRes2?.result?.find((p: any) => p.symbol === xtSymbol && (p.positionSide === positionSide || !p.positionSide));
+        if (match2) {
+          qtyToClose = Math.floor(parseFloat(match2.availableCloseSize || match2.positionSize || match2.holdAmount || match2.amount || '0'));
+        }
+      } catch {}
     }
 
     if (!qtyToClose || qtyToClose <= 0) {
       if (contractQty && parseFloat(contractQty) > 0) {
         qtyToClose = Math.floor(parseFloat(contractQty));
-      } else {
-        return res.json({ returnCode: 0, success: true, message: 'پوزیشن از قبل در صرافی بسته شده است' });
       }
     }
 
-    // 3. Send market close order with integer contracts (Cont)
-    const closePayload = {
-      symbol: xtSymbol,
-      orderSide: exitSide,
-      orderType: 'MARKET',
-      positionSide,
-      origQty: qtyToClose,
-      timeInForce: 'IOC',
-    };
+    // 3. Send market close order according to doc.xt.com /future/trade/v1/order/create
+    let orderRes: any = null;
+    if (qtyToClose > 0) {
+      const closePayload = {
+        symbol: xtSymbol,
+        orderSide: exitSide,
+        orderType: 'MARKET',
+        positionSide,
+        origQty: qtyToClose,
+      };
 
-    let orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', closePayload, apiKey, secretKey);
+      orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', closePayload, apiKey, secretKey);
 
-    if (orderRes?.returnCode === 0) {
-      addServerScannerLog('info', `✅ پوزیشن ${xtSymbol.toUpperCase()} با موفقیت با قیمت مارکت در صرافی بسته شد (حجم: ${qtyToClose} قرارداد).`, xtSymbol);
-      return res.json({ returnCode: 0, success: true, result: orderRes.result, message: 'پوزیشن با موفقیت بسته شد' });
+      if (orderRes?.returnCode === 0) {
+        addServerScannerLog('info', `✅ پوزیشن ${xtSymbol.toUpperCase()} با موفقیت با قیمت مارکت در صرافی بسته شد (حجم: ${qtyToClose} قرارداد).`, xtSymbol);
+        return res.json({ returnCode: 0, success: true, result: orderRes.result, message: 'پوزیشن با موفقیت بسته شد' });
+      }
     }
 
-    // 4. Fallback: If leveling is frozen or order rejected, use XT's native official Close All endpoint
-    console.warn(`Market close order returned error ${orderRes?.msgInfo || orderRes?.error?.code}, trying XT native close-all...`);
-    const closeAllRes = await requestXtApi('POST', '/future/user/v1/position/close-all', 'application/x-www-form-urlencoded', {}, apiKey, secretKey);
+    // 4. Native Close: Use XT's official /future/user/v1/position/close-all endpoint from doc.xt.com
+    console.warn(`Attempting XT native close-all endpoint for ${xtSymbol}...`);
+    const closeAllRes = await requestXtApi('POST', '/future/user/v1/position/close-all', 'application/x-www-form-urlencoded', { symbol: xtSymbol }, apiKey, secretKey);
     if (closeAllRes?.returnCode === 0) {
-      addServerScannerLog('info', `✅ پوزیشن ${xtSymbol.toUpperCase()} از طریق اندپوینت رسمی close-all صرافی با قیمت مارکت بسته شد.`, xtSymbol);
+      addServerScannerLog('info', `✅ پوزیشن ${xtSymbol.toUpperCase()} از طریق اندپوینت رسمی close-all صرافی با موفقیت بسته شد.`, xtSymbol);
       return res.json({ returnCode: 0, success: true, result: closeAllRes.result, message: 'پوزیشن با موفقیت در صرافی بسته شد' });
     }
 
@@ -865,12 +878,12 @@ app.get('/api/market/pairs', async (req, res) => {
   }
 });
 
-// 2. Fast single symbol klines (supporting Binance & XT.COM up to 5,000 candles)
-app.get('/api/market/klines', async (req, res) => {
+// 2. Fast single symbol klines & candles (supporting Binance & XT.COM up to 5,000 candles)
+app.get(['/api/market/klines', '/api/market/candles', '/api/klines'], async (req, res) => {
   try {
     const exchange = (req.query.exchange as string) || 'binance';
     const symbol = (req.query.symbol as string) || (exchange === 'xt' ? 'btc_usdt' : 'BTCUSDT');
-    const timeframe = (req.query.timeframe as string) || '5m';
+    const timeframe = (req.query.timeframe as string) || (req.query.interval as string) || '5m';
     const limit = parseInt((req.query.limit as string) || '5000', 10);
 
     if (exchange === 'xt') {
@@ -883,6 +896,78 @@ app.get('/api/market/klines', async (req, res) => {
     res.json({ success: true, exchange: 'binance', symbol, timeframe, candles, count: candles.length });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 2.1 24h Ticker Proxy (Server-side fetch prevents browser geo-blocking)
+app.get('/api/market/ticker', async (req, res) => {
+  try {
+    const symbol = ((req.query.symbol as string) || 'BTCUSDT').toUpperCase();
+    const exchange = (req.query.exchange as string) || 'binance';
+
+    if (exchange === 'xt') {
+      const xtSym = toXtSymbol(symbol);
+      const tickerRes = await fetch(`https://${XT_FAPI_HOST}/future/market/v1/public/q/ticker?symbol=${xtSym}`);
+      const data = await tickerRes.json();
+      if (data?.result) {
+        return res.json({
+          symbol,
+          lastPrice: parseFloat(data.result.c || data.result.p || '0'),
+          priceChange: parseFloat(data.result.cr || '0'),
+          priceChangePercent: parseFloat(data.result.cr || '0') * 100,
+          highPrice: parseFloat(data.result.h || '0'),
+          lowPrice: parseFloat(data.result.l || '0'),
+          volume: parseFloat(data.result.v || '0'),
+          quoteVolume: parseFloat(data.result.a || '0'),
+        });
+      }
+    }
+
+    const isFutures = req.query.isFutures !== 'false';
+    const baseUrl = isFutures ? 'https://fapi.binance.com' : 'https://api.binance.com';
+    const tickerRes = await fetch(`${baseUrl}/${isFutures ? 'fapi/v1' : 'api/v3'}/ticker/24hr?symbol=${symbol}`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (tickerRes.ok) {
+      const data = await tickerRes.json();
+      return res.json({
+        symbol: data.symbol,
+        lastPrice: parseFloat(data.lastPrice || '0'),
+        priceChange: parseFloat(data.priceChange || '0'),
+        priceChangePercent: parseFloat(data.priceChangePercent || '0'),
+        highPrice: parseFloat(data.highPrice || '0'),
+        lowPrice: parseFloat(data.lowPrice || '0'),
+        volume: parseFloat(data.volume || '0'),
+        quoteVolume: parseFloat(data.quoteVolume || '0'),
+      });
+    }
+
+    res.status(502).json({ error: 'Failed to fetch ticker from exchange' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 2.2 Recent Trades Proxy (Server-side fetch)
+app.get('/api/market/recent-trades', async (req, res) => {
+  try {
+    const symbol = ((req.query.symbol as string) || 'BTCUSDT').toUpperCase();
+    const limit = parseInt((req.query.limit as string) || '20', 10);
+    const futRes = await fetch(`https://fapi.binance.com/fapi/v1/trades?symbol=${symbol}&limit=${limit}`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (futRes.ok) {
+      return res.json(await futRes.json());
+    }
+    const spotRes = await fetch(`https://api.binance.com/api/v3/trades?symbol=${symbol}&limit=${limit}`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (spotRes.ok) {
+      return res.json(await spotRes.json());
+    }
+    res.json([]);
+  } catch {
+    res.json([]);
   }
 });
 
@@ -2045,11 +2130,12 @@ app.post('/api/live-scanner/test-trade', async (req, res) => {
     };
 
     if (orderRes && orderRes.returnCode === 0) {
+      const realOrderId = orderRes.result?.orderId || (typeof orderRes.result === 'string' || typeof orderRes.result === 'number' ? String(orderRes.result) : 'ثبت شد');
       execRecord.status = 'SUCCESS';
-      execRecord.orderId = orderRes.result?.orderId || 'ثبت شد';
+      execRecord.orderId = realOrderId;
       addServerScannerLog(
         'success',
-        `🧪 معامله تست زنده با موفقیت در صرافی XT ثبت شد! Order ID: ${execRecord.orderId} | نماد: ${xtSymbol.toUpperCase()} | حجم: ${contractQty} قرارداد (${xtSizing.effectiveCoinQty} واحد، ارزش: $${xtSizing.nominalUsdt}) | استاپ: ${stopLoss} | تارگت: ${takeProfit}`,
+        `🧪 معامله تست زنده با موفقیت در صرافی XT ثبت شد! Order ID: ${realOrderId} | نماد: ${xtSymbol.toUpperCase()} | حجم: ${contractQty} قرارداد (${xtSizing.effectiveCoinQty} واحد، ارزش: $${xtSizing.nominalUsdt}) | استاپ: ${stopLoss} | تارگت: ${takeProfit}`,
         xtSymbol
       );
     } else {
@@ -2063,9 +2149,11 @@ app.post('/api/live-scanner/test-trade', async (req, res) => {
 
     serverScannerState.executionLogs = [execRecord, ...serverScannerState.executionLogs].slice(0, 100);
 
+    const realOrderId = orderRes?.result?.orderId || (typeof orderRes?.result === 'string' || typeof orderRes?.result === 'number' ? String(orderRes.result) : null);
+
     return res.json({
       success: orderRes && orderRes.returnCode === 0,
-      orderId: orderRes?.result?.orderId || null,
+      orderId: realOrderId,
       orderPayload,
       exchangeResponse: orderRes,
       details: {
@@ -2085,6 +2173,141 @@ app.post('/api/live-scanner/test-trade', async (req, res) => {
   } catch (err: any) {
     addServerScannerLog('error', `❌ خطای سیستمی در اجرای تست معامله: ${err.message}`);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// =========================================================================
+// WEBSOCKET RELAY FOR REAL-TIME KLINES & CANDLES (Proxies upstream without client geoblocking)
+// =========================================================================
+const wss = new WebSocketServer({ noServer: true });
+
+server.on('upgrade', (request, socket, head) => {
+  try {
+    const pathname = request.url ? new URL(request.url, 'http://localhost').pathname : '';
+    if (pathname === '/ws/kline') {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
+      });
+    }
+  } catch (err) {
+    console.warn('WS upgrade error:', err);
+  }
+});
+
+wss.on('connection', (clientWs, request) => {
+  let isAlive = true;
+  let upstreamWs: WebSocket | null = null;
+  let pollInterval: NodeJS.Timeout | null = null;
+
+  try {
+    const urlObj = new URL(request.url || '', 'http://localhost');
+    const rawSymbol = urlObj.searchParams.get('symbol') || 'BTCUSDT';
+    const interval = urlObj.searchParams.get('interval') || '1h';
+    const exchange = urlObj.searchParams.get('exchange') || 'binance';
+
+    const cleanup = () => {
+      isAlive = false;
+      if (upstreamWs) {
+        try {
+          upstreamWs.close();
+        } catch {}
+        upstreamWs = null;
+      }
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
+    };
+
+    clientWs.on('close', cleanup);
+    clientWs.on('error', cleanup);
+
+    if (exchange === 'xt') {
+      const xtSym = toXtSymbol(rawSymbol);
+      const pollXt = async () => {
+        if (!isAlive || clientWs.readyState !== WebSocket.OPEN) return;
+        try {
+          const candles = await fetchXtServerKlines(xtSym, interval, 2);
+          if (candles.length > 0) {
+            const last = candles[candles.length - 1];
+            clientWs.send(JSON.stringify({
+              type: 'kline',
+              candle: last,
+              isFinal: false,
+            }));
+          }
+        } catch {}
+      };
+      pollXt();
+      pollInterval = setInterval(pollXt, 1500);
+    } else {
+      // Binance: Server connects upstream from cloud server (no client geo-block!)
+      const cleanSym = rawSymbol.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const streamName = `${cleanSym}@kline_${interval}`;
+      const upstreamUrl = `wss://fstream.binance.com/ws/${streamName}`;
+
+      const startBinancePoll = () => {
+        if (pollInterval || !isAlive) return;
+        const poll = async () => {
+          if (!isAlive || clientWs.readyState !== WebSocket.OPEN) return;
+          try {
+            const candles = await fetchServerKlines(rawSymbol.toUpperCase(), interval, 2, true);
+            if (candles.length > 0) {
+              const last = candles[candles.length - 1];
+              clientWs.send(JSON.stringify({
+                type: 'kline',
+                candle: last,
+                isFinal: false,
+              }));
+            }
+          } catch {}
+        };
+        poll();
+        pollInterval = setInterval(poll, 1500);
+      };
+
+      try {
+        upstreamWs = new WebSocket(upstreamUrl);
+
+        upstreamWs.on('message', (msg) => {
+          if (!isAlive || clientWs.readyState !== WebSocket.OPEN) return;
+          try {
+            const parsed = JSON.parse(msg.toString());
+            if (parsed?.k) {
+              const k = parsed.k;
+              const candle = {
+                time: Math.floor(Number(k.t) / 1000),
+                open: parseFloat(k.o),
+                high: parseFloat(k.h),
+                low: parseFloat(k.l),
+                close: parseFloat(k.c),
+                volume: parseFloat(k.v),
+                quoteVolume: parseFloat(k.q),
+                trades: Number(k.n),
+                isClosed: Boolean(k.x),
+              };
+              clientWs.send(JSON.stringify({
+                type: 'kline',
+                candle,
+                isFinal: Boolean(k.x),
+              }));
+            }
+          } catch {}
+        });
+
+        upstreamWs.on('error', () => {
+          startBinancePoll();
+        });
+
+        upstreamWs.on('close', () => {
+          startBinancePoll();
+        });
+      } catch {
+        startBinancePoll();
+      }
+    }
+  } catch (err: any) {
+    console.warn('WS client handler error:', err);
   }
 });
 
@@ -2110,7 +2333,7 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  server.listen(PORT, '0.0.0.0', () => {
     console.log(`⚡ Server-side crypto trading platform running on http://0.0.0.0:${PORT}`);
   });
 }

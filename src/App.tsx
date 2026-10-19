@@ -239,7 +239,8 @@ export default function App() {
       },
       (status) => {
         setWsStatus(status);
-      }
+      },
+      exchange
     );
 
     return () => {

@@ -1,22 +1,18 @@
 import { CandleData, CryptoPair, Ticker24h, RecentTrade } from '../types/crypto';
 
-// Reliable Binance & Global Exchange REST mirrors (including server-side proxy routes to bypass CORS/geo-blocking in browser)
+// Strict local backend proxy routes (Bypasses browser CORS & geo-restrictions completely)
 const BINANCE_REST_ENDPOINTS = [
+  '/api/market/candles',
+  '/api/market/klines',
   '/api/binance-spot',
   '/api/binance-vision',
-  'https://data-api.binance.vision',
-  'https://api.binance.com',
-  'https://api1.binance.com',
-  'https://api2.binance.com',
-  'https://api3.binance.com',
-  'https://api.mexc.com',
 ];
 
 const BINANCE_FUTURES_ENDPOINTS = [
+  '/api/market/candles',
+  '/api/market/klines',
   '/api/binance-futures',
   '/api/binance-fapi',
-  'https://fapi.binance.com',
-  'https://api.mexc.com',
 ];
 
 export const POPULAR_PAIRS: CryptoPair[] = [
@@ -285,41 +281,18 @@ async function fetchBybitKlines(
   const cleanSymbol = symbol.toUpperCase();
 
   const fetchOneBybitBatch = async (batchLimit: number, endTimeMs?: number): Promise<CandleData[]> => {
-    let url = `https://api.bybit.com/v5/market/kline?category=linear&symbol=${cleanSymbol}&interval=${bInterval}&limit=${batchLimit}`;
-    if (endTimeMs) {
-      url += `&end=${endTimeMs}`;
+    try {
+      const url = `/api/market/candles?symbol=${cleanSymbol}&timeframe=${interval}&limit=${batchLimit}${endTimeMs ? `&endTime=${endTimeMs}` : ''}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) return [];
+      const data = await res.json();
+      if (data?.candles && Array.isArray(data.candles)) {
+        return data.candles;
+      }
+      return [];
+    } catch {
+      return [];
     }
-    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!res.ok) {
-      // Try spot category if linear fails
-      const spotUrl = `https://api.bybit.com/v5/market/kline?category=spot&symbol=${cleanSymbol}&interval=${bInterval}&limit=${batchLimit}${endTimeMs ? `&end=${endTimeMs}` : ''}`;
-      const spotRes = await fetch(spotUrl, { signal: AbortSignal.timeout(8000) });
-      if (!spotRes.ok) return [];
-      const spotData = await spotRes.json();
-      if (!spotData?.result?.list || !Array.isArray(spotData.result.list)) return [];
-      return spotData.result.list.map((item: string[]) => ({
-        time: Math.floor(Number(item[0]) / 1000),
-        open: parseFloat(item[1]),
-        high: parseFloat(item[2]),
-        low: parseFloat(item[3]),
-        close: parseFloat(item[4]),
-        volume: parseFloat(item[5]),
-        quoteVolume: parseFloat(item[6] || '0'),
-        trades: 0,
-      }));
-    }
-    const data = await res.json();
-    if (!data?.result?.list || !Array.isArray(data.result.list)) return [];
-    return data.result.list.map((item: string[]) => ({
-      time: Math.floor(Number(item[0]) / 1000),
-      open: parseFloat(item[1]),
-      high: parseFloat(item[2]),
-      low: parseFloat(item[3]),
-      close: parseFloat(item[4]),
-      volume: parseFloat(item[5]),
-      quoteVolume: parseFloat(item[6] || '0'),
-      trades: 0,
-    }));
   };
 
   try {
@@ -459,49 +432,47 @@ export async function fetchKlines(
  * Fetch 24hr Ticker stats from Binance, MEXC or Bybit
  */
 export async function fetch24hTicker(symbol: string): Promise<Ticker24h | null> {
-  // 1. Try Binance & MEXC mirrors
-  for (const baseUrl of BINANCE_REST_ENDPOINTS) {
-    try {
-      const url = `${baseUrl}/api/v3/ticker/24hr?symbol=${symbol.toUpperCase()}`;
-      const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
-      if (!response.ok) continue;
-
-      const data = await response.json();
-      return {
-        symbol: data.symbol,
-        lastPrice: parseFloat(data.lastPrice),
-        priceChange: parseFloat(data.priceChange),
-        priceChangePercent: parseFloat(data.priceChangePercent),
-        highPrice: parseFloat(data.highPrice),
-        lowPrice: parseFloat(data.lowPrice),
-        volume: parseFloat(data.volume),
-        quoteVolume: parseFloat(data.quoteVolume),
-        prevClosePrice: parseFloat(data.prevClosePrice),
-      };
-    } catch {
-      continue;
-    }
-  }
-
-  // 2. Try Bybit live ticker
   try {
-    const res = await fetch(`https://api.bybit.com/v5/market/tickers?category=linear&symbol=${symbol.toUpperCase()}`, {
-      signal: AbortSignal.timeout(5000),
+    const res = await fetch(`/api/market/ticker?symbol=${encodeURIComponent(symbol.toUpperCase())}`, {
+      signal: AbortSignal.timeout(6000),
     });
     if (res.ok) {
-      const bData = await res.json();
-      const item = bData?.result?.list?.[0];
-      if (item) {
+      const data = await res.json();
+      if (data && data.lastPrice) {
         return {
-          symbol: item.symbol,
-          lastPrice: parseFloat(item.lastPrice),
-          priceChange: parseFloat(item.price24hPcnt || '0') * parseFloat(item.lastPrice),
-          priceChangePercent: parseFloat(item.price24hPcnt || '0') * 100,
-          highPrice: parseFloat(item.highPrice24h),
-          lowPrice: parseFloat(item.lowPrice24h),
-          volume: parseFloat(item.volume24h),
-          quoteVolume: parseFloat(item.turnover24h),
-          prevClosePrice: parseFloat(item.prevPrice24h),
+          symbol: data.symbol || symbol.toUpperCase(),
+          lastPrice: parseFloat(data.lastPrice),
+          priceChange: parseFloat(data.priceChange || '0'),
+          priceChangePercent: parseFloat(data.priceChangePercent || '0'),
+          highPrice: parseFloat(data.highPrice || '0'),
+          lowPrice: parseFloat(data.lowPrice || '0'),
+          volume: parseFloat(data.volume || '0'),
+          quoteVolume: parseFloat(data.quoteVolume || '0'),
+          prevClosePrice: parseFloat(data.prevClosePrice || data.lastPrice),
+        };
+      }
+    }
+  } catch {}
+
+  // Secondary fallback: fast candle query
+  try {
+    const kRes = await fetch(`/api/market/candles?symbol=${encodeURIComponent(symbol.toUpperCase())}&limit=2`);
+    if (kRes.ok) {
+      const kData = await kRes.json();
+      if (kData?.candles && kData.candles.length > 0) {
+        const last = kData.candles[kData.candles.length - 1];
+        const first = kData.candles[0];
+        const change = last.close - first.open;
+        return {
+          symbol: symbol.toUpperCase(),
+          lastPrice: last.close,
+          priceChange: change,
+          priceChangePercent: first.open > 0 ? (change / first.open) * 100 : 0,
+          highPrice: Math.max(last.high, first.high),
+          lowPrice: Math.min(last.low, first.low),
+          volume: last.volume + first.volume,
+          quoteVolume: (last.volume + first.volume) * last.close,
+          prevClosePrice: first.open,
         };
       }
     }
@@ -511,47 +482,69 @@ export async function fetch24hTicker(symbol: string): Promise<Ticker24h | null> 
 }
 
 /**
- * Fetch recent trades for the orderbook/trades preview
+ * Fetch recent trades for the orderbook/trades preview (strictly via server-side proxy)
  */
 export async function fetchRecentTrades(symbol: string, limit = 20): Promise<RecentTrade[]> {
-  for (const baseUrl of BINANCE_REST_ENDPOINTS) {
-    try {
-      const url = `${baseUrl}/api/v3/trades?symbol=${symbol.toUpperCase()}&limit=${limit}`;
-      const response = await fetch(url);
-      if (!response.ok) continue;
-
-      const data = await response.json();
-      if (!Array.isArray(data)) continue;
-
-      return data.map((t: { id: number; price: string; qty: string; time: number; isBuyerMaker: boolean }) => ({
-        id: t.id,
-        price: parseFloat(t.price),
-        qty: parseFloat(t.qty),
-        time: t.time,
-        isBuyerMaker: t.isBuyerMaker,
-      }));
-    } catch {
-      continue;
+  try {
+    const res = await fetch(`/api/market/recent-trades?symbol=${encodeURIComponent(symbol.toUpperCase())}&limit=${limit}`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        return data.map((t: any) => ({
+          id: t.id || Math.random(),
+          price: parseFloat(t.price || '0'),
+          qty: parseFloat(t.qty || t.amount || '0'),
+          time: t.time || Date.now(),
+          isBuyerMaker: Boolean(t.isBuyerMaker),
+        }));
+      }
     }
-  }
+  } catch {}
   return [];
 }
 
 /**
- * Connect to Binance live WebSocket for real-time klines and ticks
+ * Connect to backend WebSocket relay for real-time klines and ticks
+ * Eliminates direct connections to stream.binance.com to bypass regional geo-blocking
  */
 export function subscribeToKlineStream(
   symbol: string,
   interval: string,
   onCandleUpdate: (candle: CandleData, isFinal: boolean) => void,
-  onStatusChange?: (status: 'connected' | 'reconnecting' | 'disconnected') => void
+  onStatusChange?: (status: 'connected' | 'reconnecting' | 'disconnected') => void,
+  exchange: 'binance' | 'xt' = 'binance'
 ): () => void {
   let ws: WebSocket | null = null;
   let isClosedManually = false;
   let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+  let pollInterval: ReturnType<typeof setInterval> | null = null;
 
-  const streamName = `${symbol.toLowerCase()}@kline_${interval}`;
-  const wsUrl = `wss://stream.binance.com:9443/ws/${streamName}`;
+  // STRICT LOCAL BACKEND PROXY (No direct connections to stream.binance.com or external exchanges)
+  const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
+  const host = typeof window !== 'undefined' ? window.location.host : 'localhost:3000';
+  const wsUrl = `${isHttps ? 'wss:' : 'ws:'}//${host}/ws/kline?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&exchange=${encodeURIComponent(exchange)}`;
+
+  const startFallbackPolling = () => {
+    if (pollInterval || isClosedManually) return;
+    const poll = async () => {
+      if (isClosedManually) return;
+      try {
+        const res = await fetch(`/api/market/candles?exchange=${encodeURIComponent(exchange)}&symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(interval)}&limit=2`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.candles && data.candles.length > 0) {
+            const last = data.candles[data.candles.length - 1];
+            onCandleUpdate(last, false);
+            onStatusChange?.('connected');
+          }
+        }
+      } catch {}
+    };
+    poll();
+    pollInterval = setInterval(poll, 2000);
+  };
 
   const connect = () => {
     if (isClosedManually) return;
@@ -561,12 +554,18 @@ export function subscribeToKlineStream(
 
       ws.onopen = () => {
         onStatusChange?.('connected');
+        if (pollInterval) {
+          clearInterval(pollInterval);
+          pollInterval = null;
+        }
       };
 
       ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
-          if (message.e === 'kline' && message.k) {
+          if (message.type === 'kline' && message.candle) {
+            onCandleUpdate(message.candle, Boolean(message.isFinal));
+          } else if (message.e === 'kline' && message.k) {
             const k = message.k;
             const candle: CandleData = {
               time: Math.floor(Number(k.t) / 1000),
@@ -588,11 +587,13 @@ export function subscribeToKlineStream(
 
       ws.onerror = () => {
         onStatusChange?.('reconnecting');
+        startFallbackPolling();
       };
 
       ws.onclose = () => {
         if (!isClosedManually) {
           onStatusChange?.('reconnecting');
+          startFallbackPolling();
           reconnectTimeout = setTimeout(() => {
             connect();
           }, 3000);
@@ -601,7 +602,7 @@ export function subscribeToKlineStream(
         }
       };
     } catch {
-      onStatusChange?.('disconnected');
+      startFallbackPolling();
     }
   };
 
@@ -610,9 +611,17 @@ export function subscribeToKlineStream(
   return () => {
     isClosedManually = true;
     if (reconnectTimeout) clearTimeout(reconnectTimeout);
-    if (ws) {
-      ws.close();
+    if (pollInterval) {
+      clearInterval(pollInterval);
+      pollInterval = null;
     }
+    if (ws) {
+      try {
+        ws.close();
+      } catch {}
+      ws = null;
+    }
+    onStatusChange?.('disconnected');
   };
 }
 

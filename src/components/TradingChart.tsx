@@ -177,6 +177,44 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     slDistancePct: number;
   } | null>(null);
 
+  // Trade Dismissed state & handler (Clears box and price lines from chart immediately)
+  const [isTradeDismissed, setIsTradeDismissed] = useState<boolean>(false);
+
+  useEffect(() => {
+    setIsTradeDismissed(false);
+  }, [activeLiveOrder]);
+
+  const visibleLiveOrder = !isTradeDismissed ? activeLiveOrder : null;
+
+  const handleDismissActiveTrade = (e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+    setIsTradeDismissed(true);
+    setRenderedLiveOrder(null);
+
+    const series = candleSeriesRef.current;
+    if (series) {
+      if (liveEntryLineRef.current) {
+        try { series.removePriceLine(liveEntryLineRef.current); } catch {}
+        liveEntryLineRef.current = null;
+      }
+      if (liveSlLineRef.current) {
+        try { series.removePriceLine(liveSlLineRef.current); } catch {}
+        liveSlLineRef.current = null;
+      }
+      if (liveTpLineRef.current) {
+        try { series.removePriceLine(liveTpLineRef.current); } catch {}
+        liveTpLineRef.current = null;
+      }
+    }
+
+    if (onClearActiveLiveOrder) {
+      onClearActiveLiveOrder();
+    }
+  };
+
   // Series refs
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const lineSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
@@ -829,26 +867,26 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       }
 
       // Live Order projection update on zoom/scroll
-      if (activeLiveOrder && activeLiveOrder.price > 0 && series) {
-        const yEntry = series.priceToCoordinate(activeLiveOrder.price);
+      if (visibleLiveOrder && visibleLiveOrder.price > 0 && series) {
+        const yEntry = series.priceToCoordinate(visibleLiveOrder.price);
         if (yEntry !== null) {
-          const ySL = activeLiveOrder.stopLossPrice ? series.priceToCoordinate(activeLiveOrder.stopLossPrice) : null;
-          const yTP = activeLiveOrder.takeProfitPrice ? series.priceToCoordinate(activeLiveOrder.takeProfitPrice) : null;
-          const slDist = activeLiveOrder.stopLossPrice ? Math.abs(activeLiveOrder.price - activeLiveOrder.stopLossPrice) : 0;
-          const tpDist = activeLiveOrder.takeProfitPrice ? Math.abs(activeLiveOrder.price - activeLiveOrder.takeProfitPrice) : 0;
+          const ySL = visibleLiveOrder.stopLossPrice ? series.priceToCoordinate(visibleLiveOrder.stopLossPrice) : null;
+          const yTP = visibleLiveOrder.takeProfitPrice ? series.priceToCoordinate(visibleLiveOrder.takeProfitPrice) : null;
+          const slDist = visibleLiveOrder.stopLossPrice ? Math.abs(visibleLiveOrder.price - visibleLiveOrder.stopLossPrice) : 0;
+          const tpDist = visibleLiveOrder.takeProfitPrice ? Math.abs(visibleLiveOrder.price - visibleLiveOrder.takeProfitPrice) : 0;
           setRenderedLiveOrder({
             yEntry,
             ySL,
             yTP,
-            entryPrice: activeLiveOrder.price,
-            stopLoss: activeLiveOrder.stopLossPrice || null,
-            takeProfit: activeLiveOrder.takeProfitPrice || null,
-            side: activeLiveOrder.side,
-            pnl: activeLiveOrder.unrealizedPnl,
-            pnlPercent: activeLiveOrder.pnlPercent,
+            entryPrice: visibleLiveOrder.price,
+            stopLoss: visibleLiveOrder.stopLossPrice || null,
+            takeProfit: visibleLiveOrder.takeProfitPrice || null,
+            side: visibleLiveOrder.side,
+            pnl: visibleLiveOrder.unrealizedPnl,
+            pnlPercent: visibleLiveOrder.pnlPercent,
             rr: slDist > 0 ? parseFloat((tpDist / slDist).toFixed(2)) : 0,
-            tpDistancePct: activeLiveOrder.price > 0 ? (tpDist / activeLiveOrder.price) * 100 : 0,
-            slDistancePct: activeLiveOrder.price > 0 ? (slDist / activeLiveOrder.price) * 100 : 0,
+            tpDistancePct: visibleLiveOrder.price > 0 ? (tpDist / visibleLiveOrder.price) * 100 : 0,
+            slDistancePct: visibleLiveOrder.price > 0 ? (slDist / visibleLiveOrder.price) * 100 : 0,
           });
         }
       }
@@ -858,7 +896,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     return () => {
       chartRef.current?.timeScale().unsubscribeVisibleLogicalRangeChange(handleRangeOrScaleChange);
     };
-  }, [measurement, rectangles, showZigZag, zigzagPoints, zigzagLegs, showStrategyTrades, strategyTrades, candles, activeLiveOrder]);
+  }, [measurement, rectangles, showZigZag, zigzagPoints, zigzagLegs, showStrategyTrades, strategyTrades, candles, visibleLiveOrder]);
 
   // Manage Active Live Order Price Lines & Visual Overlays (TradingView style)
   useEffect(() => {
@@ -878,17 +916,17 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       liveTpLineRef.current = null;
     }
 
-    if (!activeLiveOrder || !activeLiveOrder.price || activeLiveOrder.price <= 0) {
+    if (!visibleLiveOrder || !visibleLiveOrder.price || visibleLiveOrder.price <= 0) {
       setRenderedLiveOrder(null);
       return;
     }
 
-    const isLong = activeLiveOrder.side === 'BUY' || activeLiveOrder.positionSide === 'LONG';
+    const isLong = visibleLiveOrder.side === 'BUY' || visibleLiveOrder.positionSide === 'LONG';
     const sideText = isLong ? 'خرید (LONG)' : 'فروش (SHORT)';
 
     try {
       liveEntryLineRef.current = series.createPriceLine({
-        price: activeLiveOrder.price,
+        price: visibleLiveOrder.price,
         color: '#f59e0b',
         lineWidth: 2,
         lineStyle: LineStyle.Solid,
@@ -896,9 +934,9 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         title: `ورود: ${sideText}`,
       });
 
-      if (activeLiveOrder.stopLossPrice && activeLiveOrder.stopLossPrice > 0) {
+      if (visibleLiveOrder.stopLossPrice && visibleLiveOrder.stopLossPrice > 0) {
         liveSlLineRef.current = series.createPriceLine({
-          price: activeLiveOrder.stopLossPrice,
+          price: visibleLiveOrder.stopLossPrice,
           color: '#ef4444',
           lineWidth: 2,
           lineStyle: LineStyle.Dashed,
@@ -907,9 +945,9 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         });
       }
 
-      if (activeLiveOrder.takeProfitPrice && activeLiveOrder.takeProfitPrice > 0) {
+      if (visibleLiveOrder.takeProfitPrice && visibleLiveOrder.takeProfitPrice > 0) {
         liveTpLineRef.current = series.createPriceLine({
-          price: activeLiveOrder.takeProfitPrice,
+          price: visibleLiveOrder.takeProfitPrice,
           color: '#10b981',
           lineWidth: 2,
           lineStyle: LineStyle.Dashed,
@@ -918,31 +956,31 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         });
       }
 
-      const yEntry = series.priceToCoordinate(activeLiveOrder.price);
+      const yEntry = series.priceToCoordinate(visibleLiveOrder.price);
       if (yEntry !== null) {
-        const ySL = activeLiveOrder.stopLossPrice ? series.priceToCoordinate(activeLiveOrder.stopLossPrice) : null;
-        const yTP = activeLiveOrder.takeProfitPrice ? series.priceToCoordinate(activeLiveOrder.takeProfitPrice) : null;
-        const slDist = activeLiveOrder.stopLossPrice ? Math.abs(activeLiveOrder.price - activeLiveOrder.stopLossPrice) : 0;
-        const tpDist = activeLiveOrder.takeProfitPrice ? Math.abs(activeLiveOrder.price - activeLiveOrder.takeProfitPrice) : 0;
+        const ySL = visibleLiveOrder.stopLossPrice ? series.priceToCoordinate(visibleLiveOrder.stopLossPrice) : null;
+        const yTP = visibleLiveOrder.takeProfitPrice ? series.priceToCoordinate(visibleLiveOrder.takeProfitPrice) : null;
+        const slDist = visibleLiveOrder.stopLossPrice ? Math.abs(visibleLiveOrder.price - visibleLiveOrder.stopLossPrice) : 0;
+        const tpDist = visibleLiveOrder.takeProfitPrice ? Math.abs(visibleLiveOrder.price - visibleLiveOrder.takeProfitPrice) : 0;
         setRenderedLiveOrder({
           yEntry,
           ySL,
           yTP,
-          entryPrice: activeLiveOrder.price,
-          stopLoss: activeLiveOrder.stopLossPrice || null,
-          takeProfit: activeLiveOrder.takeProfitPrice || null,
-          side: activeLiveOrder.side,
-          pnl: activeLiveOrder.unrealizedPnl,
-          pnlPercent: activeLiveOrder.pnlPercent,
+          entryPrice: visibleLiveOrder.price,
+          stopLoss: visibleLiveOrder.stopLossPrice || null,
+          takeProfit: visibleLiveOrder.takeProfitPrice || null,
+          side: visibleLiveOrder.side,
+          pnl: visibleLiveOrder.unrealizedPnl,
+          pnlPercent: visibleLiveOrder.pnlPercent,
           rr: slDist > 0 ? parseFloat((tpDist / slDist).toFixed(2)) : 0,
-          tpDistancePct: activeLiveOrder.price > 0 ? (tpDist / activeLiveOrder.price) * 100 : 0,
-          slDistancePct: activeLiveOrder.price > 0 ? (slDist / activeLiveOrder.price) * 100 : 0,
+          tpDistancePct: visibleLiveOrder.price > 0 ? (tpDist / visibleLiveOrder.price) * 100 : 0,
+          slDistancePct: visibleLiveOrder.price > 0 ? (slDist / visibleLiveOrder.price) * 100 : 0,
         });
       }
     } catch (e) {
       console.warn('Error setting price lines:', e);
     }
-  }, [activeLiveOrder, candles]);
+  }, [visibleLiveOrder, candles]);
 
   // Keep ZigZag visuals updated when points or visibility changes
   useEffect(() => {
@@ -2176,7 +2214,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
             </svg>
 
             {/* TradingView-style Floating Position HUD (Corner Badge) */}
-            {activeLiveOrder && (
+            {visibleLiveOrder && (
               <div
                 className="absolute top-3 left-3 z-30 bg-[#0e141f]/95 border border-[#2b3a4f] rounded-2xl p-3 shadow-2xl backdrop-blur-md text-xs font-mono select-none max-w-xs animate-in fade-in slide-in-from-top-2"
                 dir="rtl"
@@ -2185,64 +2223,62 @@ export const TradingChart: React.FC<TradingChartProps> = ({
                   <div className="flex items-center gap-2">
                     <span
                       className={`px-2 py-0.5 rounded text-[10px] font-extrabold uppercase ${
-                        activeLiveOrder.side === 'BUY' || activeLiveOrder.positionSide === 'LONG'
+                        visibleLiveOrder.side === 'BUY' || visibleLiveOrder.positionSide === 'LONG'
                           ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
                           : 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
                       }`}
                     >
-                      {activeLiveOrder.side === 'BUY' || activeLiveOrder.positionSide === 'LONG' ? 'LONG 🟢' : 'SHORT 🔴'}
+                      {visibleLiveOrder.side === 'BUY' || visibleLiveOrder.positionSide === 'LONG' ? 'LONG 🟢' : 'SHORT 🔴'}
                     </span>
                     <strong className="text-white text-xs font-sans font-bold">
-                      {activeLiveOrder.symbol.toUpperCase()}
+                      {visibleLiveOrder.symbol.toUpperCase()}
                     </strong>
                   </div>
-                  {onClearActiveLiveOrder && (
-                    <button
-                      type="button"
-                      onClick={onClearActiveLiveOrder}
-                      className="p-1 rounded-lg hover:bg-[#1f2a3a] text-gray-400 hover:text-white transition-colors cursor-pointer"
-                      title="بستن نمایش ستاپ روی چارت"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={handleDismissActiveTrade}
+                    className="p-1 rounded-lg hover:bg-rose-500/20 text-gray-400 hover:text-rose-400 transition-colors cursor-pointer"
+                    title="حذف معامله از روی چارت (پاک‌سازی خطوط و باکس)"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
                 </div>
 
                 <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 mt-2 text-[11px]">
                   <div>
                     <span className="text-gray-400 block text-[10px]">قیمت ورود:</span>
-                    <strong className="text-amber-400 font-bold">${formatPrice(activeLiveOrder.price)}</strong>
+                    <strong className="text-amber-400 font-bold">${formatPrice(visibleLiveOrder.price)}</strong>
                   </div>
                   <div>
                     <span className="text-gray-400 block text-[10px]">نسبت R:R:</span>
                     <strong className="text-cyan-300 font-bold">
-                      {activeLiveOrder.takeProfitPrice && activeLiveOrder.stopLossPrice
-                        ? `1 : ${(Math.abs(activeLiveOrder.takeProfitPrice - activeLiveOrder.price) / Math.max(0.0001, Math.abs(activeLiveOrder.price - activeLiveOrder.stopLossPrice))).toFixed(2)}`
+                      {visibleLiveOrder.takeProfitPrice && visibleLiveOrder.stopLossPrice
+                        ? `1 : ${(Math.abs(visibleLiveOrder.takeProfitPrice - visibleLiveOrder.price) / Math.max(0.0001, Math.abs(visibleLiveOrder.price - visibleLiveOrder.stopLossPrice))).toFixed(2)}`
                         : '1 : 3.0'}
                     </strong>
                   </div>
                   <div>
                     <span className="text-gray-400 block text-[10px]">حد سود (TP):</span>
                     <strong className="text-emerald-400 font-bold">
-                      {activeLiveOrder.takeProfitPrice ? `$${formatPrice(activeLiveOrder.takeProfitPrice)}` : '---'}
+                      {visibleLiveOrder.takeProfitPrice ? `$${formatPrice(visibleLiveOrder.takeProfitPrice)}` : '---'}
                     </strong>
                   </div>
                   <div>
                     <span className="text-gray-400 block text-[10px]">حد ضرر (SL):</span>
                     <strong className="text-rose-400 font-bold">
-                      {activeLiveOrder.stopLossPrice ? `$${formatPrice(activeLiveOrder.stopLossPrice)}` : '---'}
+                      {visibleLiveOrder.stopLossPrice ? `$${formatPrice(visibleLiveOrder.stopLossPrice)}` : '---'}
                     </strong>
                   </div>
                 </div>
 
                 {/* وضعیت و سود و زیان زنده */}
                 {(() => {
-                  const lastC = candles.length > 0 ? candles[candles.length - 1].close : activeLiveOrder.price;
-                  const isLong = activeLiveOrder.side === 'BUY' || activeLiveOrder.positionSide === 'LONG';
-                  const livePnlVal = activeLiveOrder.unrealizedPnl !== undefined
-                    ? activeLiveOrder.unrealizedPnl
-                    : (activeLiveOrder.price > 0 ? (lastC - activeLiveOrder.price) * (isLong ? 1 : -1) * (activeLiveOrder.amount || 1) : 0);
-                  const pnlPctVal = activeLiveOrder.price > 0 ? ((lastC - activeLiveOrder.price) / activeLiveOrder.price) * (isLong ? 1 : -1) * 100 * (activeLiveOrder.leverage || 10) : 0;
+                  const lastC = candles.length > 0 ? candles[candles.length - 1].close : visibleLiveOrder.price;
+                  const isLong = visibleLiveOrder.side === 'BUY' || visibleLiveOrder.positionSide === 'LONG';
+                  const livePnlVal = visibleLiveOrder.unrealizedPnl !== undefined
+                    ? visibleLiveOrder.unrealizedPnl
+                    : (visibleLiveOrder.price > 0 ? (lastC - visibleLiveOrder.price) * (isLong ? 1 : -1) * (visibleLiveOrder.amount || 1) : 0);
+                  const pnlPctVal = visibleLiveOrder.price > 0 ? ((lastC - visibleLiveOrder.price) / visibleLiveOrder.price) * (isLong ? 1 : -1) * 100 * (visibleLiveOrder.leverage || 10) : 0;
 
                   return (
                     <div className="mt-2.5 pt-2 border-t border-[#212d3e] flex items-center justify-between text-[11px]">
