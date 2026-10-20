@@ -191,5 +191,6 @@ export interface ActiveChartOrder {
   pnlPercent?: number;
   status?: string;
   time?: string | number;
+  timestamp?: string | number;
 }
 

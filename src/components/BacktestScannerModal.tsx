@@ -650,16 +650,23 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
   // همگام‌سازی با تنظیمات زیگ‌زاگ وارده توسط کاربر در چارت
   useEffect(() => {
-    if (zigzagSettings) {
-      if (zigzagSettings.atrPeriod) setOptAtrPeriod(zigzagSettings.atrPeriod);
-      if (zigzagSettings.minCandles) setOptMinCandles(zigzagSettings.minCandles);
-      if (zigzagSettings.minCandlesForLongLeg) setOptMinCandlesLong(zigzagSettings.minCandlesForLongLeg);
-      if (zigzagSettings.atrMultiplier) setOptAtrMultiplier(zigzagSettings.atrMultiplier);
-      if (zigzagSettings.longLegAtrMultiplier) setOptLongLegAtrMult(zigzagSettings.longLegAtrMultiplier);
-      if (zigzagSettings.maxBlueLegPercent !== undefined) setOptMaxBlueLegPercent(zigzagSettings.maxBlueLegPercent);
-      if (zigzagSettings.maxBreakoutAtrMultiplier !== undefined) setOptMaxBreakoutAtr(zigzagSettings.maxBreakoutAtrMultiplier);
-    }
-  }, [zigzagSettings]);
+    if (!zigzagSettings) return;
+    if (zigzagSettings.atrPeriod && zigzagSettings.atrPeriod !== optAtrPeriod) setOptAtrPeriod(zigzagSettings.atrPeriod);
+    if (zigzagSettings.minCandles && zigzagSettings.minCandles !== optMinCandles) setOptMinCandles(zigzagSettings.minCandles);
+    if (zigzagSettings.minCandlesForLongLeg && zigzagSettings.minCandlesForLongLeg !== optMinCandlesLong) setOptMinCandlesLong(zigzagSettings.minCandlesForLongLeg);
+    if (zigzagSettings.atrMultiplier && zigzagSettings.atrMultiplier !== optAtrMultiplier) setOptAtrMultiplier(zigzagSettings.atrMultiplier);
+    if (zigzagSettings.longLegAtrMultiplier && zigzagSettings.longLegAtrMultiplier !== optLongLegAtrMult) setOptLongLegAtrMult(zigzagSettings.longLegAtrMultiplier);
+    if (zigzagSettings.maxBlueLegPercent !== undefined && zigzagSettings.maxBlueLegPercent !== optMaxBlueLegPercent) setOptMaxBlueLegPercent(zigzagSettings.maxBlueLegPercent);
+    if (zigzagSettings.maxBreakoutAtrMultiplier !== undefined && zigzagSettings.maxBreakoutAtrMultiplier !== optMaxBreakoutAtr) setOptMaxBreakoutAtr(zigzagSettings.maxBreakoutAtrMultiplier);
+  }, [
+    zigzagSettings?.atrPeriod,
+    zigzagSettings?.minCandles,
+    zigzagSettings?.minCandlesForLongLeg,
+    zigzagSettings?.atrMultiplier,
+    zigzagSettings?.longLegAtrMultiplier,
+    zigzagSettings?.maxBlueLegPercent,
+    zigzagSettings?.maxBreakoutAtrMultiplier,
+  ]);
 
   // شروط اولیه ارزیابی مدل
   const [targetMaxDrawdown, setTargetMaxDrawdown] = useState<number>(20.0);
@@ -1422,13 +1429,16 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   // به‌روزرسانی حداکثر درودان در حین اسکن: مقدار درودان فقط می‌تواند افزایش یابد و هرگز کم نمی‌شود
   useEffect(() => {
     if (results.length === 0) {
-      setScanMaxDrawdown(0);
+      setScanMaxDrawdown((prev) => (prev === 0 ? 0 : 0));
       return;
     }
     const maxPair = Math.max(...results.map((r) => r.maxDrawdownPercent || 0));
     const combined = chartStats.maxDd || 0;
     const currentWorst = Math.max(maxPair, combined);
-    setScanMaxDrawdown((prev) => parseFloat(Math.max(prev, currentWorst).toFixed(2)));
+    setScanMaxDrawdown((prev) => {
+      const next = parseFloat(Math.max(prev, currentWorst).toFixed(2));
+      return next === prev ? prev : next;
+    });
   }, [results, chartStats.maxDd]);
 
   const portfolioMaxDrawdown = useMemo(() => {

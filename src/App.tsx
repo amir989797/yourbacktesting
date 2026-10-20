@@ -315,6 +315,23 @@ export default function App() {
     setIsLoginModalOpen(false);
   };
 
+  // Memoized ATR hover updater to avoid maximum update depth loops
+  const handleHoverAtr = useCallback((data: any) => {
+    setHoveredAtrData((prev: any) => {
+      if (
+        prev?.isHovering === data?.isHovering &&
+        prev?.atr === data?.atr &&
+        prev?.twoAtr === data?.twoAtr &&
+        prev?.threeAtr === data?.threeAtr &&
+        prev?.candleRange === data?.candleRange &&
+        prev?.timeStr === data?.timeStr
+      ) {
+        return prev;
+      }
+      return data;
+    });
+  }, []);
+
   const isHovering = Boolean(hoveredAtrData?.isHovering);
   const currentAtr = isHovering ? hoveredAtrData!.atr : atrMetrics.currentATR;
   const currentTwoAtr = isHovering ? hoveredAtrData!.twoAtr : atrMetrics.twoATR;
@@ -408,7 +425,7 @@ export default function App() {
               atrValues={atrMetrics.atrValues}
               atrMap={atrMetrics.atrMap}
               latestAtr={atrMetrics.currentATR}
-              onHoverAtr={(data) => setHoveredAtrData(data)}
+              onHoverAtr={handleHoverAtr}
               zigzagSettings={zigzagSettings}
               onUpdateZigZagSettings={handleUpdateZigZagSettings}
               onOpenSettingsModal={() => setIsSettingsModalOpen(true)}

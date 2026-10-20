@@ -86,12 +86,14 @@ const BINANCE_SPOT_URLS = [
 // Helper delay
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Global Rate-Limit Coordinator & Backoff state
+// Global Rate-Limit Coordinator & Banned Hosts Cache
 let globalBackoffUntil = 0;
 let lastBackoffReason = '';
+const bannedHosts = new Map<string, number>();
 
 /**
  * Paced fetch with automatic rate-limit backoff (HTTP 429 & 418), retry, and endpoint rotation
+ * Strictly caps backoff to max 8s (NEVER pauses for an hour even if 418 returns retry-after=3600)
  */
 async function fetchWithRateLimit(
   urls: string[],
@@ -101,7 +103,7 @@ async function fetchWithRateLimit(
 ): Promise<any> {
   // 1. Check if global backoff is currently active
   if (Date.now() < globalBackoffUntil) {
-    const remainingWait = globalBackoffUntil - Date.now();
+    const remainingWait = Math.min(globalBackoffUntil - Date.now(), 8000);
     serverBufferMetadata.rateLimitPacingActive = true;
     serverBufferMetadata.statusMessage = `محدودیت API بایننس؛ اعمال فاصله زمانی ${Math.ceil(remainingWait / 1000)} ثانیه...`;
     await sleep(remainingWait);
@@ -118,6 +120,11 @@ async function fetchWithRateLimit(
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     for (const baseUrl of urls) {
+      // Skip known banned host without making futile requests
+      if ((bannedHosts.get(baseUrl) || 0) > Date.now()) {
+        continue;
+      }
+
       const fullUrl = `${baseUrl}${pathQuery}`;
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -133,19 +140,27 @@ async function fetchWithRateLimit(
         });
         clearTimeout(timeoutId);
 
-        // Check for rate limit or IP restriction response codes (429 / 418)
-        if (response.status === 429 || response.status === 418) {
+        // HTTP 418: Host IP is banned by CloudFront/Binance
+        // Do NOT sleep for 3600s! Mark host as temporarily banned and immediately switch to another mirror!
+        if (response.status === 418) {
+          bannedHosts.set(baseUrl, Date.now() + 15 * 60 * 1000);
+          console.warn(`[Binance 418 Ban] Host ${baseUrl} IP banned. Skipping and switching to alternative mirrors immediately.`);
+          continue;
+        }
+
+        // HTTP 429: Rate limit warning - back off briefly (max 8 seconds, NEVER 1 hour)
+        if (response.status === 429) {
           const retryAfterHeader = response.headers.get('retry-after');
-          const waitSeconds = retryAfterHeader ? parseInt(retryAfterHeader, 10) : 4;
-          const backoffDuration = Math.max(waitSeconds * 1000, 4000);
+          const waitSeconds = retryAfterHeader ? Math.min(parseInt(retryAfterHeader, 10) || 4, 8) : 4;
+          const backoffDuration = Math.min(Math.max(waitSeconds * 1000, 3000), 8000);
           globalBackoffUntil = Date.now() + backoffDuration;
-          lastBackoffReason = `Rate limit ${response.status} from ${baseUrl}`;
+          lastBackoffReason = `Rate limit 429 from ${baseUrl}`;
           serverBufferMetadata.rateLimitPacingActive = true;
-          serverBufferMetadata.statusMessage = `محدودیت نرخ بایننس (${response.status})؛ فاصله و مکث ${waitSeconds} ثانیه‌ای...`;
-          console.warn(`[Binance Rate Limit] Status ${response.status}. Pausing all workers for ${backoffDuration}ms`);
+          serverBufferMetadata.statusMessage = `محدودیت نرخ بایننس (429)؛ مکث کوتاه ${waitSeconds} ثانیه‌ای...`;
+          console.warn(`[Binance Rate Limit] Status 429 from ${baseUrl}. Brief pause of ${backoffDuration}ms`);
           await sleep(backoffDuration);
           serverBufferMetadata.rateLimitPacingActive = false;
-          continue; // retry
+          continue;
         }
 
         if (response.status === 400) {
@@ -168,8 +183,8 @@ async function fetchWithRateLimit(
       }
     }
 
-    // Exponential backoff before next attempt
-    await sleep(400 * (attempt + 1));
+    // Brief exponential backoff between retry rounds (max 1.5s)
+    await sleep(Math.min(300 * (attempt + 1), 1500));
   }
 
   throw lastError || new Error('All mirrors failed');
@@ -189,7 +204,7 @@ async function fetchServerPairs(
   // 1. Fetch Binance USDT-M Futures pairs
   if (universe === 'all_market' || universe === 'futures') {
     try {
-      const futuresData = await fetchWithRateLimit(BINANCE_FUTURES_URLS, '/fapi/v1/ticker/24hr', 8000, 10);
+      const futuresData = await fetchWithRateLimit(BINANCE_FUTURES_URLS, '/fapi/v1/ticker/24hr', 5000, 10);
       if (Array.isArray(futuresData)) {
         for (const item of futuresData) {
           const symbol = String(item.symbol || '');
@@ -208,8 +223,22 @@ async function fetchServerPairs(
           }
         }
       }
-    } catch (e) {
-      console.warn('Failed to fetch futures tickers:', e);
+    } catch (e: any) {
+      console.warn('Binance futures ticker unavailable or 418 rate-limited; falling back to XT Futures pairs:', e?.message || e);
+      try {
+        const xtPairs = await fetchXtServerPairs();
+        for (const xp of xtPairs) {
+          const stdSym = xp.symbol.replace('_', '').toUpperCase();
+          if (!pairsMap.has(stdSym)) {
+            pairsMap.set(stdSym, {
+              symbol: stdSym,
+              baseAsset: xp.baseAsset,
+              quoteAsset: xp.quoteAsset,
+              vol: xp.volume24h || 1000000,
+            });
+          }
+        }
+      } catch {}
     }
   }
 
@@ -278,7 +307,7 @@ async function fetchServerKlines(
     : [symbol, `1000${symbol}`];
 
   const mirrors = isFutures
-    ? ['https://fapi.binance.com', 'https://data-api.binance.vision', 'https://api.binance.com']
+    ? ['https://data-api.binance.vision', 'https://api.binance.com', 'https://fapi.binance.com']
     : ['https://data-api.binance.vision', 'https://api.binance.com', 'https://api1.binance.com'];
 
   let allRawKlines: any[] = [];
@@ -292,6 +321,11 @@ async function fetchServerKlines(
     for (const sym of symCandidates) {
       if (batchData && batchData.length > 0) break;
       for (const mirror of mirrors) {
+        // Skip fapi if currently banned to avoid wasted latency
+        if (mirror.includes('fapi') && (bannedHosts.get('https://fapi.binance.com') || 0) > Date.now()) {
+          continue;
+        }
+
         const isF = mirror.includes('fapi');
         const urlPath: string = isF
           ? `/fapi/v1/klines?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(timeframe)}&limit=${limit}${endTime ? `&endTime=${endTime}` : ''}`
@@ -302,6 +336,10 @@ async function fetchServerKlines(
             headers: { Accept: 'application/json' },
             signal: AbortSignal.timeout(4000),
           });
+          if (res.status === 418) {
+            bannedHosts.set(mirror, Date.now() + 15 * 60 * 1000);
+            continue;
+          }
           if (res.ok) {
             const data = await res.json();
             if (Array.isArray(data) && data.length > 0) {
@@ -320,7 +358,16 @@ async function fetchServerKlines(
     if (batchData.length < limit) break;
   }
 
-  if (allRawKlines.length === 0) return [];
+  if (allRawKlines.length === 0) {
+    // Ultimate fallback: Try XT Futures public klines
+    try {
+      const xtCandles = await fetchXtServerKlines(symbol, timeframe, targetLimit);
+      if (xtCandles && xtCandles.length > 0) {
+        return xtCandles;
+      }
+    } catch {}
+    return [];
+  }
 
   // Deduplicate and sort chronologically (oldest to newest)
   const timeMap = new Map<number, CandleData>();
@@ -1004,8 +1051,8 @@ app.post('/api/market/server-scan-download', async (req, res) => {
       currentSymbol: 'شروع دانلود موازی با کنترل ترافیک و فاصله‌گذاری...',
     };
 
-    // Parallel Worker Pool with Concurrency = 6 and Pacing to respect Binance Rate Limits
-    const CONCURRENCY = 6;
+    // Parallel Worker Pool with Concurrency = 3 and Pacing to respect Rate Limits
+    const CONCURRENCY = 3;
     const queue = [...targetPairs];
     let completed = 0;
     const results: ServerCandleEntry[] = [];
@@ -1034,8 +1081,8 @@ app.post('/api/market/server-scan-download', async (req, res) => {
           serverBufferMetadata.downloadProgress.percent = Math.round((completed / total) * 100);
         }
 
-        // Small inter-task pacing pause per worker
-        await sleep(30);
+        // Inter-task pacing pause per worker to stay well below API rate limits
+        await sleep(120);
       }
     };
 

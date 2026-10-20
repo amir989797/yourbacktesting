@@ -177,21 +177,23 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     slDistancePct: number;
   } | null>(null);
 
-  // Trade Dismissed state & handler (Clears box and price lines from chart immediately)
-  const [isTradeDismissed, setIsTradeDismissed] = useState<boolean>(false);
+  // Trade Dismissed state & handler (Clears box, shaded zones, and price lines from chart immediately)
+  const [dismissedOrderKey, setDismissedOrderKey] = useState<string | null>(null);
 
-  useEffect(() => {
-    setIsTradeDismissed(false);
-  }, [activeLiveOrder]);
+  const currentOrderKey = activeLiveOrder
+    ? `${activeLiveOrder.id || ''}_${activeLiveOrder.symbol || ''}_${activeLiveOrder.price || ''}_${activeLiveOrder.time || activeLiveOrder.timestamp || ''}`
+    : null;
 
-  const visibleLiveOrder = !isTradeDismissed ? activeLiveOrder : null;
+  const visibleLiveOrder = (activeLiveOrder && currentOrderKey !== dismissedOrderKey) ? activeLiveOrder : null;
 
   const handleDismissActiveTrade = (e?: React.MouseEvent) => {
     if (e) {
       e.stopPropagation();
       e.preventDefault();
     }
-    setIsTradeDismissed(true);
+    if (currentOrderKey) {
+      setDismissedOrderKey(currentOrderKey);
+    }
     setRenderedLiveOrder(null);
 
     const series = candleSeriesRef.current;
@@ -636,6 +638,12 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     }
   }, [showZigZag]);
 
+  // Keep onHoverAtr in a ref so crosshair subscriber doesn't re-mount in an infinite loop
+  const onHoverAtrRef = useRef(onHoverAtr);
+  useEffect(() => {
+    onHoverAtrRef.current = onHoverAtr;
+  }, [onHoverAtr]);
+
   // Subscribe to Crosshair Move with precise ATR resolution
   useEffect(() => {
     if (!chartRef.current) return;
@@ -650,7 +658,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       ) {
         setHoverData(null);
         const lastC = candles[candles.length - 1];
-        onHoverAtr?.({
+        onHoverAtrRef.current?.({
           atr: latestAtr,
           twoAtr: latestAtr * 2,
           threeAtr: latestAtr * 3,
@@ -701,7 +709,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
           minute: '2-digit',
         });
 
-        onHoverAtr?.({
+        onHoverAtrRef.current?.({
           atr: candleAtr,
           twoAtr: candleAtr * 2,
           threeAtr: candleAtr * 3,
@@ -731,7 +739,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     return () => {
       chart.unsubscribeCrosshairMove(crosshairHandler);
     };
-  }, [candles, atrValues, atrMap, latestAtr, onHoverAtr]);
+  }, [candles, atrValues, atrMap, latestAtr]);
 
   // Keep Measurements and Rectangles pinned during pan/zoom
   useEffect(() => {
@@ -889,6 +897,8 @@ export const TradingChart: React.FC<TradingChartProps> = ({
             slDistancePct: visibleLiveOrder.price > 0 ? (slDist / visibleLiveOrder.price) * 100 : 0,
           });
         }
+      } else {
+        setRenderedLiveOrder(null);
       }
     };
 
@@ -2216,7 +2226,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
             {/* TradingView-style Floating Position HUD (Corner Badge) */}
             {visibleLiveOrder && (
               <div
-                className="absolute top-3 left-3 z-30 bg-[#0e141f]/95 border border-[#2b3a4f] rounded-2xl p-3 shadow-2xl backdrop-blur-md text-xs font-mono select-none max-w-xs animate-in fade-in slide-in-from-top-2"
+                className="absolute top-3 left-3 z-50 pointer-events-auto bg-[#0e141f]/95 border border-[#2b3a4f] rounded-2xl p-3 shadow-2xl backdrop-blur-md text-xs font-mono select-none max-w-xs animate-in fade-in slide-in-from-top-2"
                 dir="rtl"
               >
                 <div className="flex items-center justify-between pb-2 border-b border-[#212d3e] gap-3">
@@ -2237,10 +2247,11 @@ export const TradingChart: React.FC<TradingChartProps> = ({
                   <button
                     type="button"
                     onClick={handleDismissActiveTrade}
-                    className="p-1 rounded-lg hover:bg-rose-500/20 text-gray-400 hover:text-rose-400 transition-colors cursor-pointer"
+                    className="p-1.5 rounded-lg hover:bg-rose-500/20 text-gray-400 hover:text-rose-400 transition-colors cursor-pointer pointer-events-auto"
                     title="حذف معامله از روی چارت (پاک‌سازی خطوط و باکس)"
+                    aria-label="حذف معامله از چارت"
                   >
-                    <X className="w-3.5 h-3.5" />
+                    <X className="w-4 h-4" />
                   </button>
                 </div>
 
