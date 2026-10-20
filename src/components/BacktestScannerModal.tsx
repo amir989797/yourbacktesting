@@ -95,6 +95,12 @@ import {
   promoteDatasetInCloudSql,
   CloudSqlStatus,
 } from '../services/cloudsql';
+import {
+  getCachedCandlesFromDb,
+  saveCandlesToDb,
+  preloadAllCandlesToMemory,
+  clearCandleDbStore,
+} from '../utils/candleDb';
 
 export interface BacktestResultItem {
   pair: CryptoPair;
@@ -539,7 +545,13 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
   useEffect(() => {
     setCachedCount(getCachedUniqueCount());
-  }, [timeframe, getCachedUniqueCount]);
+    // لود خودکار کندل‌های ذخیره‌شده از IndexedDB مرورگر به حافظه رم برای دسترسی فوری بدون نیاز به دانلود
+    preloadAllCandlesToMemory(GLOBAL_CANDLE_CACHE, timeframe, selectedExchange).then((loaded) => {
+      if (loaded > 0) {
+        setCachedCount(getCachedUniqueCount());
+      }
+    });
+  }, [timeframe, selectedExchange, getCachedUniqueCount]);
 
   // تعداد ورکر همزمان برای دانلود و اسکن موازی سریع (Workers Concurrency)
   const [scanWorkersCount, setScanWorkersCount] = useState<number>(() => {
@@ -547,7 +559,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       const saved = localStorage.getItem('backtest_scan_workers_v2');
       if (saved) return parseInt(saved, 10);
     } catch {}
-    return 12; // پیش‌فرض ۱۲ ورکر برای سرعت بالا در ۶۵۰ ارز
+    return 20; // پیش‌فرض ۲۰ ورکر برای سرعت حداکثری در ۱۱۰۰+ نماد
   });
 
   // Scanner status & results
@@ -947,30 +959,42 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         }
       };
 
+      let lastProgressTime = 0;
+
       const worker = async () => {
         while (queue.length > 0 && !abortControllerRef.current) {
           const pair = queue.shift();
           if (!pair) break;
 
           try {
-            // ۱. بررسی حافظه کش کندل‌ها بر اساس صرافی و نماد
+            // ۱. بررسی حافظه کش سریع رم بر اساس صرافی و نماد (۰ میلی‌ثانیه)
             const cacheKey = `${selectedExchange}_${pair.symbol}_${timeframe}`;
             let candles: CandleData[] = [];
             const cached = GLOBAL_CANDLE_CACHE.get(cacheKey);
             if (cached && cached.candles && cached.candles.length >= 50 && cached.timeframe === timeframe) {
               candles = cached.candles;
             } else {
-              // ۲. دانلود سریع از اندپوینت سرور بر اساس صرافی انتخابی
-              const klineRes = await fetch(
-                `/api/market/klines?exchange=${selectedExchange}&symbol=${encodeURIComponent(pair.symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${candleHistoryLimit}&isFutures=${isFuturesUniverse}`
-              )
-                .then((r) => r.json())
-                .catch(() => null);
-
-              if (klineRes && klineRes.success && Array.isArray(klineRes.candles) && klineRes.candles.length >= 50) {
-                candles = klineRes.candles;
+              // ۲. بررسی دیتابیس پایدار مرورگر (IndexedDB - ۱ میلی‌ثانیه بدون ترافیک شبکه)
+              const idbCached = await getCachedCandlesFromDb(selectedExchange, pair.symbol, timeframe);
+              if (idbCached && idbCached.candles && idbCached.candles.length >= 50) {
+                candles = idbCached.candles;
                 GLOBAL_CANDLE_CACHE.set(cacheKey, { pair, candles, timeframe });
                 setCachedCount(getCachedUniqueCount());
+              } else {
+                // ۳. دانلود موازی و بهینه‌شده از اندپوینت سرور (با بچ‌های ۱۵۰۰ تایی و هدایت مستقیم فست-سرور)
+                const klineRes = await fetch(
+                  `/api/market/klines?exchange=${selectedExchange}&symbol=${encodeURIComponent(pair.symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${candleHistoryLimit}&isFutures=${isFuturesUniverse}`
+                )
+                  .then((r) => r.json())
+                  .catch(() => null);
+
+                if (klineRes && klineRes.success && Array.isArray(klineRes.candles) && klineRes.candles.length >= 50) {
+                  candles = klineRes.candles;
+                  GLOBAL_CANDLE_CACHE.set(cacheKey, { pair, candles, timeframe });
+                  // ذخیره ماندگار در IndexedDB در پس‌زمینه بدون مسدودسازی ورکر
+                  saveCandlesToDb(selectedExchange, pair.symbol, timeframe, pair, candles).catch(() => {});
+                  setCachedCount(getCachedUniqueCount());
+                }
               }
             }
 
@@ -1072,17 +1096,22 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             console.warn(`Error scanning ${pair.symbol}:`, itemErr);
           } finally {
             completedCount++;
-            setProgress({
-              current: completedCount,
-              total,
-              currentSymbol: pair.symbol,
-            });
+            const nowP = Date.now();
+            if (nowP - lastProgressTime > 100 || completedCount === total) {
+              lastProgressTime = nowP;
+              setProgress({
+                current: completedCount,
+                total,
+                currentSymbol: pair.symbol,
+              });
+            }
             triggerThrottledCommit(false);
           }
         }
       };
 
-      const concurrency = Math.min(scanWorkersCount || 8, 10);
+      // اجرای واقعی تعداد ورکر انتخابی کاربر (بدون محدودیت غیرضروری روی ۱۰ ورکر)
+      const concurrency = Math.max(1, scanWorkersCount || 20);
       await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
       triggerThrottledCommit(true);
@@ -1293,8 +1322,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
   const handleClearCandleCache = () => {
     GLOBAL_CANDLE_CACHE.clear();
+    clearCandleDbStore().catch(() => {});
     setCachedCount(0);
-    showToast('🗑️ حافظه کش کندل‌های دانلودشده با موفقیت پاک شد.');
+    showToast('🗑️ حافظه کش کندل‌های دانلودشده و دیتابیس پایدار با موفقیت پاک شد.');
   };
 
   // =========================================================
@@ -4682,11 +4712,12 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                           className="bg-[#171d2b] border border-[#2e3b50] text-cyan-300 font-mono font-bold rounded-lg px-2 py-0.5 text-xs focus:outline-none cursor-pointer disabled:opacity-50"
                           title="تعداد جفت‌ارزهایی که به طور موازی و همزمان دانلود و بک‌تست می‌شوند"
                         >
-                          <option value={6}>۶ ورکر (پایه)</option>
-                          <option value={10}>۱۰ ورکر (سریع)</option>
-                          <option value={12}>۱۲ ورکر (توربو - پیش‌فرض)</option>
-                          <option value={16}>۱۶ ورکر (فوق سریع)</option>
-                          <option value={20}>۲۰ ورکر (حداکثر سرعت)</option>
+                          <option value={8}>۸ ورکر (پایه)</option>
+                          <option value={12}>۱۲ ورکر (متوسط)</option>
+                          <option value={16}>۱۶ ورکر (سریع)</option>
+                          <option value={20}>۲۰ ورکر (توربو - حداکثر توان)</option>
+                          <option value={24}>۲۴ ورکر (فوق سریع)</option>
+                          <option value={30}>۳۰ ورکر (اولترا - پردازش چند هسته‌ای)</option>
                         </select>
                       </div>
                     </div>
