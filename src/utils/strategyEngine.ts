@@ -909,16 +909,17 @@ function calculateMetrics(trades: StrategyTrade[], initialCapital: number): Stra
     }
   }
 
-  // فرمول استاندارد کاربر: وین ریت = تعداد معاملات سودده تقسیم بر کل معاملات به درصد
-  const totalTradesCount = trades.length;
-  const winRate = totalTradesCount > 0 ? (winTrades / totalTradesCount) * 100 : 0;
-  // پروفیت فکتور = مجموع کل سودها تقسیم بر مجموع کل زیان‌ها
+  // فرمول استاندارد کاربر: Total Trades = Winning Trades + Losing Trades
+  const completedTrades = winTrades + lossTrades;
+  const totalTradesCount = completedTrades > 0 ? completedTrades : trades.length;
+  const winRate = completedTrades > 0 ? (winTrades / completedTrades) * 100 : 0;
+  // پروفیت فکتور = مجموع کل سودها تقسیم بر مجموع کل زیان‌ها (بر مبنای سود خالص معاملات)
   const profitFactor = totalLoss > 0 ? totalProfit / totalLoss : totalProfit > 0 ? 99.9 : 0;
   const avgRiskReward = completedTradesCount > 0 ? rrSum / completedTradesCount : 0;
   const netProfitPercent = initialCapital > 0 ? (netProfit / initialCapital) * 100 : 0;
 
   return {
-    totalTrades: totalTradesCount,
+    totalTrades: completedTrades,
     winTrades,
     lossTrades,
     activeTrades,
