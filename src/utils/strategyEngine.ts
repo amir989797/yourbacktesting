@@ -335,6 +335,8 @@ export function runStrategy1Backtest(
             pnlPercent,
             returnR: riskAmount > 0 ? parseFloat((pnl / riskAmount).toFixed(2)) : 0,
             capitalAfterTrade: rollingCapital,
+            entryNotional: parseFloat((positionSize * entryPrice).toFixed(2)),
+            exitNotional: parseFloat((positionSize * actualExitPrice).toFixed(2)),
           });
 
           lastTradeExitCandleIdx = Math.max(
@@ -612,6 +614,8 @@ export function runStrategy2Backtest(
                 pnlPercent: parseFloat((((positionSize * (entryPrice - actualExitPrice) - tradeTotalFee) / rollingCapital) * 100).toFixed(2)),
                 returnR: riskAmount > 0 ? parseFloat(((positionSize * (entryPrice - actualExitPrice) - tradeTotalFee) / riskAmount).toFixed(2)) : 0,
                 capitalAfterTrade: Math.max(10, parseFloat((rollingCapital + (positionSize * (entryPrice - actualExitPrice) - tradeTotalFee)).toFixed(2))),
+                entryNotional: parseFloat((positionSize * entryPrice).toFixed(2)),
+                exitNotional: parseFloat((positionSize * actualExitPrice).toFixed(2)),
               });
 
               rollingCapital = Math.max(10, parseFloat((rollingCapital + (positionSize * (entryPrice - actualExitPrice) - tradeTotalFee)).toFixed(2)));
@@ -790,6 +794,8 @@ export function runStrategy2Backtest(
                 pnlPercent: parseFloat((((positionSize * (actualExitPrice - entryPrice) - tradeTotalFee) / rollingCapital) * 100).toFixed(2)),
                 returnR: riskAmount > 0 ? parseFloat(((positionSize * (actualExitPrice - entryPrice) - tradeTotalFee) / riskAmount).toFixed(2)) : 0,
                 capitalAfterTrade: Math.max(10, parseFloat((rollingCapital + (positionSize * (actualExitPrice - entryPrice) - tradeTotalFee)).toFixed(2))),
+                entryNotional: parseFloat((positionSize * entryPrice).toFixed(2)),
+                exitNotional: parseFloat((positionSize * actualExitPrice).toFixed(2)),
               });
 
               rollingCapital = Math.max(10, parseFloat((rollingCapital + (positionSize * (actualExitPrice - entryPrice) - tradeTotalFee)).toFixed(2)));
@@ -838,23 +844,31 @@ export function runStrategyBacktest(
   };
 }
 
-function calculateMetrics(trades: StrategyTrade[], initialCapital: number): StrategyMetrics {
+export function calculateMetrics(trades: StrategyTrade[], initialCapital: number): StrategyMetrics {
   let winTrades = 0;
   let lossTrades = 0;
+  let breakevenTrades = 0;
   let activeTrades = 0;
   let pendingTrades = 0;
   let expiredTrades = 0;
   let totalProfit = 0;
   let totalLoss = 0;
+  let grossProfit = 0;
+  let grossLoss = 0;
   let netProfit = 0;
   let rrSum = 0;
   let completedTradesCount = 0;
+  let totalFee = 0;
+
+  // Open position tracking (isolated completely from closed trade metrics)
+  let openPositionsCount = 0;
+  let openPositionsUnrealizedPnl = 0;
+  let openPositionsFee = 0;
 
   let currentEquity = initialCapital;
   let peakEquity = initialCapital;
   let maxDrawdown = 0;
   let maxDrawdownPercent = 0;
-  let totalFee = 0;
 
   // معاملات بر اساس زمان مرتب می‌شوند تا تقدم و تأخر واقعی شبیه‌سازی گردد
   const sortedTrades = [...trades].sort(
@@ -862,102 +876,177 @@ function calculateMetrics(trades: StrategyTrade[], initialCapital: number): Stra
   );
 
   for (const t of sortedTrades) {
-    if (t.status === 'WIN') {
-      winTrades++;
-      completedTradesCount++;
-      rrSum += t.riskReward;
-    } else if (t.status === 'LOSS') {
-      lossTrades++;
-      completedTradesCount++;
-    } else if (t.status === 'ACTIVE') {
-      activeTrades++;
-    } else if (t.status === 'PENDING') {
-      pendingTrades++;
-    } else if (t.status === 'EXPIRED') {
-      expiredTrades++;
-    }
+    const isClosed = t.status === 'WIN' || t.status === 'LOSS' || (t.status as string) === 'BREAKEVEN' || (t.exitPrice !== undefined && t.exitPrice > 0 && t.status !== 'ACTIVE' && t.status !== 'PENDING' && t.status !== 'EXPIRED');
 
-    const tradeFee = t.fee !== undefined ? t.fee : (t.commission !== undefined ? t.commission : 0);
-    totalFee += tradeFee;
+    if (isClosed) {
+      completedTradesCount++;
+      const tradeFee = t.fee !== undefined ? t.fee : (t.commission !== undefined ? t.commission : 0);
+      totalFee += tradeFee;
 
-    // تأثیر مالی معاملات بسته یا جاری بر سرمایه و درودان
-    if (t.status === 'WIN' || t.status === 'LOSS' || t.status === 'ACTIVE') {
-      if (t.pnl > 0) {
-        totalProfit += t.pnl;
-      } else if (t.pnl < 0) {
-        totalLoss += Math.abs(t.pnl);
+      const pnl = t.pnl || 0;
+      const gross = t.grossPnl !== undefined ? t.grossPnl : (pnl + tradeFee);
+
+      if (gross > 0.0001) {
+        grossProfit += gross;
+      } else if (gross < -0.0001) {
+        grossLoss += Math.abs(gross);
       }
-      netProfit += t.pnl;
-      currentEquity += t.pnl;
 
-      // سقف تاریخی سرمایه (Peak Equity)
+      if (pnl > 0.0001) {
+        winTrades++;
+        totalProfit += pnl;
+      } else if (pnl < -0.0001) {
+        lossTrades++;
+        totalLoss += Math.abs(pnl);
+      } else {
+        breakevenTrades++;
+      }
+
+      netProfit += pnl;
+      currentEquity += pnl;
+
+      if (t.riskReward !== undefined && t.riskReward > 0) {
+        rrSum += t.riskReward;
+      }
+
+      // Peak & Drawdown based purely on closed equity curve
       if (currentEquity > peakEquity) {
         peakEquity = currentEquity;
       }
-
-      // افت سرمایه نسبت به سقف تاریخی
       const ddDollars = peakEquity - currentEquity;
       const ddPercent = peakEquity > 0 ? (ddDollars / peakEquity) * 100 : 0;
-
-      // قانون درودان: مقدار درودان هرگز کم نمی‌شود، بلکه تنها با افت‌های جدید افزایش می‌یابد
       if (ddDollars > maxDrawdown) {
         maxDrawdown = ddDollars;
       }
       if (ddPercent > maxDrawdownPercent) {
         maxDrawdownPercent = ddPercent;
       }
+    } else if (t.status === 'ACTIVE' || (t.status as string) === 'OPEN') {
+      activeTrades++;
+      openPositionsCount++;
+      openPositionsUnrealizedPnl += (t.pnl || 0);
+      const fee = t.fee !== undefined ? t.fee : (t.commission !== undefined ? t.commission : 0);
+      openPositionsFee += fee;
+    } else if (t.status === 'PENDING') {
+      pendingTrades++;
+    } else if (t.status === 'EXPIRED') {
+      expiredTrades++;
     }
   }
 
-  // فرمول استاندارد کاربر: Total Trades = Winning Trades + Losing Trades
-  const completedTrades = winTrades + lossTrades;
-  const totalTradesCount = completedTrades > 0 ? completedTrades : trades.length;
+  const completedTrades = completedTradesCount; // Wins + Losses + Breakeven
   const winRate = completedTrades > 0 ? (winTrades / completedTrades) * 100 : 0;
-  // پروفیت فکتور = مجموع کل سودها تقسیم بر مجموع کل زیان‌ها (بر مبنای سود خالص معاملات)
-  const profitFactor = totalLoss > 0 ? totalProfit / totalLoss : totalProfit > 0 ? 99.9 : 0;
-  const avgRiskReward = completedTradesCount > 0 ? rrSum / completedTradesCount : 0;
+
+  // Handle Profit Factor edge cases explicitly without arbitrary sentinels
+  let profitFactor = 0;
+  let profitFactorLabel = 'N/A — No Trades';
+
+  if (completedTrades === 0) {
+    profitFactor = 0;
+    profitFactorLabel = 'N/A — No Trades';
+  } else if (totalLoss <= 0.0001) {
+    if (totalProfit > 0.0001) {
+      profitFactor = Infinity;
+      profitFactorLabel = 'No Losing Trades';
+    } else {
+      profitFactor = 0;
+      profitFactorLabel = 'Breakeven Only';
+    }
+  } else {
+    profitFactor = parseFloat((totalProfit / totalLoss).toFixed(2));
+    profitFactorLabel = profitFactor.toFixed(2);
+  }
+
+  const avgRiskReward = completedTrades > 0 ? rrSum / completedTrades : 0;
   const netProfitPercent = initialCapital > 0 ? (netProfit / initialCapital) * 100 : 0;
+
+  // If NO closed trades exist, every closed-trade-derived statistic MUST be strictly ZERO or N/A
+  if (completedTrades === 0) {
+    return {
+      totalTrades: 0,
+      winTrades: 0,
+      lossTrades: 0,
+      breakevenTrades: 0,
+      activeTrades,
+      pendingTrades,
+      expiredTrades,
+      winRate: 0,
+      grossProfit: 0,
+      grossLoss: 0,
+      grossPnl: 0,
+      totalProfit: 0,
+      totalLoss: 0,
+      totalFee: 0,
+      netProfit: 0,
+      netProfitPercent: 0,
+      profitFactor: 0,
+      profitFactorLabel: 'N/A — No Trades',
+      avgRiskReward: 0,
+      maxDrawdown: 0,
+      maxDrawdownPercent: 0,
+      finalEquity: initialCapital,
+      openPositionsCount,
+      openPositionsUnrealizedPnl: parseFloat(openPositionsUnrealizedPnl.toFixed(2)),
+      openPositionsFee: parseFloat(openPositionsFee.toFixed(2)),
+    };
+  }
 
   return {
     totalTrades: completedTrades,
     winTrades,
     lossTrades,
+    breakevenTrades,
     activeTrades,
     pendingTrades,
     expiredTrades,
     winRate: parseFloat(winRate.toFixed(1)),
+    grossProfit: parseFloat(grossProfit.toFixed(2)),
+    grossLoss: parseFloat(grossLoss.toFixed(2)),
+    grossPnl: parseFloat((grossProfit - grossLoss).toFixed(2)),
     totalProfit: parseFloat(totalProfit.toFixed(2)),
     totalLoss: parseFloat(totalLoss.toFixed(2)),
     totalFee: parseFloat(totalFee.toFixed(2)),
     netProfit: parseFloat(netProfit.toFixed(2)),
     netProfitPercent: parseFloat(netProfitPercent.toFixed(2)),
-    profitFactor: parseFloat(profitFactor.toFixed(2)),
+    profitFactor: isFinite(profitFactor) ? profitFactor : 0,
+    profitFactorLabel,
     avgRiskReward: parseFloat(avgRiskReward.toFixed(2)),
     maxDrawdown: parseFloat(maxDrawdown.toFixed(2)),
     maxDrawdownPercent: parseFloat(maxDrawdownPercent.toFixed(2)),
     finalEquity: parseFloat(currentEquity.toFixed(2)),
+    openPositionsCount,
+    openPositionsUnrealizedPnl: parseFloat(openPositionsUnrealizedPnl.toFixed(2)),
+    openPositionsFee: parseFloat(openPositionsFee.toFixed(2)),
   };
 }
 
-function getEmptyMetrics(capital: number): StrategyMetrics {
+export function getEmptyMetrics(capital: number): StrategyMetrics {
   return {
     totalTrades: 0,
     winTrades: 0,
     lossTrades: 0,
+    breakevenTrades: 0,
     activeTrades: 0,
     pendingTrades: 0,
     expiredTrades: 0,
     winRate: 0,
+    grossProfit: 0,
+    grossLoss: 0,
+    grossPnl: 0,
     totalProfit: 0,
     totalLoss: 0,
     totalFee: 0,
     netProfit: 0,
     netProfitPercent: 0,
     profitFactor: 0,
+    profitFactorLabel: 'N/A — No Trades',
     avgRiskReward: 0,
     maxDrawdown: 0,
     maxDrawdownPercent: 0,
     finalEquity: capital,
+    openPositionsCount: 0,
+    openPositionsUnrealizedPnl: 0,
+    openPositionsFee: 0,
   };
 }
 

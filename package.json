@@ -7,6 +7,7 @@
     "dev": "tsx server.ts",
     "build": "vite build",
     "lint": "tsc --noEmit",
+    "test": "tsx tests/accountingRegression.ts",
     "preview": "vite preview",
     "start": "node server.ts"
   },

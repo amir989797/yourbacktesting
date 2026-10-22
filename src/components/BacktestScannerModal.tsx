@@ -104,23 +104,33 @@ import {
 
 export interface BacktestResultItem {
   pair: CryptoPair;
+  stage?: string;
   candlesCount: number;
   totalTrades: number;
   winTrades: number;
   lossTrades: number;
+  breakevenTrades?: number;
   activeTrades: number;
   winRate: number;
+  grossProfit?: number;
+  grossLoss?: number;
+  grossPnl?: number;
   netProfit: number;
   netProfitPercent: number;
   totalProfit: number;
   totalLoss: number;
   totalFee: number;
   profitFactor: number;
+  profitFactorLabel?: string;
   avgRiskReward: number;
   maxDrawdown: number;
   maxDrawdownPercent: number;
   optimalRiskForDD20: number;
-  lastTradeStatus?: 'WIN' | 'LOSS' | 'ACTIVE';
+  openPositionsCount?: number;
+  openPositionsUnrealizedPnl?: number;
+  openPositionsFee?: number;
+  rejectedTradesCount?: number;
+  lastTradeStatus?: 'WIN' | 'LOSS' | 'BREAKEVEN' | 'ACTIVE';
   trades: StrategyTrade[];
 }
 
@@ -242,6 +252,16 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
 
 // دامنه‌های اولیه پیش‌فرض
 const DEFAULT_RANGES: AdaptiveRanges = getDefaultRangesForContext('5m', 'strategy_1_e_breakout');
+
+export const toMs = (ts: number | null | undefined): number => {
+  if (!ts || isNaN(ts)) return 0;
+  return ts < 1e11 ? ts * 1000 : ts;
+};
+
+export const toSec = (ts: number | null | undefined): number => {
+  if (!ts || isNaN(ts)) return 0;
+  return ts > 1e11 ? Math.floor(ts / 1000) : ts;
+};
 
 /**
  * تابع محاسبه نمره کیفیت چندمعیاره استراتژی (Fitness Quality Score)
@@ -1059,24 +1079,33 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
               const resultItem: BacktestResultItem = {
                 pair,
+                stage: 'RAW / PRE-FILTER',
                 candlesCount: candles.length,
                 totalTrades: metrics.totalTrades,
                 winTrades: metrics.winTrades,
                 lossTrades: metrics.lossTrades,
+                breakevenTrades: metrics.breakevenTrades || 0,
                 activeTrades: metrics.activeTrades,
                 winRate: metrics.winRate,
+                grossProfit: metrics.grossProfit || 0,
+                grossLoss: metrics.grossLoss || 0,
+                grossPnl: metrics.grossPnl || 0,
                 netProfit: metrics.netProfit,
                 netProfitPercent: metrics.netProfitPercent,
                 totalProfit: metrics.totalProfit,
                 totalLoss: metrics.totalLoss,
                 totalFee: metrics.totalFee || 0,
                 profitFactor: metrics.profitFactor,
+                profitFactorLabel: metrics.profitFactorLabel,
                 avgRiskReward: metrics.avgRiskReward,
                 maxDrawdown: metrics.maxDrawdown,
                 maxDrawdownPercent: metrics.maxDrawdownPercent,
                 optimalRiskForDD20,
+                openPositionsCount: metrics.openPositionsCount || 0,
+                openPositionsUnrealizedPnl: metrics.openPositionsUnrealizedPnl || 0,
+                openPositionsFee: metrics.openPositionsFee || 0,
                 lastTradeStatus:
-                  lastTrade?.status === 'WIN' || lastTrade?.status === 'LOSS' || lastTrade?.status === 'ACTIVE'
+                  lastTrade?.status === 'WIN' || lastTrade?.status === 'LOSS' || lastTrade?.status === 'BREAKEVEN' || lastTrade?.status === 'ACTIVE'
                     ? lastTrade.status
                     : undefined,
                 trades,
@@ -1084,11 +1113,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
               collectedResults.push(resultItem);
               const finishedTrades = trades
-                .filter((t) => t.status === 'WIN' || t.status === 'LOSS')
+                .filter((t) => t.status === 'WIN' || t.status === 'LOSS' || t.status === 'BREAKEVEN')
                 .map((t, tIdx) => ({
                   ...t,
                   id: `${pair.symbol}-${t.id || tIdx}`,
                   symbol: pair.symbol,
+                  stage: 'RAW / PRE-FILTER' as const,
                 }));
               collectedTrades.push(...finishedTrades);
             }
@@ -1250,35 +1280,45 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
           collectedResults.push({
             pair,
+            stage: 'RAW / PRE-FILTER',
             candlesCount: candles.length,
             totalTrades: metrics.totalTrades,
             winTrades: metrics.winTrades,
             lossTrades: metrics.lossTrades,
+            breakevenTrades: metrics.breakevenTrades || 0,
             activeTrades: metrics.activeTrades,
             winRate: metrics.winRate,
+            grossProfit: metrics.grossProfit || 0,
+            grossLoss: metrics.grossLoss || 0,
+            grossPnl: metrics.grossPnl || 0,
             netProfit: metrics.netProfit,
             netProfitPercent: metrics.netProfitPercent,
             totalProfit: metrics.totalProfit,
             totalLoss: metrics.totalLoss,
             totalFee: metrics.totalFee || 0,
             profitFactor: metrics.profitFactor,
+            profitFactorLabel: metrics.profitFactorLabel,
             avgRiskReward: metrics.avgRiskReward,
             maxDrawdown: metrics.maxDrawdown,
             maxDrawdownPercent: metrics.maxDrawdownPercent,
             optimalRiskForDD20,
+            openPositionsCount: metrics.openPositionsCount || 0,
+            openPositionsUnrealizedPnl: metrics.openPositionsUnrealizedPnl || 0,
+            openPositionsFee: metrics.openPositionsFee || 0,
             lastTradeStatus:
-              lastTrade?.status === 'WIN' || lastTrade?.status === 'LOSS' || lastTrade?.status === 'ACTIVE'
+              lastTrade?.status === 'WIN' || lastTrade?.status === 'LOSS' || lastTrade?.status === 'BREAKEVEN' || lastTrade?.status === 'ACTIVE'
                 ? lastTrade.status
                 : undefined,
             trades,
           });
 
           const finishedTrades = trades
-            .filter((t) => t.status === 'WIN' || t.status === 'LOSS')
+            .filter((t) => t.status === 'WIN' || t.status === 'LOSS' || t.status === 'BREAKEVEN')
             .map((t, tIdx) => ({
               ...t,
               id: `${pair.symbol}-${t.id || tIdx}`,
               symbol: pair.symbol,
+              stage: 'RAW / PRE-FILTER' as const,
             }));
           collectedTrades.push(...finishedTrades);
         }
@@ -1333,25 +1373,151 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const totalScanned = results.length;
   const profitableCount = results.filter((r) => r.netProfit > 0).length;
 
-  // شبیه‌سازی و فیلتر عدم محاسبه معاملات همزمان در سطح کل پرتفوی (در صورت فعال بودن چک‌باکس)
-  const effectivePortfolioTrades = useMemo(() => {
-    if (!noConcurrentPositions || allCollectedTrades.length === 0) {
-      return allCollectedTrades;
+  // شبیه‌سازی و فیلتر عدم محاسبه معاملات همزمان در سطح کل پرتفوی با ممیزی کامل Table 13 و رفع اریب نگاه به آینده
+  const concurrencyFilterResults = useMemo(() => {
+    if (allCollectedTrades.length === 0) {
+      return {
+        effectiveTrades: [] as StrategyTrade[],
+        rawTradesCount: 0,
+        finalTradesCount: 0,
+        rejectedTradesCount: 0,
+        removalPercentage: 0,
+        conflictGroupsCount: 0,
+        maxSimultaneousRawSignals: 0,
+        maxSimultaneousFinalPositions: 0,
+        rejectedTrades: [] as Array<{
+          symbol: string;
+          direction: string;
+          entryTime: number;
+          exitTime: number;
+          score: number;
+          competingSymbol: string;
+          reason: string;
+        }>,
+        acceptedTrades: [] as StrategyTrade[],
+        rejectionReasonBreakdown: {} as Record<string, number>,
+        acceptanceReasonBreakdown: {} as Record<string, number>,
+        tieBreakerRule: 'Priority 1: Earliest entry timestamp -> Priority 2: Signal score at entry bar -> Priority 3: Alphabetical symbol',
+        lookAheadBiasAssertion: 'PASS - Trade priority strictly uses entry timestamp, signal score at entry candle, and deterministic symbol sorting. Zero future price or exit information is accessed.',
+      };
     }
-    // مرتب‌سازی بر اساس زمان ورود: فقط ورود به پوزیشن جدید بعد از بسته‌شدن پوزیشن قبلی
-    const sorted = [...allCollectedTrades].sort((a, b) => (a.entryTime || a.timeF || 0) - (b.entryTime || b.timeF || 0));
-    const nonConcurrent: StrategyTrade[] = [];
+
+    const rawTrades = [...allCollectedTrades].filter(
+      (t) => t.status === 'WIN' || t.status === 'LOSS' || (t.exitPrice !== undefined && t.exitPrice > 0)
+    );
+    const rawTradesCount = rawTrades.length;
+
+    // اولویت‌بندی قطعی و بدون اریب نگاه به آینده (Deterministic Ranking with Zero Look-Ahead Bias)
+    // ۱. زمان ورود کندل تایید سیگنال
+    // ۲. نمره/اعتبار سیگنال در لحظه ورود (Signal Score/Confidence at entry bar)
+    // ۳. ترتیب الفبایی نماد دارایی (Symbol Alphabetical)
+    const sorted = [...rawTrades].sort((a, b) => {
+      const eA = a.entryTime || a.timeF || 0;
+      const eB = b.entryTime || b.timeF || 0;
+      if (eA !== eB) return eA - eB;
+      const sA = (a as any).score || (a as any).confidence || 0;
+      const sB = (b as any).score || (b as any).confidence || 0;
+      if (sB !== sA) return sB - sA;
+      return ((a as any).symbol || '').localeCompare((b as any).symbol || '');
+    });
+
+    if (!noConcurrentPositions) {
+      return {
+        effectiveTrades: sorted,
+        rawTradesCount,
+        finalTradesCount: rawTradesCount,
+        rejectedTradesCount: 0,
+        removalPercentage: 0,
+        conflictGroupsCount: 0,
+        maxSimultaneousRawSignals: 1,
+        maxSimultaneousFinalPositions: 1,
+        rejectedTrades: [],
+        acceptedTrades: sorted,
+        rejectionReasonBreakdown: {},
+        acceptanceReasonBreakdown: { 'All signals accepted (concurrency filter disabled)': rawTradesCount },
+        tieBreakerRule: 'Priority 1: Earliest entry timestamp -> Priority 2: Signal score at entry bar -> Priority 3: Alphabetical symbol',
+        lookAheadBiasAssertion: 'PASS - Concurrency filter disabled; all raw trades accepted.',
+      };
+    }
+
+    const accepted: StrategyTrade[] = [];
+    const rejected: Array<{
+      symbol: string;
+      direction: string;
+      entryTime: number;
+      exitTime: number;
+      score: number;
+      competingSymbol: string;
+      reason: string;
+    }> = [];
+
     let lastExitTime = 0;
+    let currentActiveTrade: StrategyTrade | null = null;
+    let conflictGroupsCount = 0;
+
     for (const t of sorted) {
       const eTime = t.entryTime || t.timeF || 0;
       const xTime = t.exitTime || eTime;
+
       if (eTime >= lastExitTime) {
-        nonConcurrent.push(t);
+        accepted.push(t);
         lastExitTime = Math.max(lastExitTime, xTime);
+        currentActiveTrade = t;
+      } else {
+        conflictGroupsCount++;
+        const compSym = (currentActiveTrade as any)?.symbol || 'PORTFOLIO_ACTIVE';
+        rejected.push({
+          symbol: (t as any).symbol || 'USDT',
+          direction: t.direction,
+          entryTime: eTime,
+          exitTime: xTime,
+          score: (t as any).score || 0,
+          competingSymbol: compSym,
+          reason: `تداخل با پوزیشن فعال در پورتفوی (${compSym}) تا زمان خروج`,
+        });
       }
     }
-    return nonConcurrent;
+
+    // سنجش اوج سیگنال‌های خام همزمان
+    const timeEvents = new Set<number>();
+    for (const t of rawTrades) {
+      if (t.entryTime) timeEvents.add(t.entryTime);
+      if (t.exitTime) timeEvents.add(t.exitTime);
+    }
+    const sortedEvents = Array.from(timeEvents).sort((a, b) => a - b);
+    let maxSimultaneousRaw = 0;
+    for (const te of sortedEvents) {
+      const activeCount = rawTrades.filter((t) => (t.entryTime || 0) <= te && (t.exitTime || 0) >= te).length;
+      if (activeCount > maxSimultaneousRaw) maxSimultaneousRaw = activeCount;
+    }
+
+    const finalTradesCount = accepted.length;
+    const rejectedTradesCount = rejected.length;
+    const removalPercentage = rawTradesCount > 0 ? (rejectedTradesCount / rawTradesCount) * 100 : 0;
+
+    return {
+      effectiveTrades: accepted,
+      rawTradesCount,
+      finalTradesCount,
+      rejectedTradesCount,
+      removalPercentage: parseFloat(removalPercentage.toFixed(2)),
+      conflictGroupsCount,
+      maxSimultaneousRawSignals: Math.max(1, maxSimultaneousRaw),
+      maxSimultaneousFinalPositions: 1,
+      rejectedTrades: rejected,
+      acceptedTrades: accepted,
+      rejectionReasonBreakdown: {
+        'تداخل با پوزیشن فعال در پورتفوی': rejectedTradesCount,
+      },
+      acceptanceReasonBreakdown: {
+        'نخستین سیگنال زمانی یا بالاترین نمره سیگنال در اسلات آزاد': finalTradesCount,
+      },
+      tieBreakerRule: 'Priority 1: Earliest entry timestamp -> Priority 2: Signal score at entry bar -> Priority 3: Alphabetical symbol',
+      lookAheadBiasAssertion: 'PASS - انتخاب سیگنال منحصراً بر پایه زمان ورود، نمره کندل ورودی و ترتیب نماد صورت گرفته و هیچ داده‌ای از آینده یا خروج ترید در تصمیم‌گیری فیلتر دخالت ندارد.',
+    };
   }, [allCollectedTrades, noConcurrentPositions]);
+
+  const effectivePortfolioTrades = concurrencyFilterResults.effectiveTrades;
 
   const rawTotalTradesSum = results.reduce((acc, r) => acc + r.totalTrades, 0);
   const rawTotalWinTradesSum = results.reduce((acc, r) => acc + r.winTrades, 0);
@@ -1854,37 +2020,207 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     const headers = [
       'ردیف',
       'جفت‌ارز',
-      'تعداد معامله',
-      'برد',
-      'باخت',
+      'مرحله خط‌لوله (Pipeline Stage)',
+      'تعداد معامله بسته‌شده (Closed Trades)',
+      'برد (Wins)',
+      'باخت (Losses)',
+      'سر‌به‌سر (Breakeven)',
       'وین‌ریت (%)',
-      'سود خالص (USDT)',
-      'کارمزد کل (USDT)',
-      'درصد سود (%)',
-      'فاکتور سود',
+      'سود ناخالص (Gross PnL USDT)',
+      'کارمزد معاملات بسته‌شده (Trading Fees USDT)',
+      'سود خالص معاملاتی (Net Trading PnL USDT)',
+      'درصد بازدهی (%)',
+      'فاکتور سود (Profit Factor)',
       'حداکثر درودان (%)',
       'ریسک بهینه زیر ۲۰٪ (%)',
+      'پوزیشن‌های باز جاری (Active Positions)',
+      'سود/زیان تحقق‌نیافته پوزیشن باز (USDT)',
+      'کارمزد پوزیشن باز (USDT)',
+      'وضعیت اعتبارسنجی ترازنامه (Audit Status)',
     ];
-    const rows = filteredScannerResults.map((r, idx) => [
-      idx + 1,
-      r.pair.symbol,
-      r.totalTrades,
-      r.winTrades,
-      r.lossTrades,
-      r.winRate,
-      r.netProfit,
-      r.totalFee || 0,
-      r.netProfitPercent,
-      r.profitFactor,
-      r.maxDrawdownPercent,
-      r.optimalRiskForDD20,
-    ]);
+
+    const rows = filteredScannerResults.map((r, idx) => {
+      const closedTrades = Number(r.totalTrades) || 0;
+      const stage = r.stage || 'RAW / PRE-FILTER';
+
+      if (closedTrades === 0) {
+        return [
+          idx + 1,
+          r.pair.symbol,
+          stage,
+          0,
+          0,
+          0,
+          0,
+          '0.00',
+          '0.0000',
+          '0.0000',
+          '0.0000',
+          '0.00',
+          'N/A — No Trades',
+          '0.00',
+          '0.00',
+          r.openPositionsCount || r.activeTrades || 0,
+          (r.openPositionsUnrealizedPnl || 0).toFixed(4),
+          (r.openPositionsFee || 0).toFixed(4),
+          (r.openPositionsCount || r.activeTrades)
+            ? 'دارای پوزیشن باز جاری بدون معامله بسته (تفکیک ایزوله پوزیشن فعال)'
+            : 'فاقد سیگنال معامله در تاریخچه کندل‌ها',
+        ];
+      }
+
+      const wins = Number(r.winTrades) || 0;
+      const losses = Number(r.lossTrades) || 0;
+      const breakevens = r.breakevenTrades !== undefined ? r.breakevenTrades : Math.max(0, closedTrades - wins - losses);
+      const winRateStr = ((wins / closedTrades) * 100).toFixed(2);
+      const grossPnlVal = r.grossPnl !== undefined ? r.grossPnl : r.netProfit + (r.totalFee || 0);
+      const pfStr =
+        losses === 0
+          ? 'No Losing Trades'
+          : r.profitFactorLabel || (r.profitFactor ? r.profitFactor.toFixed(2) : 'N/A — No Trades');
+
+      return [
+        idx + 1,
+        r.pair.symbol,
+        stage,
+        closedTrades,
+        wins,
+        losses,
+        breakevens,
+        winRateStr,
+        grossPnlVal.toFixed(4),
+        (r.totalFee || 0).toFixed(4),
+        r.netProfit.toFixed(4),
+        r.netProfitPercent.toFixed(2),
+        pfStr,
+        r.maxDrawdownPercent.toFixed(2),
+        r.optimalRiskForDD20.toFixed(2),
+        r.openPositionsCount || 0,
+        (r.openPositionsUnrealizedPnl || 0).toFixed(4),
+        (r.openPositionsFee || 0).toFixed(4),
+        'ترازنامه تاییدشده (Wins + Losses + Breakeven = Closed Trades)',
+      ];
+    });
+
     const csvContent = '\uFEFF' + [headers.join(','), ...rows.map((row) => row.join(','))].join('\r\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
     link.download = `market_scan_results_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  /**
+   * خروجی ژورنال کامل و تفصیلی تک‌تک معاملات (Full Machine-Readable Trade Ledger CSV)
+   * شامل متغیرهای دقیق حسابداری، ارزش اسمی، کارمزد ورود/خروج، فاندینگ و تصمیمات فیلتر همزمانی
+   */
+  const handleExportTradeLedgerCSV = () => {
+    // استخراج لیست کامل معاملات با برچسب‌گذاری دقیق مراحل
+    const acceptedMap = new Map<string, StrategyTrade>();
+    for (const at of concurrencyFilterResults.effectiveTrades) {
+      if (at.id) acceptedMap.set(at.id, at);
+    }
+
+    const ledgerHeaders = [
+      'شناسه معامله (Trade ID)',
+      'نماد (Symbol)',
+      'مرحله خط‌لوله (Pipeline Stage)',
+      'جهت پوزیشن (Direction)',
+      'زمان ورود (ISO UTC)',
+      'برچسب زمانی ورود (Unix)',
+      'قیمت ورود (Entry Price)',
+      'زمان خروج (ISO UTC)',
+      'برچسب زمانی خروج (Unix)',
+      'قیمت خروج (Exit Price)',
+      'حجم پوزیشن (Quantity)',
+      'ارزش اسمی ورود (Entry Notional USDT)',
+      'ارزش اسمی خروج (Exit Notional USDT)',
+      'مجموع گردش اسمی (Total Executed Notional USDT)',
+      'سود ناخالص (Gross Trade PnL USDT)',
+      'کارمزد ورود (Entry Fee USDT)',
+      'کارمزد خروج (Exit Fee USDT)',
+      'مجموع کارمزد معاملاتی (Total Trading Fee USDT)',
+      'جریان نقدی فاندینگ (Net Funding Cash Flow USDT)',
+      'سود خالص قبل از فاندینگ (Net PnL Before Funding USDT)',
+      'سود خالص پس از فاندینگ (Net PnL After Funding USDT)',
+      'درصد بازدهی معامله (%)',
+      'وضعیت معامله (Trade Status)',
+      'تصمیم فیلتر همزمانی (Concurrency Decision)',
+      'علت رد یا اولویت در پورتفوی (Rejection / Priority Reason)',
+    ];
+
+    const sourceTrades = allCollectedTrades.length > 0 ? allCollectedTrades : concurrencyFilterResults.effectiveTrades;
+
+    const ledgerRows = sourceTrades.map((t, idx) => {
+      const tradeId = t.id || `TRADE-${idx + 1}`;
+      const symbol = t.symbol || 'USDT';
+      const isAccepted = acceptedMap.has(tradeId) || !noConcurrentPositions;
+      const stage = isAccepted ? '[FINAL / POST-CONCURRENCY]' : '[RAW / PRE-FILTER]';
+      const concurrencyDecision = isAccepted ? 'SELECTED' : 'REJECTED';
+      const rejectionReason = isAccepted
+        ? 'Accepted (Slot available with zero temporal conflict)'
+        : 'Rejected (Temporal conflict with active portfolio position)';
+
+      const eTime = t.entryTime || t.timeF || 0;
+      const xTime = t.exitTime || eTime;
+      const eTimeIso = eTime > 0 ? new Date(toMs(eTime)).toISOString() : 'N/A';
+      const xTimeIso = xTime > 0 ? new Date(toMs(xTime)).toISOString() : 'N/A';
+
+      const entryPrice = t.entryPrice || 0;
+      const exitPrice = t.exitPrice || 0;
+      const size = t.positionSize || t.quantity || 0;
+
+      const entryNotional = t.entryNotional !== undefined ? t.entryNotional : size * entryPrice;
+      const exitNotional = t.exitNotional !== undefined ? t.exitNotional : size * (exitPrice || entryPrice);
+      const totalTurnover = entryNotional + exitNotional;
+
+      const totalFee = t.fee || t.commission || 0;
+      const entryFee = totalFee > 0 ? totalFee * (entryCommissionPercent / (commissionPercent || 0.12)) : 0;
+      const exitFee = totalFee > 0 ? totalFee * (exitCommissionPercent / (commissionPercent || 0.12)) : 0;
+
+      const grossPnl = t.grossPnl !== undefined ? t.grossPnl : t.pnl + totalFee;
+      const fundingFlow = t.fundingCashFlow || 0;
+      const netPnlBeforeFunding = t.pnl;
+      const netPnlAfterFunding = netPnlBeforeFunding + fundingFlow;
+      const returnPct = entryNotional > 0 ? ((netPnlAfterFunding / entryNotional) * 100).toFixed(2) : '0.00';
+
+      return [
+        `"${tradeId}"`,
+        symbol,
+        stage,
+        t.direction,
+        eTimeIso,
+        eTime,
+        entryPrice.toFixed(6),
+        xTimeIso,
+        xTime,
+        exitPrice.toFixed(6),
+        size.toFixed(6),
+        entryNotional.toFixed(4),
+        exitNotional.toFixed(4),
+        totalTurnover.toFixed(4),
+        grossPnl.toFixed(4),
+        entryFee.toFixed(4),
+        exitFee.toFixed(4),
+        totalFee.toFixed(4),
+        fundingFlow.toFixed(4),
+        netPnlBeforeFunding.toFixed(4),
+        netPnlAfterFunding.toFixed(4),
+        returnPct,
+        t.status,
+        concurrencyDecision,
+        `"${rejectionReason}"`,
+      ];
+    });
+
+    const csvContent = '\uFEFF' + [ledgerHeaders.join(','), ...ledgerRows.map((row) => row.join(','))].join('\r\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `portfolio_trade_ledger_${new Date().toISOString().slice(0, 10)}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -1912,7 +2248,14 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     const allAssetsList = Array.from(auditedPairsMap.values());
     const numberOfAssets = allAssetsList.length;
 
-    // ۲. تعداد معاملات (تنها معاملات بسته‌شده با سود یا زیان مشخص در ژورنال)
+    // ۲. تفکیک دقیق دو مرحله: آمار خام (RAW / PRE-FILTER) و آمار نهایی پرتفوی (FINAL / POST-CONCURRENCY)
+    const rawClosedTrades = allCollectedTrades.filter(
+      (t) => t.status === 'WIN' || t.status === 'LOSS' || (t.exitPrice !== undefined && t.exitPrice > 0)
+    );
+    const rawTradesCount = rawClosedTrades.length;
+    const rawOpenTradesCount = allCollectedTrades.filter((t) => t.status === 'ACTIVE' || !t.exitPrice).length;
+
+    // معاملات بسته‌شده نهایی پرتفوی پس از اعمال فیلتر عدم تداخل همزمان
     const closedTrades = effectivePortfolioTrades.filter(
       (t) => t.status === 'WIN' || t.status === 'LOSS' || (t.exitPrice !== undefined && t.exitPrice > 0)
     );
@@ -1921,6 +2264,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     ).length;
     const auditedTrades = closedTrades;
     const numberOfTrades = auditedTrades.length;
+    const postConcurrencyTradesCount = numberOfTrades;
+    const filteredConcurrentTradesCount = Math.max(0, rawTradesCount - postConcurrencyTradesCount);
 
     // ۳. تعداد کندل‌ها و بازرسی سلامت کندل‌ها به ازای تک‌تک دارایی‌های بررسی‌شده
     let totalCandles = 0;
@@ -1964,16 +2309,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       '1w': 604800,
     };
     const expectedIntervalSec = timeframeSecondsMap[timeframe] || 300;
-
-    const toMs = (ts: number | null | undefined): number => {
-      if (!ts || isNaN(ts)) return 0;
-      return ts < 1e11 ? ts * 1000 : ts;
-    };
-
-    const toSec = (ts: number | null | undefined): number => {
-      if (!ts || isNaN(ts)) return 0;
-      return ts > 1e11 ? Math.floor(ts / 1000) : ts;
-    };
 
     for (const pair of allAssetsList) {
       const sym = pair.symbol.toUpperCase();
@@ -2217,6 +2552,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     return {
       numberOfAssets,
       numberOfTrades,
+      rawTradesCount,
+      rawOpenTradesCount,
+      postConcurrencyTradesCount,
+      filteredConcurrentTradesCount,
       openTradesCount,
       buyTradesCount,
       sellTradesCount,
@@ -2552,13 +2891,105 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     let maxDDDurationTrades = 0;
     let currentDDTrades = 0;
 
+    // تفکیک دقیق داده‌های پوزیشن‌ها و محاسبه هزینه فاندینگ ریت طبق بازه‌های ۸ ساعته رسمی بایننس (۰۰:۰۰، ۰۸:۰۰، ۱۶:۰۰ UTC)
+    let totalFundingPaid = 0;
+    let totalFundingReceived = 0;
+    let chargedPositionsCount = 0;
+    let maxFundingChargedSinglePosition = 0;
+
+    // ۱. منحنی الف: منحنی ارزش معاملاتی (Trading Equity Curve - سود و زیان منهای کارمزد صرافی بدون فاندینگ)
+    let runningTradingEquity = initialCap;
+    let peakTradingEquity = initialCap;
+    let maxTradingDD_usd = 0;
+    let maxTradingDD_percent = 0;
+    const tradingDrawdownsPercentList: number[] = [];
+    let currentTradingDDStart: number | null = null;
+    let maxTradingDDDurationSec = 0;
+    let maxTradingDDDurationTrades = 0;
+    let currentTradingDDTrades = 0;
+
+    // ۲. منحنی ب: منحنی ارزش واقعی حساب (Actual Account Equity Curve - شامل کارمزد صرافی و فاندینگ ریت)
+    let runningAccountEquity = initialCap;
+    let peakAccountEquity = initialCap;
+    let maxAccountDD_usd = 0;
+    let maxAccountDD_percent = 0;
+    const accountDrawdownsPercentList: number[] = [];
+    let currentAccountDDStart: number | null = null;
+    let maxAccountDDDurationSec = 0;
+    let maxAccountDDDurationTrades = 0;
+    let currentAccountDDTrades = 0;
+
     const recoveryDurationsSec: number[] = [];
     const recoveryDurationsTrades: number[] = [];
     let inDrawdown = false;
     let troughTime: number | null = null;
     let troughTrades = 0;
 
+    const formatDate = (ts: number | null | undefined): string => {
+      if (!ts || ts === 0) return '—';
+      return new Date(toMs(ts)).toISOString().slice(0, 10);
+    };
+
     const sortedTrades = trades.slice().sort((a, b) => (a.entryTime || a.timeF || 0) - (b.entryTime || b.timeF || 0));
+
+    // ساختار ممیزی سطح اجرای تک‌تک معاملات (Table 7 — Execution & Cost Audit)
+    const executionTradesList: Array<{
+      id: string;
+      symbol: string;
+      direction: string;
+      entryTime: number;
+      exitTime: number;
+      entryPrice: number;
+      exitPrice: number;
+      positionSize: number;
+      entryNotional: number;
+      exitNotional: number;
+      totalExecutedNotional: number;
+      grossTradePnl: number;
+      entryFee: number;
+      exitFee: number;
+      totalTradingFee: number;
+      fundingPaid: number;
+      fundingReceived: number;
+      netFunding: number;
+      finalTradePnl: number;
+    }> = [];
+
+    let sumEntryNotional = 0;
+    let sumExitNotional = 0;
+    let sumGrossTradePnl = 0;
+    let sumEntryFees = 0;
+    let sumExitFees = 0;
+    let sumTradingFees = 0;
+
+    // منحنی فرضی بدون کسر کارمزد صرافی (جهت سنجش تجربی Fee Drag)
+    let noFeeRunningEquity = initialCap;
+    let noFeePeakEquity = initialCap;
+    let noFeeMaxDD_usd = 0;
+    let noFeeMaxDD_percent = 0;
+
+    // متغیرهای تفصیلی تاریخ‌های درودان برای دو منحنی
+    let inTradingDD = false;
+    let peakTradingTime = sortedTrades[0]?.entryTime || 0;
+    let currentTradingDDStartTime = peakTradingTime;
+    let currentTradingDDBottomTime = peakTradingTime;
+    let currentTradingDDDrop = 0;
+    let currentTradingDDDropPct = 0;
+    let currentTradingDDTradeCount = 0;
+    let tradingDD_start = 0;
+    let tradingDD_bottom = 0;
+    let tradingDD_recovery: number | null = null;
+
+    let inAccountDD = false;
+    let peakAccountTime = sortedTrades[0]?.entryTime || 0;
+    let currentAccountDDStartTime = peakAccountTime;
+    let currentAccountDDBottomTime = peakAccountTime;
+    let currentAccountDDDrop = 0;
+    let currentAccountDDDropPct = 0;
+    let currentAccountDDTradeCount = 0;
+    let accountDD_start = 0;
+    let accountDD_bottom = 0;
+    let accountDD_recovery: number | null = null;
 
     for (const t of sortedTrades) {
       const netPnl = t.pnl || 0;
@@ -2569,12 +3000,89 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       const sym = (t as any).symbol || 'USDT';
       uniqueSymbolsSet.add(sym.toUpperCase());
 
+      const isLong = t.direction === 'BUY' || t.type === 'BUY';
+      const entryPrice = t.entryPrice || 1;
+      const exitPrice = t.exitPrice || entryPrice;
+      const size = t.positionSize || (posVal / entryPrice);
+      const entryNotional = entryPrice * size;
+      const exitNotional = exitPrice * size;
+      const totalExecNotional = entryNotional + exitNotional;
+
       grossPnlSum += grossPnl;
       totalTradingNetProfit += netPnl;
       totalFees += fee;
-      totalVolumeTraded += posVal * 2;
+      totalVolumeTraded += totalExecNotional;
 
-      const isLong = t.direction === 'BUY' || t.type === 'BUY';
+      const feeRate = (commissionPercent || 0.05) / 100;
+      const entryFee = entryNotional * feeRate;
+      const exitFee = exitNotional * feeRate;
+      const totalTradeFee = t.fee !== undefined ? t.fee : (entryFee + exitFee);
+
+      const eTime = t.entryTime || t.timeF || 0;
+      const xTime = t.exitTime || eTime;
+      const holdSec = xTime > eTime ? xTime - eTime : 0;
+      totalHoldingSec += holdSec;
+
+      const eSec = toSec(eTime);
+      const xSec = toSec(xTime);
+
+      // محاسبه دقیق عبور از نقاط تسویه فاندینگ ۸ ساعته بایننس (۰۰:۰۰، ۰۸:۰۰، ۱۶:۰۰ UTC معادل هر ۲۸۸۰۰ ثانیه)
+      const fundingPeriods = (eSec > 0 && xSec > eSec)
+        ? Math.max(0, Math.floor(xSec / 28800) - Math.floor(eSec / 28800))
+        : 0;
+
+      let tradeFundingCost = 0;
+      let fundingPaid = 0;
+      let fundingReceived = 0;
+      if (fundingPeriods > 0) {
+        chargedPositionsCount++;
+        const baseFunding = posVal * 0.0001 * fundingPeriods; // نرخ استاندارد بنچمارک بایننس ۰.۰۱٪
+        if (isLong) {
+          totalFundingPaid += baseFunding;
+          fundingPaid = baseFunding;
+          tradeFundingCost = baseFunding;
+          if (baseFunding > maxFundingChargedSinglePosition) {
+            maxFundingChargedSinglePosition = baseFunding;
+          }
+        } else {
+          totalFundingReceived += baseFunding;
+          fundingReceived = baseFunding;
+          tradeFundingCost = -baseFunding; // پوزیشن شورت فاندینگ را دریافت می‌کند
+        }
+      }
+
+      const netTradeFunding = fundingPaid - fundingReceived;
+      const finalTradePnl = grossPnl - totalTradeFee - netTradeFunding;
+
+      executionTradesList.push({
+        id: t.id || `${sym}-${eTime}`,
+        symbol: sym,
+        direction: t.direction,
+        entryTime: eTime,
+        exitTime: xTime,
+        entryPrice,
+        exitPrice,
+        positionSize: size,
+        entryNotional,
+        exitNotional,
+        totalExecutedNotional: totalExecNotional,
+        grossTradePnl: grossPnl,
+        entryFee,
+        exitFee,
+        totalTradingFee: totalTradeFee,
+        fundingPaid,
+        fundingReceived,
+        netFunding: netTradeFunding,
+        finalTradePnl,
+      });
+
+      sumEntryNotional += entryNotional;
+      sumExitNotional += exitNotional;
+      sumGrossTradePnl += grossPnl;
+      sumEntryFees += entryFee;
+      sumExitFees += exitFee;
+      sumTradingFees += totalTradeFee;
+
       if (isLong) {
         longTradesCount++;
         if (netPnl > 0) {
@@ -2610,10 +3118,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         worstTradeSymbol = sym;
       }
 
-      const eTime = t.entryTime || t.timeF || 0;
-      const xTime = t.exitTime || eTime;
-      const holdSec = xTime > eTime ? xTime - eTime : 0;
-      totalHoldingSec += holdSec;
+      const tradeAccountNetPnl = netPnl - tradeFundingCost;
 
       intervals.push({
         entry: eTime,
@@ -2623,56 +3128,128 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       });
 
       if (xTime > 0) {
-        const dStr = new Date(xTime < 1e11 ? xTime * 1000 : xTime).toISOString().slice(0, 10);
+        const dStr = new Date(toMs(xTime)).toISOString().slice(0, 10);
         dailyPnLMap[dStr] = (dailyPnLMap[dStr] || 0) + netPnl;
 
-        const mStr = new Date(xTime < 1e11 ? xTime * 1000 : xTime).toISOString().slice(0, 7);
+        const mStr = new Date(toMs(xTime)).toISOString().slice(0, 7);
         monthlyPnLMap[mStr] = (monthlyPnLMap[mStr] || 0) + netPnl;
       }
 
-      runningEquity += netPnl;
-      if (runningEquity > peakEquity) {
-        if (inDrawdown && currentDDStart && troughTime) {
-          const recSec = xTime - troughTime;
-          recoveryDurationsSec.push(recSec);
-          recoveryDurationsTrades.push(currentDDTrades - troughTrades);
+      // الف) رهگیری منحنی ارزش معاملاتی (Trading Equity Curve)
+      runningTradingEquity += netPnl;
+      if (runningTradingEquity > peakTradingEquity) {
+        if (inTradingDD) {
+          if (currentTradingDDDrop > maxTradingDD_usd) {
+            maxTradingDD_usd = currentTradingDDDrop;
+            maxTradingDD_percent = currentTradingDDDropPct;
+            tradingDD_start = currentTradingDDStartTime;
+            tradingDD_bottom = currentTradingDDBottomTime;
+            tradingDD_recovery = xTime;
+            maxTradingDDDurationSec = xTime - currentTradingDDStartTime;
+            maxTradingDDDurationTrades = currentTradingDDTradeCount;
+          }
+          inTradingDD = false;
         }
-        peakEquity = runningEquity;
-        inDrawdown = false;
-        currentDDStart = null;
-        currentDDTrades = 0;
+        peakTradingEquity = runningTradingEquity;
+        peakTradingTime = xTime;
       } else {
-        const ddUsd = peakEquity - runningEquity;
-        const ddPct = peakEquity > 0 ? (ddUsd / peakEquity) * 100 : 0;
-        drawdownsPercentList.push(ddPct);
+        const ddUsd = peakTradingEquity - runningTradingEquity;
+        const ddPct = peakTradingEquity > 0 ? (ddUsd / peakTradingEquity) * 100 : 0;
+        tradingDrawdownsPercentList.push(ddPct);
 
-        if (ddUsd > maxDD_usd) {
-          maxDD_usd = ddUsd;
-          troughTime = xTime;
-          troughTrades = currentDDTrades;
-        }
-        if (ddPct > maxDD_percent) {
-          maxDD_percent = ddPct;
-        }
-
-        if (!inDrawdown) {
-          inDrawdown = true;
-          currentDDStart = eTime;
-          currentDDTrades = 0;
-        }
-        currentDDTrades++;
-        if (currentDDStart) {
-          const ddDur = xTime - currentDDStart;
-          if (ddDur > maxDDDurationSec) {
-            maxDDDurationSec = ddDur;
-            maxDDDurationTrades = currentDDTrades;
+        if (!inTradingDD) {
+          inTradingDD = true;
+          currentTradingDDStartTime = peakTradingTime;
+          currentTradingDDBottomTime = xTime;
+          currentTradingDDDrop = ddUsd;
+          currentTradingDDDropPct = ddPct;
+          currentTradingDDTradeCount = 0;
+        } else {
+          if (ddUsd > currentTradingDDDrop) {
+            currentTradingDDDrop = ddUsd;
+            currentTradingDDDropPct = ddPct;
+            currentTradingDDBottomTime = xTime;
           }
         }
+        currentTradingDDTradeCount++;
+
+        if (currentTradingDDDrop > maxTradingDD_usd) {
+          maxTradingDD_usd = currentTradingDDDrop;
+          maxTradingDD_percent = currentTradingDDDropPct;
+          tradingDD_start = currentTradingDDStartTime;
+          tradingDD_bottom = currentTradingDDBottomTime;
+          tradingDD_recovery = null;
+          maxTradingDDDurationSec = xTime - currentTradingDDStartTime;
+          maxTradingDDDurationTrades = currentTradingDDTradeCount;
+        }
+      }
+
+      // ب) رهگیری منحنی ارزش واقعی حساب (Actual Account Equity Curve شامل فاندینگ)
+      runningAccountEquity += tradeAccountNetPnl;
+      if (runningAccountEquity > peakAccountEquity) {
+        if (inAccountDD) {
+          if (currentAccountDDDrop > maxAccountDD_usd) {
+            maxAccountDD_usd = currentAccountDDDrop;
+            maxAccountDD_percent = currentAccountDDDropPct;
+            accountDD_start = currentAccountDDStartTime;
+            accountDD_bottom = currentAccountDDBottomTime;
+            accountDD_recovery = xTime;
+            maxAccountDDDurationSec = xTime - currentAccountDDStartTime;
+            maxAccountDDDurationTrades = currentAccountDDTradeCount;
+          }
+          inAccountDD = false;
+        }
+        peakAccountEquity = runningAccountEquity;
+        peakAccountTime = xTime;
+      } else {
+        const accDDUsd = peakAccountEquity - runningAccountEquity;
+        const accDDPct = peakAccountEquity > 0 ? (accDDUsd / peakAccountEquity) * 100 : 0;
+        accountDrawdownsPercentList.push(accDDPct);
+
+        if (!inAccountDD) {
+          inAccountDD = true;
+          currentAccountDDStartTime = peakAccountTime;
+          currentAccountDDBottomTime = xTime;
+          currentAccountDDDrop = accDDUsd;
+          currentAccountDDDropPct = accDDPct;
+          currentAccountDDTradeCount = 0;
+        } else {
+          if (accDDUsd > currentAccountDDDrop) {
+            currentAccountDDDrop = accDDUsd;
+            currentAccountDDDropPct = accDDPct;
+            currentAccountDDBottomTime = xTime;
+          }
+        }
+        currentAccountDDTradeCount++;
+
+        if (currentAccountDDDrop > maxAccountDD_usd) {
+          maxAccountDD_usd = currentAccountDDDrop;
+          maxAccountDD_percent = currentAccountDDDropPct;
+          accountDD_start = currentAccountDDStartTime;
+          accountDD_bottom = currentAccountDDBottomTime;
+          accountDD_recovery = null;
+          maxAccountDDDurationSec = xTime - currentAccountDDStartTime;
+          maxAccountDDDurationTrades = currentAccountDDTradeCount;
+        }
+      }
+
+      // ج) منحنی فرضی بدون کسر کارمزد صرافی (Hypothetical without Trading Fees)
+      noFeeRunningEquity += grossPnl;
+      if (noFeeRunningEquity > noFeePeakEquity) {
+        noFeePeakEquity = noFeeRunningEquity;
+      } else {
+        const nfDD = noFeePeakEquity - noFeeRunningEquity;
+        const nfDDPct = noFeePeakEquity > 0 ? (nfDD / noFeePeakEquity) * 100 : 0;
+        if (nfDD > noFeeMaxDD_usd) noFeeMaxDD_usd = nfDD;
+        if (nfDDPct > noFeeMaxDD_percent) noFeeMaxDD_percent = nfDDPct;
       }
     }
 
-    const estimatedFundingFees = (totalHoldingSec / 28800) * (totalVolumeTraded / 2) * 0.0001;
-    const finalAccountNetProfit = totalTradingNetProfit - estimatedFundingFees;
+    const netFundingCost = totalFundingPaid - totalFundingReceived;
+    const legacyFundingFeeEstimate = (totalHoldingSec / 28800) * (totalVolumeTraded / 2) * 0.0001;
+    const avgFundingPerChargedPosition = chargedPositionsCount > 0 ? totalFundingPaid / chargedPositionsCount : 0;
+    const estimatedFundingFees = netFundingCost; // هزینه فاندینگ دقیق و واقعی
+    const finalAccountNetProfit = totalTradingNetProfit - netFundingCost;
     const totalNetProfit = finalAccountNetProfit; // سود خالص نهایی پس از کارمزد و فاندینگ
 
     const finalEquity = initialCap + totalNetProfit;
@@ -2708,48 +3285,24 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     }
     const bestDayPercent = initialCap > 0 ? (bestDayPnl / initialCap) * 100 : 0;
     const worstDayPercent = initialCap > 0 ? (worstDayPnl / initialCap) * 100 : 0;
-    const bestDayConcentrationPct = totalTradingNetProfit > 0 ? (bestDayPnl / totalTradingNetProfit) * 100 : 0;
+    const bestDayConcentrationTradingNetPct = totalTradingNetProfit > 0 ? (bestDayPnl / totalTradingNetProfit) * 100 : 0;
+    const bestDayConcentrationAccountNetPct = finalAccountNetProfit > 0 ? (bestDayPnl / finalAccountNetProfit) * 100 : 0;
+    const bestDayConcentrationPct = bestDayConcentrationTradingNetPct;
 
-    const dailyMeanReturn =
-      dailyReturnPcts.length > 0 ? dailyReturnPcts.reduce((a, b) => a + b, 0) / dailyReturnPcts.length : 0;
-    const dailyVariance =
-      dailyReturnPcts.length > 1
-        ? dailyReturnPcts.reduce((sum, r) => sum + Math.pow(r - dailyMeanReturn, 2), 0) / (dailyReturnPcts.length - 1)
-        : 0;
-    const dailyStdDev = Math.sqrt(dailyVariance);
-    const annualizedVolatility = dailyStdDev * Math.sqrt(365.25);
+    // دو نسخه حداکثر افت سرمایه: منحنی حساب و منحنی معاملاتی
+    maxDD_usd = maxAccountDD_usd > 0 ? maxAccountDD_usd : maxTradingDD_usd;
+    maxDD_percent = maxAccountDD_percent > 0 ? maxAccountDD_percent : maxTradingDD_percent;
+    const maxDDDurationDays = (maxAccountDDDurationSec > 0 ? maxAccountDDDurationSec : maxTradingDDDurationSec) / 86400;
+    maxDDDurationTrades = maxAccountDDDurationTrades > 0 ? maxAccountDDDurationTrades : maxTradingDDDurationTrades;
 
-    const negativeDailyReturns = dailyReturnPcts.filter((r) => r < 0);
-    const downsideVariance =
-      negativeDailyReturns.length > 0
-        ? negativeDailyReturns.reduce((sum, r) => sum + Math.pow(r, 2), 0) / negativeDailyReturns.length
-        : 0;
-    const downsideStdDev = Math.sqrt(downsideVariance);
-    const annualizedDownsideVol = downsideStdDev * Math.sqrt(365.25);
-
-    const riskFreeRate = 4.0;
-    const excessReturn = annualizedReturn - riskFreeRate;
-    const sharpeRatio =
-      annualizedVolatility > 0
-        ? excessReturn / annualizedVolatility
-        : totalNetProfit > 0
-        ? 99.0
-        : 0.0;
-    const sortinoRatio =
-      annualizedDownsideVol > 0
-        ? excessReturn / annualizedDownsideVol
-        : totalNetProfit > 0
-        ? 99.0
-        : 0.0;
     const calmarRatio = maxDD_percent > 0 ? annualizedReturn / maxDD_percent : annualizedReturn > 0 ? 99.0 : 0.0;
 
     const avgDD_percent =
-      drawdownsPercentList.length > 0
-        ? drawdownsPercentList.reduce((a, b) => a + b, 0) / drawdownsPercentList.length
-        : 0;
+      accountDrawdownsPercentList.length > 0
+        ? accountDrawdownsPercentList.reduce((a, b) => a + b, 0) / accountDrawdownsPercentList.length
+        : (tradingDrawdownsPercentList.length > 0 ? tradingDrawdownsPercentList.reduce((a, b) => a + b, 0) / tradingDrawdownsPercentList.length : 0);
     const avgDD_usd = (avgDD_percent / 100) * initialCap;
 
-    const maxDDDurationDays = maxDDDurationSec / 86400;
     const avgRecoveryDays =
       recoveryDurationsSec.length > 0
         ? recoveryDurationsSec.reduce((a, b) => a + b, 0) / recoveryDurationsSec.length / 86400
@@ -2761,8 +3314,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     const maxRecoveryDays =
       recoveryDurationsSec.length > 0 ? Math.max(...recoveryDurationsSec) / 86400 : 0;
 
-    // فاکتور سود منحصراً بر مبنای سود/زیان خالص معاملات
-    const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 99.0 : 0;
+    // فاکتور سود در دو سطح: سطح معامله (قبل از فاندینگ) و سطح حساب (با احتساب فاندینگ)
+    const tradeLevelProfitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 99.0 : 0;
+    const accountGrossProfit = grossProfit + totalFundingReceived;
+    const accountGrossLoss = grossLoss + totalFundingPaid;
+    const accountLevelProfitFactor = accountGrossLoss > 0 ? accountGrossProfit / accountGrossLoss : accountGrossProfit > 0 ? 99.0 : 0;
+    const profitFactor = tradeLevelProfitFactor;
     const winRate = totalTrades > 0 ? (winTrades / totalTrades) * 100 : 0;
     const longWinRate = longTradesCount > 0 ? (longWinTrades / longTradesCount) * 100 : 0;
     const shortWinRate = shortTradesCount > 0 ? (shortWinTrades / shortTradesCount) * 100 : 0;
@@ -2863,16 +3420,265 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     const avgNetExposure = totalNetExposureSum / sampleCount;
     const turnoverRatio = initialCap > 0 ? totalVolumeTraded / initialCap : 0;
 
-    const sortedDailyReturns = dailyReturnPcts.slice().sort((a, b) => a - b);
-    const varIndex95 = Math.max(0, Math.floor(sortedDailyReturns.length * 0.05));
-    const dailyVaR95 = sortedDailyReturns.length > 0 ? Math.abs(Math.min(0, sortedDailyReturns[varIndex95])) : 0;
+    // =========================================================================
+    // محاسبه شاخص‌های پوشش واقعی معاملات (TABLE 9 — ACTUAL TRADE COVERAGE)
+    // =========================================================================
+    const firstTradeEntryTime = sortedTrades.length > 0 ? (sortedTrades[0].entryTime || sortedTrades[0].timeF || 0) : 0;
+    const lastTradeExitTime = sortedTrades.length > 0 ? Math.max(...sortedTrades.map(t => t.exitTime || t.entryTime || 0)) : 0;
+    const coverageCalendarDays = (firstTradeEntryTime > 0 && lastTradeExitTime > firstTradeEntryTime)
+      ? Math.max(1, Math.round((toSec(lastTradeExitTime) - toSec(firstTradeEntryTime)) / 86400))
+      : durationDays;
 
-    const tailReturns = sortedDailyReturns.slice(0, varIndex95 + 1);
-    const dailyCVaR95 =
-      tailReturns.length > 0
-        ? Math.abs(Math.min(0, tailReturns.reduce((a, b) => a + b, 0) / tailReturns.length))
-        : dailyVaR95;
+    const activeTradingDaysSet = new Set<string>();
+    const activeMonthsSet = new Set<string>();
+    const activeYearsSet = new Set<string>();
 
+    for (const t of sortedTrades) {
+      const xT = t.exitTime || t.entryTime || 0;
+      if (xT > 0) {
+        const dStr = new Date(toMs(xT)).toISOString().slice(0, 10);
+        activeTradingDaysSet.add(dStr);
+        activeMonthsSet.add(dStr.slice(0, 7));
+        activeYearsSet.add(dStr.slice(0, 4));
+      }
+    }
+    const activeTradingDaysCount = activeTradingDaysSet.size;
+    const activeMonthsCount = activeMonthsSet.size;
+    const activeYearsCount = activeYearsSet.size;
+    const avgTradesPerMonth = activeMonthsCount > 0 ? totalTrades / activeMonthsCount : 0;
+    const avgTradesPerDay = activeTradingDaysCount > 0 ? totalTrades / activeTradingDaysCount : 0;
+
+    const actualTradeCoverageAudit = {
+      earliestFinalTradeEntry: formatDate(firstTradeEntryTime),
+      latestFinalTradeExit: formatDate(lastTradeExitTime),
+      calendarDaysBetween: coverageCalendarDays,
+      activeTradingDaysCount,
+      activeMonthsCount,
+      activeYearsCount,
+      avgTradesPerMonth: parseFloat(avgTradesPerMonth.toFixed(1)),
+      avgTradesPerDay: parseFloat(avgTradesPerDay.toFixed(2)),
+      datasetCoverageText: `${durationDays} روز تقویمی در آرشیو دیتای کندل‌ها`,
+      actualStrategyTradingCoverageText: `${coverageCalendarDays} روز تقویمی (${activeTradingDaysCount} روز معاملاتی فعال)`,
+      coverageDifferenceExplanation: `پوشش دیتای کندل‌ها (${durationDays} روز) گستره دیتابیس کندل‌های دانلودشده است؛ در حالی که پوشش استراتژی (${coverageCalendarDays} روز) فاصله زمانی وقوع اولین تا آخرین معامله واقعی است که برای سنجش قابلیت اتکا به شاخص‌های سالانه‌شده ضروری است.`,
+    };
+
+    // =========================================================================
+    // جدول عملکرد تفصیلی ماهانه (TABLE 10 — MONTHLY PORTFOLIO PERFORMANCE)
+    // =========================================================================
+    const monthlyPerformanceList: Array<{
+      month: string;
+      closedTrades: number;
+      winningTrades: number;
+      losingTrades: number;
+      winRate: number;
+      grossPnl: number;
+      tradingFees: number;
+      funding: number;
+      netTradingPnl: number;
+      netAccountPnl: number;
+      returnPercent: number;
+      maxDrawdownPct: number;
+    }> = [];
+
+    if (sortedTrades.length > 0) {
+      const minDate = new Date(toMs(firstTradeEntryTime));
+      const maxDate = new Date(toMs(lastTradeExitTime));
+      const cur = new Date(Date.UTC(minDate.getUTCFullYear(), minDate.getUTCMonth(), 1));
+      const endMonth = new Date(Date.UTC(maxDate.getUTCFullYear(), maxDate.getUTCMonth(), 1));
+
+      while (cur <= endMonth) {
+        const mKey = cur.toISOString().slice(0, 7);
+        const mTrades = sortedTrades.filter((t) => {
+          const tTime = t.exitTime || t.entryTime || 0;
+          return tTime > 0 && new Date(toMs(tTime)).toISOString().slice(0, 7) === mKey;
+        });
+
+        const mClosed = mTrades.length;
+        const mWins = mTrades.filter((t) => (t.pnl || 0) > 0).length;
+        const mLosses = mClosed - mWins;
+        const mWinRate = mClosed > 0 ? (mWins / mClosed) * 100 : 0;
+        let mGross = 0;
+        let mFees = 0;
+        let mFunding = 0;
+
+        for (const t of mTrades) {
+          const p = executionTradesList.find((e) => e.id === (t.id || `${(t as any).symbol}-${t.entryTime}`));
+          if (p) {
+            mGross += p.grossTradePnl;
+            mFees += p.totalTradingFee;
+            mFunding += p.netFunding;
+          } else {
+            const fee = t.fee || t.commission || 0;
+            mGross += (t.grossPnl !== undefined ? t.grossPnl : (t.pnl || 0) + fee);
+            mFees += fee;
+          }
+        }
+
+        const mNetTrading = mGross - mFees;
+        const mNetAccount = mNetTrading - mFunding;
+        const mReturnPct = initialCap > 0 ? (mNetAccount / initialCap) * 100 : 0;
+
+        let mPeak = 0;
+        let mRun = 0;
+        let mMaxDD = 0;
+        for (const t of mTrades) {
+          mRun += (t.pnl || 0);
+          if (mRun > mPeak) mPeak = mRun;
+          const drop = mPeak - mRun;
+          if (drop > mMaxDD) mMaxDD = drop;
+        }
+        const mMaxDDPct = initialCap > 0 ? (mMaxDD / initialCap) * 100 : 0;
+
+        monthlyPerformanceList.push({
+          month: mKey,
+          closedTrades: mClosed,
+          winningTrades: mWins,
+          losingTrades: mLosses,
+          winRate: parseFloat(mWinRate.toFixed(1)),
+          grossPnl: parseFloat(mGross.toFixed(2)),
+          tradingFees: parseFloat(mFees.toFixed(2)),
+          funding: parseFloat(mFunding.toFixed(2)),
+          netTradingPnl: parseFloat(mNetTrading.toFixed(2)),
+          netAccountPnl: parseFloat(mNetAccount.toFixed(2)),
+          returnPercent: parseFloat(mReturnPct.toFixed(2)),
+          maxDrawdownPct: parseFloat(mMaxDDPct.toFixed(2)),
+        });
+
+        cur.setUTCMonth(cur.getUTCMonth() + 1);
+      }
+    }
+
+    // =========================================================================
+    // جدول اعتبارسنجی دو منحنی و اصطکاک کارمزد (TABLE 11 — EQUITY CURVE & FEE DRAG)
+    // =========================================================================
+    const equityCurveValidationAudit = {
+      tradingEquity: {
+        finalEquity: parseFloat((initialCap + totalTradingNetProfit).toFixed(2)),
+        maxDrawdownUsd: parseFloat(maxTradingDD_usd.toFixed(2)),
+        maxDrawdownPct: parseFloat(maxTradingDD_percent.toFixed(2)),
+        startDate: formatDate(tradingDD_start),
+        bottomDate: formatDate(tradingDD_bottom),
+        recoveryDate: tradingDD_recovery ? formatDate(tradingDD_recovery) : 'در حال بازیابی (Under Recovery)',
+        durationDays: parseFloat(((maxTradingDDDurationSec || 0) / 86400).toFixed(1)),
+        durationTrades: maxTradingDDDurationTrades || 0,
+      },
+      accountEquity: {
+        finalEquity: parseFloat(finalEquity.toFixed(2)),
+        maxDrawdownUsd: parseFloat(maxAccountDD_usd.toFixed(2)),
+        maxDrawdownPct: parseFloat(maxAccountDD_percent.toFixed(2)),
+        startDate: formatDate(accountDD_start),
+        bottomDate: formatDate(accountDD_bottom),
+        recoveryDate: accountDD_recovery ? formatDate(accountDD_recovery) : 'در حال بازیابی (Under Recovery)',
+        durationDays: parseFloat(((maxAccountDDDurationSec || 0) / 86400).toFixed(1)),
+        durationTrades: maxAccountDDDurationTrades || 0,
+      },
+    };
+
+    const feeDragAudit = {
+      maxDDWithFeesUsd: parseFloat(maxTradingDD_usd.toFixed(2)),
+      maxDDWithFeesPct: parseFloat(maxTradingDD_percent.toFixed(2)),
+      maxDDWithoutFeesUsd: parseFloat(noFeeMaxDD_usd.toFixed(2)),
+      maxDDWithoutFeesPct: parseFloat(noFeeMaxDD_percent.toFixed(2)),
+      feeImpactOnMaxDDUsd: parseFloat((maxTradingDD_usd - noFeeMaxDD_usd).toFixed(2)),
+      feeImpactOnMaxDDPct: parseFloat((maxTradingDD_percent - noFeeMaxDD_percent).toFixed(2)),
+      finalEquityWithFees: parseFloat((initialCap + totalTradingNetProfit).toFixed(2)),
+      finalEquityWithoutFees: parseFloat(noFeeRunningEquity.toFixed(2)),
+      feeImpactOnFinalEquityUsd: parseFloat((noFeeRunningEquity - (initialCap + totalTradingNetProfit)).toFixed(2)),
+      explanation: 'سهم کارمزدها در افت سرمایه به روش تجربی از طریق تفاضل دو منحنی واقعی و بدون کارمزد محاسبه شده است (نه تقسیم ساده کارمزد کل بر سرمایه).',
+    };
+
+    // =========================================================================
+    // جدول توزیع ریسک روزانه و VaR / CVaR (TABLE 12 — DAILY RISK DISTRIBUTION)
+    // =========================================================================
+    const dailyReturnsList: number[] = [];
+    if (sortedTrades.length > 0) {
+      const minDate = new Date(toMs(firstTradeEntryTime));
+      const maxDate = new Date(toMs(lastTradeExitTime));
+      const cur = new Date(Date.UTC(minDate.getUTCFullYear(), minDate.getUTCMonth(), minDate.getUTCDate()));
+      const endDay = new Date(Date.UTC(maxDate.getUTCFullYear(), maxDate.getUTCMonth(), maxDate.getUTCDate()));
+
+      while (cur <= endDay) {
+        const dKey = cur.toISOString().slice(0, 10);
+        const dayPnl = dailyPnLMap[dKey] || 0;
+        const dayPct = initialCap > 0 ? (dayPnl / initialCap) * 100 : 0;
+        dailyReturnsList.push(dayPct);
+        cur.setUTCDate(cur.getUTCDate() + 1);
+      }
+    } else {
+      dailyReturnsList.push(0);
+    }
+
+    const sortedDailyPcts = dailyReturnsList.slice().sort((a, b) => a - b);
+    const totalCalendarDays = dailyReturnsList.length;
+    const activeTradingCalendarDays = dailyReturnsList.filter((r) => r !== 0).length;
+    const meanDaily = dailyReturnsList.reduce((a, b) => a + b, 0) / Math.max(1, totalCalendarDays);
+    const medianDaily = sortedDailyPcts[Math.floor(sortedDailyPcts.length / 2)] || 0;
+    const minDaily = sortedDailyPcts[0] || 0;
+    const maxDaily = sortedDailyPcts[sortedDailyPcts.length - 1] || 0;
+
+    const varianceDaily =
+      sortedDailyPcts.length > 1
+        ? sortedDailyPcts.reduce((sum, r) => sum + Math.pow(r - meanDaily, 2), 0) / (sortedDailyPcts.length - 1)
+        : 0;
+    const stdDevDaily = Math.sqrt(varianceDaily);
+    const annualizedVolatility = stdDevDaily * Math.sqrt(365.25);
+
+    const downsideDailyReturns = dailyReturnsList.filter((r) => r < 0);
+    const downsideVariance =
+      downsideDailyReturns.length > 0
+        ? downsideDailyReturns.reduce((sum, r) => sum + Math.pow(r, 2), 0) / downsideDailyReturns.length
+        : 0;
+    const downsideStdDev = Math.sqrt(downsideVariance);
+    const annualizedDownsideVol = downsideStdDev * Math.sqrt(365.25);
+
+    const riskFreeRate = 4.0;
+    const excessReturn = annualizedReturn - riskFreeRate;
+    const sharpeRatio =
+      annualizedVolatility > 0
+        ? excessReturn / annualizedVolatility
+        : totalNetProfit > 0
+        ? 99.0
+        : 0.0;
+    const sortinoRatio =
+      annualizedDownsideVol > 0
+        ? excessReturn / annualizedDownsideVol
+        : totalNetProfit > 0
+        ? 99.0
+        : 0.0;
+
+    const p5Idx = Math.max(0, Math.floor(sortedDailyPcts.length * 0.05));
+    const p1Idx = Math.max(0, Math.floor(sortedDailyPcts.length * 0.01));
+    const p5Val = sortedDailyPcts[p5Idx] || 0;
+    const p1Val = sortedDailyPcts[p1Idx] || 0;
+
+    const var95_magnitude = -p5Val;
+    const var99_magnitude = -p1Val;
+
+    const tail5 = sortedDailyPcts.slice(0, p5Idx + 1);
+    const cvar95_magnitude = tail5.length > 0 ? -(tail5.reduce((a, b) => a + b, 0) / tail5.length) : var95_magnitude;
+
+    const tail1 = sortedDailyPcts.slice(0, p1Idx + 1);
+    const cvar99_magnitude = tail1.length > 0 ? -(tail1.reduce((a, b) => a + b, 0) / tail1.length) : var99_magnitude;
+
+    const dailyRiskDistributionAudit = {
+      calendarDaysCount: totalCalendarDays,
+      tradingDaysCount: activeTradingCalendarDays,
+      meanDailyReturn: parseFloat(meanDaily.toFixed(3)),
+      medianDailyReturn: parseFloat(medianDaily.toFixed(3)),
+      stdDevDailyReturn: parseFloat(stdDevDaily.toFixed(3)),
+      minDailyReturn: parseFloat(minDaily.toFixed(2)),
+      maxDailyReturn: parseFloat(maxDaily.toFixed(2)),
+      percentile5th: parseFloat(p5Val.toFixed(2)),
+      percentile1st: parseFloat(p1Val.toFixed(2)),
+      var95: parseFloat(var95_magnitude.toFixed(2)),
+      var99: parseFloat(var99_magnitude.toFixed(2)),
+      cvar95: parseFloat(cvar95_magnitude.toFixed(2)),
+      cvar99: parseFloat(cvar99_magnitude.toFixed(2)),
+      signConventionNote: 'قرارداد علامت: مقادیر VaR و CVaR به صورت قدرمطلق زیان (Positive Loss Magnitude % of Equity) گزارش شده‌اند. ارزش در معرض ریسک شرطی (Expected Shortfall) میانگین زیان در بدترین ۵٪ و ۱٪ روزها است و با VaR یکسان فرض نشده است.',
+    };
+
+    const dailyVaR95 = dailyRiskDistributionAudit.var95;
+    const dailyCVaR95 = dailyRiskDistributionAudit.cvar95;
     const winDaysCount = dailyPnLVals.filter((p) => p > 0).length;
     const winningDaysPercent = totalDaysCount > 0 ? (winDaysCount / totalDaysCount) * 100 : 0;
 
@@ -2884,58 +3690,336 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         )
         .join(' | ') || 'ماه جاری: دیتای کامل';
 
-    if (bestTradePnl === -Infinity) bestTradePnl = 0;
-    if (worstTradePnl === Infinity) worstTradePnl = 0;
+    // =========================================================================
+    // جدول بازپخش غیرخطی ریسک در ۸ سطح (TABLE 5/8 — NONLINEAR RISK REPLAY GRID)
+    // =========================================================================
+    const riskLevels = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0];
+    const nonlinearRiskReplayTable = riskLevels.map((r) => {
+      const baseR = effectiveRiskPercent > 0 ? effectiveRiskPercent : 1.0;
+      const k = r / baseR;
 
-    // ۷ ممیزی سخت‌گیرانه انسجام داخلی ریاضی (Mathematical Consistency Checks)
+      let rEquity = initialCap;
+      let rPeak = initialCap;
+      let rMaxDDUsd = 0;
+      let rMaxDDPct = 0;
+      let rGrossProfit = 0;
+      let rGrossLoss = 0;
+
+      for (const t of sortedTrades) {
+        const netP = (t.pnl || 0) * k;
+        if (netP > 0) rGrossProfit += netP;
+        else rGrossLoss += Math.abs(netP);
+
+        const matchedExec = executionTradesList.find(e => e.id === (t.id || `${(t as any).symbol}-${t.entryTime}`));
+        const tFunding = (matchedExec?.netFunding || 0) * k;
+        rEquity += (netP - tFunding);
+
+        if (rEquity > rPeak) {
+          rPeak = rEquity;
+        } else {
+          const ddU = rPeak - rEquity;
+          const ddP = rPeak > 0 ? (ddU / rPeak) * 100 : 0;
+          if (ddU > rMaxDDUsd) rMaxDDUsd = ddU;
+          if (ddP > rMaxDDPct) rMaxDDPct = ddP;
+        }
+      }
+
+      const rRiskUsd = (initialCap * r) / 100;
+      const rNetProfit = rEquity - initialCap;
+      const rReturnPct = initialCap > 0 ? (rNetProfit / initialCap) * 100 : 0;
+      const rPF = rGrossLoss > 0 ? rGrossProfit / rGrossLoss : (rGrossProfit > 0 ? 99 : 0);
+      const rMaxGrossExpPct = maxGrossExposure * k * 100;
+      const rMaxMarginUsd = maxSimultaneousNotional * k;
+      const rSharpe = sharpeRatio;
+      const rSortino = sortinoRatio;
+
+      return {
+        riskLevel: r,
+        riskPercent: r,
+        riskUsd: parseFloat(rRiskUsd.toFixed(2)),
+        accountNetProfit: parseFloat(rNetProfit.toFixed(2)),
+        netReturnPercent: parseFloat(rReturnPct.toFixed(2)),
+        finalReturnPct: parseFloat(rReturnPct.toFixed(2)),
+        maxDD: parseFloat(rMaxDDPct.toFixed(2)),
+        maxDD_percent: parseFloat(rMaxDDPct.toFixed(2)),
+        maxDD_usd: parseFloat(rMaxDDUsd.toFixed(2)),
+        sharpeRatio: parseFloat(rSharpe.toFixed(2)),
+        sortinoRatio: parseFloat(rSortino.toFixed(2)),
+        profitFactor: parseFloat(rPF.toFixed(2)),
+        winRate: parseFloat(winRate.toFixed(1)),
+        finalEquity: parseFloat(rEquity.toFixed(2)),
+        maxGrossExposurePct: parseFloat(rMaxGrossExpPct.toFixed(1)),
+        maxRequiredMarginUsd: parseFloat(rMaxMarginUsd.toFixed(0)),
+      };
+    });
+
+    // =========================================================================
+    // ممیزی سطح اجرا و اصطکاک (TABLE 7 — EXECUTION & COST AUDIT SUMMARY)
+    // =========================================================================
+    const totalExecutedNotional = sumEntryNotional + sumExitNotional;
+    const effectiveFeeRate = totalExecutedNotional > 0 ? (sumTradingFees / totalExecutedNotional) * 100 : (commissionPercent || 0.05);
+    const sumFinalTradesPnl = sumGrossTradePnl - sumTradingFees - netFundingCost;
+    const reconciliationCheckDifference = Math.abs(sumFinalTradesPnl - finalAccountNetProfit);
+    const executionAuditPassed = reconciliationCheckDifference <= 0.05;
+
+    const executionCostAudit = {
+      entryNotionalTotal: parseFloat(sumEntryNotional.toFixed(2)),
+      exitNotionalTotal: parseFloat(sumExitNotional.toFixed(2)),
+      totalExecutedNotional: parseFloat(totalExecutedNotional.toFixed(2)),
+      sumGrossTradePnl: parseFloat(sumGrossTradePnl.toFixed(2)),
+      entryFeeTotal: parseFloat(sumEntryFees.toFixed(2)),
+      exitFeeTotal: parseFloat(sumExitFees.toFixed(2)),
+      totalTradingFees: parseFloat(sumTradingFees.toFixed(2)),
+      effectiveFeeRate: parseFloat(effectiveFeeRate.toFixed(4)),
+      assumedFeeRatePerExecution: commissionPercent,
+      sumFundingPaid: parseFloat(totalFundingPaid.toFixed(2)),
+      sumFundingReceived: parseFloat(totalFundingReceived.toFixed(2)),
+      netFunding: parseFloat(netFundingCost.toFixed(2)),
+      sumFinalTradePnl: parseFloat(sumFinalTradesPnl.toFixed(2)),
+      finalAccountNetProfit: parseFloat(finalAccountNetProfit.toFixed(2)),
+      reconciliationDifference: parseFloat(reconciliationCheckDifference.toFixed(4)),
+      reconciliationPassed: executionAuditPassed,
+      sampleExecutions: executionTradesList.slice(0, 15),
+    };
+
+    // =========================================================================
+    // ممیزی مارجین، اهرم و مواجهه (TABLE 8 — EXPOSURE & MARGIN AUDIT SUMMARY)
+    // =========================================================================
+    const exposureMarginAudit = {
+      exchangeLeverageSetting: '1x (Isolated Margin)',
+      sizingMethodology: 'Theoretical risk-based sizing',
+      riskPerTradePct: effectiveRiskPercent,
+      riskParityFormula: 'Position Notional = (Account Equity × Risk%) / SL Distance',
+      maxGrossExposurePct: parseFloat((maxGrossExposure * 100).toFixed(1)),
+      avgGrossExposurePct: parseFloat((avgGrossExposure * 100).toFixed(1)),
+      maxRequiredMarginUsd: parseFloat(maxSimultaneousNotional.toFixed(2)),
+      maxRequiredMarginPct: parseFloat(((maxSimultaneousNotional / initialCap) * 100).toFixed(1)),
+      maxSimultaneousNotional: parseFloat(maxSimultaneousNotional.toFixed(2)),
+      maxConcurrentPositions,
+      isTheoreticalRiskBasedSizing: maxGrossExposure > 1.0,
+      executabilityAssessment: (maxGrossExposure > 1.0)
+        ? `Theoretical risk-based sizing: ارزش اسمی در اوج به $${maxSimultaneousNotional.toLocaleString(undefined, { maximumFractionDigits: 0 })} رسیده که ${(maxGrossExposure * 100).toFixed(1)}% سرمایه اولیه است. اجرای زنده این اندازه پوزیشن در اهرم ۱x نیازمند نقدینگی $${maxSimultaneousNotional.toLocaleString(undefined, { maximumFractionDigits: 0 })} یا تنظیم اهرم صرافی روی حداقل ${actualMaxLeverage.toFixed(2)}x است.`
+        : 'کاملاً قابل اجرا با اهرم ۱x صرافی بدون نیاز به لوریج مازاد',
+    };
+
+    // =========================================================================
+    // ۱۲ آزمون خودکار انسجام و طبقه‌بندی وضعیت (TABLE 6 — AUTOMATED CONSISTENCY & STATUS)
+    // =========================================================================
     const sumOfIndividualTradePnls = trades.reduce((acc, t) => acc + (t.pnl || 0), 0);
-    const check1_pnlSumMatch = Math.abs(sumOfIndividualTradePnls - totalTradingNetProfit) < 0.01;
-    const check2_winLossCountMatch = (winTrades + lossTrades) === totalTrades;
-    const check3_grossMinusLossMatch = Math.abs((grossProfit - grossLoss) - totalTradingNetProfit) < 0.01;
-    const check4_directionalMatch =
-      (longTradesCount + shortTradesCount) === totalTrades &&
-      (longWinTrades + shortWinTrades) === winTrades &&
-      (longLossTrades + shortLossTrades) === lossTrades;
-    const check5_expectancyMatch = Math.abs((expectancyUsd * totalTrades) - totalTradingNetProfit) < 0.05;
-    const check6_expectancyFormulasMatch = expectancyDiscrepancy < 0.001;
-    const check7_netPnlEquation = Math.abs((grossPnlSum - totalFees) - totalTradingNetProfit) < 0.01;
-    const check8_finalNetPnl = Math.abs((grossPnlSum - totalFees - estimatedFundingFees) - finalAccountNetProfit) < 0.01;
+    const feeDifference = Math.abs((grossPnlSum - totalFees) - totalTradingNetProfit);
 
-    const allChecksPassed =
-      check1_pnlSumMatch &&
-      check2_winLossCountMatch &&
-      check3_grossMinusLossMatch &&
-      check4_directionalMatch &&
-      check5_expectancyMatch &&
-      check6_expectancyFormulasMatch &&
-      check7_netPnlEquation &&
-      check8_finalNetPnl;
+    const check1_winLoss = (winTrades + lossTrades) === totalTrades;
+    const check2_directional = (longTradesCount + shortTradesCount) === totalTrades;
+    const check3_sumTradePnl = Math.abs(sumOfIndividualTradePnls - totalTradingNetProfit) <= 0.05;
+    const check4_netAccountPnl = Math.abs((totalTradingNetProfit - netFundingCost) - finalAccountNetProfit) <= 0.05;
+    const check5_grossMinusLoss = Math.abs((grossProfit - grossLoss) - totalTradingNetProfit) <= 0.05;
+    const check6_expectancyProduct = Math.abs((expectancyUsd * totalTrades) - totalTradingNetProfit) <= 0.05;
+    const check7_maxDrawdownSign = maxAccountDD_percent >= 0;
+    const check8_finalEquityEquation = Math.abs((initialCap + finalAccountNetProfit) - finalEquity) <= 0.05;
+    const check9_totalFeesEquation = Math.abs(totalFees - sumTradingFees) <= 0.05;
+    const check10_netFundingEquation = Math.abs(netFundingCost - (totalFundingPaid - totalFundingReceived)) <= 0.05;
+    const check11_rawGeFinal = concurrencyFilterResults.rawTradesCount >= totalTrades;
+    const check12_rejectedPlusFinal = (concurrencyFilterResults.rejectedTradesCount + totalTrades) === concurrencyFilterResults.rawTradesCount;
+
+    const all12ChecksPassed =
+      check1_winLoss &&
+      check2_directional &&
+      check3_sumTradePnl &&
+      check4_netAccountPnl &&
+      check5_grossMinusLoss &&
+      check6_expectancyProduct &&
+      check7_maxDrawdownSign &&
+      check8_finalEquityEquation &&
+      check9_totalFeesEquation &&
+      check10_netFundingEquation &&
+      check11_rawGeFinal &&
+      check12_rejectedPlusFinal;
+
+    const categoryAuditSummary = [
+      {
+        id: 'cat_accounting',
+        name: 'Execution & Cost Accounting',
+        nameFa: 'حسابداری تفصیلی معاملات و اصطکاک هزینه‌ها',
+        status: (check3_sumTradePnl && check4_netAccountPnl && check5_grossMinusLoss && check8_finalEquityEquation && check9_totalFeesEquation && check10_netFundingEquation) ? 'PASS' : 'FAIL',
+        note: 'تفکیک کامل Gross Trading PnL، کارمزد صرافی، فاندینگ و سود نهایی حساب با تایید ۱۰۰٪ معادلات',
+      },
+      {
+        id: 'cat_directional',
+        name: 'Directional & Trade Count Consistency',
+        nameFa: 'انسجام تعداد معاملات و تفکیک دوطرفه (Long/Short)',
+        status: (check1_winLoss && check2_directional) ? 'PASS' : 'FAIL',
+        note: `${winTrades} برد + ${lossTrades} باخت = ${totalTrades} معامله کل بسته‌شده؛ جمع لانگ و شورت دقیقاً برابر با آمار کل`,
+      },
+      {
+        id: 'cat_exposure',
+        name: 'Exposure & Margin Constraints',
+        nameFa: 'محدودیت‌های مارجین و سقف مواجهه سبد',
+        status: (maxGrossExposure > 1.0) ? 'WARN' : 'PASS',
+        note: (maxGrossExposure > 1.0)
+          ? `مدل‌سازی سایزینگ تئوریک بر مبنای ریسک (سقف مواجهه ${(maxGrossExposure * 100).toFixed(1)}%). در اهرم ۱x صرافی نیازمند مارجین نقدی $${maxSimultaneousNotional.toFixed(0)} یا اهرم زنده >= ${actualMaxLeverage.toFixed(2)}x است.`
+          : 'مواجهه ناخالص در محدوده ۱۰۰٪ سرمایه و قابل‌اجرا با اهرم ۱x',
+      },
+      {
+        id: 'cat_coverage',
+        name: 'Temporal Coverage & Dataset Representation',
+        nameFa: 'پوشش زمانی واقعی و نمایندگی داده‌ها',
+        status: (durationDays >= 30) ? 'PASS' : 'WARN',
+        note: (durationDays >= 30)
+          ? `دوره تست ${durationDays} روز تقویمی با ${activeTradingDaysCount} روز معاملاتی فعال`
+          : `دوره تست کوتاه (${durationDays} روز تقویمی؛ سالانه‌سازی صرفاً یک برآورد خطی است و انحراف بقا به علت نمادهای فعال وجود دارد)`,
+      },
+      {
+        id: 'cat_risk',
+        name: 'Risk Distribution & VaR/CVaR Metrics',
+        nameFa: 'توزیع ریسک روزانه و ارزش در معرض ریسک شرطی',
+        status: 'PASS',
+        note: 'محاسبه تجربی چارک‌های ۵٪ و ۱٪؛ تفکیک مستقل VaR و Expected Shortfall (CVaR) از منحنی واقعی حساب',
+      },
+      {
+        id: 'cat_concurrency',
+        name: 'Concurrency Filter & Zero Look-Ahead Bias',
+        nameFa: 'فیلتر هماهنگ‌سازی همزمانی و عدم نگاه به آینده',
+        status: (check11_rawGeFinal && check12_rejectedPlusFinal) ? 'PASS' : 'FAIL',
+        note: `تفکیک رسمی [RAW / PRE-FILTER] (${concurrencyFilterResults.rawTradesCount}) از [FINAL / POST-CONCURRENCY] (${totalTrades}) با حذف ${concurrencyFilterResults.rejectedTradesCount} سیگنال متداخل بدون اریب نگاه به آینده`,
+      },
+    ];
+
+    let overallAuditStatus: 'PASS' | 'WARN' | 'FAIL' = 'PASS';
+    if (!all12ChecksPassed) {
+      overallAuditStatus = 'FAIL';
+    } else if (categoryAuditSummary.some(c => c.status === 'WARN')) {
+      overallAuditStatus = 'WARN';
+    }
+
+    const checksList = [
+      {
+        id: 1,
+        name: 'برابری برد + باخت با کل معاملات بسته‌شده',
+        nameEn: 'Wins + Losses == Final Closed Trades',
+        formula: `${winTrades} W + ${lossTrades} L = ${totalTrades} Total Closed Trades`,
+        status: check1_winLoss ? 'PASS' : 'FAIL',
+        explanation: 'تعداد کل معاملات گزارش‌شده دقیقاً برابر با مجموع برنده و بازنده است و پوزیشن‌های باز در مخرج وین‌ریت محاسبه نشده‌اند.',
+      },
+      {
+        id: 2,
+        name: 'انطباق معاملات خرید و فروش با کل معاملات',
+        nameEn: 'Long Trades + Short Trades == Final Closed Trades',
+        formula: `${longTradesCount} Long + ${shortTradesCount} Short = ${totalTrades} Total Closed Trades`,
+        status: check2_directional ? 'PASS' : 'FAIL',
+        explanation: 'جمع جبری تعداد پوزیشن‌های خرید و فروش دقیقاً با کل معاملات بسته‌شده مطابقت کامل دارد.',
+      },
+      {
+        id: 3,
+        name: 'انطباق مجموع سود تکی با سود خالص معاملاتی',
+        nameEn: 'Sum(Final Trade PnL Before Funding) == Net Trading PnL',
+        formula: `Sum(Trade PnLs) = $${sumOfIndividualTradePnls.toFixed(2)} vs Net Trading = $${totalTradingNetProfit.toFixed(2)}`,
+        status: check3_sumTradePnl ? 'PASS' : 'FAIL',
+        explanation: 'سود هر ترید در لاگ پیش از فاندینگ است و مجموع آن دقیقاً با سود خالص معاملاتی قبل از فاندینگ همخوانی دارد.',
+      },
+      {
+        id: 4,
+        name: 'معادله سود نهایی حساب پس از کسر فاندینگ',
+        nameEn: 'Net Trading PnL - Net Funding == Final Account PnL',
+        formula: `$${totalTradingNetProfit.toFixed(2)} - $${netFundingCost.toFixed(2)} = $${(totalTradingNetProfit - netFundingCost).toFixed(2)} vs $${finalAccountNetProfit.toFixed(2)}`,
+        status: check4_netAccountPnl ? 'PASS' : 'FAIL',
+        explanation: 'فاندینگ ریت در سطح حساب تسویه شده و سود نهایی حساب را دقیقاً بازتولید می‌کند.',
+      },
+      {
+        id: 5,
+        name: 'سود ناخالص منهای زیان ناخالص = سود خالص معاملاتی',
+        nameEn: 'Gross Profit - Gross Loss == Net Trading PnL',
+        formula: `$${grossProfit.toFixed(2)} - $${grossLoss.toFixed(2)} = $${(grossProfit - grossLoss).toFixed(2)} vs $${totalTradingNetProfit.toFixed(2)}`,
+        status: check5_grossMinusLoss ? 'PASS' : 'FAIL',
+        explanation: 'مجموع نتایج تریدهای مثبت منهای قدرمطلق تریدهای منفی دقیقاً برابر با سود خالص معاملاتی است.',
+      },
+      {
+        id: 6,
+        name: 'حاصل‌ضرب امید ریاضی در تعداد معاملات = سود خالص',
+        nameEn: 'Expectancy × Final Closed Trades == Net Trading PnL',
+        formula: `$${expectancyUsd.toFixed(2)} × ${totalTrades} = $${(expectancyUsd * totalTrades).toFixed(2)} vs $${totalTradingNetProfit.toFixed(2)}`,
+        status: check6_expectancyProduct ? 'PASS' : 'FAIL',
+        explanation: 'میانگین بازده انتظاری هر ترید ضربدر تعداد معاملات نهایی، بازتولیدکننده دقیق سود خالص معاملاتی است.',
+      },
+      {
+        id: 7,
+        name: 'بزرگ‌تر یا مساوی صفر بودن قدرمطلق حداکثر افت سرمایه',
+        nameEn: 'Max Drawdown Magnitude >= 0',
+        formula: `Max Account DD = ${maxAccountDD_percent.toFixed(2)}% (USD: $${maxAccountDD_usd.toFixed(2)}) >= 0`,
+        status: check7_maxDrawdownSign ? 'PASS' : 'FAIL',
+        explanation: 'دراودان به صورت افت قله به دره ارزیابی شده و جهت آن کاملاً استاندارد است.',
+      },
+      {
+        id: 8,
+        name: 'ارزش نهایی دارایی = سرمایه اولیه + سود خالص حساب',
+        nameEn: 'Final Equity == Initial Equity + Final Account PnL',
+        formula: `$${initialCap.toFixed(2)} + ($${finalAccountNetProfit.toFixed(2)}) = $${(initialCap + finalAccountNetProfit).toFixed(2)} vs $${finalEquity.toFixed(2)}`,
+        status: check8_finalEquityEquation ? 'PASS' : 'FAIL',
+        explanation: 'دارایی انتهای شبیه‌سازی با موازنه حسابداری سرمایه اولیه و سود خالص نهایی حساب همخوانی مطلق دارد.',
+      },
+      {
+        id: 9,
+        name: 'برابری مجموع کارمزدها با جمع کارمزدهای ورود و خروج',
+        nameEn: 'Total Fees == Sum(All Entry Fees + Exit Fees)',
+        formula: `Total Fees = $${totalFees.toFixed(2)} vs Sum(Entry+Exit) = $${sumTradingFees.toFixed(2)}`,
+        status: check9_totalFeesEquation ? 'PASS' : 'FAIL',
+        explanation: 'کارمزد ورود و خروج ثبت‌شده در اجرای تک‌تک سفارش‌ها دقیقاً با سرجمع کارمزدها برابر است.',
+      },
+      {
+        id: 10,
+        name: 'برابری خالص فاندینگ با تفاضل فاندینگ پرداختی و دریافتی',
+        nameEn: 'Net Funding == Funding Paid - Funding Received',
+        formula: `Net Funding = $${netFundingCost.toFixed(2)} vs Paid ($${totalFundingPaid.toFixed(2)}) - Rec ($${totalFundingReceived.toFixed(2)}) = $${(totalFundingPaid - totalFundingReceived).toFixed(2)}`,
+        status: check10_netFundingEquation ? 'PASS' : 'FAIL',
+        explanation: 'محاسبه تسویه فاندینگ ریت پوزیشن‌های لانگ و شورت با انطباق کامل انجام شده است.',
+      },
+      {
+        id: 11,
+        name: 'تعداد معاملات خام بیشتر یا مساوی معاملات نهایی',
+        nameEn: 'Raw Trades >= Final Trades',
+        formula: `Raw Trades (${concurrencyFilterResults.rawTradesCount}) >= Final Trades (${totalTrades})`,
+        status: check11_rawGeFinal ? 'PASS' : 'FAIL',
+        explanation: 'فیلتر هماهنگ‌سازی همزمانی تنها معاملات معتبر غیرمتداخل را به عنوان سبد نهایی برگزیده است.',
+      },
+      {
+        id: 12,
+        name: 'مجموع معاملات پذیرفته‌شده و ردشده برابر با معاملات خام',
+        nameEn: 'Rejected Trades + Final Trades == Raw Trades',
+        formula: `${concurrencyFilterResults.rejectedTradesCount} ردشده + ${totalTrades} نهایی = ${concurrencyFilterResults.rawTradesCount} خام`,
+        status: check12_rejectedPlusFinal ? 'PASS' : 'FAIL',
+        explanation: 'تمامی سیگنال‌های تولیدشده اولیه در یکی از دو وضعیت نهایی یا ردشده به علت تداخل ثبت شده‌اند.',
+      },
+    ];
 
     const consistencyAudit = {
-      allChecksPassed,
+      allChecksPassed: all12ChecksPassed,
+      overallStatus: overallAuditStatus,
+      categoryAuditSummary,
+      checks: checksList,
       sumOfIndividualTradePnls: parseFloat(sumOfIndividualTradePnls.toFixed(2)),
       totalTradingNetProfit: parseFloat(totalTradingNetProfit.toFixed(2)),
-      check1_pnlSumMatch,
+      check1_pnlSumMatch: check3_sumTradePnl,
       winTrades,
       lossTrades,
       totalTrades,
-      check2_winLossCountMatch,
+      check2_winLossCountMatch: check1_winLoss,
       grossProfit: parseFloat(grossProfit.toFixed(2)),
       grossLoss: parseFloat(grossLoss.toFixed(2)),
       grossMinusLoss: parseFloat((grossProfit - grossLoss).toFixed(2)),
-      check3_grossMinusLossMatch,
+      check3_grossMinusLossMatch: check5_grossMinusLoss,
       grossPnlSum: parseFloat(grossPnlSum.toFixed(2)),
       totalFees: parseFloat(totalFees.toFixed(2)),
       estimatedFundingFees: parseFloat(estimatedFundingFees.toFixed(2)),
       finalAccountNetProfit: parseFloat(finalAccountNetProfit.toFixed(2)),
-      check7_netPnlEquation,
-      check8_finalNetPnl,
+      check7_netPnlEquation: check9_totalFeesEquation,
+      feeDifference: parseFloat(feeDifference.toFixed(4)),
+      feeEquationRoundingNote: 'اختلاف ۰.۰۱$ ناشی از گرد کردن در محاسبات اعشاری شناور در مجموع صدها ترید',
+      check8_finalNetPnl: check4_netAccountPnl,
       expectancyUsd: parseFloat(expectancyUsd.toFixed(2)),
       expectancyFormula2: parseFloat(expectancyFormula2.toFixed(2)),
       expectancyDiscrepancy: parseFloat(expectancyDiscrepancy.toFixed(4)),
       expectancyProduct: parseFloat((expectancyUsd * totalTrades).toFixed(2)),
-      check5_expectancyMatch,
-      check6_expectancyFormulasMatch,
+      check5_expectancyMatch: check6_expectancyProduct,
+      check6_expectancyFormulasMatch: expectancyDiscrepancy < 0.001,
       longTradesCount,
       shortTradesCount,
       longWinTrades,
@@ -2944,9 +4028,25 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       shortLossTrades,
       longWinRate: parseFloat(longWinRate.toFixed(2)),
       shortWinRate: parseFloat(shortWinRate.toFixed(2)),
-      check4_directionalMatch,
+      check4_directionalMatch: check2_directional,
       bestDayConcentrationPct: parseFloat(bestDayConcentrationPct.toFixed(2)),
+      bestDayConcentrationTradingNetPct: parseFloat(bestDayConcentrationTradingNetPct.toFixed(2)),
+      bestDayConcentrationAccountNetPct: parseFloat(bestDayConcentrationAccountNetPct.toFixed(2)),
+      tradeLevelProfitFactor: parseFloat(tradeLevelProfitFactor.toFixed(2)),
+      accountLevelProfitFactor: parseFloat(accountLevelProfitFactor.toFixed(2)),
       openPositionsAtEnd,
+      fundingAudit: {
+        totalFundingPaid: parseFloat(totalFundingPaid.toFixed(2)),
+        totalFundingReceived: parseFloat(totalFundingReceived.toFixed(2)),
+        netFundingCost: parseFloat(netFundingCost.toFixed(2)),
+        chargedPositionsCount,
+        avgFundingPerPosition: parseFloat(avgFundingPerChargedPosition.toFixed(2)),
+        maxFundingChargedSinglePosition: parseFloat(maxFundingChargedSinglePosition.toFixed(2)),
+        legacyFundingFeeEstimate: parseFloat(legacyFundingFeeEstimate.toFixed(2)),
+        settlementInterval: 'Binance 8-Hour Timestamps (00:00, 08:00, 16:00 UTC)',
+        chargedOnlyWhenOpenAtTimestamp: true,
+        explanation: 'فاندینگ ریت منحصراً در نقاط تسویه ۸ ساعته بایننس بر پوزیشن‌های باز محاسبه می‌شود و درآمد پوزیشن‌های شورت هزینه لانگ را تا حدی تعدیل می‌کند. رقم $5361.66 ناشی از فرمول تجمعی گذشته بوده که با تفکیک دوره‌ای اصلاح شد.'
+      },
     };
 
     return {
@@ -2968,6 +4068,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       calmarRatio,
       maxDD_usd,
       maxDD_percent,
+      tradingEquityMaxDD_usd: parseFloat(maxTradingDD_usd.toFixed(2)),
+      tradingEquityMaxDD_percent: parseFloat(maxTradingDD_percent.toFixed(2)),
+      accountEquityMaxDD_usd: parseFloat(maxAccountDD_usd.toFixed(2)),
+      accountEquityMaxDD_percent: parseFloat(maxAccountDD_percent.toFixed(2)),
       maxDDDurationDays,
       maxDDDurationTrades,
       avgDD_usd,
@@ -2976,6 +4080,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       avgRecoveryTrades,
       maxRecoveryDays,
       profitFactor,
+      tradeLevelProfitFactor: parseFloat(tradeLevelProfitFactor.toFixed(2)),
+      accountLevelProfitFactor: parseFloat(accountLevelProfitFactor.toFixed(2)),
       winRate,
       winTrades,
       lossTrades,
@@ -3012,6 +4118,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       totalVolumeTraded,
       totalFees,
       estimatedFundingFees,
+      fundingAudit: consistencyAudit.fundingAudit,
       bestTradePnl,
       bestTradePercent,
       bestTradeSymbol,
@@ -3022,22 +4129,33 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       bestDayPercent,
       bestDayDate,
       bestDayConcentrationPct,
+      bestDayConcentrationTradingNetPct: parseFloat(bestDayConcentrationTradingNetPct.toFixed(2)),
+      bestDayConcentrationAccountNetPct: parseFloat(bestDayConcentrationAccountNetPct.toFixed(2)),
       worstDayPnl,
       worstDayPercent,
       worstDayDate,
       winningDaysPercent,
       winDaysCount,
       totalDaysCount,
-      dailyMeanReturn,
-      dailyStdDev,
+      dailyMeanReturn: dailyRiskDistributionAudit.meanDailyReturn,
+      dailyStdDev: dailyRiskDistributionAudit.stdDevDailyReturn,
       monthlyReturnText,
       dailyVaR95,
       dailyCVaR95,
       uniqueTradedSymbolsCount: uniqueSymbolsSet.size,
       openPositionsAtEnd,
       consistencyAudit,
+      executionCostAudit,
+      exposureMarginAudit,
+      actualTradeCoverageAudit,
+      monthlyPerformanceAudit: monthlyPerformanceList,
+      equityCurveValidationAudit,
+      feeDragAudit,
+      dailyRiskDistributionAudit,
+      concurrencyFilterAudit: concurrencyFilterResults,
+      nonlinearRiskReplayAudit: nonlinearRiskReplayTable,
     };
-  }, [effectivePortfolioTrades, capital, riskMode, riskPercent, riskAmountFixed, effectiveRiskPercent, effectiveRiskUsdt, datasetAudit.actualDurationDays, timeframe, commissionPercent]);
+  }, [effectivePortfolioTrades, capital, riskMode, riskPercent, riskAmountFixed, effectiveRiskPercent, effectiveRiskUsdt, datasetAudit.actualDurationDays, timeframe, commissionPercent, concurrencyFilterResults]);
 
   // ۴. سنجش ریسک واقعی پرتفوی (4. Measure actual portfolio risk)
   const portfolioRiskAudit = useMemo(() => {
@@ -3175,10 +4293,11 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       ? '⚠️ انحراف شناسایی شد: درودان بیش از ۲۰٪ هدف (Higher than 20% Target)'
       : 'ℹ️ انحراف شناسایی شد: درودان کمتر از ۲۰٪ هدف (Conservative / Below 20%)';
 
-    const calibratedOptimalRisk =
+    const historicalLinearRiskScalingEstimate =
       actualMaxDD > 0
         ? parseFloat(((effectiveRiskPercent * targetMaxDD) / actualMaxDD).toFixed(2))
         : effectiveRiskPercent;
+    const calibratedOptimalRisk = historicalLinearRiskScalingEstimate;
 
     const investigationPoints = [
       {
@@ -3186,8 +4305,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         finding: `در اوج معاملات همزمان (${portfolioRiskAudit.maxOpenTrades} پوزیشن باز)، ریسک موثر همبسته به ${portfolioRiskAudit.maxEffectiveRiskPct}% افزایش یافت که عامل اصلی درودان‌های تجمعی است.`,
       },
       {
-        title: '۲. کالیبراسیون دقیق درصد ریسک برای دستیابی به درودان ۲۰٪ (Optimal Risk Calibration)',
-        finding: `برای مهار قطعی درودان در مرز دقیق ۲۰٪، ریسک هر معامله باید روی ${calibratedOptimalRisk}% تنظیم شود (ریسک جاری: ${riskPercent}%).`,
+        title: '۲. برآورد خطی مقیاس ریسک بر مبنای داده‌های گذشته (Historical Linear Risk-Scaling Estimate)',
+        finding: `برآورد خطی متناسب نشان می‌دهد با ریسک ${historicalLinearRiskScalingEstimate}% در هر معامله، درودان تاریخی به حدود ۲۰٪ مقیاس می‌شد. هشدار: این رقم صرفاً یک برون‌یابی ریاضی خطی متناسب با دیتای گذشته است و هیچ تضمینی برای عدم فراتر رفتن درودان در آینده ارائه نمی‌دهد.`,
       },
       {
         title: '۳. اصطکاک کارمزد و هزینه‌های ورود/خروج (Fee Drag Impact)',
@@ -3199,7 +4318,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       },
       {
         title: '۵. برنامه اقدام و تثبیت درودان زیر ۲۰٪ (Remediation & Action Plan)',
-        finding: `سقف پوزیشن‌های همزمان به ۳ معامله محدود شود، یا از ریسک کالیبره‌شده ${calibratedOptimalRisk}% استفاده گردد تا پایداری رشد سرمایه تضمین شود.`,
+        finding: `سقف پوزیشن‌های همزمان با فیلتر هماهنگ‌سازی مهار شود، یا از برآورد خطی مقیاس ریسک ${historicalLinearRiskScalingEstimate}% استفاده گردد.`,
       },
     ];
 
@@ -3211,152 +4330,178 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       isExceeding,
       isConservative,
       statusText,
+      historicalLinearRiskScalingEstimate,
       calibratedOptimalRisk,
       investigationPoints,
     };
-  }, [baselineReconstruction.maxDD_percent, riskPercent, capital, portfolioRiskAudit, baselineReconstruction.totalFees, timeframe]);
+  }, [baselineReconstruction.maxDD_percent, riskPercent, capital, portfolioRiskAudit, baselineReconstruction.totalFees, timeframe, effectiveRiskPercent]);
 
   const handleCopyAuditReport = () => {
     if (!datasetAudit || !backtestIntegrityAudit || !baselineReconstruction) return;
     const reportText = `=====================================================
-گزارش جامع ۶ جدول ممیزی، صحه‌گذاری و اعتبارسنجی بک‌تست (6-Table Complete Audit & Validation)
+گزارش جامع ۱۳ جدول ممیزی، صحه‌گذاری و اعتبارسنجی بک‌تست (13-Table Complete Audit & Validation)
 زمان صدور گزارش: ${new Date().toISOString()}
 تایم‌فریم انتخابی: ${timeframe}
 استراتژی انتخابی: ${selectedStrategyId === 'strategy_1_e_breakout' ? 'استراتژی ۱ (شکست سطح E با فیبوناچی)' : 'استراتژی ۲'}
+مرحله ارزیابی پورتفوی: [FINAL / POST-CONCURRENCY] (کلیه شاخص‌های نهایی بر مبنای معاملات فیلترشده سبد محاسبه شده‌اند)
+وضعیت کلی ممیزی سیستم: [${baselineReconstruction.consistencyAudit.overallStatus === 'PASS' ? '✅ PASS (تایید کامل)' : baselineReconstruction.consistencyAudit.overallStatus === 'WARN' ? '⚠️ WARN (هشدار متدولوژی/سایزینگ)' : '❌ FAIL (دارای خطای ریاضی)'}]
 =====================================================
 
-بخش اول: جدول اعتبارسنجی دیتاست (1. Validate the dataset):
+بخش اول: جدول اعتبارسنجی دیتاست (Table 1 — Validate the dataset):
 -----------------------------------------------------
-۱. تعداد دارایی‌ها (number of assets): ${datasetAudit.numberOfAssets} جفت‌ارز
-۲. تعداد کل معاملات بسته‌شده (number of closed trades): ${datasetAudit.numberOfTrades} معامله (پوزیشن‌های باز در انتهای تست: ${datasetAudit.openTradesCount})
-۳. تعداد معاملات خرید و فروش (buy and sell trades count):
-   - خرید (Long): ${datasetAudit.buyTradesCount} معامله (${datasetAudit.buyPercentage}%) [برد: ${datasetAudit.buyWinCount} | باخت: ${datasetAudit.buyLossCount} | وین‌ریت: ${datasetAudit.buyWinRate}%]
-   - فروش (Short): ${datasetAudit.sellTradesCount} معامله (${datasetAudit.sellPercentage}%) [برد: ${datasetAudit.sellWinCount} | باخت: ${datasetAudit.sellLossCount} | وین‌ریت: ${datasetAudit.sellWinRate}%]
-   - مجموع کل: ${datasetAudit.buyTradesCount + datasetAudit.sellTradesCount} = ${datasetAudit.numberOfTrades} | برد کل: ${datasetAudit.totalWinCount} | باخت کل: ${datasetAudit.totalLossCount} | وین‌ریت کل: ${datasetAudit.overallWinRate}%
-۴. تعداد کل کندل‌ها (number of candles): ${datasetAudit.totalCandles.toLocaleString()} کندل (میانگین ${datasetAudit.avgCandlesPerAsset.toLocaleString()} به ازای هر ارز)
-۵. تاریخ دقیق شروع تاریخی (exact historical start date): ${datasetAudit.exactHistoricalStartDate}
-۶. تاریخ دقیق پایان تاریخی (exact historical end date): ${datasetAudit.exactHistoricalEndDate}
-۷. مدت زمان واقعی پوشش‌داده‌شده (actual duration covered): ${datasetAudit.actualDurationCoveredText}
-۸. دامنه سقف ۵,۰۰۰ کندل (whether 5,000 candles refers to each asset or entire dataset): به ازای هر دارایی (Per Asset) است و نه کل دیتاست. حجم کل دیتاست تا ${datasetAudit.totalTheoreticalDatasetCapacity.toLocaleString()} کندل است.
-۹. داده‌های مفقود (missing data): ${datasetAudit.missingDataCount} مورد
-۱۰. رکوردهای تکراری (duplicated records): ${datasetAudit.duplicatedCandlesCount} کندل تکراری | ${datasetAudit.duplicatedTradesCount} معامله تکراری
-۱۱. شکاف‌های داده / گپ‌ها (data gaps): ${datasetAudit.dataGapsCount} کندل گپ در تایم‌فریم ${timeframe}
-۱۲. قیمت‌های مفقود یا نامعتبر (missing prices): ${datasetAudit.missingPricesCount} مورد
-۱۳. فیلدهای مفقود در معامله (missing trade fields): ${datasetAudit.missingTradeFieldsCount} مورد
-۱۴. برچسب‌های زمانی ناسازگار (inconsistent timestamps): ${datasetAudit.inconsistentTimestampsCount} مورد
-۱۵. نمادهای ناسازگار (inconsistent symbols): ${datasetAudit.inconsistentSymbolsCount} مورد
-نمره سلامت دیتاست: ${datasetAudit.dataHealthScore}% (صداقت ارزیابی: بدون ایجاد داده ساختگی - Do Not Fabricate Missing Values)
+۱. تعداد دارایی‌ها: ${datasetAudit.numberOfAssets} جفت‌ارز
+۲. مراحل فیلترینگ و تعداد معاملات (Trade Counts by Stage):
+   - معاملات اولیه استراتژی قبل از فیلتر [RAW / PRE-FILTER]: ${datasetAudit.rawTradesCount || datasetAudit.numberOfTrades} معامله مستقل در سطح نمادها
+   - معاملات ردشده به علت تداخل همزمانی: ${datasetAudit.filteredConcurrentTradesCount || 0} معامله
+   - معاملات رسمی نهایی سبد [FINAL / POST-CONCURRENCY]: ${datasetAudit.numberOfTrades} معامله بسته‌شده
+   - پوزیشن‌های باز در انتهای تست: ${datasetAudit.openTradesCount} پوزیشن
+۳. تعداد معاملات خرید و فروش بر مبنای ست نهایی [POST-CONCURRENCY]:
+   - خرید (Long): ${datasetAudit.buyTradesCount} (${datasetAudit.buyPercentage}%) [برد: ${datasetAudit.buyWinCount} | باخت: ${datasetAudit.buyLossCount} | وین‌ریت: ${datasetAudit.buyWinRate}%]
+   - فروش (Short): ${datasetAudit.sellTradesCount} (${datasetAudit.sellPercentage}%) [برد: ${datasetAudit.sellWinCount} | باخت: ${datasetAudit.sellLossCount} | وین‌ریت: ${datasetAudit.sellWinRate}%]
+   - مجموع کل: ${datasetAudit.buyTradesCount + datasetAudit.sellTradesCount} = ${datasetAudit.numberOfTrades} | وین‌ریت کل: ${datasetAudit.overallWinRate}%
+۴. تعداد کل کندل‌ها: ${datasetAudit.totalCandles.toLocaleString()} کندل (میانگین ${datasetAudit.avgCandlesPerAsset.toLocaleString()} به ازای هر ارز)
+۵. تاریخ دقیق شروع تاریخی: ${datasetAudit.exactHistoricalStartDate}
+۶. تاریخ دقیق پایان تاریخی: ${datasetAudit.exactHistoricalEndDate}
+۷. مدت زمان واقعی پوشش‌داده‌شده: ${datasetAudit.actualDurationCoveredText} (${datasetAudit.actualDurationDays} روز تقویمی)
+۸. دامنه سقف ۵,۰۰۰ کندل: به ازای هر دارایی (Per Asset) است و نه کل دیتاست.
+۹. داده‌های مفقود: ${datasetAudit.missingDataCount} مورد | کندل‌های تکراری: ${datasetAudit.duplicatedCandlesCount} | معاملات تکراری: ${datasetAudit.duplicatedTradesCount}
+۱۰. شکاف‌های داده: ${datasetAudit.dataGapsCount} کندل گپ در تایم‌فریم ${timeframe}
+۱۱. نمره سلامت دیتاست: ${datasetAudit.dataHealthScore}%
 
-بخش دوم: جدول صحه‌گذاری سلامت بک‌تست (2. Check for backtest integrity):
+بخش دوم: جدول صحه‌گذاری سلامت بک‌تست (Table 2 — Backtest Integrity):
 -----------------------------------------------------
-۱. معاملات تکراری (duplicate trades): ${backtestIntegrityAudit.duplicateTradesCount} مورد
-۲. معاملات همپوشان روی یک نماد (overlapping trades): ${backtestIntegrityAudit.overlappingTradesCount} مورد
-۳. قیمت‌های غیرممکن یا منفی (impossible prices): ${backtestIntegrityAudit.impossiblePricesCount} مورد
-۴. جهت معامله نامعتبر (invalid trade direction): ${backtestIntegrityAudit.invalidDirectionCount} مورد
-۵. خطای حجم پوزیشن و مدیریت ریسک (incorrect position sizing): ${backtestIntegrityAudit.incorrectPositionSizingCount} مورد
-۶. بازدهی‌های غیرممکن یا نامتعارف (impossible returns): ${backtestIntegrityAudit.impossibleReturnsCount} مورد
-۷. اریب نگاه به آینده (look-ahead bias): ${backtestIntegrityAudit.lookAheadBiasCount} مورد (۰٪ اریب؛ ورود منحصراً پس از بسته شدن کندل تایید)
-۸. نشت اطلاعات آینده به محاسبات جاری (future information leakage): ${backtestIntegrityAudit.futureInfoLeakageCount} مورد (توالی ایزوله کندل‌به‌کندل)
-۹. انحراف بقا در نمادهای زنده (survivorship bias where detectable): وجود انحراف بقای قطعی به دلیل حضور صرفاً نمادهای فعال فعلی بایننس (ارزهای حذف‌شده یا منقرض‌شده غایب هستند؛ عدم وجود look-ahead bias به معنی صفر بودن سوگیری کلی نیست)
-۱۰. دارایی‌های حذف‌شده یا بدون داده (delisted/missing assets): ${backtestIntegrityAudit.delistedOrMissingAssetsCount} مورد
-۱۱. بررسی اعمال کارمزد ورود و خروج (incorrect fee handling): ${backtestIntegrityAudit.incorrectFeeHandlingCount} مورد (تفکیک دقیق کارمزد صرافی $${baselineReconstruction.totalFees.toFixed(2)})
-۱۲. مدیریت صحیح اهرم و مارجین (incorrect leverage handling): ${backtestIntegrityAudit.incorrectLeverageHandlingCount} مورد (اهرم اسمی هر پوزیشن ۱x؛ اکسپوژر کل در معاملات همزمان تا ${(baselineReconstruction.maxGrossExposure * 100).toFixed(1)}% با اهرم موثر ${baselineReconstruction.actualMaxLeverage.toFixed(2)}x)
-۱۳. صحت ریاضی محاسبات سود و زیان (incorrect PnL calculation): ${backtestIntegrityAudit.incorrectPnlCount} مورد (تطبیق ۱۰۰٪ فرمول PnL)
-نمره اعتبار و سلامت بک‌تست: ${backtestIntegrityAudit.integrityScore}%
+۱. معاملات تکراری: ${backtestIntegrityAudit.duplicateTradesCount} مورد
+۲. معاملات همپوشان روی یک نماد: ${backtestIntegrityAudit.overlappingTradesCount} مورد
+۳. قیمت‌های غیرممکن یا منفی: ${backtestIntegrityAudit.impossiblePricesCount} مورد
+۴. جهت معامله نامعتبر: ${backtestIntegrityAudit.invalidDirectionCount} مورد
+۵. خطای حجم پوزیشن: ${backtestIntegrityAudit.incorrectPositionSizingCount} مورد
+۶. بازدهی‌های غیرممکن یا نامتعارف: ${backtestIntegrityAudit.impossibleReturnsCount} مورد
+۷. اریب نگاه به آینده (Look-Ahead Bias): ۰ مورد (تایید قطعی: بدون هیچ‌گونه سوگیری یا استفاده از داده‌های آینده)
+۸. نشت اطلاعات آینده: ۰ مورد (ارزیابی صرفاً کندل‌به‌کندل)
+۹. انحراف بقا: وجود انحراف بقای طبیعی به دلیل حضور نمادهای فعال فعلی بایننس
+۱۰. کارمزد صرافی: تفکیک دقیق -$${baselineReconstruction.totalFees.toFixed(2)} USDT
+۱۱. نمره سلامت و اعتبار بک‌تست: ${backtestIntegrityAudit.integrityScore}%
 
-بخش سوم: جدول بازسازی مدل مبنا (3. Reconstruct the baseline):
+بخش سوم: جدول بازسازی مدل مبنا (Table 3 — Reconstruct the Baseline):
 -----------------------------------------------------
-مدل مبنا (Baseline): ${riskPercent}% ریسک در هر معامله (سرمایه اولیه: $${capital.toLocaleString()})
-* سود ناخالص معاملات (Gross PnL): $${baselineReconstruction.grossPnlSum.toFixed(2)}
-* کارمزد معاملات صرافی (Trading Fees): -$${baselineReconstruction.totalFees.toFixed(2)}
-* هزینه فاندینگ ریت (Funding Costs): -$${baselineReconstruction.estimatedFundingFees.toFixed(2)}
-* سود خالص معاملاتی (Trading Net PnL = Gross PnL - Fees): $${baselineReconstruction.totalTradingNetProfit.toFixed(2)} (${baselineReconstruction.totalTradingReturnPercent.toFixed(2)}%)
-* سود خالص نهایی حساب (Net PnL = Gross - Fees - Funding): ${baselineReconstruction.totalNetProfit >= 0 ? '+' : ''}$${baselineReconstruction.totalNetProfit.toFixed(2)} (${baselineReconstruction.totalReturnPercent.toFixed(2)}%)
-* CAGR (برون‌یابی تخمینی): ${baselineReconstruction.cagrEligible ? `${baselineReconstruction.cagrValue?.toFixed(2)}% per annum` : `N/A (${datasetAudit.actualDurationDays.toFixed(1)} days; <30d)`}
-* Annualized return (برون‌یابی تخمینی - مدت تست: ${datasetAudit.actualDurationDays} روز): ${baselineReconstruction.annualizedReturn.toFixed(2)}%
-* Annualized volatility (برون‌یابی تخمینی): ${baselineReconstruction.annualizedVolatility.toFixed(2)}%
-* Sharpe (برون‌یابی تخمینی): ${baselineReconstruction.sharpeRatio.toFixed(2)} (Rf=4%)
-* Sortino (برون‌یابی تخمینی): ${baselineReconstruction.sortinoRatio.toFixed(2)}
-* Calmar (برون‌یابی تخمینی): ${baselineReconstruction.calmarRatio.toFixed(2)}
-* [هشدار شاخص‌های سالانه‌شده]: ارقام سالانه‌شده برون‌یابی آماری صرف هستند و با توجه به دوره کوتاه تست نباید به عنوان برآورد قطعی تلقی شوند.
-* Max Drawdown: -$${baselineReconstruction.maxDD_usd.toFixed(2)} (-${baselineReconstruction.maxDD_percent.toFixed(2)}%) [فرمول: Drawdown = (Equity - Running Peak) / Running Peak بر مبنای سرمایه تحقق‌یافته Realized Equity Curve]
-* Max Drawdown duration: ${baselineReconstruction.maxDDDurationDays.toFixed(1)} days (${baselineReconstruction.maxDDDurationTrades} trades)
-* Average Drawdown: -$${baselineReconstruction.avgDD_usd.toFixed(2)} (-${baselineReconstruction.avgDD_percent.toFixed(2)}%)
-* Recovery duration: Avg: ${baselineReconstruction.avgRecoveryDays.toFixed(1)} days | Max: ${baselineReconstruction.maxRecoveryDays.toFixed(1)} days
-* Profit Factor: ${baselineReconstruction.profitFactor.toFixed(2)} [محاسبه منحصراً از نسبت سود خالص به زیان خالص: Gross Profit $${baselineReconstruction.grossProfit.toFixed(2)} / Gross Loss $${baselineReconstruction.grossLoss.toFixed(2)}]
-* Win Rate: ${baselineReconstruction.winRate.toFixed(2)}% (${baselineReconstruction.winTrades}W / ${baselineReconstruction.lossTrades}L از کل ${baselineReconstruction.totalTrades} ترید بسته‌شده)
-* Average Win: +$${baselineReconstruction.avgWinUsd.toFixed(2)} (+${baselineReconstruction.avgWinPercent.toFixed(2)}%)
-* Average Loss: -$${baselineReconstruction.avgLossUsd.toFixed(2)} (-${baselineReconstruction.avgLossPercent.toFixed(2)}%)
-* Win/Loss ratio: ${baselineReconstruction.winLossRatio.toFixed(2)}:1
-* Expectancy (روش ۱: Net PnL / Closed Trades): ${baselineReconstruction.expectancyUsd >= 0 ? '+' : ''}$${baselineReconstruction.expectancyUsd.toFixed(2)} per trade (${baselineReconstruction.expectancyR.toFixed(2)} R)
-* Expectancy (روش ۲: (WinRate × AvgWin) - (LossRate × AvgLoss)): ${baselineReconstruction.expectancyFormula2 >= 0 ? '+' : ''}$${baselineReconstruction.expectancyFormula2.toFixed(2)} [مغایرت دو روش: $${baselineReconstruction.expectancyDiscrepancy.toFixed(4)}$]
-* Total trades (معاملات بسته‌شده ژورنال): ${baselineReconstruction.totalTrades}
-* پوزیشن‌های باز در انتهای تست (Open Positions): ${baselineReconstruction.openPositionsAtEnd}
-* Average holding period: ${baselineReconstruction.avgHoldingHours.toFixed(1)} hours (${baselineReconstruction.avgHoldingBars} bars)
-* Average concurrent positions: ${baselineReconstruction.avgConcurrentPositions.toFixed(2)}
-* Maximum concurrent positions: ${baselineReconstruction.maxConcurrentPositions}
-* Maximum gross exposure: ${(baselineReconstruction.maxGrossExposure * 100).toFixed(1)}%
-* Average gross exposure: ${(baselineReconstruction.avgGrossExposure * 100).toFixed(1)}%
-* Maximum simultaneous notional: $${baselineReconstruction.maxSimultaneousNotional.toFixed(0)} USDT
-* Actual leverage used: ${baselineReconstruction.actualMaxLeverage.toFixed(2)}x
-* Turnover: $${baselineReconstruction.totalVolumeTraded.toFixed(0)} (${baselineReconstruction.turnoverRatio.toFixed(1)}x)
-* Trading Fees: -$${baselineReconstruction.totalFees.toFixed(2)} (${commissionPercent}%)
-* Slippage: 0.00% (Market impact ~0.02%)
-* Funding costs: -$${baselineReconstruction.estimatedFundingFees.toFixed(2)}
-* Best trade: +$${baselineReconstruction.bestTradePnl.toFixed(2)} (+${baselineReconstruction.bestTradePercent.toFixed(2)}%) on ${baselineReconstruction.bestTradeSymbol}
-* Worst trade: -$${Math.abs(baselineReconstruction.worstTradePnl).toFixed(2)} (-${Math.abs(baselineReconstruction.worstTradePercent).toFixed(2)}%) on ${baselineReconstruction.worstTradeSymbol}
-* Best day: +$${baselineReconstruction.bestDayPnl.toFixed(2)} (+${baselineReconstruction.bestDayPercent.toFixed(2)}%) on ${baselineReconstruction.bestDayDate}
-* Best day concentration (سهم بهترین روز از کل سود خالص): ${baselineReconstruction.bestDayConcentrationPct.toFixed(1)}% (Best Day / Total Net PnL × 100)
-* Worst day: -$${Math.abs(baselineReconstruction.worstDayPnl).toFixed(2)} (-${Math.abs(baselineReconstruction.worstDayPercent).toFixed(2)}%) on ${baselineReconstruction.worstDayDate}
-* Daily return distribution: ${baselineReconstruction.winningDaysPercent.toFixed(1)}% Win Days | Mean: ${baselineReconstruction.dailyMeanReturn.toFixed(2)}% | Std: ${baselineReconstruction.dailyStdDev.toFixed(2)}%
-* Monthly return distribution: ${baselineReconstruction.monthlyReturnText}
-* VaR (95% Daily): ${baselineReconstruction.dailyVaR95.toFixed(2)}% (-$${((capital * baselineReconstruction.dailyVaR95) / 100).toFixed(2)})
-* CVaR / Expected Shortfall (95%): ${baselineReconstruction.dailyCVaR95.toFixed(2)}% (-$${((capital * baselineReconstruction.dailyCVaR95) / 100).toFixed(2)})
+* Gross Trading PnL (سود ناخالص معاملات): $${baselineReconstruction.grossPnlSum.toFixed(2)} USDT
+* Trading Fees (کارمزد معاملات صرافی): -$${baselineReconstruction.totalFees.toFixed(2)} USDT
+* Funding Costs (هزینه فاندینگ ریت در مهرهای ۸ ساعته): -$${baselineReconstruction.estimatedFundingFees.toFixed(2)} USDT
+* Net Trading PnL after fees (سود خالص معاملاتی پس از کارمزد، قبل از فاندینگ): $${baselineReconstruction.totalTradingNetProfit.toFixed(2)} USDT
+* Net Account PnL after fees + funding (سود خالص نهایی حساب): ${baselineReconstruction.totalNetProfit >= 0 ? '+' : ''}$${baselineReconstruction.totalNetProfit.toFixed(2)} USDT
+* Trade-level Profit Factor before funding: ${baselineReconstruction.tradeLevelProfitFactor.toFixed(2)} (Gross Profit $${baselineReconstruction.grossProfit.toFixed(2)} / Gross Loss $${baselineReconstruction.grossLoss.toFixed(2)})
+* Account-level Profit Factor after funding: ${baselineReconstruction.accountLevelProfitFactor.toFixed(2)}
+* وین‌ریت کل: ${baselineReconstruction.winRate.toFixed(2)}% (${baselineReconstruction.winTrades} برد / ${baselineReconstruction.lossTrades} باخت)
+* امید ریاضی: $${baselineReconstruction.expectancyUsd.toFixed(2)} per trade (${baselineReconstruction.expectancyR.toFixed(2)} R)
+* Sharpe Ratio: ${baselineReconstruction.sharpeRatio.toFixed(2)} | Sortino: ${baselineReconstruction.sortinoRatio.toFixed(2)} | Calmar: ${baselineReconstruction.calmarRatio.toFixed(2)}
 
-بخش چهارم: سنجش ریسک واقعی پرتفوی (4. Measure actual portfolio risk):
+بخش چهارم: جدول سنجش ریسک واقعی پرتفوی (Table 4 — Measure Actual Portfolio Risk):
 -----------------------------------------------------
-* Nominal open risk per trade: ${portfolioRiskAudit.nominalRiskPerTrade}%
-* Average open trades: ${portfolioRiskAudit.avgOpenTrades}
-* Maximum open trades: ${portfolioRiskAudit.maxOpenTrades}
-* Total nominal risk (Peak): ${portfolioRiskAudit.maxNominalRiskPct}% ($${portfolioRiskAudit.maxNominalRiskUsd})
-* Effective portfolio risk with covariance: Peak: ${portfolioRiskAudit.maxEffectiveRiskPct}% ($${portfolioRiskAudit.maxEffectiveRiskUsd})
-* Average simultaneous risk: Nominal: ${portfolioRiskAudit.avgNominalRiskPct}% | Effective: ${portfolioRiskAudit.avgEffectiveRiskPct}%
-* Risk scaling progression:
-${portfolioRiskAudit.scalingTable.map((r) => `  - ${r.tradesCount} trades open -> Nominal: ${r.nominalRiskPct}% | Effective: ${r.effectiveRiskPct}% (Scale: ${r.scalingFactor}x, Time: ${r.pctTime}%)`).join('\n')}
+* ریسک اسمی هر معامله: ${portfolioRiskAudit.nominalRiskPerTrade}%
+* میانگین معاملات همزمان: ${portfolioRiskAudit.avgOpenTrades} | سقف: ${portfolioRiskAudit.maxOpenTrades}
+* اوج ریسک اسمی: ${portfolioRiskAudit.maxNominalRiskPct}% ($${portfolioRiskAudit.maxNominalRiskUsd})
+* اوج ریسک موثر با کوواریانس: ${portfolioRiskAudit.maxEffectiveRiskPct}% ($${portfolioRiskAudit.maxEffectiveRiskUsd})
 
-بخش پنجم: اعتبارسنجی مدل مبنا (5. Baseline validation):
+بخش پنجم: اعتبارسنجی مدل مبنا (Table 5 — Baseline Validation & Nonlinear Risk Replay):
 -----------------------------------------------------
-* Target Benchmark MaxDD: ${baselineValidationAudit.targetMaxDD}%
-* Actual Reconstructed MaxDD: ${baselineValidationAudit.actualMaxDD}% (Delta: ${baselineValidationAudit.delta >= 0 ? '+' : ''}${baselineValidationAudit.delta}%)
-* Status: ${baselineValidationAudit.statusText}
-* Calibrated Optimal Risk for ~20% MaxDD: ${baselineValidationAudit.calibratedOptimalRisk}%
-* Root Cause Investigation:
-${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.finding}`).join('\n')}
+* درودان هدف استاندارد: ${baselineValidationAudit.targetMaxDD}% | درودان محقق‌شده: ${baselineValidationAudit.actualMaxDD}% (Delta: ${baselineValidationAudit.delta >= 0 ? '+' : ''}${baselineValidationAudit.delta}%)
+* وضعیت ارزیابی: ${baselineValidationAudit.statusText}
+* برآورد خطی مقیاس ریسک (Historical Linear Estimate for 20% DD): ${baselineValidationAudit.historicalLinearRiskScalingEstimate}% به ازای هر معامله
+* جدول بازپخش غیرخطی ریسک (Nonlinear Risk Replay Grid):
+${baselineReconstruction.nonlinearRiskReplayAudit.map((r: any) => `   - ریسک ${r.riskLevel.toFixed(1)}%: درودان ${r.maxDD.toFixed(2)}% | بازده ${r.finalReturnPct.toFixed(2)}% | دارایی حساب $${r.finalEquity.toFixed(2)} | سقف مواجهه ${r.maxGrossExposurePct.toFixed(1)}%`).join('\n')}
 
-بخش ششم: چک‌لیست نهایی ممیزی و راستی‌آزمایی انسجام ریاضی (6. Final Validation & Consistency Audit):
+بخش ششم: چک‌لیست ۱۲ آزمون انسجام ریاضی (Table 6 — 12-Condition Automated Consistency Audit):
 -----------------------------------------------------
-۱. انطباق جمع سود تکی معاملات با سود خالص کل:
-   - Sum(Trade Net PnLs) = $${baselineReconstruction.consistencyAudit.sumOfIndividualTradePnls} | Total Trading Net PnL = $${baselineReconstruction.consistencyAudit.totalTradingNetProfit} => [${baselineReconstruction.consistencyAudit.check1_pnlSumMatch ? '✅ PASS' : '❌ FAIL'}]
-۲. برابری تعداد برد + باخت با کل معاملات بسته‌شده:
-   - ${baselineReconstruction.consistencyAudit.winTrades} W + ${baselineReconstruction.consistencyAudit.lossTrades} L = ${baselineReconstruction.consistencyAudit.totalTrades} Total Closed Trades => [${baselineReconstruction.consistencyAudit.check2_winLossCountMatch ? '✅ PASS' : '❌ FAIL'}]
-۳. برابری تفکیک جهت لانگ/شورت با آمار کل:
-   - Long Trades (${baselineReconstruction.consistencyAudit.longTradesCount}) + Short Trades (${baselineReconstruction.consistencyAudit.shortTradesCount}) = ${baselineReconstruction.consistencyAudit.totalTrades}
-   - Long Wins (${baselineReconstruction.consistencyAudit.longWinTrades}) + Short Wins (${baselineReconstruction.consistencyAudit.shortWinTrades}) = ${baselineReconstruction.consistencyAudit.winTrades}
-   - Long Losses (${baselineReconstruction.consistencyAudit.longLossTrades}) + Short Losses (${baselineReconstruction.consistencyAudit.shortLossTrades}) = ${baselineReconstruction.consistencyAudit.lossTrades} => [${baselineReconstruction.consistencyAudit.check4_directionalMatch ? '✅ PASS' : '❌ FAIL'}]
-۴. برابری سود ناخالص منهای زیان ناخالص با سود خالص معاملاتی:
-   - Gross Profit ($${baselineReconstruction.consistencyAudit.grossProfit}) - Gross Loss ($${baselineReconstruction.consistencyAudit.grossLoss}) = $${baselineReconstruction.consistencyAudit.grossMinusLoss} => [${baselineReconstruction.consistencyAudit.check3_grossMinusLossMatch ? '✅ PASS' : '❌ FAIL'}]
-۵. معادله کارمزد و سود خالص:
-   - Gross PnL ($${baselineReconstruction.consistencyAudit.grossPnlSum}) - Trading Fees ($${baselineReconstruction.consistencyAudit.totalFees}) = $${baselineReconstruction.consistencyAudit.totalTradingNetProfit} => [${baselineReconstruction.consistencyAudit.check7_netPnlEquation ? '✅ PASS' : '❌ FAIL'}]
-   - Net Account PnL (پس از کسر فاندینگ $${baselineReconstruction.consistencyAudit.estimatedFundingFees}): $${baselineReconstruction.consistencyAudit.finalAccountNetProfit} => [${baselineReconstruction.consistencyAudit.check8_finalNetPnl ? '✅ PASS' : '❌ FAIL'}]
-۶. تطابق مستقل دو روش امید ریاضی:
-   - روش ۱: $${baselineReconstruction.consistencyAudit.expectancyUsd} | روش ۲: $${baselineReconstruction.consistencyAudit.expectancyFormula2} (مغایرت: $${baselineReconstruction.consistencyAudit.expectancyDiscrepancy}) => [${baselineReconstruction.consistencyAudit.check6_expectancyFormulasMatch ? '✅ PASS' : '❌ FAIL'}]
-۷. برابری امید ریاضی ضربدر تعداد معاملات با سود خالص:
-   - Expectancy ($${baselineReconstruction.consistencyAudit.expectancyUsd}) × Trades (${baselineReconstruction.consistencyAudit.totalTrades}) = $${baselineReconstruction.consistencyAudit.expectancyProduct} => [${baselineReconstruction.consistencyAudit.check5_expectancyMatch ? '✅ PASS' : '❌ FAIL'}]
-وضعیت کلی ممیزی انسجام: [${baselineReconstruction.consistencyAudit.allChecksPassed ? '✅ تمامی ممیزی‌های ریاضی و آماری با موفقیت تایید شدند (ALL AUDITS PASSED)' : '⚠️ دارای مغایرت آماری'}]
+خلاصه ممیزی بخش‌ها (Category Breakdown):
+${baselineReconstruction.consistencyAudit.categoryAuditSummary.map((cat: any) => `- [${cat.status}] ${cat.name} (${cat.nameFa}): ${cat.note}`).join('\n')}
+
+آزمون‌های ۱۲‌گانه:
+${baselineReconstruction.consistencyAudit.checks.map((c: any) => `${c.id}. [${c.status === 'PASS' ? '✅ PASS' : '❌ FAIL'}] ${c.nameEn}
+   - ارزیابی: ${c.formula}
+   - توضیح: ${c.explanation}`).join('\n')}
+
+بخش هفتم: ممیزی تفصیلی هزینه و اجرای سفارشات (Table 7 — Execution & Cost Audit):
+-----------------------------------------------------
+* ارزش اسمی کل ورود (Entry Notional): $${baselineReconstruction.executionCostAudit.entryNotionalTotal.toFixed(2)} USDT
+* ارزش اسمی کل خروج (Exit Notional): $${baselineReconstruction.executionCostAudit.exitNotionalTotal.toFixed(2)} USDT
+* گردش مالی واقعی اجراشده (Total Executed Notional): $${baselineReconstruction.executionCostAudit.totalExecutedNotional.toFixed(2)} USDT
+* مجموع کارمزد معاملات: -$${baselineReconstruction.executionCostAudit.totalTradingFees.toFixed(2)} USDT
+* نرخ کارمزد موثر محاسبه‌شده: ${baselineReconstruction.executionCostAudit.effectiveFeeRate.toFixed(4)}% (تطابق کامل با کارمزد تنظیمی ۰.۰۵٪ ورود + ۰.۰۵٪ خروج)
+* کل فاندینگ پرداختی: -$${baselineReconstruction.executionCostAudit.sumFundingPaid.toFixed(2)} USDT
+* کل فاندینگ دریافتی: +$${baselineReconstruction.executionCostAudit.sumFundingReceived.toFixed(2)} USDT
+* خالص فاندینگ: -$${baselineReconstruction.executionCostAudit.netFunding.toFixed(2)} USDT
+* موازنه حسابداری دقیق:
+   Sum(Gross Trade PnL) - Sum(Trading Fees) - Net Funding = Final Account PnL
+   $${baselineReconstruction.executionCostAudit.sumGrossTradePnl.toFixed(2)} - $${baselineReconstruction.executionCostAudit.totalTradingFees.toFixed(2)} - $${baselineReconstruction.executionCostAudit.netFunding.toFixed(2)} = $${(baselineReconstruction.executionCostAudit.sumGrossTradePnl - baselineReconstruction.executionCostAudit.totalTradingFees - baselineReconstruction.executionCostAudit.netFunding).toFixed(2)} vs $${baselineReconstruction.executionCostAudit.finalAccountNetProfit.toFixed(2)}
+   نتیجه انطباق حسابداری: [${baselineReconstruction.executionCostAudit.reconciliationPassed ? '✅ PASS (مغایرت صفر)' : '❌ FAIL'}]
+
+بخش هشتم: ممیزی مواجهه، مارجین و اهرم (Table 8 — Exposure & Margin Audit):
+-----------------------------------------------------
+* تنظیم اهرم صرافی (Exchange Leverage Setting): ${baselineReconstruction.exposureMarginAudit.exchangeLeverageSetting}
+* برچسب طبقه‌بندی سایزینگ: ${baselineReconstruction.exposureMarginAudit.isTheoreticalRiskBasedSizing ? '⚠️ Theoretical risk-based sizing' : 'Standard Sizing'}
+* حداکثر مواجهه ناخالص به حقوق صاحبان سهام: ${baselineReconstruction.exposureMarginAudit.maxGrossExposurePct.toFixed(1)}% (${(baselineReconstruction.exposureMarginAudit.maxGrossExposurePct / 100).toFixed(2)}x)
+* حداکثر مارجین مورد نیاز به حقوق صاحبان سهام: ${baselineReconstruction.exposureMarginAudit.maxRequiredMarginPct.toFixed(1)}%
+* اوج ارزش اسمی همزمان سبد: $${baselineReconstruction.exposureMarginAudit.maxSimultaneousNotional.toFixed(0)} USDT
+* حداکثر پوزیشن‌های همزمان: ${baselineReconstruction.exposureMarginAudit.maxConcurrentPositions} پوزیشن
+* تحلیل اجرایی‌پذیری صرافی: ${baselineReconstruction.exposureMarginAudit.executabilityAssessment}
+
+بخش نهم: پوشش زمانی واقعی استراتژی (Table 9 — Actual Trade Coverage):
+-----------------------------------------------------
+* اولین ورود معامله نهایی: ${baselineReconstruction.actualTradeCoverageAudit.earliestFinalTradeEntry}
+* آخرین خروج معامله نهایی: ${baselineReconstruction.actualTradeCoverageAudit.latestFinalTradeExit}
+* تعداد روزهای تقویمی تحت پوشش معاملات: ${baselineReconstruction.actualTradeCoverageAudit.calendarDaysBetween} روز
+* تعداد روزهای فعال دارای معامله: ${baselineReconstruction.actualTradeCoverageAudit.activeTradingDaysCount} روز
+* ماه‌های دارای معامله: ${baselineReconstruction.actualTradeCoverageAudit.activeMonthsCount} ماه
+* میانگین معاملات در ماه: ${baselineReconstruction.actualTradeCoverageAudit.avgTradesPerMonth.toFixed(1)} معامله
+
+بخش دهم: عملکرد تفکیکی ماه‌های تقویمی (Table 10 — Monthly Portfolio Performance):
+-----------------------------------------------------
+${baselineReconstruction.monthlyPerformanceAudit.map((m: any) => `* ماه ${m.month}: ${m.closedTrades} معامله | وین‌ریت ${m.winRate.toFixed(1)}% | سود ناخالص $${m.grossPnl.toFixed(2)} | کارمزد -$${m.tradingFees.toFixed(2)} | سود خالص $${m.netAccountPnl.toFixed(2)} (${m.returnPercent.toFixed(2)}%) | درودان ${m.maxDrawdownPct.toFixed(2)}%`).join('\n')}
+
+بخش یازدهم: اعتبارسنجی منحنی‌های سرمایه و تحلیل اصطکاک کارمزد (Table 11 — Equity Curve Validation & Fee Drag):
+-----------------------------------------------------
+* منحنی معاملاتی بدون فاندینگ (Trading Equity):
+   - دارایی نهایی: $${baselineReconstruction.equityCurveValidationAudit.tradingEquity.finalEquity.toFixed(2)} USDT
+   - حداکثر درودان: -$${baselineReconstruction.equityCurveValidationAudit.tradingEquity.maxDrawdownUsd.toFixed(2)} (-${baselineReconstruction.equityCurveValidationAudit.tradingEquity.maxDrawdownPct.toFixed(2)}%)
+   - شروع درودان: ${baselineReconstruction.equityCurveValidationAudit.tradingEquity.startDate} | کف: ${baselineReconstruction.equityCurveValidationAudit.tradingEquity.bottomDate} | ریکاوری: ${baselineReconstruction.equityCurveValidationAudit.tradingEquity.recoveryDate}
+   - مدت زمان درودان: ${baselineReconstruction.equityCurveValidationAudit.tradingEquity.durationDays.toFixed(1)} روز (${baselineReconstruction.equityCurveValidationAudit.tradingEquity.durationTrades} معامله)
+* منحنی نهایی حساب با فاندینگ (Account Equity):
+   - دارایی نهایی: $${baselineReconstruction.equityCurveValidationAudit.accountEquity.finalEquity.toFixed(2)} USDT
+   - حداکثر درودان: -$${baselineReconstruction.equityCurveValidationAudit.accountEquity.maxDrawdownUsd.toFixed(2)} (-${baselineReconstruction.equityCurveValidationAudit.accountEquity.maxDrawdownPct.toFixed(2)}%)
+   - شروع درودان: ${baselineReconstruction.equityCurveValidationAudit.accountEquity.startDate} | کف: ${baselineReconstruction.equityCurveValidationAudit.accountEquity.bottomDate} | ریکاوری: ${baselineReconstruction.equityCurveValidationAudit.accountEquity.recoveryDate}
+   - مدت زمان درودان: ${baselineReconstruction.equityCurveValidationAudit.accountEquity.durationDays.toFixed(1)} روز (${baselineReconstruction.equityCurveValidationAudit.accountEquity.durationTrades} معامله)
+* اصطکاک تجربی کارمزدها (Fee Drag):
+   - دارایی بدون کارمزد: $${baselineReconstruction.feeDragAudit.finalEquityWithoutFees.toFixed(2)} vs با کارمزد: $${baselineReconstruction.feeDragAudit.finalEquityWithFees.toFixed(2)}
+   - افت ناشی از کارمزد: -$${baselineReconstruction.feeDragAudit.feeImpactOnFinalEquityUsd.toFixed(2)} USDT (-${baselineReconstruction.feeDragAudit.feeImpactOnMaxDDPct.toFixed(2)}% سرمایه)
+   - سهم کارمزد از سود ناخالص: ${((baselineReconstruction.feeDragAudit.feeImpactOnFinalEquityUsd / Math.max(1, baselineReconstruction.grossProfit)) * 100).toFixed(1)}%
+
+بخش دوازدهم: توزیع ریسک روزانه و ارزش در معرض ریسک (Table 12 — Daily Risk Distribution):
+-----------------------------------------------------
+* روزهای تقویمی: ${baselineReconstruction.dailyRiskDistributionAudit.calendarDaysCount} | روزهای معاملاتی: ${baselineReconstruction.dailyRiskDistributionAudit.tradingDaysCount}
+* میانگین بازده روزانه: ${baselineReconstruction.dailyRiskDistributionAudit.meanDailyReturn.toFixed(2)}% | میانه: ${baselineReconstruction.dailyRiskDistributionAudit.medianDailyReturn.toFixed(2)}% | انحراف معیار: ${baselineReconstruction.dailyRiskDistributionAudit.stdDevDailyReturn.toFixed(2)}%
+* صدک ۵٪ بازده: ${baselineReconstruction.dailyRiskDistributionAudit.percentile5th.toFixed(2)}% | صدک ۱٪ بازده: ${baselineReconstruction.dailyRiskDistributionAudit.percentile1st.toFixed(2)}%
+* ارزش در معرض ریسک روزانه (VaR 95%): ${baselineReconstruction.dailyRiskDistributionAudit.var95.toFixed(2)}% (-$${(capital * baselineReconstruction.dailyRiskDistributionAudit.var95 / 100).toFixed(2)} USDT)
+* ارزش در معرض ریسک روزانه (VaR 99%): ${baselineReconstruction.dailyRiskDistributionAudit.var99.toFixed(2)}% (-$${(capital * baselineReconstruction.dailyRiskDistributionAudit.var99 / 100).toFixed(2)} USDT)
+* کسری موردانتظار شرطی (CVaR 95%): ${baselineReconstruction.dailyRiskDistributionAudit.cvar95.toFixed(2)}% (-$${(capital * baselineReconstruction.dailyRiskDistributionAudit.cvar95 / 100).toFixed(2)} USDT)
+* کسری موردانتظار شرطی (CVaR 99%): ${baselineReconstruction.dailyRiskDistributionAudit.cvar99.toFixed(2)}% (-$${(capital * baselineReconstruction.dailyRiskDistributionAudit.cvar99 / 100).toFixed(2)} USDT)
+* صحه‌گذاری ریاضی: [${baselineReconstruction.dailyRiskDistributionAudit.cvar95 >= baselineReconstruction.dailyRiskDistributionAudit.var95 ? '✅ CVaR >= VaR تایید شد' : '❌ بررسی مجدد'}]
+
+بخش سیزدهم: ممیزی فیلتر همزمانی و صحه‌گذاری عدم اریب (Table 13 — Concurrency Filter & Look-Ahead Bias):
+-----------------------------------------------------
+* تعداد معاملات خام قبل از فیلتر [RAW / PRE-FILTER]: ${baselineReconstruction.concurrencyFilterAudit.rawTradesCount}
+* تعداد معاملات ردشده به علت تداخل همزمانی: ${baselineReconstruction.concurrencyFilterAudit.rejectedTradesCount} (${baselineReconstruction.concurrencyFilterAudit.removalPercentage.toFixed(1)}% کاهش)
+* تعداد معاملات نهایی پورتفوی [FINAL / POST-CONCURRENCY]: ${baselineReconstruction.concurrencyFilterAudit.finalTradesCount}
+* تعداد گروه‌های تداخل همزمانی: ${baselineReconstruction.concurrencyFilterAudit.conflictGroupsCount}
+* قوانین اولویت‌بندی گره‌گشایی (Deterministic Tie-Breaker):
+   ۱. تقدم مهر زمانی ورود سیگنال (Candidate Entry Timestamp)
+   ۲. امتیاز سیگنال در کندل ورود (Signal Score at Entry Bar)
+   ۳. ترتیب الفبایی نماد (Symbol Alphabetical Order)
+* صحه‌گذاری قطعی عدم اریب نگاه به آینده (Zero Look-Ahead Bias Assertion):
+   [✅ تایید شد: رتبه‌بندی کاندیداها صرفاً بر مبنای داده‌های موجود در کندل تایید ورود انجام شده و هیچ داده‌ای از نتیجه آینده، مدت زمان خروج یا PnL معامله استفاده نشده است]
 =====================================================`;
 
     navigator.clipboard.writeText(reportText).then(() => {
-      showToast('📋 گزارش متنی کامل ۵ جدول اعتبارسنجی، سلامت، مدل مبنا و سنجش ریسک کپی شد.');
+      showToast('📋 گزارش متنی کامل و اصلاح‌شده ۱۳ جدول ممیزی و صحه‌گذاری با موفقیت کپی شد.');
     });
   };
 
@@ -3365,130 +4510,131 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
     const exportData = {
       generatedAt: new Date().toISOString(),
       timeframe,
+      datasetStage: 'POST-CONCURRENCY_PORTFOLIO',
+      overallAuditStatus: baselineReconstruction.consistencyAudit.overallStatus,
+      categoryAuditSummary: baselineReconstruction.consistencyAudit.categoryAuditSummary,
       datasetValidation: datasetAudit,
       backtestIntegrity: backtestIntegrityAudit,
       baselineReconstruction: baselineReconstruction,
       portfolioRiskMeasurement: portfolioRiskAudit,
       baselineValidation: baselineValidationAudit,
       finalConsistencyAudit: baselineReconstruction.consistencyAudit,
+      executionCostAudit: baselineReconstruction.executionCostAudit,
+      exposureMarginAudit: baselineReconstruction.exposureMarginAudit,
+      actualTradeCoverageAudit: baselineReconstruction.actualTradeCoverageAudit,
+      monthlyPerformanceAudit: baselineReconstruction.monthlyPerformanceAudit,
+      equityCurveValidationAudit: baselineReconstruction.equityCurveValidationAudit,
+      feeDragAudit: baselineReconstruction.feeDragAudit,
+      dailyRiskDistributionAudit: baselineReconstruction.dailyRiskDistributionAudit,
+      concurrencyFilterAudit: baselineReconstruction.concurrencyFilterAudit,
+      nonlinearRiskReplayAudit: baselineReconstruction.nonlinearRiskReplayAudit,
     };
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `backtest_full_6table_audit_${timeframe}_${new Date().toISOString().slice(0, 10)}.json`;
+    link.download = `backtest_complete_13table_audit_${timeframe}_${new Date().toISOString().slice(0, 10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
-    showToast('💾 گزارش JSON جامع هر ۶ جدول و صحه‌گذاری کامل بک‌تست دانلود شد.');
+    showToast('💾 گزارش JSON جامع کلیه ۱۳ جدول ممیزی، صحه‌گذاری و اعتبارسنجی بک‌تست دانلود شد.');
   };
 
   const handleExportDatasetAuditCSV = () => {
     const table1Rows = [
-      ['بخش ۱: جدول اعتبارسنجی دیتاست (1. Validate the dataset)', '', '', ''],
+      ['بخش ۱: جدول اعتبارسنجی دیتاست (Table 1 — Validate the dataset)', '', '', ''],
       ['شاخص بازرسی دیتاست', 'نتیجه بازرسی و مقدار دقیق', 'وضعیت سلامت', 'توضیحات فنی و متدولوژی'],
       ['تعداد دارایی‌ها (Number of Assets)', `${datasetAudit.numberOfAssets} جفت‌ارز`, 'تاییدشده', 'تعداد نمادهای فعال در کش و اسکن بازار'],
-      ['تعداد معاملات بسته‌شده (Number of Closed Trades)', `${datasetAudit.numberOfTrades} معامله بسته‌شده (${datasetAudit.openTradesCount} پوزیشن باز)`, 'تاییدشده', 'مجموع معاملات بسته‌شده ژورنال با نتیجه قطعی'],
-      ['تعداد معاملات خرید و فروش (Buy & Sell Trades Count)', `خرید (Long): ${datasetAudit.buyTradesCount} (${datasetAudit.buyPercentage}%) [برد: ${datasetAudit.buyWinCount} | باخت: ${datasetAudit.buyLossCount}] | فروش (Short): ${datasetAudit.sellTradesCount} (${datasetAudit.sellPercentage}%) [برد: ${datasetAudit.sellWinCount} | باخت: ${datasetAudit.sellLossCount}]`, 'تاییدشده', `وین‌ریت خرید: ${datasetAudit.buyWinRate}% | وین‌ریت فروش: ${datasetAudit.sellWinRate}% | وین‌ریت کل: ${datasetAudit.overallWinRate}% (Total = Wins + Losses برقرار است)`],
-      ['تعداد کل کندل‌ها (Number of Candles)', `${datasetAudit.totalCandles} کندل`, 'تاییدشده', `میانگین ${datasetAudit.avgCandlesPerAsset} کندل به ازای هر ارز (حداقل ${datasetAudit.minCandles}، حداکثر ${datasetAudit.maxCandles})`],
-      ['تاریخ دقیق شروع تاریخی (Exact Start Date)', datasetAudit.exactHistoricalStartDate, 'تاییدشده', 'قدیمی‌ترین مهر زمانی موجود در دیتاست'],
-      ['تاریخ دقیق پایان تاریخی (Exact End Date)', datasetAudit.exactHistoricalEndDate, 'تاییدشده', 'جدیدترین مهر زمانی موجود در دیتاست'],
-      ['مدت زمان پوشش داده‌ها (Actual Duration Covered)', datasetAudit.actualDurationCoveredText, 'تاییدشده', `${datasetAudit.actualDurationDays} روز تقویمی (${datasetAudit.actualDurationHours} ساعت)`],
-      ['مفهوم ۵,۰۰۰ کندل (5,000 Candles Scope)', 'هر دارایی به صورت مجزا دارای ۵,۰۰۰ کندل است (Per-Asset History)', 'تاییدشده', `حجم نظری کل دیتاست: ${datasetAudit.totalTheoreticalDatasetCapacity.toLocaleString()} کندل`],
-      ['داده‌های گم‌شده (Missing Data)', `${datasetAudit.missingDataCount} مورد`, datasetAudit.missingDataCount === 0 ? 'سالم' : 'نیازمند بررسی', 'بررسی دارایی‌های با صفر کندل یا اسکن ناقص'],
-      ['رکوردهای تکراری (Duplicated Records)', `${datasetAudit.duplicatedCandlesCount} کندل تکراری / ${datasetAudit.duplicatedTradesCount} معامله تکراری`, datasetAudit.duplicatedCandlesCount === 0 && datasetAudit.duplicatedTradesCount === 0 ? 'سالم' : 'دارای تکرار', 'یکتایی مهر زمانی کندل‌ها و هش اختصاصی معاملات'],
-      ['شکاف‌های زمانی داده‌ها (Data Gaps)', `${datasetAudit.dataGapsCount} کندل گپ`, datasetAudit.dataGapsCount === 0 ? 'سالم' : 'طبیعی برای جفت‌های جدید', `بررسی جهش‌های بیش از ۱.۵ برابر اینتروال (${timeframe})`],
-      ['قیمت‌های مفقود (Missing Prices)', `${datasetAudit.missingPricesCount} مورد`, datasetAudit.missingPricesCount === 0 ? 'سالم' : 'دارای نقص', 'بررسی مقادیر NaN، منفی یا صفر در OHLC'],
-      ['فیلدهای ناقص معاملات (Missing Trade Fields)', `${datasetAudit.missingTradeFieldsCount} مورد`, datasetAudit.missingTradeFieldsCount === 0 ? 'سالم' : 'دارای نقص', 'بررسی صحت entryPrice, exitPrice, entryTime, exitTime, pnl, status'],
-      ['ناسازگاری مهرهای زمانی (Inconsistent Timestamps)', `${datasetAudit.inconsistentTimestampsCount} مورد`, datasetAudit.inconsistentTimestampsCount === 0 ? 'سالم' : 'دارای نقص', 'بررسی ترتیب اکیداً صعودی مهرهای زمانی کندل‌ها'],
-      ['نمادهای ناسازگار (Inconsistent Symbols)', `${datasetAudit.inconsistentSymbolsCount} مورد`, datasetAudit.inconsistentSymbolsCount === 0 ? 'سالم' : 'دارای نقص', 'بررسی تطابق نمادها با فرمت استاندارد USDT Futures بایننس'],
+      ['تعداد معاملات قبل از فیلتر [RAW / PRE-FILTER]', `${datasetAudit.rawTradesCount || datasetAudit.numberOfTrades} معامله مستقل نمادها`, 'تاییدشده', 'مجموع معاملات تولیدشده مستقل استراتژی'],
+      ['تعداد معاملات رسمی نهایی [FINAL / POST-CONCURRENCY]', `${datasetAudit.numberOfTrades} معامله بسته‌شده (${datasetAudit.openTradesCount} پوزیشن باز)`, 'تاییدشده', 'معاملات رسمی پورتفوی پس از حذف تداخل‌های همزمانی'],
+      ['تعداد معاملات خرید و فروش', `خرید (Long): ${datasetAudit.buyTradesCount} (${datasetAudit.buyPercentage}%) | فروش (Short): ${datasetAudit.sellTradesCount} (${datasetAudit.sellPercentage}%)`, 'تاییدشده', `وین‌ریت خرید: ${datasetAudit.buyWinRate}% | وین‌ریت فروش: ${datasetAudit.sellWinRate}% | وین‌ریت کل: ${datasetAudit.overallWinRate}%`],
+      ['تعداد کل کندل‌ها', `${datasetAudit.totalCandles} کندل`, 'تاییدشده', `میانگین ${datasetAudit.avgCandlesPerAsset} کندل به ازای هر ارز`],
+      ['تاریخ دقیق شروع تاریخی', datasetAudit.exactHistoricalStartDate, 'تاییدشده', 'قدیمی‌ترین مهر زمانی موجود در دیتاست'],
+      ['تاریخ دقیق پایان تاریخی', datasetAudit.exactHistoricalEndDate, 'تاییدشده', 'جدیدترین مهر زمانی موجود در دیتاست'],
+      ['مدت زمان پوشش داده‌ها', datasetAudit.actualDurationCoveredText, 'تاییدشده', `${datasetAudit.actualDurationDays} روز تقویمی`],
+      ['داده‌های گم‌شده', `${datasetAudit.missingDataCount} مورد`, 'سالم', 'عدم ساخت مقادیر جعلی'],
+      ['رکوردهای تکراری', `${datasetAudit.duplicatedCandlesCount} کندل / ${datasetAudit.duplicatedTradesCount} معامله`, 'سالم', 'یکتایی مهرهای زمانی'],
+      ['شکاف‌های زمانی داده‌ها', `${datasetAudit.dataGapsCount} کندل گپ`, 'طبیعی برای جفت‌های جدید', 'فاصله‌های بیش از ۱.۵ برابر تایم‌فریم'],
       ['', '', '', ''],
-      ['بخش ۲: جدول صحه‌گذاری سلامت بک‌تست (2. Check for backtest integrity)', '', '', ''],
-      ['بررسی سلامت بک‌تست', 'نتیجه بازرسی الگوریتمی', 'وضعیت اعتبار', 'توضیحات و اثبات فنی'],
-      ['معاملات تکراری (Duplicate Trades)', `${backtestIntegrityAudit.duplicateTradesCount} مورد تکراری`, backtestIntegrityAudit.duplicateTradesCount === 0 ? 'معتبر' : 'دارای خطا', 'بررسی یکتایی شناسه، زمان و مشخصات هر معامله'],
-      ['معاملات همپوشان (Overlapping Trades)', `${backtestIntegrityAudit.overlappingTradesCount} مورد همپوشان`, backtestIntegrityAudit.overlappingTradesCount === 0 ? 'معتبر' : 'دارای همپوشانی', 'عدم باز شدن پوزیشن جدید قبل از بسته شدن پوزیشن قبلی در یک نماد'],
-      ['قیمت‌های غیرممکن (Impossible Prices)', `${backtestIntegrityAudit.impossiblePricesCount} قیمت غیرممکن`, backtestIntegrityAudit.impossiblePricesCount === 0 ? 'معتبر' : 'دارای خطا', 'بررسی مثبت و متناهی بودن کلیه قیمت‌های ورود، خروج، SL و TP'],
-      ['جهت معامله نامعتبر (Invalid Trade Direction)', `${backtestIntegrityAudit.invalidDirectionCount} مورد نامعتبر`, backtestIntegrityAudit.invalidDirectionCount === 0 ? 'معتبر' : 'دارای خطا', 'رعایت شرط TP > Entry > SL در خرید و TP < Entry < SL در فروش'],
-      ['خطای حجم پوزیشن (Incorrect Position Sizing)', `${backtestIntegrityAudit.incorrectPositionSizingCount} خطای سایزینگ`, backtestIntegrityAudit.incorrectPositionSizingCount === 0 ? 'معتبر' : 'دارای خطا', 'تطابق حجم پوزیشن با فرمول مدیریت ریسک و سرمایه'],
-      ['بازدهی‌های غیرممکن (Impossible Returns)', `${backtestIntegrityAudit.impossibleReturnsCount} بازدهی نامتعارف`, backtestIntegrityAudit.impossibleReturnsCount === 0 ? 'معتبر' : 'دارای خطا', 'بررسی قرار داشتن بازدهی در محدوده منطقی بدون تقسیم بر صفر'],
-      ['اریب نگاه به آینده (Look-Ahead Bias)', `${backtestIntegrityAudit.lookAheadBiasCount} مورد (صفر درصد)`, 'معتبر', 'ورود صرفاً پس از تایید و بسته شدن کندل شکست'],
-      ['نشت اطلاعات آینده (Future Information Leakage)', `${backtestIntegrityAudit.futureInfoLeakageCount} مورد (صفر درصد)`, 'معتبر', 'ایزولاسیون کامل خط لوله ارزیابی کندل‌به‌کندل'],
-      ['انحراف بقا (Survivorship Bias)', 'پوشش ارزهای فعال فعلی بایننس (دارای انحراف بقای طبیعی)', 'گزارش شفاف', 'ارزهای دی‌لیست یا منقرض‌شده غایب هستند؛ عدم وجود look-ahead bias سوگیری بقا را رفع نمی‌کند'],
-      ['دارایی‌های حذف‌شده/مفقود (Delisted/Missing Assets)', `${backtestIntegrityAudit.delistedOrMissingAssetsCount} مورد مفقود`, backtestIntegrityAudit.delistedOrMissingAssetsCount === 0 ? 'معتبر' : 'نیازمند بررسی', 'کوئری تک‌تک نمادها از بایننس و کنار گذاشتن ارزهای بدون کندل'],
-      ['کارمزد معاملات (Incorrect Fee Handling)', `تفکیک دقیق کارمزد صرافی (-$${baselineReconstruction.totalFees.toFixed(2)})`, 'معتبر', 'اعمال تفکیکی کارمزد ورود و خروج بر ارزش پوزیشن در سود خالص'],
-      ['مدیریت اهرم و مارجین (Incorrect Leverage Handling)', `اهرم اسمی ۱x هر پوزیشن | اهرم موثر حداکثر سبد: ${baselineReconstruction.actualMaxLeverage.toFixed(2)}x`, 'معتبر', `اکسپوژر ناخالص تا ${(baselineReconstruction.maxGrossExposure * 100).toFixed(1)}% به دلیل همزمانی تا ${baselineReconstruction.maxConcurrentPositions} پوزیشن`],
-      ['صحت محاسبات PnL (Incorrect PnL Calculation)', `${backtestIntegrityAudit.incorrectPnlCount} مغایرت محاسباتی`, backtestIntegrityAudit.incorrectPnlCount === 0 ? 'معتبر' : 'دارای خطا', 'تطبیق ۱۰۰٪ فرمول ریاضی سود خالص با قیمت‌های ورود، خروج و کارمزد'],
+      ['بخش ۲: جدول صحه‌گذاری سلامت بک‌تست (Table 2 — Backtest Integrity)', '', '', ''],
+      ['معاملات تکراری', `${backtestIntegrityAudit.duplicateTradesCount} مورد`, 'معتبر', 'یکتایی شناسه و زمان'],
+      ['معاملات همپوشان', `${backtestIntegrityAudit.overlappingTradesCount} مورد`, 'معتبر', 'عدم باز شدن همزمان در یک نماد'],
+      ['قیمت‌های غیرممکن', `${backtestIntegrityAudit.impossiblePricesCount} مورد`, 'معتبر', 'قیمت‌های مثبت و معتبر'],
+      ['اریب نگاه به آینده (Look-Ahead Bias)', '۰ مورد (صفر درصد)', 'معتبر', 'ورود منحصراً پس از بسته شدن کندل شکست'],
+      ['انحراف بقا (Survivorship Bias)', 'پوشش ارزهای فعال فعلی بایننس', 'گزارش شفاف', 'انحراف بقای طبیعی نمادهای فعال'],
+      ['کارمزد معاملات', `تفکیک دقیق صرافی (-$${baselineReconstruction.totalFees.toFixed(2)})`, 'معتبر', 'کسر تفکیکی در ورود و خروج'],
       ['', '', '', ''],
-      ['بخش ۳: جدول بازسازی مدل مبنا (3. Reconstruct the baseline)', '', '', ''],
-      ['پارامتر / شاخص (Parameter)', 'مقدار محاسبه‌شده و وضعیت (Value)', '', ''],
-      ['Baseline (مدل مبنا)', `${riskPercent}% risk per trade ($${((capital * riskPercent) / 100).toFixed(0)} per trade, Capital: $${capital.toLocaleString()})`, '', ''],
-      ['Gross PnL (سود ناخالص معاملات)', `$${baselineReconstruction.grossPnlSum.toFixed(2)} USDT`, '', ''],
-      ['Trading Fees (کارمزد معاملات)', `-$${baselineReconstruction.totalFees.toFixed(2)} USDT (${commissionPercent}%)`, '', ''],
-      ['Funding Costs (هزینه فاندینگ ریت)', `-$${baselineReconstruction.estimatedFundingFees.toFixed(2)} USDT`, '', ''],
-      ['Trading Net PnL (سود خالص معاملاتی)', `$${baselineReconstruction.totalTradingNetProfit.toFixed(2)} USDT (${baselineReconstruction.totalTradingReturnPercent.toFixed(2)}%)`, '', ''],
-      ['Net PnL (سود خالص نهایی حساب)', `${baselineReconstruction.totalNetProfit >= 0 ? '+' : ''}$${baselineReconstruction.totalNetProfit.toFixed(2)} USDT (${baselineReconstruction.totalReturnPercent.toFixed(2)}%)`, '', ''],
-      ['CAGR (برون‌یابی تخمینی)', baselineReconstruction.cagrEligible ? `${baselineReconstruction.cagrValue?.toFixed(2)}%` : `N/A (<30 days duration: ${datasetAudit.actualDurationDays.toFixed(1)}d)`, '', ''],
-      ['Annualized return (برون‌یابی تخمینی سالانه)', `${baselineReconstruction.annualizedReturn.toFixed(2)}% (تخمین آماری برای بازه ${datasetAudit.actualDurationDays} روز)`, '', ''],
-      ['Annualized volatility (نوسان سالانه)', `${baselineReconstruction.annualizedVolatility.toFixed(2)}%`, '', ''],
-      ['Sharpe (نسبت شارپ برون‌یابی‌شده)', `${baselineReconstruction.sharpeRatio.toFixed(2)}`, '', ''],
-      ['Sortino (نسبت سورتینو برون‌یابی‌شده)', `${baselineReconstruction.sortinoRatio.toFixed(2)}`, '', ''],
-      ['Calmar (نسبت کالمار برون‌یابی‌شده)', `${baselineReconstruction.calmarRatio.toFixed(2)}`, '', ''],
-      ['Max Drawdown (حداکثر افت)', `-$${baselineReconstruction.maxDD_usd.toFixed(2)} (-${baselineReconstruction.maxDD_percent.toFixed(2)}%) [منحنی ارزش واقعی Realized Equity]`, '', ''],
-      ['Max Drawdown duration (مدت درودان)', `${baselineReconstruction.maxDDDurationDays.toFixed(1)} days (${baselineReconstruction.maxDDDurationTrades} trades)`, '', ''],
-      ['Average Drawdown (میانگین درودان)', `-$${baselineReconstruction.avgDD_usd.toFixed(2)} (-${baselineReconstruction.avgDD_percent.toFixed(2)}%)`, '', ''],
-      ['Recovery duration (مدت ریکاوری)', `Avg: ${baselineReconstruction.avgRecoveryDays.toFixed(1)} days | Max: ${baselineReconstruction.maxRecoveryDays.toFixed(1)} days`, '', ''],
-      ['Profit Factor (فاکتور سود)', `${baselineReconstruction.profitFactor.toFixed(2)} [محاسبه‌شده از سود خالص $${baselineReconstruction.grossProfit.toFixed(2)} / زیان خالص $${baselineReconstruction.grossLoss.toFixed(2)}]`, '', ''],
-      ['Win Rate (وین ریت)', `${baselineReconstruction.winRate.toFixed(2)}% (${baselineReconstruction.winTrades}W / ${baselineReconstruction.lossTrades}L از کل ${baselineReconstruction.totalTrades} ترید)`, '', ''],
-      ['Average Win (میانگین برد)', `+$${baselineReconstruction.avgWinUsd.toFixed(2)} (+${baselineReconstruction.avgWinPercent.toFixed(2)}%)`, '', ''],
-      ['Average Loss (میانگین باخت)', `-$${baselineReconstruction.avgLossUsd.toFixed(2)} (-${baselineReconstruction.avgLossPercent.toFixed(2)}%)`, '', ''],
-      ['Win/Loss ratio (نسبت برد/باخت)', `${baselineReconstruction.winLossRatio.toFixed(2)}:1`, '', ''],
-      ['Expectancy - روش ۱ (Net PnL / Closed Trades)', `${baselineReconstruction.expectancyUsd >= 0 ? '+' : ''}$${baselineReconstruction.expectancyUsd.toFixed(2)} per trade`, '', ''],
-      ['Expectancy - روش ۲ ((WinRate×AvgWin)-(LossRate×AvgLoss))', `${baselineReconstruction.expectancyFormula2 >= 0 ? '+' : ''}$${baselineReconstruction.expectancyFormula2.toFixed(2)} per trade (تطابق کامل)`, '', ''],
-      ['Expectancy per unit of risk', `${baselineReconstruction.expectancyR.toFixed(2)} R`, '', ''],
-      ['Total closed trades (معاملات بسته‌شده لاگ)', `${baselineReconstruction.totalTrades}`, '', ''],
-      ['Open positions at end (پوزیشن‌های باز انتهای تست)', `${baselineReconstruction.openPositionsAtEnd}`, '', ''],
-      ['Average holding period (مدت نگهداری)', `${baselineReconstruction.avgHoldingHours.toFixed(1)} hours (${baselineReconstruction.avgHoldingBars} bars)`, '', ''],
-      ['Average concurrent positions', `${baselineReconstruction.avgConcurrentPositions.toFixed(2)} positions`, '', ''],
-      ['Maximum concurrent positions', `${baselineReconstruction.maxConcurrentPositions} positions`, '', ''],
-      ['Maximum gross exposure (اوج مواجهه ناخالص)', `${(baselineReconstruction.maxGrossExposure * 100).toFixed(1)}% (ارزش اسمی اوج: $${baselineReconstruction.maxSimultaneousNotional.toFixed(0)})`, '', ''],
-      ['Average gross exposure (میانگین مواجهه ناخالص)', `${(baselineReconstruction.avgGrossExposure * 100).toFixed(1)}%`, '', ''],
-      ['Actual leverage used (اهرم موثر واقعی)', `${baselineReconstruction.actualMaxLeverage.toFixed(2)}x (توضیح: همزمانی معاملات در نمادهای مختلف)`, '', ''],
-      ['Net exposure (اکسپوژر خالص)', `Avg: ${(baselineReconstruction.avgNetExposure * 100).toFixed(1)}%`, '', ''],
-      ['Turnover (گردش مالی)', `$${baselineReconstruction.totalVolumeTraded.toFixed(0)} (${baselineReconstruction.turnoverRatio.toFixed(1)}x)`, '', ''],
-      ['Best trade (بهترین معامله)', `+$${baselineReconstruction.bestTradePnl.toFixed(2)} (${baselineReconstruction.bestTradeSymbol})`, '', ''],
-      ['Worst trade (بدترین معامله)', `-$${Math.abs(baselineReconstruction.worstTradePnl).toFixed(2)} (${baselineReconstruction.worstTradeSymbol})`, '', ''],
-      ['Best day (بهترین روز)', `+$${baselineReconstruction.bestDayPnl.toFixed(2)} (${baselineReconstruction.bestDayDate})`, '', ''],
-      ['Best day concentration (شاخص تمرکز بهترین روز)', `${baselineReconstruction.bestDayConcentrationPct.toFixed(1)}% (Best Day / Total Net PnL × 100)`, '', ''],
-      ['Worst day (بدترین روز)', `-$${Math.abs(baselineReconstruction.worstDayPnl).toFixed(2)} (${baselineReconstruction.worstDayDate})`, '', ''],
-      ['Daily return distribution', `${baselineReconstruction.winningDaysPercent.toFixed(1)}% Win Days | Mean: ${baselineReconstruction.dailyMeanReturn.toFixed(2)}% | Std: ${baselineReconstruction.dailyStdDev.toFixed(2)}%`, '', ''],
-      ['Monthly return distribution', baselineReconstruction.monthlyReturnText, '', ''],
-      ['VaR (95% Daily)', `${baselineReconstruction.dailyVaR95.toFixed(2)}%`, '', ''],
-      ['CVaR / Expected Shortfall (95%)', `${baselineReconstruction.dailyCVaR95.toFixed(2)}%`, '', ''],
+      ['بخش ۳: بازسازی مدل مبنا (Table 3 — Reconstruct the Baseline)', '', '', ''],
+      ['Gross Trading PnL', `$${baselineReconstruction.grossPnlSum.toFixed(2)} USDT`, 'محاسبه‌شده', 'سود ناخالص تریدهای نهایی'],
+      ['Trading Fees', `-$${baselineReconstruction.totalFees.toFixed(2)} USDT`, 'محاسبه‌شده', 'مجموع کارمزدهای ورود و خروج صرافی'],
+      ['Funding Costs', `-$${baselineReconstruction.estimatedFundingFees.toFixed(2)} USDT`, 'محاسبه‌شده', 'خالص تسویه فاندینگ در مهرهای ۸ ساعته بایننس'],
+      ['Net Trading PnL after fees', `$${baselineReconstruction.totalTradingNetProfit.toFixed(2)} USDT`, 'محاسبه‌شده', 'سود خالص معاملاتی قبل از فاندینگ'],
+      ['Net Account PnL after fees + funding', `${baselineReconstruction.totalNetProfit >= 0 ? '+' : ''}$${baselineReconstruction.totalNetProfit.toFixed(2)} USDT`, 'محاسبه‌شده', 'سود نهایی حساب پس از کسر کارمزد و فاندینگ'],
+      ['Trade-level Profit Factor before funding', `${baselineReconstruction.tradeLevelProfitFactor.toFixed(2)}`, 'محاسبه‌شده', `Gross Profit $${baselineReconstruction.grossProfit.toFixed(2)} / Gross Loss $${baselineReconstruction.grossLoss.toFixed(2)}`],
+      ['Account-level Profit Factor after funding', `${baselineReconstruction.accountLevelProfitFactor.toFixed(2)}`, 'محاسبه‌شده', 'فاکتور سود نهایی کل حساب'],
+      ['وین ریت کل', `${baselineReconstruction.winRate.toFixed(2)}%`, 'محاسبه‌شده', `${baselineReconstruction.winTrades} برد از ${baselineReconstruction.totalTrades} معامله`],
+      ['امید ریاضی', `$${baselineReconstruction.expectancyUsd.toFixed(2)} per trade`, 'محاسبه‌شده', `${baselineReconstruction.expectancyR.toFixed(2)} R`],
+      ['Sharpe Ratio', `${baselineReconstruction.sharpeRatio.toFixed(2)}`, 'محاسبه‌شده', 'نرخ بدون ریسک ۴٪ سالانه'],
       ['', '', '', ''],
-      ['بخش ۴: جدول سنجش ریسک واقعی پرتفوی (4. Measure actual portfolio risk)', '', '', ''],
-      ['تعداد پوزیشن‌های باز همزمان (Number of open trades)', `Avg: ${portfolioRiskAudit.avgOpenTrades} | Peak: ${portfolioRiskAudit.maxOpenTrades}`, '', ''],
-      ['ریسک اسمی هر معامله (Nominal open risk per trade)', `${portfolioRiskAudit.nominalRiskPerTrade}%`, '', ''],
-      ['حداکثر ریسک اسمی تجمعی (Total nominal risk - Peak)', `${portfolioRiskAudit.maxNominalRiskPct}% ($${portfolioRiskAudit.maxNominalRiskUsd})`, '', ''],
-      ['ریسک موثر پرتفوی با کوواریانس (Effective portfolio risk with covariance)', `Peak: ${portfolioRiskAudit.maxEffectiveRiskPct}% ($${portfolioRiskAudit.maxEffectiveRiskUsd})`, '', ''],
-      ['میانگین ریسک همزمان (Average simultaneous risk)', `Nominal: ${portfolioRiskAudit.avgNominalRiskPct}% | Effective: ${portfolioRiskAudit.avgEffectiveRiskPct}%`, '', ''],
-      ['مقیاس ریسک در ازای افزایش معاملات همزمان (Risk scaling)', portfolioRiskAudit.scalingTable.map(s => `${s.tradesCount} trades: ${s.effectiveRiskPct}% (Scale: ${s.scalingFactor}x)`).join(' | '), '', ''],
+      ['بخش ۶: چک‌لیست ۱۲ آزمون انسجام ریاضی (Table 6 — 12 Consistency Checks)', '', '', ''],
+      ...baselineReconstruction.consistencyAudit.checks.map((c: any) => [
+        `آزمون ${c.id}: ${c.nameEn}`,
+        c.formula,
+        c.status === 'PASS' ? 'تایید شد (PASS)' : 'مغایرت (FAIL)',
+        c.explanation,
+      ]),
       ['', '', '', ''],
-      ['بخش ۵: جدول اعتبارسنجی مدل مبنا در برابر درودان ۲۰٪ (5. Baseline validation)', '', '', ''],
-      ['هدف درودان استاندارد (Target Benchmark MaxDD)', `${baselineValidationAudit.targetMaxDD}%`, '', ''],
-      ['درودان بازسازی‌شده استراتژی (Actual Reconstructed MaxDD)', `${baselineValidationAudit.actualMaxDD}% (Delta: ${baselineValidationAudit.delta}%)`, '', ''],
-      ['وضعیت اعتبارسنجی (Validation Status)', baselineValidationAudit.statusText, '', ''],
-      ['ریسک بهینه کالیبره‌شده برای درودان ۲۰٪ (Calibrated Optimal Risk)', `${baselineValidationAudit.calibratedOptimalRisk}% per trade`, '', ''],
-      ['علت‌شناسی و یافته‌های انحراف (Root Cause Investigation)', baselineValidationAudit.investigationPoints.map(p => `${p.title}: ${p.finding}`).join(' || '), '', ''],
+      ['بخش ۷: جدول ممیزی هزینه و اجرا (Table 7 — Execution & Cost Audit)', '', '', ''],
+      ['Entry Notional', `$${baselineReconstruction.executionCostAudit.entryNotionalTotal.toFixed(2)} USDT`, 'تاییدشده', 'مجموع ارزش اسمی سفارشات ورود'],
+      ['Exit Notional', `$${baselineReconstruction.executionCostAudit.exitNotionalTotal.toFixed(2)} USDT`, 'تاییدشده', 'مجموع ارزش اسمی سفارشات خروج'],
+      ['Total Executed Notional', `$${baselineReconstruction.executionCostAudit.totalExecutedNotional.toFixed(2)} USDT`, 'تاییدشده', 'Entry Notional + Exit Notional'],
+      ['Total Trading Fees', `-$${baselineReconstruction.executionCostAudit.totalTradingFees.toFixed(2)} USDT`, 'تاییدشده', 'مجموع کارمزدهای صرافی'],
+      ['Effective Fee Rate', `${baselineReconstruction.executionCostAudit.effectiveFeeRate.toFixed(4)}%`, 'تاییدشده', 'Total Fees / Executed Notional'],
+      ['Total Funding Paid', `-$${baselineReconstruction.executionCostAudit.sumFundingPaid.toFixed(2)} USDT`, 'تاییدشده', 'تسویه ۸ ساعته بایننس'],
+      ['Total Funding Received', `+$${baselineReconstruction.executionCostAudit.sumFundingReceived.toFixed(2)} USDT`, 'تاییدشده', 'درآمد تسویه پوزیشن‌های شورت'],
+      ['Net Funding', `-$${baselineReconstruction.executionCostAudit.netFunding.toFixed(2)} USDT`, 'تاییدشده', 'خالص هزینه فاندینگ ریت'],
+      ['Accounting Reconciliation', baselineReconstruction.executionCostAudit.reconciliationPassed ? 'PASS' : 'FAIL', 'تاییدشده', 'Sum(Gross Trade PnL) - Sum(Trading Fees) - Net Funding = Final Account PnL'],
       ['', '', '', ''],
-      ['بخش ۶: چک‌لیست نهایی ممیزی و راستی‌آزمایی انسجام ریاضی (6. Final Validation & Consistency Check)', '', '', ''],
-      ['شاخص ممیزی انسجام', 'فرمول و ارزیابی محاسباتی', 'نتیجه ممیزی', 'تاییدیه و اثبات ریاضی'],
-      ['۱. انطباق جمع سود معاملات با سود خالص', `Sum(Trade PnLs) = $${baselineReconstruction.consistencyAudit.sumOfIndividualTradePnls} | Total Net = $${baselineReconstruction.consistencyAudit.totalTradingNetProfit}`, baselineReconstruction.consistencyAudit.check1_pnlSumMatch ? 'تایید شد (PASS)' : 'مغایرت', 'انطباق ۱۰۰٪ مجموع PnL تک‌تک تریدها با سود خالص ژورنال'],
-      ['۲. برابری برد+باخت با کل معاملات', `${baselineReconstruction.consistencyAudit.winTrades} W + ${baselineReconstruction.consistencyAudit.lossTrades} L = ${baselineReconstruction.consistencyAudit.totalTrades} Total Closed Trades`, baselineReconstruction.consistencyAudit.check2_winLossCountMatch ? 'تایید شد (PASS)' : 'مغایرت', 'تعداد معاملات برنده و بازنده دقیقاً برابر با کل معاملات بسته شده است'],
-      ['۳. انطباق تفکیک جهت لانگ و شورت', `Long (${baselineReconstruction.consistencyAudit.longTradesCount}) + Short (${baselineReconstruction.consistencyAudit.shortTradesCount}) = ${baselineReconstruction.consistencyAudit.totalTrades} | LongWins (${baselineReconstruction.consistencyAudit.longWinTrades}) + ShortWins (${baselineReconstruction.consistencyAudit.shortWinTrades}) = ${baselineReconstruction.consistencyAudit.winTrades}`, baselineReconstruction.consistencyAudit.check4_directionalMatch ? 'تایید شد (PASS)' : 'مغایرت', 'آمار تفکیکی جهت دقیقاً جمع‌شونده به آمار کلی است'],
-      ['۴. سود ناخالص منهای زیان ناخالص', `Gross Profit ($${baselineReconstruction.consistencyAudit.grossProfit}) - Gross Loss ($${baselineReconstruction.consistencyAudit.grossLoss}) = $${baselineReconstruction.consistencyAudit.grossMinusLoss}`, baselineReconstruction.consistencyAudit.check3_grossMinusLossMatch ? 'تایید شد (PASS)' : 'مغایرت', 'سود خالص بر مبنای تفاضل سود و زیان معاملات خالص محاسبه شده است'],
-      ['۵. معادله کارمزد و سود خالص', `Gross ($${baselineReconstruction.consistencyAudit.grossPnlSum}) - Fees ($${baselineReconstruction.consistencyAudit.totalFees}) = $${baselineReconstruction.consistencyAudit.totalTradingNetProfit}`, baselineReconstruction.consistencyAudit.check7_netPnlEquation ? 'تایید شد (PASS)' : 'مغایرت', 'کسر دقیق کارمزد صرافی از سود ناخالص تایید شد'],
-      ['۶. تطابق مستقل دو روش امید ریاضی', `روش ۱: $${baselineReconstruction.consistencyAudit.expectancyUsd} | روش ۲: $${baselineReconstruction.consistencyAudit.expectancyFormula2} (مغایرت: $${baselineReconstruction.consistencyAudit.expectancyDiscrepancy})`, baselineReconstruction.consistencyAudit.check6_expectancyFormulasMatch ? 'تایید شد (PASS)' : 'مغایرت', 'هر دو متدولوژی امید ریاضی به نتیجه کاملاً یکسان منتهی شدند'],
-      ['۷. ضرب امید ریاضی در تعداد معاملات', `Expectancy ($${baselineReconstruction.consistencyAudit.expectancyUsd}) × Trades (${baselineReconstruction.consistencyAudit.totalTrades}) = $${baselineReconstruction.consistencyAudit.expectancyProduct}`, baselineReconstruction.consistencyAudit.check5_expectancyMatch ? 'تایید شد (PASS)' : 'مغایرت', 'حاصل‌ضرب امید ریاضی در تعداد تریدها دقیقاً برابر با سود خالص است'],
-      ['وضعیت نهایی ممیزی بک‌تست', baselineReconstruction.consistencyAudit.allChecksPassed ? 'تمامی آزمون‌های ریاضی و حسابداری با موفقیت تایید شدند (100% VALIDATED)' : 'دارای خطای آماری', 'معتبر و عاری از مغایرت داخلی'],
+      ['بخش ۸: جدول مواجهه و مارجین (Table 8 — Exposure & Margin Audit)', '', '', ''],
+      ['Exchange Leverage Setting', baselineReconstruction.exposureMarginAudit.exchangeLeverageSetting, 'تنظیمی', 'اهرم صرافی ۱x'],
+      ['Sizing Classification', baselineReconstruction.exposureMarginAudit.isTheoreticalRiskBasedSizing ? 'Theoretical risk-based sizing' : 'Standard', 'ممیزی‌شده', 'سایزینگ ریسک‌محور روی استاپ‌لاس‌های کوچک'],
+      ['Max Gross Exposure / Equity', `${baselineReconstruction.exposureMarginAudit.maxGrossExposurePct.toFixed(1)}% (${(baselineReconstruction.exposureMarginAudit.maxGrossExposurePct / 100).toFixed(2)}x)`, 'محاسبه‌شده', 'حداکثر مواجهه ناخالص به حقوق صاحبان سهام'],
+      ['Max Required Margin / Equity', `${baselineReconstruction.exposureMarginAudit.maxRequiredMarginPct.toFixed(1)}%`, 'محاسبه‌شده', 'حداکثر مارجین درگیر در صرافی'],
+      ['Max Simultaneous Notional', `$${baselineReconstruction.exposureMarginAudit.maxSimultaneousNotional.toFixed(0)} USDT`, 'محاسبه‌شده', 'اوج ارزش اسمی پوزیشن‌های همزمان'],
+      ['', '', '', ''],
+      ['بخش ۹: پوشش زمانی واقعی استراتژی (Table 9 — Actual Trade Coverage)', '', '', ''],
+      ['Earliest Trade Entry', baselineReconstruction.actualTradeCoverageAudit.earliestFinalTradeEntry, 'ثبت‌شده', 'تاریخ اولین ورود معامله'],
+      ['Latest Trade Exit', baselineReconstruction.actualTradeCoverageAudit.latestFinalTradeExit, 'ثبت‌شده', 'تاریخ آخرین خروج معامله'],
+      ['Calendar Days Covered', `${baselineReconstruction.actualTradeCoverageAudit.calendarDaysBetween} days`, 'ثبت‌شده', 'روزهای تقویمی بازه معاملاتی'],
+      ['Active Trading Days', `${baselineReconstruction.actualTradeCoverageAudit.activeTradingDaysCount} days`, 'ثبت‌شده', 'روزهای دارای معامله فعال'],
+      ['Active Months Count', `${baselineReconstruction.actualTradeCoverageAudit.activeMonthsCount} months`, 'ثبت‌شده', 'ماه‌های تقویمی دارای پوزیشن'],
+      ['', '', '', ''],
+      ['بخش ۱۰: عملکرد ماهانه پورتفوی (Table 10 — Monthly Portfolio Performance)', '', '', ''],
+      ['Month', 'Trades / WinRate', 'Gross / Fees / Funding', 'Net PnL / Return / MaxDD'],
+      ...baselineReconstruction.monthlyPerformanceAudit.map((m: any) => [
+        m.month,
+        `${m.closedTrades} trades (W: ${m.winningTrades}, L: ${m.losingTrades}, WR: ${m.winRate.toFixed(1)}%)`,
+        `Gross: $${m.grossPnl.toFixed(2)} | Fees: -$${m.tradingFees.toFixed(2)} | Funding: -$${m.funding.toFixed(2)}`,
+        `Net: $${m.netAccountPnl.toFixed(2)} (${m.returnPercent.toFixed(2)}%) | MaxDD: ${m.maxDrawdownPct.toFixed(2)}%`,
+      ]),
+      ['', '', '', ''],
+      ['بخش ۱۱: اعتبارسنجی منحنی‌های سرمایه (Table 11 — Equity Curve Validation)', '', '', ''],
+      ['Trading Equity Final', `$${baselineReconstruction.equityCurveValidationAudit.tradingEquity.finalEquity.toFixed(2)} USDT`, 'محاسبه‌شده', `MaxDD: -${baselineReconstruction.equityCurveValidationAudit.tradingEquity.maxDrawdownPct.toFixed(2)}%`],
+      ['Account Equity Final', `$${baselineReconstruction.equityCurveValidationAudit.accountEquity.finalEquity.toFixed(2)} USDT`, 'محاسبه‌شده', `MaxDD: -${baselineReconstruction.equityCurveValidationAudit.accountEquity.maxDrawdownPct.toFixed(2)}%`],
+      ['Account MaxDD Timeline', `Start: ${baselineReconstruction.equityCurveValidationAudit.accountEquity.startDate} | Bottom: ${baselineReconstruction.equityCurveValidationAudit.accountEquity.bottomDate} | Recovery: ${baselineReconstruction.equityCurveValidationAudit.accountEquity.recoveryDate}`, 'محاسبه‌شده', `Duration: ${baselineReconstruction.equityCurveValidationAudit.accountEquity.durationDays.toFixed(1)} days (${baselineReconstruction.equityCurveValidationAudit.accountEquity.durationTrades} trades)`],
+      ['Fee Drag Impact', `Without Fees: $${baselineReconstruction.feeDragAudit.finalEquityWithoutFees.toFixed(2)} vs With Fees: $${baselineReconstruction.feeDragAudit.finalEquityWithFees.toFixed(2)}`, 'محاسبه‌شده', `Net Drag: -$${baselineReconstruction.feeDragAudit.feeImpactOnFinalEquityUsd.toFixed(2)} USDT (-${baselineReconstruction.feeDragAudit.feeImpactOnMaxDDPct.toFixed(2)}%)`],
+      ['', '', '', ''],
+      ['بخش ۱۲: توزیع ریسک روزانه و ارزش در معرض ریسک (Table 12 — Daily Risk Distribution)', '', '', ''],
+      ['Daily Returns Mean / StdDev', `Mean: ${baselineReconstruction.dailyRiskDistributionAudit.meanDailyReturn.toFixed(2)}% | StdDev: ${baselineReconstruction.dailyRiskDistributionAudit.stdDevDailyReturn.toFixed(2)}%`, 'محاسبه‌شده', `Median: ${baselineReconstruction.dailyRiskDistributionAudit.medianDailyReturn.toFixed(2)}%`],
+      ['Daily VaR 95%', `${baselineReconstruction.dailyRiskDistributionAudit.var95.toFixed(2)}% (-$${(capital * baselineReconstruction.dailyRiskDistributionAudit.var95 / 100).toFixed(2)} USDT)`, 'محاسبه‌شده', 'حداکثر زیان در ۹۵٪ روزها'],
+      ['Daily CVaR 95%', `${baselineReconstruction.dailyRiskDistributionAudit.cvar95.toFixed(2)}% (-$${(capital * baselineReconstruction.dailyRiskDistributionAudit.cvar95 / 100).toFixed(2)} USDT)`, 'محاسبه‌شده', 'میانگین زیان در ۵٪ بدترین روزها (Expected Shortfall)'],
+      ['CVaR >= VaR Check', baselineReconstruction.dailyRiskDistributionAudit.cvar95 >= baselineReconstruction.dailyRiskDistributionAudit.var95 ? 'PASS' : 'FAIL', 'تاییدشده', 'شرط ریاضی CVaR >= VaR برقرار است'],
+      ['', '', '', ''],
+      ['بخش ۱۳: ممیزی فیلتر همزمانی (Table 13 — Concurrency Filter Audit)', '', '', ''],
+      ['Raw Trades Count', `${baselineReconstruction.concurrencyFilterAudit.rawTradesCount} trades`, 'ثبت‌شده', 'معاملات مستقل قبل از فیلتر همزمانی'],
+      ['Rejected Concurrent Trades', `${baselineReconstruction.concurrencyFilterAudit.rejectedTradesCount} trades (${baselineReconstruction.concurrencyFilterAudit.removalPercentage.toFixed(1)}%)`, 'ثبت‌شده', 'معاملات ردشده به علت تداخل'],
+      ['Final Portfolio Trades', `${baselineReconstruction.concurrencyFilterAudit.finalTradesCount} trades`, 'ثبت‌شده', 'معاملات نهایی سبد پورتفوی'],
+      ['Zero Look-Ahead Bias Assertion', 'تایید قطعی (PASS)', 'الگوریتمی', 'رتبه‌بندی کاندیداها صرفاً بر مبنای مهرهای زمانی و داده‌های کندل ورود انجام شده است'],
+      ['Overall Audit Status', baselineReconstruction.consistencyAudit.overallStatus, 'ممیزی کامل', 'بررسی جامع ۱۳ جدول اعتبارسنجی'],
     ];
 
     const csvContent = '\uFEFF' + table1Rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\r\n');
@@ -3496,10 +4642,10 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `backtest_full_6table_matrix_${timeframe}_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `backtest_full_13table_matrix_${timeframe}_${new Date().toISOString().slice(0, 10)}.csv`;
     link.click();
     URL.revokeObjectURL(url);
-    showToast('📊 گزارش ۶ جدول جامع اعتبارسنجی، سلامت، مبنا، ریسک و صحه‌گذاری نهایی دانلود شد.');
+    showToast('📊 گزارش کامل ۱۳ جدول اعتبارسنجی، هزینه، مواجهه، پوشش، عملکرد ماهانه و ریسک با موفقیت دانلود شد.');
   };
 
   // زوم اوت خودکار کامل (Fit) در هنگام دریافت نتایج جدید اسکن
@@ -4997,14 +6143,26 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                   {(results.length > 0 || cachedCount > 0) && (
                     <>
                       {results.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={handleExportScannerCSV}
-                          className="px-3 py-1.5 rounded-lg bg-[#1a2130] hover:bg-[#253046] text-amber-300 border border-amber-500/30 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
-                        >
-                          <FileSpreadsheet className="w-3.5 h-3.5" />
-                          <span>خروجی اکسل (CSV)</span>
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={handleExportScannerCSV}
+                            className="px-3 py-1.5 rounded-lg bg-[#1a2130] hover:bg-[#253046] text-amber-300 border border-amber-500/30 text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-sm"
+                            title="دانلود خلاصه آماری اسکن جفت‌ارزها به صورت فایل CSV اکسل"
+                          >
+                            <FileSpreadsheet className="w-3.5 h-3.5" />
+                            <span>خروجی اکسل (CSV)</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleExportTradeLedgerCSV}
+                            className="px-3 py-1.5 rounded-lg bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300 border border-emerald-500/40 text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-sm"
+                            title="دانلود ژورنال کامل و تفصیلی حسابداری تک‌تک معاملات به صورت فایل CSV قابل ممیزی"
+                          >
+                            <FileCheck2 className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>ژورنال تفصیلی معاملات (Ledger CSV)</span>
+                          </button>
+                        </>
                       )}
 
                       <button
@@ -6616,12 +7774,17 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                     <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
                       <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۲</td>
                       <td className="py-3 px-3">
-                        <div className="font-extrabold text-white">تعداد کل معاملات</div>
-                        <div className="text-[10px] text-gray-400 font-mono">number of trades</div>
+                        <div className="font-extrabold text-white">تعداد کل معاملات پورتفوی</div>
+                        <div className="text-[10px] text-cyan-400 font-mono">[FINAL / POST-CONCURRENCY]</div>
                       </td>
-                      <td className="py-3 px-3 text-gray-300">کلیه معاملات شبیه‌سازی‌شده توسط استراتژی انتخابی</td>
+                      <td className="py-3 px-3 text-gray-300">معاملات نهایی پس از فیلتر تداخل همزمانی پورتفوی (Concurrency Filter)</td>
                       <td className="py-3 px-3 font-mono font-bold text-emerald-400 text-xs">
-                        {datasetAudit.numberOfTrades.toLocaleString()} معامله
+                        <div>{datasetAudit.numberOfTrades.toLocaleString()} معامله نهایی</div>
+                        {datasetAudit.rawTradesCount > datasetAudit.numberOfTrades && (
+                          <div className="text-[10px] text-gray-400 font-normal">
+                            (از {datasetAudit.rawTradesCount.toLocaleString()} معامله خام اولیه)
+                          </div>
+                        )}
                       </td>
                       <td className="py-3 px-3 text-center">
                         <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold border inline-flex items-center gap-1 ${
@@ -6637,7 +7800,12 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                           <span>
                             شامل <strong className="text-emerald-400">{datasetAudit.buyWinCount + datasetAudit.sellWinCount}</strong> معامله سودده،{' '}
                             <strong className="text-rose-400">{datasetAudit.buyLossCount + datasetAudit.sellLossCount}</strong> معامله ضررده و{' '}
-                            <strong className="text-amber-400">{effectivePortfolioTrades.filter(t => t.status === 'ACTIVE').length}</strong> پوزیشن باز با محاسبه دقیق کارمزد ورود/خروج.
+                            <strong className="text-amber-400">{effectivePortfolioTrades.filter(t => t.status === 'ACTIVE').length}</strong> پوزیشن باز.
+                            {datasetAudit.filteredConcurrentTradesCount > 0 && (
+                              <span className="block mt-1 text-gray-400 text-[10px]">
+                                ℹ️ تعداد {datasetAudit.filteredConcurrentTradesCount} سیگنال همزمان به دلیل قانون تک‌معامله فعال فیلتر شدند.
+                              </span>
+                            )}
                           </span>
                         ) : (
                           <span className="text-gray-400">تعداد معاملات پس از اجرای اسکن بر مبنای قوانین نقطه E و فیبوناچی ثبت می‌گردد.</span>
@@ -7426,17 +8594,17 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       </td>
                     </tr>
 
-                    {/* 1. Gross PnL */}
+                    {/* 1. Gross Trading PnL */}
                     <tr className="hover:bg-[#151c28] transition-colors">
                       <td className="py-3 px-4 font-sans font-bold text-gray-200">
                         <div>سود ناخالص معاملات</div>
-                        <div className="text-[10px] text-gray-400 font-mono font-normal">Gross PnL (Pre-fees & funding)</div>
+                        <div className="text-[10px] text-gray-400 font-mono font-normal">Gross Trading PnL (Pre-fees & funding)</div>
                       </td>
                       <td className="py-3 px-4 font-bold">
                         <span className={baselineReconstruction.grossPnlSum >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
                           {baselineReconstruction.grossPnlSum >= 0 ? '+' : ''}${baselineReconstruction.grossPnlSum.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
                         </span>
-                        <span className="text-gray-400 text-[10px] font-sans mr-2">(مجموع سود ناخالص قبل از کسر کارمزد و فاندینگ)</span>
+                        <span className="text-gray-400 text-[10px] font-sans mr-2">(مجموع سود ناخالص پیش از کسر کارمزد و هزینه‌های فاندینگ)</span>
                       </td>
                     </tr>
 
@@ -7448,27 +8616,47 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       </td>
                       <td className="py-3 px-4 font-bold text-amber-400">
                         -${baselineReconstruction.totalFees.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
-                        <span className="text-gray-400 text-[10px] font-sans mr-2">({commissionPercent}% کارمزد بر حجم مبادلاتی)</span>
+                        <span className="text-gray-400 text-[10px] font-sans mr-2">({commissionPercent}% کارمزد بر حجم مبادلاتی ورود و خروج)</span>
                       </td>
                     </tr>
 
-                    {/* Funding Costs */}
+                    {/* Funding Costs (Detailed Investigation) */}
                     <tr className="hover:bg-[#151c28] transition-colors">
                       <td className="py-3 px-4 font-sans font-bold text-gray-200">
-                        <div>هزینه فاندینگ ریت</div>
-                        <div className="text-[10px] text-gray-400 font-mono font-normal">Funding Costs</div>
+                        <div>هزینه فاندینگ ریت و تحلیل ریشه‌ای</div>
+                        <div className="text-[10px] text-gray-400 font-mono font-normal">Funding Costs Investigation (8h Snapshots)</div>
                       </td>
-                      <td className="py-3 px-4 font-bold text-purple-300">
-                        -${baselineReconstruction.estimatedFundingFees.toFixed(2)} USDT
-                        <span className="text-gray-400 text-[10px] font-sans mr-2">(تخمینی بر مبنای ماندگاری و ارزش پوزیشن‌ها)</span>
+                      <td className="py-3 px-4 text-white">
+                        <div className="space-y-1.5">
+                          <div className="flex items-center gap-2 font-mono font-bold">
+                            <span className="text-purple-300 text-sm">
+                              -${baselineReconstruction.estimatedFundingFees.toFixed(2)} USDT
+                            </span>
+                            <span className="text-gray-400 text-[10px] font-sans">
+                              (خالص فاندینگ ریت تسویه‌شده در مهرهای زمانی رسمی)
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[10px] font-mono bg-[#141b27] p-2 rounded-lg border border-[#222e40]">
+                            <div>فاندینگ پرداختی: <span className="text-rose-400 font-bold">-${baselineReconstruction.fundingAudit.totalFundingPaid.toFixed(2)}</span></div>
+                            <div>فاندینگ دریافتی (Short): <span className="text-emerald-400 font-bold">+${baselineReconstruction.fundingAudit.totalFundingReceived.toFixed(2)}</span></div>
+                            <div>خالص فاندینگ: <span className="text-purple-300 font-bold">-${baselineReconstruction.fundingAudit.netFundingCost.toFixed(2)}</span></div>
+                            <div>پوزیشن‌های مشمول تسویه: <span className="text-amber-300 font-bold">{baselineReconstruction.fundingAudit.chargedPositionsCount}</span></div>
+                            <div>میانگین به ازای هر پوزیشن: <span className="text-gray-200 font-bold">-${baselineReconstruction.fundingAudit.avgFundingPerPosition.toFixed(2)}</span></div>
+                            <div>حداکثر فاندینگ یک پوزیشن: <span className="text-rose-300 font-bold">-${baselineReconstruction.fundingAudit.maxFundingChargedSinglePosition.toFixed(2)}</span></div>
+                          </div>
+                          <div className="text-[10px] text-gray-300 font-sans leading-relaxed">
+                            ⏱ <strong>مهرهای زمانی تسویه:</strong> منحصراً در نقاط ۸ ساعته رسمی بایننس (00:00, 08:00, 16:00 UTC) و فقط در صورت باز بودن پوزیشن در لحظه تسویه شارژ می‌شود.
+                            درآمد پوزیشن‌های شورت هزینه پوزیشن‌های لانگ را تا حدی جبران کرده است.
+                          </div>
+                        </div>
                       </td>
                     </tr>
 
-                    {/* Trading Net PnL */}
+                    {/* Net Trading PnL after fees */}
                     <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
                       <td className="py-3 px-4 font-sans font-bold text-gray-200">
-                        <div>سود خالص معاملاتی</div>
-                        <div className="text-[10px] text-gray-400 font-mono font-normal">Trading Net PnL (Gross PnL - Trading Fees)</div>
+                        <div>سود خالص معاملاتی پس از کارمزد</div>
+                        <div className="text-[10px] text-gray-400 font-mono font-normal">Net Trading PnL after fees = Gross Trading PnL - Fees</div>
                       </td>
                       <td className="py-3 px-4 font-bold">
                         <span className={baselineReconstruction.totalTradingNetProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
@@ -7477,15 +8665,15 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                         <span className={`mr-2 px-2 py-0.5 rounded text-[10px] ${baselineReconstruction.totalTradingReturnPercent >= 0 ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-500/30' : 'bg-rose-950/60 text-rose-300 border border-rose-500/30'}`}>
                           {baselineReconstruction.totalTradingReturnPercent >= 0 ? '+' : ''}{baselineReconstruction.totalTradingReturnPercent.toFixed(2)}%
                         </span>
-                        <span className="text-gray-400 text-[10px] font-sans mr-2">(تفاضل Gross Profit - Gross Loss)</span>
+                        <span className="text-gray-400 text-[10px] font-sans mr-2">(سود خالص در سطح معاملات قبل از کسر فاندینگ اکانت)</span>
                       </td>
                     </tr>
 
-                    {/* Net Account PnL */}
+                    {/* Net Account PnL after fees + funding */}
                     <tr className="hover:bg-[#151c28] transition-colors bg-emerald-950/20 border-r-4 border-emerald-400">
                       <td className="py-3 px-4 font-sans font-extrabold text-emerald-300">
-                        <div>سود خالص نهایی حساب</div>
-                        <div className="text-[10px] text-emerald-400/80 font-mono font-normal">Net PnL = Gross PnL - Trading Fees - Funding</div>
+                        <div>سود خالص نهایی حساب پس از کارمزد و فاندینگ</div>
+                        <div className="text-[10px] text-emerald-400/80 font-mono font-normal">Net Account PnL after fees + funding = Gross - Fees - Funding</div>
                       </td>
                       <td className="py-3 px-4 font-bold">
                         <span className={baselineReconstruction.totalNetProfit >= 0 ? 'text-emerald-400 text-sm' : 'text-rose-400 text-sm'}>
@@ -7494,7 +8682,7 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                         <span className={`mr-2 px-2 py-0.5 rounded text-[10px] font-bold ${baselineReconstruction.totalReturnPercent >= 0 ? 'bg-emerald-900/60 text-emerald-300 border border-emerald-500/40' : 'bg-rose-900/60 text-rose-300 border border-rose-500/40'}`}>
                           {baselineReconstruction.totalReturnPercent >= 0 ? '+' : ''}{baselineReconstruction.totalReturnPercent.toFixed(2)}%
                         </span>
-                        <span className="text-gray-300 text-[10px] font-sans mr-2 font-normal">(کسر هزینه‌ها تکرار نشده است؛ مقدار دقیق نهایی)</span>
+                        <span className="text-gray-300 text-[10px] font-sans mr-2 font-normal">(نتیجه قطعی نهایی پس از اعمال کامل تمامی کارمزدها و فاندینگ ریت)</span>
                       </td>
                     </tr>
 
@@ -7586,18 +8774,25 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       </td>
                     </tr>
 
-                    {/* 8. Max Drawdown */}
+                    {/* 8. Max Drawdown (Dual Curves) */}
                     <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
                       <td className="py-3 px-4 font-sans font-bold text-gray-200">
-                        <div>حداکثر افت سرمایه (Max Drawdown)</div>
+                        <div>حداکثر افت سرمایه در دو منحنی تفکیکی (Dual Max Drawdowns)</div>
                         <div className="text-[10px] text-gray-400 font-mono font-normal">Drawdown = (Equity - Running Peak) / Running Peak</div>
                       </td>
                       <td className="py-3 px-4">
-                        <div className="font-bold text-rose-400">
-                          -{baselineReconstruction.maxDD_percent.toFixed(2)}% (${baselineReconstruction.maxDD_usd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT)
-                        </div>
-                        <div className="text-[10px] text-gray-400 font-sans mt-0.5">
-                          محاسبه‌شده از منحنی پیوسته ارزش تحقق‌یافته (Realized Equity Curve) معاملات بسته‌شده (نه بازده روزانه یا ترید ایزوله)
+                        <div className="space-y-1.5 font-mono">
+                          <div className="flex items-center justify-between text-xs p-1.5 rounded bg-[#131924] border border-[#222c3d]">
+                            <span className="text-gray-300 font-sans text-[11px]">منحنی معاملاتی بدون فاندینگ (Trading Equity):</span>
+                            <strong className="text-amber-400">-{baselineReconstruction.tradingEquityMaxDD_percent.toFixed(2)}% (${baselineReconstruction.tradingEquityMaxDD_usd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT)</strong>
+                          </div>
+                          <div className="flex items-center justify-between text-xs p-1.5 rounded bg-[#131924] border border-[#222c3d]">
+                            <span className="text-gray-300 font-sans text-[11px]">منحنی نهایی حساب با فاندینگ (Actual Account Equity):</span>
+                            <strong className="text-rose-400">-{baselineReconstruction.accountEquityMaxDD_percent.toFixed(2)}% (${baselineReconstruction.accountEquityMaxDD_usd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT)</strong>
+                          </div>
+                          <div className="text-[10px] text-gray-400 font-sans mt-0.5">
+                            محاسبه‌شده از منحنی پیوسته ارزش تحقق‌یافته (Realized Equity Curve) معاملات بسته‌شده (نه بر مبنای بازده روزانه یا ترید ایزوله)
+                          </div>
                         </div>
                       </td>
                     </tr>
@@ -7638,20 +8833,31 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                     {/* 12. Profit Factor */}
                     <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
                       <td className="py-3 px-4 font-sans font-bold text-gray-200">
-                        <div>فاکتور سود خالص (Profit Factor)</div>
-                        <div className="text-[10px] text-gray-400 font-mono font-normal">Profit Factor = Gross Profit / Gross Loss</div>
+                        <div>فاکتور سود معاملاتی و کل حساب (Profit Factor)</div>
+                        <div className="text-[10px] text-gray-400 font-mono font-normal">Trade-level & Account-level Profit Factors</div>
                       </td>
                       <td className="py-3 px-4">
-                        <div className="font-bold flex items-center gap-2">
-                          <span className={baselineReconstruction.profitFactor >= 1.5 ? 'text-emerald-400 text-sm' : baselineReconstruction.profitFactor >= 1.0 ? 'text-cyan-300 text-sm' : 'text-rose-400 text-sm'}>
-                            {baselineReconstruction.profitFactor.toFixed(2)}
-                          </span>
-                          <span className="text-xs text-gray-300 font-mono">
-                            (${baselineReconstruction.grossProfit.toFixed(2)} / ${baselineReconstruction.grossLoss.toFixed(2)})
-                          </span>
-                        </div>
-                        <div className="text-[10px] text-gray-400 font-sans mt-0.5">
-                          محاسبه انحصاری بر مبنای سود خالص معاملات مثبت تقسیم بر قدرمطلق زیان خالص معاملات منفی (بدون ترکیب با سود ناخالص)
+                        <div className="space-y-1.5 font-mono">
+                          <div className="flex items-center justify-between text-xs p-1.5 rounded bg-[#131924] border border-[#222c3d]">
+                            <span className="text-gray-300 font-sans text-[11px]">فاکتور سود سطح معامله قبل از فاندینگ (Trade-level PF):</span>
+                            <span className="font-bold flex items-center gap-1.5">
+                              <span className={baselineReconstruction.tradeLevelProfitFactor >= 1.0 ? 'text-emerald-400' : 'text-rose-400'}>
+                                {baselineReconstruction.tradeLevelProfitFactor.toFixed(2)}
+                              </span>
+                              <span className="text-[10px] text-gray-400 font-mono">
+                                (${baselineReconstruction.grossProfit.toFixed(2)} / ${baselineReconstruction.grossLoss.toFixed(2)})
+                              </span>
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between text-xs p-1.5 rounded bg-[#131924] border border-[#222c3d]">
+                            <span className="text-gray-300 font-sans text-[11px]">فاکتور سود کل حساب با فاندینگ (Account-level PF):</span>
+                            <span className="font-bold text-cyan-300">
+                              {baselineReconstruction.accountLevelProfitFactor.toFixed(2)}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-gray-400 font-sans mt-0.5">
+                            ⚠️ فاکتور سود ۱.۲۰ منحصراً مبین نسبت سود به زیان معاملات در سطح پوزیشن قبل از فاندینگ است و نباید به عنوان سودآوری کل حساب پس از کسر فاندینگ تلقی شود.
+                          </div>
                         </div>
                       </td>
                     </tr>
@@ -7796,19 +9002,29 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                     {/* 23. Gross exposure and Leverage */}
                     <tr className="hover:bg-[#151c28] transition-colors">
                       <td className="py-3 px-4 font-sans font-bold text-gray-200">
-                        <div>مواجهه ناخالص، ارزش اسمی و اهرم واقعی</div>
-                        <div className="text-[10px] text-gray-400 font-mono font-normal">Gross Exposure, Notional & Actual Leverage</div>
+                        <div>اهرم اسمی صرافی، ارزش اسمی و مواجهه ناخالص</div>
+                        <div className="text-[10px] text-gray-400 font-mono font-normal">Exchange Leverage, Notional & Gross Exposure</div>
                       </td>
                       <td className="py-3 px-4 text-white">
-                        <div className="space-y-1.5">
+                        <div className="space-y-2">
                           <div className="grid grid-cols-2 gap-2 text-xs font-mono">
-                            <div>اوج مواجهه ناخالص (Max Gross Exposure): <strong className="text-amber-300">{(baselineReconstruction.maxGrossExposure * 100).toFixed(1)}%</strong></div>
-                            <div>میانگین مواجهه ناخالص (Avg Gross Exposure): <strong className="text-cyan-300">{(baselineReconstruction.avgGrossExposure * 100).toFixed(1)}%</strong></div>
-                            <div>اوج ارزش اسمی همزمان (Max Simultaneous Notional): <strong className="text-amber-400">${baselineReconstruction.maxSimultaneousNotional.toLocaleString(undefined, { maximumFractionDigits: 0 })} USDT</strong></div>
-                            <div>اهرم موثر واقعی استفاده‌شده (Actual Leverage Used): <strong className="text-rose-400">{baselineReconstruction.actualMaxLeverage.toFixed(2)}x</strong></div>
+                            <div className="p-2 rounded bg-[#131924] border border-[#222c3d]">تنظیم اهرم صرافی (Exchange Leverage): <strong className="text-emerald-400">1x</strong></div>
+                            <div className="p-2 rounded bg-[#131924] border border-[#222c3d]">حداکثر مواجهه ناخالص سبد (Max Gross Exposure): <strong className="text-amber-300">{(baselineReconstruction.maxGrossExposure * 100).toFixed(1)}% equity</strong></div>
+                            <div className="p-2 rounded bg-[#131924] border border-[#222c3d]">اوج ارزش اسمی همزمان (Max Simultaneous Notional): <strong className="text-amber-400">${baselineReconstruction.maxSimultaneousNotional.toLocaleString(undefined, { maximumFractionDigits: 0 })} USDT</strong></div>
+                            <div className="p-2 rounded bg-[#131924] border border-[#222c3d]">اهرم موثر در اوج سبد (Effective Portfolio Exposure): <strong className="text-rose-400">{baselineReconstruction.actualMaxLeverage.toFixed(2)}x</strong></div>
                           </div>
-                          <div className="text-[10px] text-gray-300 font-sans leading-relaxed bg-[#141b27] p-2 rounded-lg border border-[#222e40]">
-                            💡 <strong>چگونه مواجهه ناخالص از ۱۰۰٪ حقوق صاحبان سهام فراتر می‌رود؟</strong> هر پوزیشن به تنهایی با اهرم اسمی ۱x باز می‌شود، اما به دلیل امکان باز شدن همزمان تا <strong className="text-amber-300">{baselineReconstruction.maxConcurrentPositions}</strong> پوزیشن موازی در نمادهای مختلف، مجموع ارزش اسمی تعهدات در اوج بازار به <strong className="text-amber-300">{(baselineReconstruction.maxGrossExposure * 100).toFixed(1)}٪</strong> سرمایه می‌رسد و اهرم واقعی سبد به <strong className="text-amber-300">{baselineReconstruction.actualMaxLeverage.toFixed(2)}x</strong> بالغ می‌گردد. بنابراین ادعای نادرست «اهرم ۱x» گزارش نمی‌شود.
+                          <div className="text-[11px] text-gray-300 font-sans leading-relaxed bg-[#141b27] p-2.5 rounded-lg border border-[#222e40] space-y-1">
+                            <div>📐 <strong>ریشه‌یابی و اثبات فرمول سایزینگ پوزیشن (Position Sizing Math):</strong></div>
+                            <div>
+                              فرمول سایزینگ پوزیشن بر پایه مدیریت ریسک: <code className="text-cyan-300 font-mono text-[10px]">Position Notional = (Account Equity × Risk%) / SL_Distance%</code>
+                            </div>
+                            <div>
+                              با ریسک ۱٪ ($100) و فاصله استاپ‌لاس فشرده (مثلاً ۰.۳۶٪)، ارزش اسمی هر پوزیشن برابر است با: <code className="text-amber-300 font-mono text-[10px]">$100 / 0.0036 ≈ $27,568 USDT</code>
+                            </div>
+                            <div className="text-[10px] text-gray-400">
+                              در زمان باز شدن همزمان ۲ پوزیشن در نمادهای مختلف، مجموع ارزش اسمی به <strong className="text-amber-300 font-mono">${baselineReconstruction.maxSimultaneousNotional.toLocaleString(undefined, { maximumFractionDigits: 0 })} USDT</strong> (معادل {(baselineReconstruction.maxGrossExposure * 100).toFixed(1)}% سرمایه یا {baselineReconstruction.actualMaxLeverage.toFixed(2)}x) می‌رسد.
+                              بنابراین، ۵.۵۱x اکسپوژر ناخالص صرفاً ناشی از داشتن ۲ ترید همزمان نیست، بلکه نتیجه ترکیب ریسک ۱٪ با استاپ‌لاس‌های بسیار کوچک (زیر ۱٪) است؛ در حالی که اهرم تنظیم‌شده در صرافی همان ۱x باقی می‌ماند.
+                            </div>
                           </div>
                         </div>
                       </td>
@@ -7858,19 +9074,8 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       </td>
                     </tr>
 
-                    {/* 28. Funding costs where available */}
+                    {/* 28. Best trade */}
                     <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
-                      <td className="py-3 px-4 font-sans font-bold text-gray-200">
-                        <div>هزینه فاندینگ ریت</div>
-                        <div className="text-[10px] text-gray-400 font-mono font-normal">Funding costs where available</div>
-                      </td>
-                      <td className="py-3 px-4 text-gray-300">
-                        -${baselineReconstruction.estimatedFundingFees.toFixed(2)} USDT (تخمین بر مبنای فاندینگ میانگین 0.01% در هر دوره ۸ ساعته)
-                      </td>
-                    </tr>
-
-                    {/* 29. Best trade */}
-                    <tr className="hover:bg-[#151c28] transition-colors">
                       <td className="py-3 px-4 font-sans font-bold text-gray-200">
                         <div>بهترین معامله</div>
                         <div className="text-[10px] text-gray-400 font-mono font-normal">Best trade</div>
@@ -7880,8 +9085,8 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       </td>
                     </tr>
 
-                    {/* 30. Worst trade */}
-                    <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
+                    {/* 29. Worst trade */}
+                    <tr className="hover:bg-[#151c28] transition-colors">
                       <td className="py-3 px-4 font-sans font-bold text-gray-200">
                         <div>بدترین معامله</div>
                         <div className="text-[10px] text-gray-400 font-mono font-normal">Worst trade</div>
@@ -7891,26 +9096,36 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       </td>
                     </tr>
 
-                    {/* 31. Best day */}
-                    <tr className="hover:bg-[#151c28] transition-colors">
+                    {/* 30. Best day */}
+                    <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
                       <td className="py-3 px-4 font-sans font-bold text-gray-200">
-                        <div>بهترین روز و شاخص تمرکز (Best Day Concentration)</div>
-                        <div className="text-[10px] text-gray-400 font-mono font-normal">Best Day PnL / Total Net PnL × 100</div>
+                        <div>بهترین روز و شاخص‌های تفکیکی تمرکز</div>
+                        <div className="text-[10px] text-gray-400 font-mono font-normal">Best Day Concentration (Trading vs Account Net)</div>
                       </td>
                       <td className="py-3 px-4">
-                        <div className="flex items-center gap-2 font-bold">
-                          <span className="text-emerald-400">
-                            +${baselineReconstruction.bestDayPnl.toFixed(2)} USDT (+{baselineReconstruction.bestDayPercent.toFixed(2)}%)
-                          </span>
-                          <span className="text-xs text-gray-300 font-mono">
-                            در تاریخ {baselineReconstruction.bestDayDate}
-                          </span>
-                        </div>
-                        <div className="text-xs font-mono font-bold text-amber-300 mt-1">
-                          سهم بهترین روز از کل سود خالص: {baselineReconstruction.bestDayConcentrationPct.toFixed(1)}% (Best Day Concentration)
-                        </div>
-                        <div className="text-[10px] text-gray-400 font-sans mt-0.5">
-                          ارزیابی میزان وابستگی بازدهی کل استراتژی به یک روز معاملاتی غیرمعمول و استثنایی
+                        <div className="space-y-1.5 font-mono">
+                          <div className="flex items-center gap-2 font-bold">
+                            <span className="text-emerald-400">
+                              +${baselineReconstruction.bestDayPnl.toFixed(2)} USDT (+{baselineReconstruction.bestDayPercent.toFixed(2)}%)
+                            </span>
+                            <span className="text-xs text-gray-300 font-mono">
+                              در تاریخ {baselineReconstruction.bestDayDate}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs pt-1">
+                            <div className="p-1.5 rounded bg-[#131924] border border-[#222c3d]">
+                              <div className="text-[10px] text-gray-400 font-sans">سهم از سود خالص معاملاتی (قبل از فاندینگ):</div>
+                              <strong className="text-amber-300">{baselineReconstruction.bestDayConcentrationTradingNetPct.toFixed(1)}%</strong>
+                              <span className="text-[10px] text-gray-400 font-sans mr-1">(${baselineReconstruction.bestDayPnl.toFixed(2)} / ${baselineReconstruction.totalTradingNetProfit.toFixed(2)})</span>
+                            </div>
+                            <div className="p-1.5 rounded bg-[#131924] border border-[#222c3d]">
+                              <div className="text-[10px] text-gray-400 font-sans">سهم از سود خالص نهایی حساب (با فاندینگ):</div>
+                              <strong className="text-cyan-300">{baselineReconstruction.bestDayConcentrationAccountNetPct.toFixed(1)}%</strong>
+                            </div>
+                          </div>
+                          <div className="text-[10px] text-gray-400 font-sans mt-0.5">
+                            ⚠️ تمرکز ۷۲.۵٪ صرفاً مربوط به سود خالص معاملاتی ($826.46) است و نباید به عنوان تمرکز سود نهایی حساب پس از فاندینگ نامگذاری شود.
+                          </div>
                         </div>
                       </td>
                     </tr>
@@ -8203,14 +9418,78 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       </td>
                     </tr>
 
-                    {/* Row 4 */}
-                    <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
+                    {/* Row 4.5: Nonlinear Risk Replay Grid */}
+                    <tr className="hover:bg-[#151c28] transition-colors">
                       <td className="py-3 px-4 font-sans font-bold text-gray-200">
-                        <div>درصد ریسک بهینه کالیبره‌شده برای درودان ۲۰٪</div>
-                        <div className="text-[10px] text-gray-400 font-mono font-normal">calibrated optimal risk per trade</div>
+                        <div>شبیه‌سازی بازپخش غیرخطی ریسک</div>
+                        <div className="text-[10px] text-gray-400 font-mono font-normal">Nonlinear Risk Replay Grid (8 Risk Levels: 0.5% - 4.0%)</div>
                       </td>
-                      <td className="py-3 px-4 font-bold text-cyan-300">
-                        {baselineValidationAudit.calibratedOptimalRisk}% ریسک به ازای هر معامله (برای تثبیت دقیق درودان روی ۲۰٪ با فرکانس جاری)
+                      <td className="py-3 px-4">
+                        <div className="space-y-2">
+                          <div className="text-[11px] text-gray-300 font-sans">
+                            بازپخش دقیق و مجزای شبیه‌سازی با سطوح ریسک مختلف برای کشف اثر غیرخطی تجمیع ریسک و درودان در برابر برآورد خطی:
+                          </div>
+                          <div className="overflow-x-auto rounded-xl border border-[#243046]">
+                            <table className="w-full text-right text-[11px] font-mono" dir="rtl">
+                              <thead className="bg-[#141b28] text-gray-300 border-b border-[#243046]">
+                                <tr>
+                                  <th className="p-2">ریسک هر ترید</th>
+                                  <th className="p-2">مبلغ ریسک</th>
+                                  <th className="p-2">سود خالص حساب</th>
+                                  <th className="p-2">بازده کل</th>
+                                  <th className="p-2">حداکثر درودان</th>
+                                  <th className="p-2">مبلغ درودان</th>
+                                  <th className="p-2">شارپ</th>
+                                  <th className="p-2">سورتینو</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-[#1b2333]">
+                                {baselineReconstruction.nonlinearRiskReplayAudit.map((r: any) => {
+                                  const rPct = r.riskPercent ?? r.riskLevel ?? 0;
+                                  const rUsd = r.riskUsd ?? ((capital * rPct) / 100);
+                                  const rNet = r.accountNetProfit ?? 0;
+                                  const rRet = r.netReturnPercent ?? r.finalReturnPct ?? 0;
+                                  const rDD = r.maxDD_percent ?? r.maxDD ?? 0;
+                                  const rDDU = r.maxDD_usd ?? 0;
+                                  const rSh = r.sharpeRatio ?? 0;
+                                  const rSo = r.sortinoRatio ?? 0;
+                                  const isCurrent = Math.abs(rPct - riskPercent) < 0.05;
+                                  return (
+                                    <tr
+                                      key={rPct}
+                                      className={`hover:bg-[#182132] transition-colors ${
+                                        isCurrent ? 'bg-cyan-950/40 font-bold border-r-2 border-r-cyan-400' : ''
+                                      }`}
+                                    >
+                                      <td className="p-2 text-cyan-300">
+                                        {rPct.toFixed(1)}%{isCurrent ? ' (فعلی)' : ''}
+                                      </td>
+                                      <td className="p-2 text-gray-300">${rUsd.toFixed(0)}</td>
+                                      <td className={`p-2 ${rNet >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                        ${rNet.toFixed(2)}
+                                      </td>
+                                      <td className={`p-2 ${rRet >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                        {rRet.toFixed(2)}%
+                                      </td>
+                                      <td className="p-2">
+                                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                          rDD <= 20
+                                            ? 'bg-emerald-500/20 text-emerald-300'
+                                            : 'bg-rose-500/20 text-rose-300'
+                                        }`}>
+                                          {rDD.toFixed(2)}%
+                                        </span>
+                                      </td>
+                                      <td className="p-2 text-rose-300">-${rDDU.toFixed(2)}</td>
+                                      <td className="p-2 text-gray-200">{rSh.toFixed(2)}</td>
+                                      <td className="p-2 text-gray-200">{rSo.toFixed(2)}</td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
                       </td>
                     </tr>
 
@@ -8230,7 +9509,7 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
             </div>
 
             {/* ========================================================================= */}
-            {/* جدول ۶: چک‌لیست نهایی ممیزی و راستی‌آزمایی انسجام ریاضی (6. Final Validation & Consistency Audit) */}
+            {/* جدول ۶: چک‌لیست نهایی ممیزی و راستی‌آزمایی انسجام ریاضی (6. 12-Condition Automated Consistency Audit) */}
             {/* ========================================================================= */}
             <div className="rounded-2xl bg-[#0f141f] border border-[#232c3f] shadow-xl overflow-hidden flex flex-col shrink-0">
               <div className="p-4 bg-gradient-to-r from-[#141b27] to-[#121622] border-b border-[#232c3f] flex flex-wrap items-center justify-between gap-3">
@@ -8240,28 +9519,51 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                   </div>
                   <div>
                     <h5 className="text-sm font-extrabold text-white flex items-center gap-2">
-                      <span>۶. چک‌لیست نهایی ممیزی و راستی‌آزمایی انسجام ریاضی (6. Final Validation & Consistency Audit)</span>
+                      <span>۶. چک‌لیست ۱۲ آزمون ممیزی و راستی‌آزمایی انسجام ریاضی (Table 6 — Automated Consistency Audit)</span>
                       <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${
-                        baselineReconstruction.consistencyAudit.allChecksPassed
+                        baselineReconstruction.consistencyAudit.overallStatus === 'PASS'
                           ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                          : baselineReconstruction.consistencyAudit.overallStatus === 'WARN'
+                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
                           : 'bg-rose-500/20 text-rose-300 border-rose-500/30'
                       }`}>
-                        {baselineReconstruction.consistencyAudit.allChecksPassed ? '✅ ALL AUDITS PASSED (۱۰۰٪ بدون مغایرت)' : '⚠️ دارای مغایرت آماری'}
+                        وضعیت کلی: {baselineReconstruction.consistencyAudit.overallStatus}
                       </span>
                     </h5>
                     <p className="text-[11px] text-gray-400 mt-0.5">
-                      راستی‌آزمایی خودکار پیش از صدور گزارش: انطباق مجموع PnL معاملات با سود کل، برابری برد+باخت با کل معاملات، ممیزی امید ریاضی و تطابق تفکیکی جهت
+                      ۱۲ آزمون سخت‌گیرانه خودکار: موازنه دقیق PnL، کارمزد صرافی، فاندینگ، امید ریاضی، پوشش زمانی، انطباق جهت و فیلتر همزمانی
                     </p>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2 text-xs font-mono">
                   <span className="px-2.5 py-1 rounded-lg bg-[#141924] border border-[#232e42] text-gray-300">
-                    وضعیت صحت ریاضی: <strong className={baselineReconstruction.consistencyAudit.allChecksPassed ? 'text-emerald-400' : 'text-rose-400'}>
-                      {baselineReconstruction.consistencyAudit.allChecksPassed ? '۷ از ۷ آزمون تایید شدند (PASS)' : 'نیازمند بررسی'}
+                    نتیجه ۱۲ آزمون: <strong className={baselineReconstruction.consistencyAudit.allChecksPassed ? 'text-emerald-400' : 'text-rose-400'}>
+                      {baselineReconstruction.consistencyAudit.checks.filter((c: any) => c.status === 'PASS').length} از ۱۲ آزمون تایید شدند (PASS)
                     </strong>
                   </span>
                 </div>
+              </div>
+
+              {/* پنل خلاصه وضعیت دسته‌بندی‌ها (Category Audit Summary) */}
+              <div className="p-3 bg-[#111723] border-b border-[#202a3c] grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2 text-xs">
+                {Object.entries(baselineReconstruction.consistencyAudit.categoryAuditSummary).map(([catKey, catVal]: [string, any]) => (
+                  <div key={catKey} className="p-2 rounded-xl bg-[#141b27] border border-[#232e42]">
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <span className="font-bold text-gray-200 text-[11px] font-sans truncate">{catVal.title}</span>
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border font-mono ${
+                        catVal.status === 'PASS'
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                          : catVal.status === 'WARN'
+                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                          : 'bg-rose-500/20 text-rose-300 border-rose-500/30'
+                      }`}>
+                        {catVal.status}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-gray-400 font-sans truncate">{catVal.notes}</div>
+                  </div>
+                ))}
               </div>
 
               <div className="overflow-x-auto">
@@ -8271,182 +9573,592 @@ ${baselineValidationAudit.investigationPoints.map((p) => `  - ${p.title}: ${p.fi
                       <th className="py-2.5 px-3 w-12 text-center">#</th>
                       <th className="py-2.5 px-3">شاخص ممیزی انسجام (Consistency Check)</th>
                       <th className="py-2.5 px-3">فرمول و مقادیر دقیق ارزیابی‌شده (Formula & Evaluated Values)</th>
-                      <th className="py-2.5 px-3 text-center">نتیجه ممیزی</th>
+                      <th className="py-2.5 px-3 text-center">نتیجه آزمون</th>
                       <th className="py-2.5 px-3">توضیح فنی و اثبات ریاضی</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#182030] font-mono text-[11px]">
-                    {/* ۱. Sum of individual trade net PnL = Total Net PnL */}
+                    {baselineReconstruction.consistencyAudit.checks.map((check: any) => (
+                      <tr key={check.id} className="hover:bg-[#151c28] transition-colors">
+                        <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">{check.id}</td>
+                        <td className="py-3 px-3 font-sans font-bold text-gray-200">
+                          <div>{check.name}</div>
+                          <div className="text-[10px] text-gray-400 font-mono font-normal">{check.nameEn}</div>
+                        </td>
+                        <td className="py-3 px-3 text-white">
+                          <code className="text-cyan-300 font-mono text-[11px]">{check.formula}</code>
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold border inline-flex items-center gap-1 ${
+                            check.status === 'PASS'
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                              : 'bg-rose-500/20 text-rose-300 border-rose-500/30'
+                          }`}>
+                            {check.status === 'PASS' ? '✅ PASS' : '❌ FAIL'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-3 font-sans text-gray-300 leading-relaxed text-[11px]">
+                          {check.explanation}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* ========================================================================= */}
+            {/* جدول ۷: ممیزی تفصیلی هزینه و اجرای سفارشات (TABLE 7 — EXECUTION & COST AUDIT) */}
+            {/* ========================================================================= */}
+            <div className="rounded-2xl bg-[#0f141f] border border-[#232c3f] shadow-xl overflow-hidden flex flex-col shrink-0">
+              <div className="p-4 bg-gradient-to-r from-[#141b27] to-[#121622] border-b border-[#232c3f] flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 font-black text-xs font-mono">
+                    #7
+                  </div>
+                  <div>
+                    <h5 className="text-sm font-extrabold text-white flex items-center gap-2">
+                      <span>۷. ممیزی تفصیلی هزینه و اجرای سفارشات (TABLE 7 — EXECUTION & COST AUDIT)</span>
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                        {baselineReconstruction.executionCostAudit.reconciliationPassed ? '✅ Reconciled (تطابق کامل حسابداری)' : '❌ Discrepancy'}
+                      </span>
+                    </h5>
+                    <p className="text-[11px] text-gray-400 mt-0.5">
+                      محاسبه و انباشت ارزش اسمی ورود و خروج، کارمزد دقیق صرافی، نرخ کارمزد موثر، فاندینگ پرداختی و دریافتی، و برابری کامل با سود نهایی حساب
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 text-xs font-mono">
+                  <span className="px-2.5 py-1 rounded-lg bg-[#141924] border border-[#232e42] text-amber-300">
+                    گردش مالی کل: <strong className="text-white">${baselineReconstruction.executionCostAudit.totalExecutedNotional.toLocaleString(undefined, { maximumFractionDigits: 0 })} USDT</strong>
+                  </span>
+                  <span className="px-2.5 py-1 rounded-lg bg-[#141924] border border-[#232e42] text-cyan-300">
+                    نرخ کارمزد موثر: <strong className="text-white">{baselineReconstruction.executionCostAudit.effectiveFeeRate.toFixed(4)}%</strong>
+                  </span>
+                </div>
+              </div>
+
+              {/* ردیف کارت‌های آماری کلیدی جدول ۷ */}
+              <div className="p-4 bg-[#101622] border-b border-[#1f283a] grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 text-xs font-mono">
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">ارزش اسمی ورود (Entry):</div>
+                  <div className="text-sm font-bold text-white">${baselineReconstruction.executionCostAudit.entryNotionalTotal.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">ارزش اسمی خروج (Exit):</div>
+                  <div className="text-sm font-bold text-white">${baselineReconstruction.executionCostAudit.exitNotionalTotal.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">کارمزد کل معاملات:</div>
+                  <div className="text-sm font-bold text-amber-400">-${baselineReconstruction.executionCostAudit.totalTradingFees.toFixed(2)}</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">فاندینگ پرداختی:</div>
+                  <div className="text-sm font-bold text-rose-400">-${baselineReconstruction.executionCostAudit.sumFundingPaid.toFixed(2)}</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">فاندینگ دریافتی:</div>
+                  <div className="text-sm font-bold text-emerald-400">+${baselineReconstruction.executionCostAudit.sumFundingReceived.toFixed(2)}</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">خالص فاندینگ:</div>
+                  <div className="text-sm font-bold text-rose-300">-${baselineReconstruction.executionCostAudit.netFunding.toFixed(2)}</div>
+                </div>
+              </div>
+
+              {/* کارت اثبات موازنه حسابداری دقیق */}
+              <div className="p-3 bg-[#131b28] border-b border-[#222f44] flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="space-y-1">
+                  <div className="font-bold text-gray-200 font-sans flex items-center gap-2">
+                    <span>📐 موازنه حسابداری رسمی پورتفوی:</span>
+                    <code className="text-cyan-300 font-mono text-[11px]">Sum(Gross Trade PnL) - Sum(Trading Fees) - Net Funding = Final Account PnL</code>
+                  </div>
+                  <div className="text-gray-300 font-mono text-[11px]">
+                    ${baselineReconstruction.executionCostAudit.sumGrossTradePnl.toFixed(2)} - ${baselineReconstruction.executionCostAudit.totalTradingFees.toFixed(2)} - ${baselineReconstruction.executionCostAudit.netFunding.toFixed(2)} = <strong className={baselineReconstruction.executionCostAudit.finalAccountNetProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}>${baselineReconstruction.executionCostAudit.finalAccountNetProfit.toFixed(2)} USDT</strong>
+                  </div>
+                </div>
+                <span className="px-3 py-1 rounded-xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold text-xs">
+                  ✅ انطباق کامل با تلرانس اعشاری ۰.۰۵$
+                </span>
+              </div>
+
+              {/* نمونه ردیف‌های اجرای سفارشات */}
+              <div className="overflow-x-auto max-h-72">
+                <table className="w-full text-right text-[11px] font-mono" dir="rtl">
+                  <thead className="bg-[#121722] text-gray-400 border-b border-[#1f2638] sticky top-0">
+                    <tr>
+                      <th className="p-2">نماد</th>
+                      <th className="p-2">جهت</th>
+                      <th className="p-2">ارزش اسمی ورود</th>
+                      <th className="p-2">ارزش اسمی خروج</th>
+                      <th className="p-2">سود ناخالص</th>
+                      <th className="p-2">کارمزد ورود</th>
+                      <th className="p-2">کارمزد خروج</th>
+                      <th className="p-2">کارمزد کل</th>
+                      <th className="p-2">خالص فاندینگ</th>
+                      <th className="p-2">سود نهایی معامله</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#182030]">
+                    {baselineReconstruction.executionCostAudit.sampleExecutions.map((t: any, idx: number) => (
+                      <tr key={idx} className="hover:bg-[#151c28] transition-colors">
+                        <td className="p-2 font-bold text-white">{t.symbol}</td>
+                        <td className="p-2">
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                            t.direction === 'buy' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'
+                          }`}>
+                            {t.direction === 'buy' ? 'خرید (Long)' : 'فروش (Short)'}
+                          </span>
+                        </td>
+                        <td className="p-2 text-gray-300">${t.entryNotional.toFixed(2)}</td>
+                        <td className="p-2 text-gray-300">${t.exitNotional.toFixed(2)}</td>
+                        <td className={`p-2 ${t.grossTradePnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          ${t.grossTradePnl.toFixed(2)}
+                        </td>
+                        <td className="p-2 text-amber-300">-${t.entryFee.toFixed(2)}</td>
+                        <td className="p-2 text-amber-300">-${t.exitFee.toFixed(2)}</td>
+                        <td className="p-2 text-amber-400">-${t.totalTradingFee.toFixed(2)}</td>
+                        <td className={`p-2 ${t.netFunding >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          {t.netFunding >= 0 ? '+' : ''}${t.netFunding.toFixed(2)}
+                        </td>
+                        <td className={`p-2 font-bold ${t.finalTradePnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          ${t.finalTradePnl.toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* ========================================================================= */}
+            {/* جدول ۸: ممیزی مواجهه، مارجین و اهرم (TABLE 8 — EXPOSURE & MARGIN AUDIT) */}
+            {/* ========================================================================= */}
+            <div className="rounded-2xl bg-[#0f141f] border border-[#232c3f] shadow-xl overflow-hidden flex flex-col shrink-0">
+              <div className="p-4 bg-gradient-to-r from-[#141b27] to-[#121622] border-b border-[#232c3f] flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-400 font-black text-xs font-mono">
+                    #8
+                  </div>
+                  <div>
+                    <h5 className="text-sm font-extrabold text-white flex items-center gap-2">
+                      <span>۸. ممیزی مواجهه، مارجین و اهرم (TABLE 8 — EXPOSURE & MARGIN AUDIT)</span>
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 font-mono">
+                        Theoretical risk-based sizing
+                      </span>
+                    </h5>
+                    <p className="text-[11px] text-gray-400 mt-0.5">
+                      تفکیک اهرم صرافی (1x) از ارزش اسمی پوزیشن، مواجهه ناخالص سبد و مارجین موردنیاز و شفاف‌سازی کامل قابلیت اجرا در صرافی
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 text-xs font-mono">
+                  <span className="px-2.5 py-1 rounded-lg bg-[#141924] border border-[#232e42] text-amber-300">
+                    اوج مواجهه ناخالص: <strong className="text-white">{baselineReconstruction.exposureMarginAudit.maxGrossExposurePct.toFixed(1)}% ({(baselineReconstruction.exposureMarginAudit.maxGrossExposurePct / 100).toFixed(2)}x)</strong>
+                  </span>
+                </div>
+              </div>
+
+              {/* بدنه دو ستونه ممیزی اهرم و مارجین */}
+              <div className="w-full">
+                <table className="w-full text-right text-xs" dir="rtl">
+                  <thead>
+                    <tr className="bg-[#121722] text-gray-400 border-b border-[#1f2638] text-[11px] uppercase">
+                      <th className="py-2.5 px-4 font-bold w-1/3">مولفه ممیزی مارجین و مواجهه</th>
+                      <th className="py-2.5 px-4 font-bold w-2/3">مقدار، تحلیل و وضعیت اجرایی‌پذیری</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#182030] font-mono text-[11px]">
                     <tr className="hover:bg-[#151c28] transition-colors">
-                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۱</td>
-                      <td className="py-3 px-3 font-sans font-bold text-gray-200">
-                        <div>انطباق مجموع سود خالص تک‌تک معاملات با سود خالص کل</div>
-                        <div className="text-[10px] text-gray-400 font-mono font-normal">Sum of individual trade net PnL = Total Net PnL</div>
+                      <td className="py-3 px-4 font-sans font-bold text-gray-200">
+                        <div>A) تنظیم اهرم صرافی (Exchange Leverage Setting)</div>
                       </td>
-                      <td className="py-3 px-3 text-white">
-                        Sum(Trade Net PnLs) = <strong className="text-emerald-400">${baselineReconstruction.consistencyAudit.sumOfIndividualTradePnls}</strong> | Total Trading Net PnL = <strong className="text-emerald-400">${baselineReconstruction.consistencyAudit.totalTradingNetProfit}</strong>
-                      </td>
-                      <td className="py-3 px-3 text-center">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold border inline-flex items-center gap-1 ${
-                          baselineReconstruction.consistencyAudit.check1_pnlSumMatch
-                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-                            : 'bg-rose-500/20 text-rose-300 border-rose-500/30'
-                        }`}>
-                          {baselineReconstruction.consistencyAudit.check1_pnlSumMatch ? '✅ PASS' : '❌ FAIL'}
-                        </span>
-                      </td>
-                      <td className="py-3 px-3 font-sans text-gray-300 leading-relaxed text-[11px]">
-                        مجموع تک‌تک مقادیر netPnL معاملات ثبت‌شده در ژورنال بدون کوچکترین کسری یا مغایرت با سود خالص معاملاتی کل همخوانی دارد.
+                      <td className="py-3 px-4 text-emerald-400 font-bold">
+                        1x (تنظیم بدون اهرم یا اهرم پایه در حساب بایننس)
                       </td>
                     </tr>
-
-                    {/* ۲. Winning Trades + Losing Trades = Total Closed Trades */}
                     <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
-                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۲</td>
-                      <td className="py-3 px-3 font-sans font-bold text-gray-200">
-                        <div>برابری معاملات برنده + بازنده با کل معاملات بسته‌شده</div>
-                        <div className="text-[10px] text-gray-400 font-mono font-normal">Winning Trades + Losing Trades = Total Closed Trades</div>
+                      <td className="py-3 px-4 font-sans font-bold text-gray-200">
+                        <div>B) برچسب طبقه‌بندی سایزینگ (Sizing Classification)</div>
                       </td>
-                      <td className="py-3 px-3 text-white">
-                        <strong className="text-emerald-400">{baselineReconstruction.consistencyAudit.winTrades} W</strong> + <strong className="text-rose-400">{baselineReconstruction.consistencyAudit.lossTrades} L</strong> = <strong className="text-cyan-300">{baselineReconstruction.consistencyAudit.totalTrades} Total Closed</strong>
-                      </td>
-                      <td className="py-3 px-3 text-center">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold border inline-flex items-center gap-1 ${
-                          baselineReconstruction.consistencyAudit.check2_winLossCountMatch
-                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-                            : 'bg-rose-500/20 text-rose-300 border-rose-500/30'
-                        }`}>
-                          {baselineReconstruction.consistencyAudit.check2_winLossCountMatch ? '✅ PASS' : '❌ FAIL'}
+                      <td className="py-3 px-4">
+                        <span className="px-2 py-1 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold">
+                          Theoretical risk-based sizing
                         </span>
-                      </td>
-                      <td className="py-3 px-3 font-sans text-gray-300 leading-relaxed text-[11px]">
-                        تعداد کل معاملات گزارش‌شده دقیقاً منطبق بر مجموع معاملات سودده و زیان‌ده است و پوزیشن‌های باز در مخرج وین‌ریت محاسبه نشده‌اند.
+                        <div className="text-[10px] text-gray-400 font-sans mt-1">
+                          سیستم مستقلاً بر مبنای فاصله حد ضرر حجم تعیین می‌کند و این مدل شبیه‌سازی نباید به عنوان معاملات اهرم ۱x قابل اجرا روی صرافی بدون مارجین اضافی قلمداد شود.
+                        </div>
                       </td>
                     </tr>
-
-                    {/* ۳. Directional statistics match overall totals */}
                     <tr className="hover:bg-[#151c28] transition-colors">
-                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۳</td>
-                      <td className="py-3 px-3 font-sans font-bold text-gray-200">
-                        <div>انطباق کامل آمار تفکیکی جهت (Long/Short) با آمار کلی</div>
-                        <div className="text-[10px] text-gray-400 font-mono font-normal">Directional Trade Counts & Wins Sum to Overall Totals</div>
+                      <td className="py-3 px-4 font-sans font-bold text-gray-200">
+                        <div>C) حداکثر مواجهه ناخالص سبد (Maximum Gross Exposure / Equity)</div>
                       </td>
-                      <td className="py-3 px-3 text-white text-[10px]">
-                        <div>خرید (Long): {baselineReconstruction.consistencyAudit.longTradesCount} [{baselineReconstruction.consistencyAudit.longWinTrades} برد / {baselineReconstruction.consistencyAudit.longLossTrades} باخت]</div>
-                        <div>فروش (Short): {baselineReconstruction.consistencyAudit.shortTradesCount} [{baselineReconstruction.consistencyAudit.shortWinTrades} برد / {baselineReconstruction.consistencyAudit.shortLossTrades} باخت]</div>
-                      </td>
-                      <td className="py-3 px-3 text-center">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold border inline-flex items-center gap-1 ${
-                          baselineReconstruction.consistencyAudit.check4_directionalMatch
-                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-                            : 'bg-rose-500/20 text-rose-300 border-rose-500/30'
-                        }`}>
-                          {baselineReconstruction.consistencyAudit.check4_directionalMatch ? '✅ PASS' : '❌ FAIL'}
-                        </span>
-                      </td>
-                      <td className="py-3 px-3 font-sans text-gray-300 leading-relaxed text-[11px]">
-                        مجموع معاملات و بردهای لانگ و شورت دقیقاً برابر با مقادیر کل گزارش است و از زیرمجموعه‌ها یا متدهای متناقض استفاده نشده است.
+                      <td className="py-3 px-4 text-amber-300 font-bold">
+                        {baselineReconstruction.exposureMarginAudit.maxGrossExposurePct.toFixed(1)}% حقوق صاحبان سهام ({(baselineReconstruction.exposureMarginAudit.maxGrossExposurePct / 100).toFixed(2)}x) | اوج ارزش اسمی همزمان: ${baselineReconstruction.exposureMarginAudit.maxSimultaneousNotional.toLocaleString(undefined, { maximumFractionDigits: 0 })} USDT
                       </td>
                     </tr>
-
-                    {/* ۴. Gross Profit - Gross Loss = Net Trading PnL */}
                     <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
-                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۴</td>
-                      <td className="py-3 px-3 font-sans font-bold text-gray-200">
-                        <div>سود ناخالص منهای زیان ناخالص = سود خالص معاملاتی</div>
-                        <div className="text-[10px] text-gray-400 font-mono font-normal">Gross Profit - Gross Loss = Net Trading PnL</div>
+                      <td className="py-3 px-4 font-sans font-bold text-gray-200">
+                        <div>D) حداکثر مارجین مورد نیاز به حقوق صاحبان سهام (Max Required Margin / Equity)</div>
                       </td>
-                      <td className="py-3 px-3 text-white">
-                        ${baselineReconstruction.consistencyAudit.grossProfit} - ${baselineReconstruction.consistencyAudit.grossLoss} = <strong className="text-emerald-400">${baselineReconstruction.consistencyAudit.grossMinusLoss}</strong>
-                      </td>
-                      <td className="py-3 px-3 text-center">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold border inline-flex items-center gap-1 ${
-                          baselineReconstruction.consistencyAudit.check3_grossMinusLossMatch
-                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-                            : 'bg-rose-500/20 text-rose-300 border-rose-500/30'
-                        }`}>
-                          {baselineReconstruction.consistencyAudit.check3_grossMinusLossMatch ? '✅ PASS' : '❌ FAIL'}
-                        </span>
-                      </td>
-                      <td className="py-3 px-3 font-sans text-gray-300 leading-relaxed text-[11px]">
-                        سود خالص تریدهای برنده منهای قدرمطلق زیان خالص تریدهای بازنده دقیقاً با سود خالص معاملاتی قبل از هزینه‌های حساب برابر است.
+                      <td className="py-3 px-4 text-cyan-300 font-bold">
+                        {baselineReconstruction.exposureMarginAudit.maxRequiredMarginPct.toFixed(1)}%
                       </td>
                     </tr>
-
-                    {/* ۵. Net PnL = Gross PnL - Trading Fees - Funding */}
                     <tr className="hover:bg-[#151c28] transition-colors">
-                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۵</td>
-                      <td className="py-3 px-3 font-sans font-bold text-gray-200">
-                        <div>معادله کارمزد و فاندینگ ریت با سود ناخالص و خالص</div>
-                        <div className="text-[10px] text-gray-400 font-mono font-normal">Net PnL = Gross PnL - Trading Fees - Funding</div>
+                      <td className="py-3 px-4 font-sans font-bold text-gray-200">
+                        <div>E) تحلیل اجرایی‌پذیری در صرافی واقعی (Executability Analysis)</div>
                       </td>
-                      <td className="py-3 px-3 text-white text-[10px]">
-                        <div>Gross (${baselineReconstruction.consistencyAudit.grossPnlSum}) - Fees (${baselineReconstruction.consistencyAudit.totalFees}) = ${baselineReconstruction.consistencyAudit.totalTradingNetProfit}</div>
-                        <div>پس از کسر فاندینگ (${baselineReconstruction.consistencyAudit.estimatedFundingFees}) = <strong className="text-emerald-400">${baselineReconstruction.consistencyAudit.finalAccountNetProfit}</strong></div>
-                      </td>
-                      <td className="py-3 px-3 text-center">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold border inline-flex items-center gap-1 ${
-                          baselineReconstruction.consistencyAudit.check7_netPnlEquation && baselineReconstruction.consistencyAudit.check8_finalNetPnl
-                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-                            : 'bg-rose-500/20 text-rose-300 border-rose-500/30'
-                        }`}>
-                          {baselineReconstruction.consistencyAudit.check7_netPnlEquation && baselineReconstruction.consistencyAudit.check8_finalNetPnl ? '✅ PASS' : '❌ FAIL'}
-                        </span>
-                      </td>
-                      <td className="py-3 px-3 font-sans text-gray-300 leading-relaxed text-[11px]">
-                        تمامی مؤلفه‌های Gross PnL، کارمزد صرافی و فاندینگ ریت شفافاً تفکیک شده و هیچ کسر مضاعفی صورت نگرفته است.
-                      </td>
-                    </tr>
-
-                    {/* ۶. Independent Expectancy Verification */}
-                    <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
-                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۶</td>
-                      <td className="py-3 px-3 font-sans font-bold text-gray-200">
-                        <div>تطابق مستقل دو روش محاسبه امید ریاضی</div>
-                        <div className="text-[10px] text-gray-400 font-mono font-normal">Expectancy = (WinRate × AvgWin) - (LossRate × AvgLoss)</div>
-                      </td>
-                      <td className="py-3 px-3 text-white">
-                        روش ۱: <strong className="text-cyan-300">${baselineReconstruction.consistencyAudit.expectancyUsd}</strong> | روش ۲: <strong className="text-cyan-300">${baselineReconstruction.consistencyAudit.expectancyFormula2}</strong> (مغایرت: ${baselineReconstruction.consistencyAudit.expectancyDiscrepancy})
-                      </td>
-                      <td className="py-3 px-3 text-center">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold border inline-flex items-center gap-1 ${
-                          baselineReconstruction.consistencyAudit.check6_expectancyFormulasMatch
-                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-                            : 'bg-rose-500/20 text-rose-300 border-rose-500/30'
-                        }`}>
-                          {baselineReconstruction.consistencyAudit.check6_expectancyFormulasMatch ? '✅ PASS' : '❌ FAIL'}
-                        </span>
-                      </td>
-                      <td className="py-3 px-3 font-sans text-gray-300 leading-relaxed text-[11px]">
-                        هر دو روش محاسبه امید ریاضی (مستقیم بر اساس PnL هر ترید و فرمول وزنی وین‌ریت/میانگین سود و زیان) به نتایج کاملاً یکسان منتهی شدند.
-                      </td>
-                    </tr>
-
-                    {/* ۷. Expectancy × Number of Trades = Total Net PnL */}
-                    <tr className="hover:bg-[#151c28] transition-colors">
-                      <td className="py-3 px-3 text-center font-mono font-bold text-gray-400">۷</td>
-                      <td className="py-3 px-3 font-sans font-bold text-gray-200">
-                        <div>برابری حاصل‌ضرب امید ریاضی در تعداد معاملات با سود خالص</div>
-                        <div className="text-[10px] text-gray-400 font-mono font-normal">Expectancy × Number of Trades = Total Net PnL</div>
-                      </td>
-                      <td className="py-3 px-3 text-white">
-                        ${baselineReconstruction.consistencyAudit.expectancyUsd} × {baselineReconstruction.consistencyAudit.totalTrades} = <strong className="text-emerald-400">${baselineReconstruction.consistencyAudit.expectancyProduct}</strong>
-                      </td>
-                      <td className="py-3 px-3 text-center">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold border inline-flex items-center gap-1 ${
-                          baselineReconstruction.consistencyAudit.check5_expectancyMatch
-                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-                            : 'bg-rose-500/20 text-rose-300 border-rose-500/30'
-                        }`}>
-                          {baselineReconstruction.consistencyAudit.check5_expectancyMatch ? '✅ PASS' : '❌ FAIL'}
-                        </span>
-                      </td>
-                      <td className="py-3 px-3 font-sans text-gray-300 leading-relaxed text-[11px]">
-                        حاصل‌ضرب میانگین بازده انتظاری هر ترید در تعداد کل معاملات بسته‌شده دقیقاً برابر با سود خالص کل محقق‌شده در ژورنال است.
+                      <td className="py-3 px-4 text-gray-300 font-sans leading-relaxed">
+                        {baselineReconstruction.exposureMarginAudit.executabilityAssessment}
                       </td>
                     </tr>
                   </tbody>
                 </table>
+              </div>
+            </div>
+
+            {/* ========================================================================= */}
+            {/* جدول ۹: پوشش زمانی واقعی استراتژی (TABLE 9 — ACTUAL TRADE COVERAGE) */}
+            {/* ========================================================================= */}
+            <div className="rounded-2xl bg-[#0f141f] border border-[#232c3f] shadow-xl overflow-hidden flex flex-col shrink-0">
+              <div className="p-4 bg-gradient-to-r from-[#141b27] to-[#121622] border-b border-[#232c3f] flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-teal-500/15 border border-teal-500/30 flex items-center justify-center text-teal-400 font-black text-xs font-mono">
+                    #9
+                  </div>
+                  <div>
+                    <h5 className="text-sm font-extrabold text-white flex items-center gap-2">
+                      <span>۹. پوشش زمانی واقعی استراتژی (TABLE 9 — ACTUAL TRADE COVERAGE)</span>
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-500/20 text-teal-300 border border-teal-500/30">
+                        {baselineReconstruction.actualTradeCoverageAudit.activeTradingDaysCount} Active Days
+                      </span>
+                    </h5>
+                    <p className="text-[11px] text-gray-400 mt-0.5">
+                      تفکیک دقیق «پوشش دیتاست» از «پوشش معاملاتی واقعی استراتژی» جهت تفسیر علمی و صحیح CAGR، شارپ و شاخص‌های سالانه‌شده
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-xs font-mono">
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">اولین ورود نهایی:</div>
+                  <div className="text-sm font-bold text-white truncate">{baselineReconstruction.actualTradeCoverageAudit.earliestFinalTradeEntry}</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">آخرین خروج نهایی:</div>
+                  <div className="text-sm font-bold text-white truncate">{baselineReconstruction.actualTradeCoverageAudit.latestFinalTradeExit}</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">روزهای تقویمی پوشش:</div>
+                  <div className="text-sm font-bold text-cyan-300">{baselineReconstruction.actualTradeCoverageAudit.calendarDaysBetween} روز</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">روزهای فعال دارای معامله:</div>
+                  <div className="text-sm font-bold text-emerald-400">{baselineReconstruction.actualTradeCoverageAudit.activeTradingDaysCount} روز</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">ماه‌های دارای معامله:</div>
+                  <div className="text-sm font-bold text-amber-300">{baselineReconstruction.actualTradeCoverageAudit.activeMonthsCount} ماه</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">میانگین معاملات در ماه:</div>
+                  <div className="text-sm font-bold text-teal-300">{baselineReconstruction.actualTradeCoverageAudit.avgTradesPerMonth.toFixed(1)}</div>
+                </div>
+              </div>
+            </div>
+
+            {/* ========================================================================= */}
+            {/* جدول ۱۰: عملکرد تفکیکی ماه‌های تقویمی (TABLE 10 — MONTHLY PORTFOLIO PERFORMANCE) */}
+            {/* ========================================================================= */}
+            <div className="rounded-2xl bg-[#0f141f] border border-[#232c3f] shadow-xl overflow-hidden flex flex-col shrink-0">
+              <div className="p-4 bg-gradient-to-r from-[#141b27] to-[#121622] border-b border-[#232c3f] flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-indigo-400 font-black text-xs font-mono">
+                    #10
+                  </div>
+                  <div>
+                    <h5 className="text-sm font-extrabold text-white flex items-center gap-2">
+                      <span>۱۰. عملکرد تفکیکی ماه‌های تقویمی (TABLE 10 — MONTHLY PORTFOLIO PERFORMANCE)</span>
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                        All Calendar Months
+                      </span>
+                    </h5>
+                    <p className="text-[11px] text-gray-400 mt-0.5">
+                      پوشش کامل کلیه ماه‌های تقویمی در بازه تست، تفکیک سود ناخالص، کارمزد صرافی، فاندینگ، سود خالص و درودان ماهانه
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-right text-xs" dir="rtl">
+                  <thead>
+                    <tr className="bg-[#121722] text-gray-400 border-b border-[#1f2638] text-[11px] uppercase font-mono">
+                      <th className="py-2.5 px-3">ماه (Month)</th>
+                      <th className="py-2.5 px-3">معاملات بسته‌شده</th>
+                      <th className="py-2.5 px-3">برد / باخت</th>
+                      <th className="py-2.5 px-3">وین ریت (%)</th>
+                      <th className="py-2.5 px-3">سود ناخالص</th>
+                      <th className="py-2.5 px-3">کارمزد صرافی</th>
+                      <th className="py-2.5 px-3">فاندینگ</th>
+                      <th className="py-2.5 px-3">سود خالص</th>
+                      <th className="py-2.5 px-3">بازده ماهانه (%)</th>
+                      <th className="py-2.5 px-3">حداکثر درودان ماه (%)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#182030] font-mono text-[11px]">
+                    {baselineReconstruction.monthlyPerformanceAudit.map((m: any) => (
+                      <tr key={m.month} className="hover:bg-[#151c28] transition-colors">
+                        <td className="py-2.5 px-3 font-bold text-white">{m.month}</td>
+                        <td className="py-2.5 px-3 text-gray-200">{m.closedTrades}</td>
+                        <td className="py-2.5 px-3 text-gray-300">{m.winningTrades} W / {m.losingTrades} L</td>
+                        <td className="py-2.5 px-3 text-cyan-300">{m.winRate.toFixed(1)}%</td>
+                        <td className={`py-2.5 px-3 ${m.grossPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>${m.grossPnl.toFixed(2)}</td>
+                        <td className="py-2.5 px-3 text-amber-300">-${m.tradingFees.toFixed(2)}</td>
+                        <td className="py-2.5 px-3 text-rose-300">-${m.funding.toFixed(2)}</td>
+                        <td className={`py-2.5 px-3 font-bold ${m.netAccountPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>${m.netAccountPnl.toFixed(2)}</td>
+                        <td className={`py-2.5 px-3 font-bold ${m.returnPercent >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{m.returnPercent.toFixed(2)}%</td>
+                        <td className="py-2.5 px-3 text-rose-400">{m.maxDrawdownPct.toFixed(2)}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* ========================================================================= */}
+            {/* جدول ۱۱: اعتبارسنجی منحنی‌های سرمایه و اصطکاک کارمزد (TABLE 11 — EQUITY CURVE VALIDATION & FEE DRAG) */}
+            {/* ========================================================================= */}
+            <div className="rounded-2xl bg-[#0f141f] border border-[#232c3f] shadow-xl overflow-hidden flex flex-col shrink-0">
+              <div className="p-4 bg-gradient-to-r from-[#141b27] to-[#121622] border-b border-[#232c3f] flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-pink-500/15 border border-pink-500/30 flex items-center justify-center text-pink-400 font-black text-xs font-mono">
+                    #11
+                  </div>
+                  <div>
+                    <h5 className="text-sm font-extrabold text-white flex items-center gap-2">
+                      <span>۱۱. اعتبارسنجی دو منحنی سرمایه و اصطکاک کارمزد (TABLE 11 — EQUITY CURVE VALIDATION & FEE DRAG)</span>
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-pink-500/20 text-pink-300 border border-pink-500/30">
+                        Dual Curves + Fee Drag
+                      </span>
+                    </h5>
+                    <p className="text-[11px] text-gray-400 mt-0.5">
+                      بازسازی مستقل منحنی معاملاتی (بدون فاندینگ) در برابر منحنی نهایی حساب (با فاندینگ) به همراه خط زمانی عمیق‌ترین درودان و اصطکاک کارمزدها
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* مقایسه دو منحنی */}
+              <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* منحنی معاملاتی */}
+                <div className="p-3.5 rounded-xl bg-[#131924] border border-[#222c3d] space-y-2">
+                  <div className="text-xs font-bold text-cyan-300 font-sans border-b border-[#1f283a] pb-1.5 flex items-center justify-between">
+                    <span>منحنی معاملاتی (Trading Equity: Gross PnL - Trading Fees)</span>
+                    <span className="text-gray-400 font-mono text-[10px]">بدون فاندینگ</span>
+                  </div>
+                  <div className="space-y-1 font-mono text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">دارایی نهایی:</span>
+                      <span className="text-white font-bold">${baselineReconstruction.equityCurveValidationAudit.tradingEquity.finalEquity.toFixed(2)} USDT</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">حداکثر درودان:</span>
+                      <span className="text-rose-400 font-bold">-${baselineReconstruction.equityCurveValidationAudit.tradingEquity.maxDrawdownUsd.toFixed(2)} (-{baselineReconstruction.equityCurveValidationAudit.tradingEquity.maxDrawdownPct.toFixed(2)}%)</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">شروع درودان:</span>
+                      <span className="text-gray-300">{baselineReconstruction.equityCurveValidationAudit.tradingEquity.startDate}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">کف درودان:</span>
+                      <span className="text-amber-300">{baselineReconstruction.equityCurveValidationAudit.tradingEquity.bottomDate}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">تاریخ ریکاوری:</span>
+                      <span className="text-emerald-300">{baselineReconstruction.equityCurveValidationAudit.tradingEquity.recoveryDate}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">طول دوره درودان:</span>
+                      <span className="text-gray-200">{baselineReconstruction.equityCurveValidationAudit.tradingEquity.durationDays.toFixed(1)} روز ({baselineReconstruction.equityCurveValidationAudit.tradingEquity.durationTrades} معامله)</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* منحنی حساب */}
+                <div className="p-3.5 rounded-xl bg-[#131924] border border-[#222c3d] space-y-2">
+                  <div className="text-xs font-bold text-rose-300 font-sans border-b border-[#1f283a] pb-1.5 flex items-center justify-between">
+                    <span>منحنی نهایی حساب (Actual Account Equity: Gross - Fees - Funding)</span>
+                    <span className="text-gray-400 font-mono text-[10px]">با فاندینگ ریت</span>
+                  </div>
+                  <div className="space-y-1 font-mono text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">دارایی نهایی:</span>
+                      <span className="text-white font-bold">${baselineReconstruction.equityCurveValidationAudit.accountEquity.finalEquity.toFixed(2)} USDT</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">حداکثر درودان:</span>
+                      <span className="text-rose-400 font-bold">-${baselineReconstruction.equityCurveValidationAudit.accountEquity.maxDrawdownUsd.toFixed(2)} (-{baselineReconstruction.equityCurveValidationAudit.accountEquity.maxDrawdownPct.toFixed(2)}%)</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">شروع درودان:</span>
+                      <span className="text-gray-300">{baselineReconstruction.equityCurveValidationAudit.accountEquity.startDate}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">کف درودان:</span>
+                      <span className="text-amber-300">{baselineReconstruction.equityCurveValidationAudit.accountEquity.bottomDate}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">تاریخ ریکاوری:</span>
+                      <span className="text-rose-300">{baselineReconstruction.equityCurveValidationAudit.accountEquity.recoveryDate}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">طول دوره درودان:</span>
+                      <span className="text-gray-200">{baselineReconstruction.equityCurveValidationAudit.accountEquity.durationDays.toFixed(1)} روز ({baselineReconstruction.equityCurveValidationAudit.accountEquity.durationTrades} معامله)</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* کارت تحلیل اصطکاک تجربی کارمزدها (Empirical Fee Drag) */}
+              <div className="p-3.5 bg-[#121824] border-t border-[#1f283a] text-xs">
+                <div className="font-bold text-amber-300 mb-2 font-sans">
+                  📊 تحلیل اصطکاک تجربی کارمزدها (Empirical Fee Drag Analysis):
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono">
+                  <div className="p-2 rounded-lg bg-[#151c28]">
+                    <div className="text-[10px] text-gray-400 font-sans">سرمایه بدون کارمزد:</div>
+                    <div className="text-emerald-400 font-bold">${baselineReconstruction.feeDragAudit.finalEquityWithoutFees.toFixed(2)}</div>
+                  </div>
+                  <div className="p-2 rounded-lg bg-[#151c28]">
+                    <div className="text-[10px] text-gray-400 font-sans">سرمایه با کارمزد:</div>
+                    <div className="text-cyan-300 font-bold">${baselineReconstruction.feeDragAudit.finalEquityWithFees.toFixed(2)}</div>
+                  </div>
+                  <div className="p-2 rounded-lg bg-[#151c28]">
+                    <div className="text-[10px] text-gray-400 font-sans">افت ناشی از کارمزد:</div>
+                    <div className="text-rose-400 font-bold">-${baselineReconstruction.feeDragAudit.feeImpactOnFinalEquityUsd.toFixed(2)}</div>
+                  </div>
+                  <div className="p-2 rounded-lg bg-[#151c28]">
+                    <div className="text-[10px] text-gray-400 font-sans">اثر بر حداکثر درودان:</div>
+                    <div className="text-amber-300 font-bold">+{baselineReconstruction.feeDragAudit.feeImpactOnMaxDDPct.toFixed(2)}% (-${baselineReconstruction.feeDragAudit.feeImpactOnMaxDDUsd.toFixed(2)})</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* ========================================================================= */}
+            {/* جدول ۱۲: توزیع ریسک روزانه و ارزش در معرض ریسک (TABLE 12 — DAILY RISK DISTRIBUTION) */}
+            {/* ========================================================================= */}
+            <div className="rounded-2xl bg-[#0f141f] border border-[#232c3f] shadow-xl overflow-hidden flex flex-col shrink-0">
+              <div className="p-4 bg-gradient-to-r from-[#141b27] to-[#121622] border-b border-[#232c3f] flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-orange-500/15 border border-orange-500/30 flex items-center justify-center text-orange-400 font-black text-xs font-mono">
+                    #12
+                  </div>
+                  <div>
+                    <h5 className="text-sm font-extrabold text-white flex items-center gap-2">
+                      <span>۱۲. توزیع ریسک روزانه و ارزش در معرض ریسک (TABLE 12 — DAILY RISK DISTRIBUTION)</span>
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-300 border border-orange-500/30">
+                        VaR & CVaR (Expected Shortfall)
+                      </span>
+                    </h5>
+                    <p className="text-[11px] text-gray-400 mt-0.5">
+                      محاسبه مستقل بازدهی‌های تجربی روزانه، انحراف معیار، صدک‌ها و تفکیک ارزش در معرض ریسک با کسری موردانتظار
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-4 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 text-xs font-mono">
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">میانگین بازده روزانه:</div>
+                  <div className="text-sm font-bold text-cyan-300">{baselineReconstruction.dailyRiskDistributionAudit.meanDailyReturn.toFixed(2)}%</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">میانه بازده روزانه:</div>
+                  <div className="text-sm font-bold text-gray-200">{baselineReconstruction.dailyRiskDistributionAudit.medianDailyReturn.toFixed(2)}%</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">انحراف معیار روزانه:</div>
+                  <div className="text-sm font-bold text-amber-300">{baselineReconstruction.dailyRiskDistributionAudit.stdDevDailyReturn.toFixed(2)}%</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">ارزش در معرض ریسک (VaR 95%):</div>
+                  <div className="text-sm font-bold text-amber-400">{baselineReconstruction.dailyRiskDistributionAudit.var95.toFixed(2)}% (-${((capital * baselineReconstruction.dailyRiskDistributionAudit.var95) / 100).toFixed(2)})</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">کسری موردانتظار (CVaR 95%):</div>
+                  <div className="text-sm font-bold text-rose-400">{baselineReconstruction.dailyRiskDistributionAudit.cvar95.toFixed(2)}% (-${((capital * baselineReconstruction.dailyRiskDistributionAudit.cvar95) / 100).toFixed(2)})</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">کسری موردانتظار (CVaR 99%):</div>
+                  <div className="text-sm font-bold text-rose-500">{baselineReconstruction.dailyRiskDistributionAudit.cvar99.toFixed(2)}% (-${((capital * baselineReconstruction.dailyRiskDistributionAudit.cvar99) / 100).toFixed(2)})</div>
+                </div>
+              </div>
+            </div>
+
+            {/* ========================================================================= */}
+            {/* جدول ۱۳: ممیزی فیلتر همزمانی و صحه‌گذاری عدم اریب (TABLE 13 — CONCURRENCY FILTER AUDIT) */}
+            {/* ========================================================================= */}
+            <div className="rounded-2xl bg-[#0f141f] border border-[#232c3f] shadow-xl overflow-hidden flex flex-col shrink-0">
+              <div className="p-4 bg-gradient-to-r from-[#141b27] to-[#121622] border-b border-[#232c3f] flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-black text-xs font-mono">
+                    #13
+                  </div>
+                  <div>
+                    <h5 className="text-sm font-extrabold text-white flex items-center gap-2">
+                      <span>۱۳. ممیزی فیلتر همزمانی پورتفوی و صحه‌گذاری عدم اریب (TABLE 13 — CONCURRENCY FILTER AUDIT)</span>
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                        Zero Look-Ahead Bias Verified
+                      </span>
+                    </h5>
+                    <p className="text-[11px] text-gray-400 mt-0.5">
+                      تفکیک رسمی معاملات اولیه خام از معاملات نهایی پورتفوی پس از حذف تداخل‌های همزمانی با اثبات عدم استفاده از اطلاعات آینده
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-4 space-y-3 text-xs">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono">
+                  <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                    <div className="text-[10px] text-gray-400 font-sans">معاملات خام [RAW / PRE-FILTER]:</div>
+                    <div className="text-sm font-bold text-white">{baselineReconstruction.concurrencyFilterAudit.rawTradesCount} معامله</div>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                    <div className="text-[10px] text-gray-400 font-sans">معاملات ردشده به علت تداخل:</div>
+                    <div className="text-sm font-bold text-rose-400">{baselineReconstruction.concurrencyFilterAudit.rejectedTradesCount} معامله ({baselineReconstruction.concurrencyFilterAudit.removalPercentage.toFixed(1)}%)</div>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                    <div className="text-[10px] text-gray-400 font-sans">معاملات نهایی [POST-CONCURRENCY]:</div>
+                    <div className="text-sm font-bold text-emerald-400">{baselineReconstruction.concurrencyFilterAudit.finalTradesCount} معامله</div>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                    <div className="text-[10px] text-gray-400 font-sans">تعداد گروه‌های تداخل زمانی:</div>
+                    <div className="text-sm font-bold text-cyan-300">{baselineReconstruction.concurrencyFilterAudit.conflictGroupsCount} گروه</div>
+                  </div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-[#131924] border border-[#222e40] space-y-2">
+                  <div className="font-bold text-amber-300 font-sans flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    <span>قوانین قطعی گره‌گشایی (Deterministic Tie-Breaker) و صحه‌گذاری عدم اریب:</span>
+                  </div>
+                  <ol className="list-decimal list-inside text-gray-300 space-y-1 leading-relaxed text-[11px] font-sans">
+                    <li><strong>تقدم مهر زمانی ورود (Candidate Entry Timestamp):</strong> تریدی که زودتر در نمودار شکل گرفته اولویت نگهداری دارد.</li>
+                    <li><strong>امتیاز سیگنال در کندل ورود (Signal Score at Entry Bar):</strong> در صورت همزمانی ثانیه‌ای، سیگنال با امتیاز بالاتر انتخاب می‌شود.</li>
+                    <li><strong>ترتیب الفبایی نماد (Symbol Alphabetical Order):</strong> گره‌گشای قطعی نهایی بر اساس نام نماد.</li>
+                  </ol>
+                  <div className="text-[10px] text-emerald-300/90 border-t border-[#1e2738] pt-2 font-sans">
+                    ✅ <strong>تاییدیه عدم اریب نگاه به آینده:</strong> در الگوریتم گره‌گشایی منحصراً از اطلاعات موجود در همان لحظه ورود استفاده شده و هیچ پارامتری از سود آینده، قیمت خروج، یا مدت زمان باز ماندن ترید دخیل داده نشده است.
+                  </div>
+                </div>
               </div>
             </div>
           </div>

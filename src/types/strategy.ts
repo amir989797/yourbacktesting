@@ -37,7 +37,7 @@ export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
   exitCommissionPercent: 0.06, // 0.06% خروج
 };
 
-export type TradeStatus = 'PENDING' | 'ACTIVE' | 'WIN' | 'LOSS' | 'EXPIRED' | 'OPEN';
+export type TradeStatus = 'PENDING' | 'ACTIVE' | 'WIN' | 'LOSS' | 'BREAKEVEN' | 'EXPIRED' | 'OPEN';
 
 export interface Trade {
   id: string;
@@ -112,6 +112,7 @@ export interface StrategyTrade {
   stepSize?: number; // حداقل گام حجم معامله در صرافی
   qtyPrecision?: number; // تعداد ارقام اعشار مجاز حجم در صرافی
   positionSize: number;
+  quantity?: number;
   positionValue: number;
   riskReward: number;
   // Timestamps & Candle Indexes
@@ -130,14 +131,22 @@ export interface StrategyTrade {
   hasPostLeg?: boolean;
   status: TradeStatus;
   grossPnl?: number; // سود/زیان ناخالص قبل از کارمزد
-  entryFee?: number; // کارمزد ورود (0.06%)
-  exitFee?: number; // کارمزد خروج (0.06%)
+  entryFee?: number; // کارمزد ورود
+  exitFee?: number; // کارمزد خروج
   fee?: number; // مجموع کارمزد ورود و خروج
   commission?: number;
   pnl: number; // سود/زیان خالص پس از کسر کارمزد
   pnlPercent: number;
   returnR?: number; // بازدهی بر حسب R (نسبت سود/زیان خالص به ریسک)
   capitalAfterTrade?: number; // موجودی شناور حساب پس از این معامله
+  entryNotional?: number;
+  exitNotional?: number;
+  fundingCashFlow?: number;
+  netPnlAfterFunding?: number;
+  concurrencyDecision?: 'ACCEPTED' | 'REJECTED';
+  rejectionReason?: string;
+  stage?: 'RAW' | 'FINAL';
+  competingSymbol?: string;
   reason?: string;
 }
 
@@ -159,23 +168,31 @@ export interface BacktestMetrics {
 }
 
 export interface StrategyMetrics {
-  totalTrades: number;
+  totalTrades: number; // Closed trades count
   winTrades: number;
   lossTrades: number;
+  breakevenTrades?: number;
   activeTrades: number;
   pendingTrades: number;
   expiredTrades: number;
   winRate: number; // In percent (0 - 100)
+  grossProfit?: number;
+  grossLoss?: number;
+  grossPnl?: number;
   totalProfit: number;
   totalLoss: number;
   totalFee?: number; // مجموع کارمزدهای پرداخت‌شده
   netProfit: number;
   netProfitPercent: number;
   profitFactor: number;
+  profitFactorLabel?: string;
   avgRiskReward: number;
   maxDrawdown: number;
   maxDrawdownPercent: number;
   finalEquity: number;
+  openPositionsCount?: number;
+  openPositionsUnrealizedPnl?: number;
+  openPositionsFee?: number;
 }
 
 export interface BacktestResult {
