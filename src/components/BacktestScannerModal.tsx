@@ -107,6 +107,7 @@ import { LoadConfigModal } from './backtest/LoadConfigModal';
 import { SaveCandleModal } from './backtest/SaveCandleModal';
 import { LoadCandleModal } from './backtest/LoadCandleModal';
 import { AllowedPairsModal } from './backtest/AllowedPairsModal';
+import { TimeRangeModal } from './backtest/TimeRangeModal';
 import { DEFAULT_POPULAR_WATCHLIST } from './LiveTradingTab';
 
 export type {
@@ -289,6 +290,59 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     setSelectedAllowedSymbols(symbols);
     try {
       localStorage.setItem('backtest_selected_allowed_symbols', JSON.stringify(symbols));
+    } catch {}
+  };
+
+  // مودال بازه زمانی و تقویم بکتست
+  const [isTimeRangeModalOpen, setIsTimeRangeModalOpen] = useState<boolean>(false);
+  const [timeRangeStartMs, setTimeRangeStartMs] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('backtest_time_range_start_ms');
+      if (saved) return Number(saved);
+    } catch {}
+    return Date.now() - 30 * 24 * 60 * 60 * 1000;
+  });
+  const [timeRangeEndMs, setTimeRangeEndMs] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('backtest_time_range_end_ms');
+      if (saved) return Number(saved);
+    } catch {}
+    return Date.now();
+  });
+  const [timeRangeLabel, setTimeRangeLabel] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('backtest_time_range_label');
+      if (saved) return saved;
+    } catch {}
+    return '۳۰ روز گذشته (۱ ماه)';
+  });
+  const [estimatedCandles, setEstimatedCandles] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('backtest_estimated_candles');
+      if (saved) return Number(saved);
+    } catch {}
+    return 2880;
+  });
+
+  const handleApplyTimeRange = (params: {
+    startDate: string;
+    endDate: string;
+    startTimeMs: number;
+    endTimeMs: number;
+    estimatedCandles: number;
+    label: string;
+  }) => {
+    setTimeRangeStartMs(params.startTimeMs);
+    setTimeRangeEndMs(params.endTimeMs);
+    setTimeRangeLabel(params.label);
+    setEstimatedCandles(params.estimatedCandles);
+    const limit = Math.min(params.estimatedCandles, selectedExchange === 'xt' ? 1000 : 5000);
+    setCandleHistoryLimit(Math.max(50, limit));
+    try {
+      localStorage.setItem('backtest_time_range_start_ms', String(params.startTimeMs));
+      localStorage.setItem('backtest_time_range_end_ms', String(params.endTimeMs));
+      localStorage.setItem('backtest_time_range_label', params.label);
+      localStorage.setItem('backtest_estimated_candles', String(params.estimatedCandles));
     } catch {}
   };
 
@@ -763,8 +817,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           if (!pair) break;
 
           try {
-            // ۱. بررسی حافظه کش سریع رم بر اساس صرافی و نماد (۰ میلی‌ثانیه)
-            const cacheKey = `${selectedExchange}_${pair.symbol}_${timeframe}`;
+            // ۱. بررسی حافظه کش سریع رم بر اساس صرافی، نماد، تایم‌فریم و بازه زمانی (۰ میلی‌ثانیه)
+            const cacheKey = `${selectedExchange}_${pair.symbol}_${timeframe}_${timeRangeStartMs}_${timeRangeEndMs}`;
             let candles: CandleData[] = [];
             const cached = GLOBAL_CANDLE_CACHE.get(cacheKey);
             if (cached && cached.candles && cached.candles.length >= 50 && cached.timeframe === timeframe) {
@@ -777,9 +831,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                 GLOBAL_CANDLE_CACHE.set(cacheKey, { pair, candles, timeframe });
                 setCachedCount(getCachedUniqueCount());
               } else {
-                // ۳. دانلود موازی و بهینه‌شده از اندپوینت سرور (با بچ‌های ۱۵۰۰ تایی و هدایت مستقیم فست-سرور)
+                // ۳. دانلود موازی و بهینه‌شده از اندپوینت سرور (با پشتیبانی از startTime و endTime برای XT و Binance)
                 const klineRes = await fetch(
-                  `/api/market/klines?exchange=${selectedExchange}&symbol=${encodeURIComponent(pair.symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${candleHistoryLimit}&isFutures=${isFuturesUniverse}`
+                  `/api/market/klines?exchange=${selectedExchange}&symbol=${encodeURIComponent(pair.symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${candleHistoryLimit}&isFutures=${isFuturesUniverse}&startTime=${timeRangeStartMs}&endTime=${timeRangeEndMs}`
                 )
                   .then((r) => r.json())
                   .catch(() => null);
@@ -3080,6 +3134,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             isScanning={isScanning}
             selectedAllowedSymbols={selectedAllowedSymbols}
             onOpenAllowedPairsModal={() => setIsAllowedPairsModalOpen(true)}
+            onOpenTimeRangeModal={() => setIsTimeRangeModalOpen(true)}
+            timeRangeLabel={timeRangeLabel}
+            estimatedCandles={estimatedCandles}
             universeOption={universeOption}
             setUniverseOption={setUniverseOption}
             timeframe={timeframe}
@@ -3371,6 +3428,17 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           onSave={handleSaveAllowedSymbols}
           exchange={selectedExchange}
           userId={currentUser || 'amir'}
+          showToast={showToast}
+        />
+
+        <TimeRangeModal
+          isOpen={isTimeRangeModalOpen}
+          onClose={() => setIsTimeRangeModalOpen(false)}
+          timeframe={timeframe}
+          exchange={selectedExchange}
+          initialStartTimeMs={timeRangeStartMs}
+          initialEndTimeMs={timeRangeEndMs}
+          onApply={handleApplyTimeRange}
           showToast={showToast}
         />
       </div>

@@ -64,26 +64,49 @@ export async function loadUserSettings(userId: string) {
 export interface AllowedPairsRecord {
   id: string;
   userId: string;
+  exchange: 'xt' | 'binance';
   listName: string;
   symbols: string[];
   count: number;
+  createdAt: string;
   updatedAt: string;
 }
+
+const MAX_SAVED_LISTS_PER_EXCHANGE = 10;
 
 export async function saveAllowedPairsToFirestore(
   userId: string,
   symbols: string[],
+  exchange: 'xt' | 'binance' = 'xt',
   listName: string = 'پیش‌فرض'
-): Promise<boolean> {
+): Promise<{ success: boolean; message: string; record?: AllowedPairsRecord }> {
   const safeUserId = userId || 'default_user';
-  const docId = `${safeUserId}_${listName.replace(/\s+/g, '_')}`;
+  const cleanName = (listName || 'پیش‌فرض').trim();
+  const slug = cleanName.toLowerCase().replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, '_');
+  const docId = `${safeUserId}_${exchange}_${slug}`;
+
+  // First check existing lists to enforce max 10 lists per exchange
+  let existingLists = await loadAllAllowedPairsListsFromFirestore(safeUserId, exchange);
+  const isUpdatingExisting = existingLists.some((item) => item.id === docId || item.listName === cleanName);
+
+  if (!isUpdatingExisting && existingLists.length >= MAX_SAVED_LISTS_PER_EXCHANGE) {
+    return {
+      success: false,
+      message: `حداکثر می‌توانید تا ${MAX_SAVED_LISTS_PER_EXCHANGE} لیست اختصاصی برای صرافی ${exchange.toUpperCase()} ذخیره کنید. لطفاً ابتدا یکی از لیست‌های قبلی را حذف کنید.`,
+    };
+  }
+
+  const now = new Date().toISOString();
+  const existingRecord = existingLists.find((item) => item.id === docId || item.listName === cleanName);
   const record: AllowedPairsRecord = {
     id: docId,
     userId: safeUserId,
-    listName,
+    exchange,
+    listName: cleanName,
     symbols,
     count: symbols.length,
-    updatedAt: new Date().toISOString(),
+    createdAt: existingRecord?.createdAt || now,
+    updatedAt: now,
   };
 
   try {
@@ -94,69 +117,131 @@ export async function saveAllowedPairsToFirestore(
         doc(db, 'users', safeUserId),
         {
           settings: {
-            backtestAllowedPairs: symbols,
-            lastPairsList: listName,
+            [`backtestAllowedPairs_${exchange}`]: symbols,
+            [`lastPairsList_${exchange}`]: cleanName,
           },
-          updatedAt: new Date().toISOString(),
+          updatedAt: now,
         },
         { merge: true }
       );
     }
   } catch (err) {
-    console.warn('saveAllowedPairsToFirestore error, falling back to localStorage:', err);
+    console.warn('saveAllowedPairsToFirestore cloud error, saving to localStorage:', err);
+  }
+
+  // Update local cache of lists
+  try {
+    const localKey = `allowed_pairs_lists_${safeUserId}_${exchange}`;
+    const updated = existingLists.filter((item) => item.id !== docId && item.listName !== cleanName);
+    updated.unshift(record);
+    localStorage.setItem(localKey, JSON.stringify(updated.slice(0, MAX_SAVED_LISTS_PER_EXCHANGE)));
+    localStorage.setItem(`backtest_selected_allowed_symbols_${exchange}`, JSON.stringify(symbols));
+    localStorage.setItem('backtest_selected_allowed_symbols', JSON.stringify(symbols));
+  } catch {}
+
+  return {
+    success: true,
+    message: `لیست «${cleanName}» با موفقیت در دیتابیس صرافی ${exchange.toUpperCase()} ذخیره شد.`,
+    record,
+  };
+}
+
+export async function loadAllAllowedPairsListsFromFirestore(
+  userId: string,
+  exchange: 'xt' | 'binance' = 'xt'
+): Promise<AllowedPairsRecord[]> {
+  const safeUserId = userId || 'default_user';
+  const lists: AllowedPairsRecord[] = [];
+
+  try {
+    const coll = collection(db, 'allowedPairs');
+    const snap = await getDocs(coll);
+    snap.forEach((d) => {
+      const data = d.data() as AllowedPairsRecord;
+      if (data && (data.userId === safeUserId || data.userId === 'amir' || !data.userId)) {
+        if (!data.exchange || data.exchange === exchange) {
+          lists.push({ ...data, id: d.id, exchange: data.exchange || exchange });
+        }
+      }
+    });
+
+    if (lists.length > 0) {
+      // Sort newest first
+      lists.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
+      // Save to localStorage mirror
+      try {
+        localStorage.setItem(`allowed_pairs_lists_${safeUserId}_${exchange}`, JSON.stringify(lists));
+      } catch {}
+      return lists.slice(0, MAX_SAVED_LISTS_PER_EXCHANGE);
+    }
+  } catch (err) {
+    console.warn('loadAllAllowedPairsListsFromFirestore error, trying localStorage:', err);
+  }
+
+  // Fallback to localStorage
+  try {
+    const localKey = `allowed_pairs_lists_${safeUserId}_${exchange}`;
+    const cached = localStorage.getItem(localKey);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.slice(0, MAX_SAVED_LISTS_PER_EXCHANGE);
+      }
+    }
+  } catch {}
+
+  return [];
+}
+
+export async function deleteAllowedPairsFromFirestore(
+  userId: string,
+  docId: string,
+  exchange: 'xt' | 'binance' = 'xt'
+): Promise<boolean> {
+  const safeUserId = userId || 'default_user';
+  try {
+    await deleteDoc(doc(db, 'allowedPairs', docId));
+  } catch (err) {
+    console.warn('deleteAllowedPairsFromFirestore error:', err);
   }
 
   try {
-    localStorage.setItem(`allowed_pairs_${safeUserId}`, JSON.stringify(record));
-    localStorage.setItem('backtest_selected_allowed_symbols', JSON.stringify(symbols));
-    return true;
-  } catch {
-    return false;
-  }
+    const localKey = `allowed_pairs_lists_${safeUserId}_${exchange}`;
+    const cached = localStorage.getItem(localKey);
+    if (cached) {
+      const parsed: AllowedPairsRecord[] = JSON.parse(cached);
+      const filtered = parsed.filter((item) => item.id !== docId);
+      localStorage.setItem(localKey, JSON.stringify(filtered));
+    }
+  } catch {}
+
+  return true;
 }
 
 export async function loadAllowedPairsFromFirestore(
   userId: string,
-  listName: string = 'پیش‌فرض'
+  exchangeOrListName?: string,
+  maybeListName?: string
 ): Promise<string[] | null> {
   const safeUserId = userId || 'default_user';
-  const docId = `${safeUserId}_${listName.replace(/\s+/g, '_')}`;
+  const exchange: 'xt' | 'binance' = exchangeOrListName === 'binance' || exchangeOrListName === 'xt' ? exchangeOrListName : 'xt';
+  const listName = maybeListName || (exchangeOrListName && exchangeOrListName !== 'binance' && exchangeOrListName !== 'xt' ? exchangeOrListName : 'پیش‌فرض');
 
   try {
-    const docRef = doc(db, 'allowedPairs', docId);
-    const snap = await getDoc(docRef);
-    if (snap.exists()) {
-      const data = snap.data() as AllowedPairsRecord;
-      if (Array.isArray(data.symbols) && data.symbols.length > 0) {
-        return data.symbols;
+    const lists = await loadAllAllowedPairsListsFromFirestore(safeUserId, exchange);
+    if (lists.length > 0) {
+      const match = lists.find((l) => l.listName === listName) || lists[0];
+      if (match && Array.isArray(match.symbols) && match.symbols.length > 0) {
+        return match.symbols;
       }
     }
-
-    const userDoc = await getDoc(doc(db, 'users', safeUserId));
-    if (userDoc.exists()) {
-      const settings = userDoc.data()?.settings;
-      if (settings && Array.isArray(settings.backtestAllowedPairs) && settings.backtestAllowedPairs.length > 0) {
-        return settings.backtestAllowedPairs;
-      }
-    }
-  } catch (err) {
-    console.warn('loadAllowedPairsFromFirestore error, fallback to localStorage:', err);
-  }
+  } catch {}
 
   try {
-    const cached = localStorage.getItem(`allowed_pairs_${safeUserId}`);
-    if (cached) {
-      const parsed = JSON.parse(cached);
-      if (Array.isArray(parsed.symbols) && parsed.symbols.length > 0) {
-        return parsed.symbols;
-      }
-    }
-    const localList = localStorage.getItem('backtest_selected_allowed_symbols');
+    const localList = localStorage.getItem(`backtest_selected_allowed_symbols_${exchange}`) || localStorage.getItem('backtest_selected_allowed_symbols');
     if (localList) {
       const parsed = JSON.parse(localList);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
-      }
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
     }
   } catch {}
 

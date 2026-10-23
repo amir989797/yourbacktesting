@@ -36,12 +36,13 @@
       "properties": {
         "id": { "type": "string" },
         "userId": { "type": "string" },
+        "exchange": { "type": "string", "enum": ["xt", "binance"] },
         "listName": { "type": "string" },
         "symbols": { "type": "array" },
         "count": { "type": "number" },
         "updatedAt": { "type": "string" }
       },
-      "required": ["id", "userId", "symbols"]
+      "required": ["id", "userId", "exchange", "symbols"]
     }
   },
   "firestore": {

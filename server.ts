@@ -324,10 +324,12 @@ async function fetchServerKlines(
   symbol: string,
   timeframe: string,
   targetLimit: number = 5000,
-  isFutures: boolean = true
+  isFutures: boolean = true,
+  startTime?: number,
+  endTime?: number
 ): Promise<CandleData[]> {
   const cleanSymbol = symbol.trim().toUpperCase();
-  const cacheKey = `${cleanSymbol}_${timeframe}_${targetLimit}_${isFutures}`;
+  const cacheKey = `${cleanSymbol}_${timeframe}_${targetLimit}_${isFutures}_${startTime || 0}_${endTime || 0}`;
   const cached = SERVER_KLINE_CACHE.get(cacheKey);
   if (cached && Date.now() - cached.timestamp < 30 * 60 * 1000 && cached.candles.length >= Math.min(50, targetLimit)) {
     return cached.candles;
@@ -350,6 +352,7 @@ async function fetchServerKlines(
   const stepMs = timeframeToMs(timeframe);
   const now = Date.now();
   const maxPerChunk = isFutures ? 1500 : 1000;
+  const baseEnd = endTime && endTime > 0 ? endTime : now;
 
   // Build optimal chunk specifications
   const chunks: { limit: number; endParam: string }[] = [];
@@ -358,7 +361,9 @@ async function fetchServerKlines(
 
   while (remaining > 0 && chunks.length < 6) {
     const chunkLimit = Math.min(remaining, maxPerChunk);
-    const endParam = offsetCandles === 0 ? '' : `&endTime=${now - offsetCandles * stepMs}`;
+    const chunkEndTime = baseEnd - offsetCandles * stepMs;
+    if (startTime && chunkEndTime < startTime) break;
+    const endParam = `&endTime=${chunkEndTime}`;
     chunks.push({ limit: chunkLimit, endParam });
     remaining -= chunkLimit;
     offsetCandles += chunkLimit;
@@ -422,7 +427,14 @@ async function fetchServerKlines(
         }
 
         if (timeMap.size >= 50) {
-          const sorted = Array.from(timeMap.values()).sort((a, b) => a.time - b.time).slice(-targetLimit);
+          let sorted = Array.from(timeMap.values()).sort((a, b) => a.time - b.time);
+          if (startTime && startTime > 0) {
+            sorted = sorted.filter(c => c.time * 1000 >= startTime);
+          }
+          if (endTime && endTime > 0) {
+            sorted = sorted.filter(c => c.time * 1000 <= endTime);
+          }
+          sorted = sorted.slice(-targetLimit);
           SERVER_KLINE_CACHE.set(cacheKey, { candles: sorted, timestamp: Date.now() });
           return sorted;
         }
@@ -540,11 +552,24 @@ function toXtSymbol(symbol: string): string {
   return s + '_usdt';
 }
 
-// XT Public Kline fetcher
-async function fetchXtServerKlines(symbol: string, interval: string, limit: number = 1000): Promise<CandleData[]> {
+// XT Public Kline fetcher with startTime and endTime support
+async function fetchXtServerKlines(
+  symbol: string,
+  interval: string,
+  limit: number = 1000,
+  startTime?: number,
+  endTime?: number
+): Promise<CandleData[]> {
   const xtSymbol = toXtSymbol(symbol);
 
-  const url = `https://${XT_FAPI_HOST}/future/market/v1/public/q/kline?symbol=${xtSymbol}&interval=${interval}&limit=${Math.min(limit, 1000)}`;
+  let url = `https://${XT_FAPI_HOST}/future/market/v1/public/q/kline?symbol=${xtSymbol}&interval=${interval}&limit=${Math.min(limit, 1000)}`;
+  if (startTime && startTime > 0) {
+    url += `&startTime=${startTime}`;
+  }
+  if (endTime && endTime > 0) {
+    url += `&endTime=${endTime}`;
+  }
+
   const response = await fetch(url);
   const data = await response.json();
 
@@ -980,21 +1005,23 @@ app.get('/api/market/pairs', async (req, res) => {
   }
 });
 
-// 2. Fast single symbol klines & candles (supporting Binance & XT.COM up to 5,000 candles)
+// 2. Fast single symbol klines & candles (supporting Binance & XT.COM up to 5,000 candles with date range)
 app.get(['/api/market/klines', '/api/market/candles', '/api/klines'], async (req, res) => {
   try {
     const exchange = (req.query.exchange as string) || 'binance';
     const symbol = (req.query.symbol as string) || (exchange === 'xt' ? 'btc_usdt' : 'BTCUSDT');
     const timeframe = (req.query.timeframe as string) || (req.query.interval as string) || '5m';
     const limit = parseInt((req.query.limit as string) || '5000', 10);
+    const startTime = req.query.startTime ? parseInt(req.query.startTime as string, 10) : undefined;
+    const endTime = req.query.endTime ? parseInt(req.query.endTime as string, 10) : undefined;
 
     if (exchange === 'xt') {
-      const candles = await fetchXtServerKlines(symbol, timeframe, limit);
+      const candles = await fetchXtServerKlines(symbol, timeframe, limit, startTime, endTime);
       return res.json({ success: true, exchange: 'xt', symbol, timeframe, candles, count: candles.length });
     }
 
     const isFutures = req.query.isFutures !== 'false';
-    const candles = await fetchServerKlines(symbol, timeframe, limit, isFutures);
+    const candles = await fetchServerKlines(symbol, timeframe, limit, isFutures, startTime, endTime);
     res.json({ success: true, exchange: 'binance', symbol, timeframe, candles, count: candles.length });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });

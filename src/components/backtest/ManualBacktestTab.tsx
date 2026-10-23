@@ -28,6 +28,7 @@ import {
   Camera,
   Coins,
   Filter,
+  Calendar,
 } from 'lucide-react';
 import { Timeframe, ZigZagSettings } from '../../types/crypto';
 import { BacktestResultItem, GLOBAL_CANDLE_CACHE } from './types';
@@ -38,6 +39,9 @@ export interface ManualBacktestTabProps {
   isScanning: boolean;
   selectedAllowedSymbols: string[];
   onOpenAllowedPairsModal: () => void;
+  onOpenTimeRangeModal: () => void;
+  timeRangeLabel?: string;
+  estimatedCandles?: number;
   universeOption?: 'all_market' | 'all_futures' | 'all_spot' | 'top_50' | 'top_30';
   setUniverseOption?: (val: 'all_market' | 'all_futures' | 'all_spot' | 'top_50' | 'top_30') => void;
   timeframe: Timeframe;
@@ -136,6 +140,9 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
   isScanning,
   selectedAllowedSymbols = [],
   onOpenAllowedPairsModal,
+  onOpenTimeRangeModal,
+  timeRangeLabel,
+  estimatedCandles,
   universeOption,
   setUniverseOption,
   timeframe,
@@ -286,18 +293,24 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                     </select>
                   </div>
                   <div>
-                    <label className="text-[10px] font-semibold text-gray-400 block mb-1">تعداد کندل:</label>
-                    <select
-                      value={candleHistoryLimit}
-                      onChange={(e) => setCandleHistoryLimit(Number(e.target.value))}
+                    <label className="text-[10px] font-semibold text-gray-400 block mb-1">بازه زمانی و تقویم:</label>
+                    <button
+                      type="button"
+                      onClick={onOpenTimeRangeModal}
                       disabled={isScanning}
-                      className="w-full px-2 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-white text-xs font-medium focus:outline-none cursor-pointer disabled:opacity-50"
+                      className="w-full flex items-center justify-between px-2 py-1 bg-[#171d28] hover:bg-[#1f2838] border border-[#2e394e] hover:border-amber-400/60 rounded-lg text-white font-bold text-xs transition-all cursor-pointer group shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="کلیک کنید تا تقویم و بازه زمانی تست انتخاب شود"
                     >
-                      <option value={300}>۳۰۰ کندل</option>
-                      <option value={500}>۵۰۰ کندل</option>
-                      <option value={1000}>۱,۰۰۰ کندل</option>
-                      <option value={5000}>۵,۰۰۰ کندل</option>
-                    </select>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <Calendar className="w-3.5 h-3.5 text-amber-400 shrink-0 group-hover:scale-105 transition-transform" />
+                        <span className="text-amber-300 font-mono text-[11px] truncate">
+                          {timeRangeLabel || `${candleHistoryLimit} کندل`}
+                        </span>
+                      </div>
+                      <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0 font-mono">
+                        {estimatedCandles ? `~${estimatedCandles}` : `${candleHistoryLimit}`}
+                      </span>
+                    </button>
                   </div>
                 </div>
 
