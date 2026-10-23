@@ -28,6 +28,20 @@
         "createdAt": { "type": "string" }
       },
       "required": ["id", "name", "userId", "timeframe"]
+    },
+    "AllowedPairsConfig": {
+      "title": "AllowedPairsConfig",
+      "description": "Custom allowed cryptocurrency pairs for backtest scanning and live trading",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "listName": { "type": "string" },
+        "symbols": { "type": "array" },
+        "count": { "type": "number" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "symbols"]
     }
   },
   "firestore": {
@@ -38,6 +52,10 @@
     "/datasets/{datasetId}": {
       "schema": { "$ref": "#/entities/BacktestDataset" },
       "description": "Stores user backtesting datasets metadata"
+    },
+    "/allowedPairs/{configId}": {
+      "schema": { "$ref": "#/entities/AllowedPairsConfig" },
+      "description": "Stores saved allowed cryptocurrency pairs lists"
     }
   }
 }

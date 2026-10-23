@@ -253,7 +253,7 @@ export const COMPREHENSIVE_FALLBACK_PAIRS: CryptoPair[] = [
   { symbol: 'crv_usdt', baseAsset: 'CRV', quoteAsset: 'USDT', name: 'Curve DAO', category: 'Futures', volume24h: 90000000 },
 ];
 
-const DEFAULT_POPULAR_WATCHLIST = [
+export const DEFAULT_POPULAR_WATCHLIST = [
   'btc_usdt', 'eth_usdt', 'sol_usdt', 'xrp_usdt', 'doge_usdt',
   'sui_usdt', 'ada_usdt', 'near_usdt', 'avax_usdt', 'link_usdt',
   'pepe_usdt', 'shib_usdt', 'dot_usdt', 'ltc_usdt', 'apt_usdt',

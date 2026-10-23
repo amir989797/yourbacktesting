@@ -1,4 +1,4 @@
-import { CandleData, CryptoPair, Leg, ZigZagPoint, ZigZagSettings as CryptoZigZagSettings } from './crypto.ts';
+import { CandleData, CryptoPair, Leg, ZigZagPoint, ZigZagSettings as CryptoZigZagSettings } from './crypto';
 
 export type ZigZagSettings = CryptoZigZagSettings;
 

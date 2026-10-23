@@ -61,6 +61,108 @@ export async function loadUserSettings(userId: string) {
   return null;
 }
 
+export interface AllowedPairsRecord {
+  id: string;
+  userId: string;
+  listName: string;
+  symbols: string[];
+  count: number;
+  updatedAt: string;
+}
+
+export async function saveAllowedPairsToFirestore(
+  userId: string,
+  symbols: string[],
+  listName: string = 'پیش‌فرض'
+): Promise<boolean> {
+  const safeUserId = userId || 'default_user';
+  const docId = `${safeUserId}_${listName.replace(/\s+/g, '_')}`;
+  const record: AllowedPairsRecord = {
+    id: docId,
+    userId: safeUserId,
+    listName,
+    symbols,
+    count: symbols.length,
+    updatedAt: new Date().toISOString(),
+  };
+
+  try {
+    const docRef = doc(db, 'allowedPairs', docId);
+    await setDoc(docRef, record, { merge: true });
+    if (safeUserId) {
+      await setDoc(
+        doc(db, 'users', safeUserId),
+        {
+          settings: {
+            backtestAllowedPairs: symbols,
+            lastPairsList: listName,
+          },
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
+    }
+  } catch (err) {
+    console.warn('saveAllowedPairsToFirestore error, falling back to localStorage:', err);
+  }
+
+  try {
+    localStorage.setItem(`allowed_pairs_${safeUserId}`, JSON.stringify(record));
+    localStorage.setItem('backtest_selected_allowed_symbols', JSON.stringify(symbols));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function loadAllowedPairsFromFirestore(
+  userId: string,
+  listName: string = 'پیش‌فرض'
+): Promise<string[] | null> {
+  const safeUserId = userId || 'default_user';
+  const docId = `${safeUserId}_${listName.replace(/\s+/g, '_')}`;
+
+  try {
+    const docRef = doc(db, 'allowedPairs', docId);
+    const snap = await getDoc(docRef);
+    if (snap.exists()) {
+      const data = snap.data() as AllowedPairsRecord;
+      if (Array.isArray(data.symbols) && data.symbols.length > 0) {
+        return data.symbols;
+      }
+    }
+
+    const userDoc = await getDoc(doc(db, 'users', safeUserId));
+    if (userDoc.exists()) {
+      const settings = userDoc.data()?.settings;
+      if (settings && Array.isArray(settings.backtestAllowedPairs) && settings.backtestAllowedPairs.length > 0) {
+        return settings.backtestAllowedPairs;
+      }
+    }
+  } catch (err) {
+    console.warn('loadAllowedPairsFromFirestore error, fallback to localStorage:', err);
+  }
+
+  try {
+    const cached = localStorage.getItem(`allowed_pairs_${safeUserId}`);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (Array.isArray(parsed.symbols) && parsed.symbols.length > 0) {
+        return parsed.symbols;
+      }
+    }
+    const localList = localStorage.getItem('backtest_selected_allowed_symbols');
+    if (localList) {
+      const parsed = JSON.parse(localList);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch {}
+
+  return null;
+}
+
 export interface TestParameterConfigRecord {
   id: string;
   name: string;
