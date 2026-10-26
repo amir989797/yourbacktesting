@@ -70,9 +70,8 @@ import {
   deleteTestConfigFromFirestore,
   TestParameterConfigRecord,
 } from '../services/firebase';
-import { calculateATR, calculateAtrZigZag, analyzeZigZagLegs, formatPrice } from '../utils/indicators';
-import { runStrategy1Backtest, runStrategy2Backtest } from '../utils/strategyEngine';
-import { calculateExactTradeSizing, getSymbolLotRule } from '../utils/exchangePrecision';
+import { formatPrice } from '../utils/indicators';
+import { getSymbolLotRule } from '../utils/exchangePrecision';
 
 export function formatLivePnl(val: number): string {
   if (!val || val === 0) return '0.00';
@@ -439,6 +438,25 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     }
   });
 
+  // خروج زمانی (Time-Stop): حداکثر تعداد کندل ماندن در معامله
+  const [timeStopEnabled, setTimeStopEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('livetrade_time_stop_enabled');
+      return saved !== null ? saved === 'true' : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const [timeStopCandles, setTimeStopCandles] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('livetrade_time_stop_candles');
+      return saved !== null ? parseInt(saved, 10) : 80;
+    } catch {
+      return 80;
+    }
+  });
+
   // کلیک روی ردیف پوزیشن یا تاریخچه برای نمایش چارت جفت‌ارز و ستاپ معامله در تب اصلی چارت (مشابه تریدینگ‌ویو)
   const handleNavigateToChart = (rawSymbol: string, orderData?: any) => {
     const clean = exchange === 'xt' ? toXtSymbol(rawSymbol) : rawSymbol.replace('_', '').toUpperCase();
@@ -501,7 +519,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   const [isTogglingServer, setIsTogglingServer] = useState<boolean>(false);
   const [serverActiveConfig, setServerActiveConfig] = useState<any | null>(null);
   const [serverExecutionLogs, setServerExecutionLogs] = useState<any[]>([]);
-  const [activeLogTab, setActiveLogTab] = useState<'scanner' | 'execution'>('scanner');
+  const [serverActiveSignals, setServerActiveSignals] = useState<any[]>([]);
+  const [activeLogTab, setActiveLogTab] = useState<'scanner' | 'execution' | 'signals'>('scanner');
   const [isTestTradeLoading, setIsTestTradeLoading] = useState<boolean>(false);
   const [testTradeResult, setTestTradeResult] = useState<any | null>(null);
   const [showTestTradeModal, setShowTestTradeModal] = useState<boolean>(false);
@@ -718,317 +737,6 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     }
   };
 
-  // Perform a single scan cycle across selected pairs
-  const runScanCycle = useCallback(async () => {
-    setIsScanningNow(true);
-    const scanStartTime = Date.now();
-    // ارزهای مورد اسکن: دقیقاً ارزهایی که توسط کاربر تیک خورده و ذخیره شده‌اند
-    const targetSymbols = selectedSymbols && selectedSymbols.length > 0
-      ? selectedSymbols
-      : DEFAULT_POPULAR_WATCHLIST;
-
-    addLog(
-      'info',
-      `🔍 شروع اسکن ${targetSymbols.length} ارز فعال در تایم‌فریم ${tradeTimeframe} (${exchange.toUpperCase()})...`
-    );
-
-    if (noConcurrentPositions && positions.length > 0) {
-      addLog('warning', `⚠️ حالت تک‌پوزیشن فعال است: ${positions.length} پوزیشن باز در حساب وجود دارد.`);
-    }
-
-    const candidateSignals: CandidateSignal[] = [];
-
-    for (const sym of targetSymbols) {
-      try {
-        let candles: CandleData[] = [];
-        if (exchange === 'xt') {
-          candles = await fetchXtKlines(sym, tradeTimeframe, 300);
-        } else {
-          const res = await fetchKlines(sym.replace('_', '').toUpperCase(), tradeTimeframe, 300, true, 'binance');
-          candles = res.candles;
-        }
-
-        if (!candles || candles.length < 50) continue;
-
-        // Calculate Indicators
-        const atrResult = calculateATR(candles, atrPeriod);
-        const atrValues = atrResult.atrValues;
-
-        const zzResult = calculateAtrZigZag(
-          candles,
-          atrValues,
-          atrMultiplier,
-          minCandles
-        );
-
-        const analyzedLegs = analyzeZigZagLegs(
-          zzResult.points,
-          minCandlesForLongLeg,
-          longLegAtrMultiplier,
-          maxBlueLegPercent,
-          maxBreakoutAtrMultiplier
-        );
-
-        // Run Strategy Backtest up to the current candle
-        const cfg: StrategyConfig = {
-          ...DEFAULT_STRATEGY_CONFIG,
-          capital: balance.availableBalance > 0 ? balance.availableBalance : 100,
-          riskMode,
-          riskAmountFixed,
-          riskPercent: riskPercent || 1,
-          maxRiskReward: riskRewardRatio,
-          selectedStrategyId: selectedStrategy,
-          maxCandlesToEnter: 35,
-          noConcurrentPositions,
-        };
-
-        let evalTrades: any[] = [];
-        if (selectedStrategy === 'strategy_1_e_breakout') {
-          const res = runStrategy1Backtest(candles, zzResult.points, analyzedLegs, cfg);
-          evalTrades = res.trades;
-        } else {
-          const res = runStrategy2Backtest(candles, zzResult.points, analyzedLegs, cfg, atrValues, atrMultiplier, minCandles);
-          evalTrades = res.trades;
-        }
-
-        // Check if there is an active trade formed on the current or recent candle
-        if (evalTrades.length > 0) {
-          const lastTrade = evalTrades[evalTrades.length - 1];
-          const isCurrentCandleEntry = lastTrade.entryCandleIdx >= candles.length - 2;
-
-          if (isCurrentCandleEntry && (lastTrade.status === 'ACTIVE' || lastTrade.status === 'OPEN')) {
-            // بررسی تکراری نبودن پوزیشن روی همین جفت‌ارز
-            const alreadyHasPos = positions.some(
-              (p) => p.symbol === sym || toXtSymbol(p.symbol) === toXtSymbol(sym)
-            );
-            if (alreadyHasPos) {
-              addLog(
-                'warning',
-                `⚠️ نماد ${fromXtSymbol(sym)} از قبل دارای پوزیشن باز است؛ سیگنال جدید نادیده گرفته شد.`,
-                sym
-              );
-              continue;
-            }
-
-            const side = lastTrade.direction === 'BUY' ? 'BUY' : 'SELL';
-            const posSide = lastTrade.direction === 'BUY' ? 'LONG' : 'SHORT';
-            const curPrice = candles[candles.length - 1].close;
-            const stopLoss = parseFloat(Number(lastTrade.stopLoss || curPrice * (posSide === 'LONG' ? 0.98 : 1.02)).toFixed(4));
-            const takeProfit = parseFloat(Number(lastTrade.takeProfit || curPrice * (posSide === 'LONG' ? 1.06 : 0.94)).toFixed(4));
-
-            // بیشترین اهرم مجاز برای این ارز
-            const maxLev = getMaxLeverageForSymbol(sym);
-
-            // محاسبه حجم و مارجین بر مبنای بودجه ریسک و قوانین اعشار و استپ‌سایز صرافی
-            const currentEquity = balance.availableBalance > 0
-              ? balance.availableBalance
-              : (balance.totalEquity > 0 ? balance.totalEquity : (balance.walletBalance > 0 ? balance.walletBalance : 100));
-            const riskBudgetUsdt = riskMode === 'fixed' && riskAmountFixed && riskAmountFixed > 0
-              ? riskAmountFixed
-              : currentEquity * ((riskPercent || 1) / 100);
-
-            const sizing = calculateExactTradeSizing(
-              riskBudgetUsdt,
-              curPrice,
-              stopLoss,
-              takeProfit,
-              0.0006,
-              0.0006,
-              sym
-            );
-
-            const contractQty = sizing.quantizedPositionSize;
-            const notionalUsdt = sizing.positionValue;
-            const requiredMargin = parseFloat((notionalUsdt / maxLev).toFixed(2));
-            const actualRiskUsdt = sizing.actualLossAtSL; // زیان واقعی با کوانتیزه‌کردن به استپ‌سایز صرافی
-
-            candidateSignals.push({
-              sym,
-              posSide,
-              side,
-              curPrice,
-              stopLoss,
-              takeProfit,
-              contractQty,
-              stepSize: sizing.stepSize,
-              qtyPrecision: sizing.qtyPrecision,
-              maxLeverage: maxLev,
-              requiredMargin,
-              notionalUsdt,
-              riskUsdt: actualRiskUsdt,
-              targetRiskUsdt: riskBudgetUsdt,
-              strategyName: selectedStrategy === 'strategy_1_e_breakout' ? 'استراتژی ۱ (E-Breakout)' : 'استراتژی ۲ (Next-Pivot)',
-            });
-          }
-        }
-      } catch (coinErr) {
-        console.warn(`Error scanning ${sym}`, coinErr);
-      }
-    }
-
-    const durationMs = Date.now() - scanStartTime;
-    const durationFormatted = durationMs >= 60000
-      ? `${Math.floor(durationMs / 60000)} دقیقه و ${((durationMs % 60000) / 1000).toFixed(1)} ثانیه`
-      : `${(durationMs / 1000).toFixed(1)} ثانیه`;
-
-    addLog(
-      'info',
-      `⏱️ یک دور اسکن کامل ${targetSymbols.length} ارز تکمیل شد. زمان سپری‌شده: ${durationFormatted} (${(durationMs / 1000).toFixed(2)} ثانیه).`
-    );
-
-    if (candidateSignals.length === 0) {
-      addLog('info', `✅ اسکن پایان یافت (مدت زمان: ${durationFormatted}). هیچ سیگنال شکست جدیدی در کندل فعلی تایم‌فریم ${tradeTimeframe} در بین ${targetSymbols.length} ارز فعال مشاهده نشد.`);
-    } else {
-      // قانون کاربر: وقتی چند ترید سیگنال اومد، اونی رو ترید میکنی که مارجین کمتری رو درگیر میکنه
-      candidateSignals.sort((a, b) => a.requiredMargin - b.requiredMargin);
-
-      if (candidateSignals.length > 1) {
-        const descList = candidateSignals
-          .map((c) => `${fromXtSymbol(c.sym)} (مارجین: ${c.requiredMargin}$ | اهرم ${c.maxLeverage}x)`)
-          .join(' ، ');
-        addLog(
-          'info',
-          `🎯 ${candidateSignals.length} سیگنال همزمان شناسایی شد (زمان اسکن: ${durationFormatted}): [${descList}]. طبق قانون حداقل مارجین درگیر، سیگنال ${fromXtSymbol(candidateSignals[0].sym)} انتخاب شد.`
-        );
-      }
-
-      const chosen = candidateSignals[0];
-      const chosenName = fromXtSymbol(chosen.sym);
-
-      // شرط ۱: تک‌پوزیشن بودن (در صورت وجود پوزیشن باز وارد معامله جدید نشو)
-      if (noConcurrentPositions && positions.length > 0) {
-        addLog(
-          'warning',
-          `⚠️ سیگنال ورود برای ${chosenName} وجود دارد اما به دلیل فعال بودن گزینه «تک‌پوزیشن» و وجود ${positions.length} پوزیشن باز، معامله جدید باز نشد.`,
-          chosen.sym
-        );
-      } else {
-        // شرط ۲: حد نصاب مارجین
-        // اگر مارجین به حد نصاب نرسید ترید نمیکنی
-        const availBal = balance.availableBalance > 0
-          ? balance.availableBalance
-          : (balance.totalEquity > 0 ? balance.totalEquity : balance.walletBalance);
-
-        if (availBal < chosen.requiredMargin) {
-          addLog(
-            'warning',
-            `⚠️ موجودی آزاد ناکافی! مارجین مورد نیاز برای ${chosenName}: ${chosen.requiredMargin.toFixed(2)} USDT (اهرم ${chosen.maxLeverage}x) | موجودی آزاد حساب: ${availBal.toFixed(2)} USDT. از ورود به معامله صرف‌نظر شد.`,
-            chosen.sym
-          );
-        } else if (isLiveExecution && chosen.notionalUsdt < 5.0) {
-          // در معاملات لایو واقعی صرافی، حداقل ارزش سفارش (Notional) معمولاً ۵ دلار است
-          addLog(
-            'warning',
-            `⚠️ ارزش کل معامله (${chosen.notionalUsdt.toFixed(2)}$) کمتر از حداقل مجاز صرافی (5 USDT) است. از ارسال سفارش لایو برای ${chosenName} صرف‌نظر شد.`,
-            chosen.sym
-          );
-        } else {
-          // مارجین کافی است -> اجرای ترید با بیشترین اهرم و حداقل مارجین
-          const liveEquityVal = balance.availableBalance > 0 ? balance.availableBalance : (balance.totalEquity > 0 ? balance.totalEquity : 100);
-          const riskNotice = riskMode === 'fixed'
-            ? `زیان واقعی در استاپ: ${chosen.riskUsdt.toFixed(2)}$ (سقف بودجه: ${chosen.targetRiskUsdt || riskAmountFixed}$ | استپ صرافی: ${chosen.stepSize ?? '-'})`
-            : `زیان واقعی در استاپ (${riskPercent}%): ${chosen.riskUsdt.toFixed(2)}$ (استپ صرافی: ${chosen.stepSize ?? '-'})`;
-          addLog(
-            'trade',
-            `⚡ سیگنال برگزیده ${chosen.posSide} برای ${chosenName} با بیشترین اهرم (${chosen.maxLeverage}x) و حداقل مارجین درگیر (${chosen.requiredMargin.toFixed(2)} USDT) اجرا می‌شود. حجم مجاز صرافی: ${chosen.contractQty} (${chosen.notionalUsdt.toFixed(1)}$) | ${riskNotice} | ورود: ${formatPrice(chosen.curPrice)} | استاپ: ${formatPrice(chosen.stopLoss)} | تارگت: ${formatPrice(chosen.takeProfit)}`,
-            chosen.sym
-          );
-
-          // ارسال سفارش زنده یا شبیه‌ساز
-          if (isLiveExecution && exchange === 'xt') {
-            addLog('info', `🚀 در حال ارسال سفارش زنده فیوچرز به XT.COM با اهرم ${chosen.maxLeverage}x (${chosen.contractQty} قرارداد)...`, chosen.sym);
-            const orderRes = await createXtOrder({
-              symbol: chosen.sym,
-              orderSide: chosen.side,
-              orderType: 'MARKET',
-              positionSide: chosen.posSide,
-              amount: chosen.contractQty,
-              triggerProfitPrice: chosen.takeProfit,
-              triggerStopPrice: chosen.stopLoss,
-            });
-
-            if (orderRes.success) {
-              addLog('success', `✅ سفارش زنده فیوچرز با موفقیت ثبت شد (Order ID: ${orderRes.orderId || 'ثبت شد'})`, chosen.sym);
-            } else {
-              addLog('warning', `⚠️ پیام صرافی: ${orderRes.error || 'سفارش در حالت مارجین آزمایشی نگه‌داری شد'}`, chosen.sym);
-            }
-          } else {
-            addLog('success', `📝 معامله در حالت شبیه‌ساز (Paper Trading) با اهرم ${chosen.maxLeverage}x و مارجین ${chosen.requiredMargin.toFixed(2)}$ با موفقیت ثبت گردید.`, chosen.sym);
-          }
-
-          // ثبت در تاریخچه سفارشات
-          const newOrder: LiveTradeOrder = {
-            id: `order-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-            orderId: String(Date.now()),
-            exchange,
-            symbol: chosen.sym,
-            side: chosen.side,
-            positionSide: chosen.posSide,
-            orderType: 'MARKET',
-            price: chosen.curPrice,
-            amount: chosen.contractQty,
-            status: 'FILLED',
-            strategyName: chosen.strategyName,
-            takeProfitPrice: chosen.takeProfit,
-            stopLossPrice: chosen.stopLoss,
-            realizedPnl: 0,
-            timestamp: new Date().toLocaleTimeString('fa-IR'),
-          };
-
-          setTradeHistory((prev) => [newOrder, ...prev]);
-
-          // افزودن به لیست پوزیشن‌های باز با اهرم بیشینه و مارجین محاسبه‌شده
-          const newPos: LivePosition = {
-            symbol: chosen.sym,
-            exchange,
-            side: chosen.posSide,
-            positionSide: chosen.posSide,
-            entryPrice: chosen.curPrice,
-            markPrice: chosen.curPrice,
-            amount: chosen.contractQty,
-            leverage: chosen.maxLeverage,
-            margin: chosen.requiredMargin,
-            unrealizedPnl: 0,
-            pnlPercent: 0,
-            takeProfitPrice: chosen.takeProfit,
-            stopLossPrice: chosen.stopLoss,
-            updatedAt: new Date().toLocaleTimeString('fa-IR'),
-          };
-
-          setPositions((prev) => [newPos, ...prev.filter((p) => p.symbol !== chosen.sym)]);
-        }
-      }
-    }
-
-    setIsScanningNow(false);
-    // Refresh balance and positions
-    handleRefreshBalance();
-  }, [
-    exchange,
-    selectedSymbols,
-    tradeTimeframe,
-    atrPeriod,
-    atrMultiplier,
-    minCandles,
-    longLegAtrMultiplier,
-    minCandlesForLongLeg,
-    maxBlueLegPercent,
-    maxBreakoutAtrMultiplier,
-    riskRewardRatio,
-    selectedStrategy,
-    noConcurrentPositions,
-    positions,
-    balance.availableBalance,
-    balance.totalEquity,
-    balance.walletBalance,
-    riskMode,
-    riskAmountFixed,
-    riskPercent,
-    isLiveExecution,
-    addLog,
-    handleRefreshBalance,
-  ]);
-
   // =========================================================================
   // PERSISTENT SERVER-SIDE BACKGROUND AUTO-SCANNER SYNC & CONTROLS
   // =========================================================================
@@ -1050,6 +758,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         setServerLastRunAt(lastRunAt || null);
         if (data.state.lastResult && typeof data.state.lastResult.durationMs === 'number') {
           setServerLastDurationMs(data.state.lastResult.durationMs);
+        }
+
+        if (Array.isArray(activeSignals)) {
+          setServerActiveSignals(activeSignals);
         }
 
         if (Array.isArray(executionLogs)) {
@@ -1096,6 +808,45 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       // transient network error
     }
   }, []);
+
+  // Trigger on-demand immediate scan on server backend (100% server-side execution)
+  const handleTriggerServerScanNow = useCallback(async () => {
+    if (isScanningNow) return;
+    setIsScanningNow(true);
+    try {
+      addLog('info', '🔍 ارسال درخواست اجرای اسکن فوری به سرور Node.js...');
+      showToast('🔍 در حال اجرای اسکن کامل در سرور...');
+      const res = await fetch('/api/live-scanner/scan-now', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('✅ اسکن سرور با موفقیت به پایان رسید');
+        if (data.state) {
+          if (Array.isArray(data.state.activeSignals)) {
+            setServerActiveSignals(data.state.activeSignals);
+          }
+          if (Array.isArray(data.state.logs)) {
+            setScanLogs((prev) => {
+              const existingIds = new Set(prev.map((l) => l.id));
+              const newLogs = data.state.logs.filter((l: any) => !existingIds.has(l.id));
+              if (newLogs.length === 0) return prev;
+              return [...newLogs, ...prev].slice(0, 150);
+            });
+          }
+        }
+      } else {
+        showToast(`❌ پیام سرور: ${data.error || data.message}`);
+      }
+    } catch (err: any) {
+      showToast(`❌ خطای شبکه: ${err.message}`);
+    } finally {
+      setIsScanningNow(false);
+      fetchServerScannerStatus();
+      handleRefreshBalance();
+    }
+  }, [isScanningNow, addLog, fetchServerScannerStatus, handleRefreshBalance]);
 
   // Save changes directly to server backend
   const syncConfigToServer = useCallback(async (partialConfig: any) => {
@@ -1718,10 +1469,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
 
                 <button
                   type="button"
-                  onClick={runScanCycle}
+                  onClick={handleTriggerServerScanNow}
                   disabled={isScanningNow}
                   className="p-2 rounded-xl bg-[#1b2230] hover:bg-[#252f42] text-cyan-300 border border-[#2d3a50] transition-all cursor-pointer disabled:opacity-40"
-                  title="اجرای فوری اسکن دستی همین حالا"
+                  title="اجرای فوری اسکن دستی در سرور (100% Server Engine)"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isScanningNow ? 'animate-spin' : ''}`} />
                 </button>
@@ -2117,6 +1868,61 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
               </label>
             </div>
 
+            {/* حد زمان ماندن در معامله (Time-Stop بر مبنای تعداد کندل) */}
+            <div className="flex flex-wrap items-center justify-between p-3 rounded-xl bg-[#0d1119] border border-cyan-500/30 gap-2 mt-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-7 h-7 rounded-lg bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+                  <Clock className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="text-xs font-extrabold text-white flex items-center gap-1.5">
+                    <span>خروج زمانی (Time-Stop):</span>
+                    <span className="text-[10px] text-cyan-400 font-normal">بسته شدن معامله در سود یا ضرر پس از تعداد معین کندل</span>
+                  </div>
+                  <div className="text-[11px] text-gray-400">
+                    حداکثر تعداد کندل مجاز برای ماندن در معامله باز (پیش‌فرض: ۸۰ کندل)
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={5}
+                  max={500}
+                  step={5}
+                  value={timeStopCandles}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value, 10) || 80;
+                    setTimeStopCandles(val);
+                    try {
+                      localStorage.setItem('livetrade_time_stop_candles', String(val));
+                    } catch {}
+                  }}
+                  disabled={!timeStopEnabled}
+                  className="w-20 px-2 py-1 bg-[#141a26] border border-[#2d384c] rounded-lg text-cyan-300 font-mono text-center font-bold text-xs disabled:opacity-40"
+                  title="حداکثر تعداد کندل ماندن در پوزیشن"
+                />
+                <span className="text-xs text-gray-400 font-sans">کندل</span>
+                <label className="flex items-center gap-2 cursor-pointer select-none px-3 py-1.5 rounded-xl bg-[#141a26] border border-[#2d384c] hover:border-cyan-500/40 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={timeStopEnabled}
+                    onChange={(e) => {
+                      const val = e.target.checked;
+                      setTimeStopEnabled(val);
+                      try {
+                        localStorage.setItem('livetrade_time_stop_enabled', String(val));
+                      } catch {}
+                    }}
+                    className="w-4 h-4 rounded text-cyan-500 bg-[#171d28] border-[#2e394e] focus:ring-cyan-500 cursor-pointer"
+                  />
+                  <span className={`text-xs font-bold font-mono ${timeStopEnabled ? 'text-cyan-300' : 'text-gray-400'}`}>
+                    {timeStopEnabled ? 'فعال' : 'غیرفعال'}
+                  </span>
+                </label>
+              </div>
+            </div>
+
             {/* راهنمای نحوه محاسبه دقیق حجم بر اساس Step Size صرافی بایننس و XT */}
             <div className="p-2.5 rounded-xl bg-cyan-950/25 border border-cyan-800/35 text-[11px] space-y-1 text-cyan-200">
               <div className="font-bold flex items-center gap-1.5 text-cyan-300">
@@ -2156,6 +1962,18 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 >
                   <Zap className="w-3.5 h-3.5" />
                   <span>سفارشات صرافی XT ({serverExecutionLogs.length})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveLogTab('signals')}
+                  className={`px-2.5 py-1 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                    activeLogTab === 'signals'
+                      ? 'bg-cyan-500 text-black shadow-xs'
+                      : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  <Crosshair className="w-3.5 h-3.5" />
+                  <span>سیگنال‌های سرور ({serverActiveSignals.length})</span>
                 </button>
               </div>
 
@@ -2269,6 +2087,65 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                           <strong>خطای صرافی:</strong> {item.error}
                         </div>
                       )}
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+
+            {/* تب ۳: سیگنال‌های فعال کشف‌شده در بک‌اند سرور */}
+            {activeLogTab === 'signals' && (
+              <div className="flex-1 bg-[#0b0e14] p-2 rounded-xl border border-[#1b2230] overflow-y-auto max-h-[260px] space-y-2">
+                {serverActiveSignals.length === 0 ? (
+                  <div className="text-gray-500 text-center py-8 text-xs space-y-1">
+                    <div>در آخرین اسکن سرور هیچ سیگنال شکست جدیدی یافت نشد.</div>
+                    <div className="text-[10px] text-gray-600">
+                      موتور تحلیلی مستقل سرور در هر چرخه، بازار را به صورت خودکار رصد می‌کند.
+                    </div>
+                  </div>
+                ) : (
+                  serverActiveSignals.map((sig, idx) => (
+                    <div
+                      key={`${sig.symbol}_${idx}`}
+                      className="p-2.5 rounded-xl border border-cyan-500/30 bg-[#0d1520] text-xs space-y-1.5"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-extrabold uppercase ${
+                              sig.posSide === 'LONG'
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                            }`}
+                          >
+                            {sig.posSide}
+                          </span>
+                          <strong className="text-white font-mono uppercase">{fromXtSymbol(sig.symbol)}</strong>
+                          <span className="text-[10px] text-gray-400 font-mono">({sig.strategyName})</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-500/30">
+                            مارجین: ${sig.requiredMargin}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleNavigateToChart(sig.symbol, sig)}
+                            className="p-1 rounded bg-[#1f2937] hover:bg-[#374151] text-cyan-300 hover:text-white transition-colors cursor-pointer"
+                            title="مشاهده چارت نماد"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="text-[11px] text-gray-300 grid grid-cols-2 sm:grid-cols-3 gap-1 font-mono pt-1 border-t border-[#1e293b]">
+                        <div>قیمت ورود: <strong className="text-white">{formatPrice(sig.curPrice)}</strong></div>
+                        <div>اهرم: <strong className="text-amber-300">{sig.maxLeverage}x</strong></div>
+                        <div>حجم مجاز: <strong className="text-cyan-300">{sig.contractQty}</strong></div>
+                        <div>استاپ‌لاس: <span className="text-rose-400">{formatPrice(sig.stopLoss)}</span></div>
+                        <div>تیک‌پرافیت: <span className="text-emerald-400">{formatPrice(sig.takeProfit)}</span></div>
+                        <div>زیان در SL: <strong className="text-rose-300">${sig.riskUsdt}</strong></div>
+                      </div>
                     </div>
                   ))
                 )}

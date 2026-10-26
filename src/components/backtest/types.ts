@@ -37,7 +37,7 @@ export interface OptimizationTrial {
   id: number;
   hash: string;
   timestamp: string;
-  // ۸ پارامتر استراتژی
+  // ۸ پارامتر استراتژی + Time-Stop
   atrPeriod: number;
   minCandles: number;
   minCandlesForLongLeg: number;
@@ -46,6 +46,7 @@ export interface OptimizationTrial {
   maxBlueLegPercent: number;
   maxBreakoutAtrMultiplier: number;
   maxRiskReward: number;
+  timeStopCandles?: number;
   // خروجی‌های شبیه‌سازی
   totalTrades: number;
   winTrades: number;
@@ -81,6 +82,7 @@ export interface AdaptiveRanges {
   maxBlueLegPercent: ParameterRange;
   maxBreakoutAtrMultiplier: ParameterRange;
   maxRiskReward: ParameterRange;
+  timeStopCandles: ParameterRange;
 }
 
 export type SortDirection = 'asc' | 'desc';
@@ -145,6 +147,7 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
       maxBlueLegPercent: makeRange(35, 75, 20, 90, 55, 5),
       maxBreakoutAtrMultiplier: makeRange(2.0, 5.5, 1.0, 8.0, 3.5, 0.5),
       maxRiskReward: makeRange(1.5, 4.5, 1.0, 10.0, 2.5, 0.25),
+      timeStopCandles: makeRange(20, 120, 10, 200, 80, 10),
     };
   }
 
@@ -158,6 +161,7 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
       maxBlueLegPercent: makeRange(30, 70, 20, 85, 50, 5),
       maxBreakoutAtrMultiplier: makeRange(1.5, 5.0, 1.0, 7.0, 3.0, 0.5),
       maxRiskReward: makeRange(1.5, 7.0, 1.0, 12.0, 3.5, 0.5),
+      timeStopCandles: makeRange(20, 120, 10, 200, 60, 10),
     };
   }
 
@@ -171,6 +175,7 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
     maxBlueLegPercent: makeRange(35, 75, 25, 85, 55, 5),
     maxBreakoutAtrMultiplier: makeRange(1.8, 5.5, 1.0, 7.5, 3.5, 0.5),
     maxRiskReward: makeRange(1.5, 6.0, 1.0, 10.0, 3.0, 0.5),
+    timeStopCandles: makeRange(20, 120, 10, 200, 80, 10),
   };
 }
 
@@ -286,6 +291,7 @@ export function generateConfigHash(p: {
   maxBlueLegPercent: number;
   maxBreakoutAtrMultiplier: number;
   maxRiskReward: number;
+  timeStopCandles?: number;
 }): string {
-  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxRiskReward}`;
+  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxRiskReward}_${p.timeStopCandles || 80}`;
 }

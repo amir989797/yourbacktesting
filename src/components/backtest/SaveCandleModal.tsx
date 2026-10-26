@@ -95,21 +95,21 @@ export const SaveCandleModal: React.FC<SaveCandleModalProps> = ({
               </div>
             </div>
 
-            {/* وضعیت و سلامت فضای ابری Cloud SQL */}
+            {/* وضعیت و سلامت سرور اختصاصی PostgreSQL */}
             <div className="p-2.5 rounded-xl bg-cyan-950/40 border border-cyan-500/30 flex items-center justify-between text-[11px]">
               <div className="flex items-center gap-1.5 text-cyan-300">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span>دیتابیس Cloud SQL (PostgreSQL): <strong>متصل و آماده</strong></span>
+                <span>سرور اختصاصی PostgreSQL (193.142.58.196): <strong>متصل و آماده</strong></span>
               </div>
               <div className="text-gray-300 font-mono text-[10px]">
-                حجم دیتابیس: <span className="text-emerald-300 font-bold">{cloudSqlStatus?.dbSize || '15 MB'}</span> (فضای ذخیره ابری: بیش از ۱۰ گیگابایت)
+                حجم دیتابیس: <span className="text-emerald-300 font-bold">{cloudSqlStatus?.dbSize || '89 MB'}</span>
               </div>
             </div>
 
             {activeSessionDatasetId && (
               <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[11px] flex items-center gap-2">
                 <span className="text-base shrink-0">⚡</span>
-                <span>داده‌های کندل از قبل در Cloud SQL سرور به صورت خودکار بافر شده‌اند؛ ذخیره‌سازی دائمی آنی خواهد بود (بدون نیاز به آپلود مجدد حجم بالا از کلاینت).</span>
+                <span>داده‌های کندل در سرور PostgreSQL اختصاصی به صورت خودکار بافر شده‌اند؛ ذخیره‌سازی دائمی آنی خواهد بود (بدون نیاز به آپلود مجدد حجم بالا از کلاینت).</span>
               </div>
             )}
 

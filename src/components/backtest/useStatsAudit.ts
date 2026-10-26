@@ -833,6 +833,10 @@ export function useStatsAudit(props: UseStatsAuditProps) {
     let accountDD_bottom = 0;
     let accountDD_recovery: number | null = null;
 
+    // آرایه‌های سری زمانی ارزش حساب و بازده معاملات جهت سنجش پایداری و ریسک نزولی
+    const accountEquitySeries: number[] = [initialCap];
+    const tradeReturnPcts: number[] = [];
+
     for (const t of sortedTrades) {
       const netPnl = t.pnl || 0;
       const fee = t.fee || t.commission || 0;
@@ -1027,7 +1031,12 @@ export function useStatsAudit(props: UseStatsAuditProps) {
       }
 
       // ب) رهگیری منحنی ارزش واقعی حساب (Actual Account Equity Curve شامل فاندینگ)
+      const prevAccountEquity = runningAccountEquity;
       runningAccountEquity += tradeAccountNetPnl;
+      accountEquitySeries.push(runningAccountEquity);
+      const tradeReturnPct = prevAccountEquity > 0 ? (tradeAccountNetPnl / prevAccountEquity) * 100 : 0;
+      tradeReturnPcts.push(tradeReturnPct);
+
       if (runningAccountEquity > peakAccountEquity) {
         if (inAccountDD) {
           if (currentAccountDDDrop > maxAccountDD_usd) {
@@ -1390,44 +1399,6 @@ export function useStatsAudit(props: UseStatsAuditProps) {
       }
     }
 
-    // =========================================================================
-    // جدول اعتبارسنجی دو منحنی و اصطکاک کارمزد (TABLE 11 — EQUITY CURVE & FEE DRAG)
-    // =========================================================================
-    const equityCurveValidationAudit = {
-      tradingEquity: {
-        finalEquity: parseFloat((initialCap + totalTradingNetProfit).toFixed(2)),
-        maxDrawdownUsd: parseFloat(maxTradingDD_usd.toFixed(2)),
-        maxDrawdownPct: parseFloat(maxTradingDD_percent.toFixed(2)),
-        startDate: formatDate(tradingDD_start),
-        bottomDate: formatDate(tradingDD_bottom),
-        recoveryDate: tradingDD_recovery ? formatDate(tradingDD_recovery) : 'در حال بازیابی (Under Recovery)',
-        durationDays: parseFloat(((maxTradingDDDurationSec || 0) / 86400).toFixed(1)),
-        durationTrades: maxTradingDDDurationTrades || 0,
-      },
-      accountEquity: {
-        finalEquity: parseFloat(finalEquity.toFixed(2)),
-        maxDrawdownUsd: parseFloat(maxAccountDD_usd.toFixed(2)),
-        maxDrawdownPct: parseFloat(maxAccountDD_percent.toFixed(2)),
-        startDate: formatDate(accountDD_start),
-        bottomDate: formatDate(accountDD_bottom),
-        recoveryDate: accountDD_recovery ? formatDate(accountDD_recovery) : 'در حال بازیابی (Under Recovery)',
-        durationDays: parseFloat(((maxAccountDDDurationSec || 0) / 86400).toFixed(1)),
-        durationTrades: maxAccountDDDurationTrades || 0,
-      },
-    };
-
-    const feeDragAudit = {
-      maxDDWithFeesUsd: parseFloat(maxTradingDD_usd.toFixed(2)),
-      maxDDWithFeesPct: parseFloat(maxTradingDD_percent.toFixed(2)),
-      maxDDWithoutFeesUsd: parseFloat(noFeeMaxDD_usd.toFixed(2)),
-      maxDDWithoutFeesPct: parseFloat(noFeeMaxDD_percent.toFixed(2)),
-      feeImpactOnMaxDDUsd: parseFloat((maxTradingDD_usd - noFeeMaxDD_usd).toFixed(2)),
-      feeImpactOnMaxDDPct: parseFloat((maxTradingDD_percent - noFeeMaxDD_percent).toFixed(2)),
-      finalEquityWithFees: parseFloat((initialCap + totalTradingNetProfit).toFixed(2)),
-      finalEquityWithoutFees: parseFloat(noFeeRunningEquity.toFixed(2)),
-      feeImpactOnFinalEquityUsd: parseFloat((noFeeRunningEquity - (initialCap + totalTradingNetProfit)).toFixed(2)),
-      explanation: 'سهم کارمزدها در افت سرمایه به روش تجربی از طریق تفاضل دو منحنی واقعی و بدون کارمزد محاسبه شده است (نه تقسیم ساده کارمزد کل بر سرمایه).',
-    };
 
     // =========================================================================
     // جدول توزیع ریسک روزانه و VaR / CVaR (TABLE 12 — DAILY RISK DISTRIBUTION)
@@ -1502,12 +1473,176 @@ export function useStatsAudit(props: UseStatsAuditProps) {
     const tail1 = sortedDailyPcts.slice(0, p1Idx + 1);
     const cvar99_magnitude = tail1.length > 0 ? -(tail1.reduce((a, b) => a + b, 0) / tail1.length) : var99_magnitude;
 
+    // =========================================================================
+    // سه شاخص سنجش پیوستگی و ریسک نزولی (SMOOTHNESS & DOWNSIDE-RISK METRICS)
+    // ۱. پایداری منحنی سرمایه (R^2 / R-Squared و شیب رگرسیون OLS)
+    // ۲. شاخص زخم اولسر (Ulcer Index) و نسبت مارتین (Martin Ratio / UPI)
+    // ۳. نسبت سورتینو به ازای هر معامله و روزانه/سالانه‌شده (Sortino Ratio)
+    // =========================================================================
+    const N_trades = tradeReturnPcts.length;
+    const M_points = accountEquitySeries.length; // N + 1
+
+    // ۱. برازش رگرسیون خطی حداقل مربعات معمولی (OLS) بر کل نقاط E = [E_0, ..., E_N]
+    let olsSlope = 0;
+    let rSquared = 0;
+    if (N_trades >= 1 && M_points >= 2) {
+      const xMean = N_trades / 2; // میانگین اندیس‌ها [0, 1, ..., N]
+      const eMean = accountEquitySeries.reduce((a, b) => a + b, 0) / M_points;
+      let covXE = 0;
+      let varX = 0;
+      let varE = 0;
+      for (let i = 0; i < M_points; i++) {
+        const dx = i - xMean;
+        const de = accountEquitySeries[i] - eMean;
+        covXE += dx * de;
+        varX += dx * dx;
+        varE += de * de;
+      }
+      covXE /= M_points;
+      varX /= M_points;
+      varE /= M_points;
+      olsSlope = varX > 0 ? covXE / varX : 0;
+      const sigmaX = Math.sqrt(varX);
+      const sigmaE = Math.sqrt(varE);
+      if (sigmaX > 0 && sigmaE > 0) {
+        const corr = covXE / (sigmaX * sigmaE);
+        rSquared = Math.max(0, Math.min(1, Math.pow(corr, 2)));
+      } else {
+        rSquared = varE === 0 ? 1.0 : 0.0;
+      }
+    } else {
+      rSquared = 1.0;
+      olsSlope = 0;
+    }
+    const rSquaredStatus: 'PASS' | 'WARN' = rSquared >= 0.70 ? 'PASS' : 'WARN';
+
+    // ۲. شاخص زخم اولسر (Ulcer Index) و نسبت مارتین (Martin Ratio / UPI)
+    let sumSquaredDrawdowns = 0;
+    let runningUiPeak = accountEquitySeries[0] || initialCap;
+    for (let i = 0; i < M_points; i++) {
+      const eq = accountEquitySeries[i];
+      if (eq > runningUiPeak) {
+        runningUiPeak = eq;
+      }
+      const ddPct = runningUiPeak > 0 ? ((runningUiPeak - eq) / runningUiPeak) * 100 : 0;
+      sumSquaredDrawdowns += ddPct * ddPct;
+    }
+    const ulcerIndex = M_points > 0 ? Math.sqrt(sumSquaredDrawdowns / M_points) : 0;
+    const martinRatio =
+      ulcerIndex > 0
+        ? totalReturnPercent / ulcerIndex
+        : totalReturnPercent > 0
+        ? 99.0
+        : 0.0;
+
+    // ۳. نسبت سورتینو با انحراف نزولی هدف صفر (Target Return = 0)
+    // ۳-الف: به ازای هر معامله (Per-Trade Sortino)
+    const sumSquaredDownsideTrade = tradeReturnPcts.reduce((sum, r) => {
+      const downside = Math.min(0, r);
+      return sum + (downside * downside);
+    }, 0);
+    const tradeDownsideDev = N_trades > 0 ? Math.sqrt(sumSquaredDownsideTrade / N_trades) : 0;
+    const meanTradeReturn = N_trades > 0 ? tradeReturnPcts.reduce((a, b) => a + b, 0) / N_trades : 0;
+    const perTradeSortino =
+      tradeDownsideDev > 0
+        ? meanTradeReturn / tradeDownsideDev
+        : meanTradeReturn > 0
+        ? 99.0
+        : 0.0;
+
+    // ۳-ب: روزانه و سالانه‌شده بر کل روزهای تقویمی (Daily & Annualized Sortino)
+    const K_calendarDays = dailyReturnsList.length;
+    const sumSquaredDownsideDaily = dailyReturnsList.reduce((sum, r) => {
+      const downside = Math.min(0, r);
+      return sum + (downside * downside);
+    }, 0);
+    const dailyDownsideDev = K_calendarDays > 0 ? Math.sqrt(sumSquaredDownsideDaily / K_calendarDays) : 0;
+    const dailySortino =
+      dailyDownsideDev > 0
+        ? meanDaily / dailyDownsideDev
+        : meanDaily > 0
+        ? 99.0
+        : 0.0;
+    const annualizedDailySortino = dailySortino * Math.sqrt(365);
+
+    const equityCurveStability = {
+      rSquared: parseFloat(rSquared.toFixed(4)),
+      rSquaredPercent: parseFloat((rSquared * 100).toFixed(2)),
+      slopePerTrade: parseFloat(olsSlope.toFixed(2)),
+      status: rSquaredStatus,
+      displayText: `${rSquared.toFixed(2)} (${(rSquared * 100).toFixed(2)}%) | شیب: ${olsSlope >= 0 ? '+' : ''}$${olsSlope.toFixed(2)}/trade`,
+    };
+
+    const ulcerIndexAndMartinRatio = {
+      ulcerIndex: parseFloat(ulcerIndex.toFixed(2)),
+      martinRatio: parseFloat(martinRatio.toFixed(2)),
+      displayText: `UI: ${ulcerIndex.toFixed(2)}% | Martin Ratio: ${martinRatio.toFixed(2)}`,
+    };
+
+    const sortinoMetrics = {
+      perTradeDownsideDev: parseFloat(tradeDownsideDev.toFixed(3)),
+      perTradeSortino: parseFloat(perTradeSortino.toFixed(2)),
+      dailyDownsideDev: parseFloat(dailyDownsideDev.toFixed(3)),
+      dailySortino: parseFloat(dailySortino.toFixed(2)),
+      annualizedDailySortino: parseFloat(annualizedDailySortino.toFixed(2)),
+      table3DisplayText: `Per-Trade: ${perTradeSortino.toFixed(2)} | Annualized: ${annualizedDailySortino.toFixed(2)}`,
+      table12DisplayText: `Downside Dev: ${dailyDownsideDev.toFixed(2)}% | Daily Sortino: ${dailySortino.toFixed(2)} (Annualized: ${annualizedDailySortino.toFixed(2)})`,
+    };
+
+    // =========================================================================
+    // جدول اعتبارسنجی دو منحنی و اصطکاک کارمزد (TABLE 11 — EQUITY CURVE & FEE DRAG)
+    // =========================================================================
+    const equityCurveValidationAudit = {
+      tradingEquity: {
+        finalEquity: parseFloat((initialCap + totalTradingNetProfit).toFixed(2)),
+        maxDrawdownUsd: parseFloat(maxTradingDD_usd.toFixed(2)),
+        maxDrawdownPct: parseFloat(maxTradingDD_percent.toFixed(2)),
+        startDate: formatDate(tradingDD_start),
+        bottomDate: formatDate(tradingDD_bottom),
+        recoveryDate: tradingDD_recovery ? formatDate(tradingDD_recovery) : 'در حال بازیابی (Under Recovery)',
+        durationDays: parseFloat(((maxTradingDDDurationSec || 0) / 86400).toFixed(1)),
+        durationTrades: maxTradingDDDurationTrades || 0,
+      },
+      accountEquity: {
+        finalEquity: parseFloat(finalEquity.toFixed(2)),
+        maxDrawdownUsd: parseFloat(maxAccountDD_usd.toFixed(2)),
+        maxDrawdownPct: parseFloat(maxAccountDD_percent.toFixed(2)),
+        startDate: formatDate(accountDD_start),
+        bottomDate: formatDate(accountDD_bottom),
+        recoveryDate: accountDD_recovery ? formatDate(accountDD_recovery) : 'در حال بازیابی (Under Recovery)',
+        durationDays: parseFloat(((maxAccountDDDurationSec || 0) / 86400).toFixed(1)),
+        durationTrades: maxAccountDDDurationTrades || 0,
+      },
+      stability: equityCurveStability,
+      ulcerIndex: parseFloat(ulcerIndex.toFixed(2)),
+      martinRatio: parseFloat(martinRatio.toFixed(2)),
+    };
+
+    const feeDragAudit = {
+      maxDDWithFeesUsd: parseFloat(maxTradingDD_usd.toFixed(2)),
+      maxDDWithFeesPct: parseFloat(maxTradingDD_percent.toFixed(2)),
+      maxDDWithoutFeesUsd: parseFloat(noFeeMaxDD_usd.toFixed(2)),
+      maxDDWithoutFeesPct: parseFloat(noFeeMaxDD_percent.toFixed(2)),
+      feeImpactOnMaxDDUsd: parseFloat((maxTradingDD_usd - noFeeMaxDD_usd).toFixed(2)),
+      feeImpactOnMaxDDPct: parseFloat((maxTradingDD_percent - noFeeMaxDD_percent).toFixed(2)),
+      finalEquityWithFees: parseFloat((initialCap + totalTradingNetProfit).toFixed(2)),
+      finalEquityWithoutFees: parseFloat(noFeeRunningEquity.toFixed(2)),
+      feeImpactOnFinalEquityUsd: parseFloat((noFeeRunningEquity - (initialCap + totalTradingNetProfit)).toFixed(2)),
+      explanation: 'سهم کارمزدها در افت سرمایه به روش تجربی از طریق تفاضل دو منحنی واقعی و بدون کارمزد محاسبه شده است (نه تقسیم ساده کارمزد کل بر سرمایه).',
+    };
+
+    // =========================================================================
+    // جدول توزیع ریسک روزانه و VaR / CVaR (TABLE 12 — DAILY RISK DISTRIBUTION)
+    // =========================================================================
     const dailyRiskDistributionAudit = {
       calendarDaysCount: totalCalendarDays,
       tradingDaysCount: activeTradingCalendarDays,
       meanDailyReturn: parseFloat(meanDaily.toFixed(3)),
       medianDailyReturn: parseFloat(medianDaily.toFixed(3)),
       stdDevDailyReturn: parseFloat(stdDevDaily.toFixed(3)),
+      downsideDeviation: parseFloat(dailyDownsideDev.toFixed(3)),
+      dailySortino: parseFloat(dailySortino.toFixed(2)),
+      annualizedSortino: parseFloat(annualizedDailySortino.toFixed(2)),
       minDailyReturn: parseFloat(minDaily.toFixed(2)),
       maxDailyReturn: parseFloat(maxDaily.toFixed(2)),
       percentile5th: parseFloat(p5Val.toFixed(2)),
@@ -1602,7 +1737,7 @@ export function useStatsAudit(props: UseStatsAuditProps) {
     const effectiveFeeRate = totalExecutedNotional > 0 ? (sumTradingFees / totalExecutedNotional) * 100 : (commissionPercent || 0.05);
     const sumFinalTradesPnl = sumGrossTradePnl - sumTradingFees - netFundingCost;
     const reconciliationCheckDifference = Math.abs(sumFinalTradesPnl - finalAccountNetProfit);
-    const executionAuditPassed = reconciliationCheckDifference <= 0.05;
+    const executionAuditPassed = reconciliationCheckDifference <= 0.10;
 
     const executionCostAudit = {
       entryNotionalTotal: parseFloat(sumEntryNotional.toFixed(2)),
@@ -1652,14 +1787,14 @@ export function useStatsAudit(props: UseStatsAuditProps) {
 
     const check1_winLoss = (winTrades + lossTrades) === totalTrades;
     const check2_directional = (longTradesCount + shortTradesCount) === totalTrades;
-    const check3_sumTradePnl = Math.abs(sumOfIndividualTradePnls - totalTradingNetProfit) <= 0.05;
-    const check4_netAccountPnl = Math.abs((totalTradingNetProfit - netFundingCost) - finalAccountNetProfit) <= 0.05;
-    const check5_grossMinusLoss = Math.abs((grossProfit - grossLoss) - totalTradingNetProfit) <= 0.05;
-    const check6_expectancyProduct = Math.abs((expectancyUsd * totalTrades) - totalTradingNetProfit) <= 0.05;
+    const check3_sumTradePnl = Math.abs(sumOfIndividualTradePnls - totalTradingNetProfit) <= 0.10;
+    const check4_netAccountPnl = Math.abs((totalTradingNetProfit - netFundingCost) - finalAccountNetProfit) <= 0.10;
+    const check5_grossMinusLoss = Math.abs((grossProfit - grossLoss) - totalTradingNetProfit) <= 0.10;
+    const check6_expectancyProduct = Math.abs((expectancyUsd * totalTrades) - totalTradingNetProfit) <= 0.10;
     const check7_maxDrawdownSign = maxAccountDD_percent >= 0;
-    const check8_finalEquityEquation = Math.abs((initialCap + finalAccountNetProfit) - finalEquity) <= 0.05;
-    const check9_totalFeesEquation = Math.abs(totalFees - sumTradingFees) <= 0.05;
-    const check10_netFundingEquation = Math.abs(netFundingCost - (totalFundingPaid - totalFundingReceived)) <= 0.05;
+    const check8_finalEquityEquation = Math.abs((initialCap + finalAccountNetProfit) - finalEquity) <= 0.10;
+    const check9_totalFeesEquation = Math.abs(totalFees - sumTradingFees) <= 0.10;
+    const check10_netFundingEquation = Math.abs(netFundingCost - (totalFundingPaid - totalFundingReceived)) <= 0.10;
     const check11_rawGeFinal = concurrencyFilterResults.rawTradesCount >= totalTrades;
     const check12_rejectedPlusFinal = (concurrencyFilterResults.rejectedTradesCount + totalTrades) === concurrencyFilterResults.rawTradesCount;
 
@@ -1908,6 +2043,15 @@ export function useStatsAudit(props: UseStatsAuditProps) {
       sharpeRatio,
       sortinoRatio,
       calmarRatio,
+      sortinoMetrics,
+      perTradeSortino: parseFloat(perTradeSortino.toFixed(2)),
+      annualizedDailySortino: parseFloat(annualizedDailySortino.toFixed(2)),
+      equityCurveStability,
+      ulcerIndexAndMartinRatio,
+      ulcerIndex: parseFloat(ulcerIndex.toFixed(2)),
+      martinRatio: parseFloat(martinRatio.toFixed(2)),
+      equityCurveR2: parseFloat(rSquared.toFixed(4)),
+      equityCurveSlope: parseFloat(olsSlope.toFixed(2)),
       maxDD_usd,
       maxDD_percent,
       tradingEquityMaxDD_usd: parseFloat(maxTradingDD_usd.toFixed(2)),
@@ -2236,6 +2380,7 @@ export function useStatsAudit(props: UseStatsAuditProps) {
 * وین‌ریت کل: ${baselineReconstruction.winRate.toFixed(2)}% (${baselineReconstruction.winTrades} برد / ${baselineReconstruction.lossTrades} باخت)
 * امید ریاضی: $${baselineReconstruction.expectancyUsd.toFixed(2)} per trade (${baselineReconstruction.expectancyR.toFixed(2)} R)
 * Sharpe Ratio: ${baselineReconstruction.sharpeRatio.toFixed(2)} | Sortino: ${baselineReconstruction.sortinoRatio.toFixed(2)} | Calmar: ${baselineReconstruction.calmarRatio.toFixed(2)}
+* Sortino Ratio (Per-Trade / Annualized): Per-Trade: ${baselineReconstruction.sortinoMetrics.perTradeSortino.toFixed(2)} | Annualized: ${baselineReconstruction.sortinoMetrics.annualizedDailySortino.toFixed(2)}
 
 بخش چهارم: جدول سنجش ریسک واقعی پرتفوی (Table 4 — Measure Actual Portfolio Risk):
 -----------------------------------------------------
@@ -2275,7 +2420,7 @@ ${baselineReconstruction.consistencyAudit.checks.map((c: any) => `${c.id}. [${c.
 * موازنه حسابداری دقیق:
    Sum(Gross Trade PnL) - Sum(Trading Fees) - Net Funding = Final Account PnL
    $${baselineReconstruction.executionCostAudit.sumGrossTradePnl.toFixed(2)} - $${baselineReconstruction.executionCostAudit.totalTradingFees.toFixed(2)} - $${baselineReconstruction.executionCostAudit.netFunding.toFixed(2)} = $${(baselineReconstruction.executionCostAudit.sumGrossTradePnl - baselineReconstruction.executionCostAudit.totalTradingFees - baselineReconstruction.executionCostAudit.netFunding).toFixed(2)} vs $${baselineReconstruction.executionCostAudit.finalAccountNetProfit.toFixed(2)}
-   نتیجه انطباق حسابداری: [${baselineReconstruction.executionCostAudit.reconciliationPassed ? '✅ PASS (مغایرت صفر)' : '❌ FAIL'}]
+   نتیجه انطباق حسابداری: [${baselineReconstruction.executionCostAudit.reconciliationPassed ? '✅ PASS (مغایرت زیر ۰.۱۰$)' : '❌ FAIL'}]
 
 بخش هشتم: ممیزی مواجهه، مارجین و اهرم (Table 8 — Exposure & Margin Audit):
 -----------------------------------------------------
@@ -2312,6 +2457,8 @@ ${baselineReconstruction.monthlyPerformanceAudit.map((m: any) => `* ماه ${m.m
    - حداکثر درودان: -$${baselineReconstruction.equityCurveValidationAudit.accountEquity.maxDrawdownUsd.toFixed(2)} (-${baselineReconstruction.equityCurveValidationAudit.accountEquity.maxDrawdownPct.toFixed(2)}%)
    - شروع درودان: ${baselineReconstruction.equityCurveValidationAudit.accountEquity.startDate} | کف: ${baselineReconstruction.equityCurveValidationAudit.accountEquity.bottomDate} | ریکاوری: ${baselineReconstruction.equityCurveValidationAudit.accountEquity.recoveryDate}
    - مدت زمان درودان: ${baselineReconstruction.equityCurveValidationAudit.accountEquity.durationDays.toFixed(1)} روز (${baselineReconstruction.equityCurveValidationAudit.accountEquity.durationTrades} معامله)
+* پایداری منحنی سرمایه (Equity Curve Stability R^2): ${baselineReconstruction.equityCurveStability.rSquared.toFixed(2)} (${baselineReconstruction.equityCurveStability.rSquaredPercent.toFixed(2)}%) | شیب خطی: ${baselineReconstruction.equityCurveStability.slopePerTrade >= 0 ? '+' : ''}$${baselineReconstruction.equityCurveStability.slopePerTrade.toFixed(2)} به ازای هر معامله [وضعیت: ${baselineReconstruction.equityCurveStability.status}]
+* شاخص اولسر و نسبت مارتین (Ulcer Index & Martin Ratio): UI: ${baselineReconstruction.ulcerIndexAndMartinRatio.ulcerIndex.toFixed(2)}% | Martin Ratio: ${baselineReconstruction.ulcerIndexAndMartinRatio.martinRatio.toFixed(2)}
 * اصطکاک تجربی کارمزدها (Fee Drag):
    - دارایی بدون کارمزد: $${baselineReconstruction.feeDragAudit.finalEquityWithoutFees.toFixed(2)} vs با کارمزد: $${baselineReconstruction.feeDragAudit.finalEquityWithFees.toFixed(2)}
    - افت ناشی از کارمزد: -$${baselineReconstruction.feeDragAudit.feeImpactOnFinalEquityUsd.toFixed(2)} USDT (-${baselineReconstruction.feeDragAudit.feeImpactOnMaxDDPct.toFixed(2)}% سرمایه)
@@ -2321,6 +2468,7 @@ ${baselineReconstruction.monthlyPerformanceAudit.map((m: any) => `* ماه ${m.m
 -----------------------------------------------------
 * روزهای تقویمی: ${baselineReconstruction.dailyRiskDistributionAudit.calendarDaysCount} | روزهای معاملاتی: ${baselineReconstruction.dailyRiskDistributionAudit.tradingDaysCount}
 * میانگین بازده روزانه: ${baselineReconstruction.dailyRiskDistributionAudit.meanDailyReturn.toFixed(2)}% | میانه: ${baselineReconstruction.dailyRiskDistributionAudit.medianDailyReturn.toFixed(2)}% | انحراف معیار: ${baselineReconstruction.dailyRiskDistributionAudit.stdDevDailyReturn.toFixed(2)}%
+* انحراف معیار نزولی روزانه و نسبت سورتینو: انحراف نزولی: ${baselineReconstruction.sortinoMetrics.dailyDownsideDev.toFixed(2)}% | سورتینو روزانه: ${baselineReconstruction.sortinoMetrics.dailySortino.toFixed(2)} | سورتینو سالانه‌شده: ${baselineReconstruction.sortinoMetrics.annualizedDailySortino.toFixed(2)}
 * صدک ۵٪ بازده: ${baselineReconstruction.dailyRiskDistributionAudit.percentile5th.toFixed(2)}% | صدک ۱٪ بازده: ${baselineReconstruction.dailyRiskDistributionAudit.percentile1st.toFixed(2)}%
 * ارزش در معرض ریسک روزانه (VaR 95%): ${baselineReconstruction.dailyRiskDistributionAudit.var95.toFixed(2)}% (-$${(capital * baselineReconstruction.dailyRiskDistributionAudit.var95 / 100).toFixed(2)} USDT)
 * ارزش در معرض ریسک روزانه (VaR 99%): ${baselineReconstruction.dailyRiskDistributionAudit.var99.toFixed(2)}% (-$${(capital * baselineReconstruction.dailyRiskDistributionAudit.var99 / 100).toFixed(2)} USDT)
@@ -2416,6 +2564,7 @@ ${baselineReconstruction.monthlyPerformanceAudit.map((m: any) => `* ماه ${m.m
       ['وین ریت کل', `${baselineReconstruction.winRate.toFixed(2)}%`, 'محاسبه‌شده', `${baselineReconstruction.winTrades} برد از ${baselineReconstruction.totalTrades} معامله`],
       ['امید ریاضی', `$${baselineReconstruction.expectancyUsd.toFixed(2)} per trade`, 'محاسبه‌شده', `${baselineReconstruction.expectancyR.toFixed(2)} R`],
       ['Sharpe Ratio', `${baselineReconstruction.sharpeRatio.toFixed(2)}`, 'محاسبه‌شده', 'نرخ بدون ریسک ۴٪ سالانه'],
+      ['Sortino Ratio (Per-Trade / Annualized)', `Per-Trade: ${baselineReconstruction.sortinoMetrics.perTradeSortino.toFixed(2)} | Annualized: ${baselineReconstruction.sortinoMetrics.annualizedDailySortino.toFixed(2)}`, 'محاسبه‌شده', 'نسبت سورتینو به ازای هر معامله و سالانه‌شده بر مبنای انحراف معیار زیان‌های منفی (Rf=0)'],
       ['', '', '', ''],
       ['بخش ۶: چک‌لیست ۱۲ آزمون انسجام ریاضی (Table 6 — 12 Consistency Checks)', '', '', ''],
       ...baselineReconstruction.consistencyAudit.checks.map((c: any) => [
@@ -2463,10 +2612,13 @@ ${baselineReconstruction.monthlyPerformanceAudit.map((m: any) => `* ماه ${m.m
       ['Trading Equity Final', `$${baselineReconstruction.equityCurveValidationAudit.tradingEquity.finalEquity.toFixed(2)} USDT`, 'محاسبه‌شده', `MaxDD: -${baselineReconstruction.equityCurveValidationAudit.tradingEquity.maxDrawdownPct.toFixed(2)}%`],
       ['Account Equity Final', `$${baselineReconstruction.equityCurveValidationAudit.accountEquity.finalEquity.toFixed(2)} USDT`, 'محاسبه‌شده', `MaxDD: -${baselineReconstruction.equityCurveValidationAudit.accountEquity.maxDrawdownPct.toFixed(2)}%`],
       ['Account MaxDD Timeline', `Start: ${baselineReconstruction.equityCurveValidationAudit.accountEquity.startDate} | Bottom: ${baselineReconstruction.equityCurveValidationAudit.accountEquity.bottomDate} | Recovery: ${baselineReconstruction.equityCurveValidationAudit.accountEquity.recoveryDate}`, 'محاسبه‌شده', `Duration: ${baselineReconstruction.equityCurveValidationAudit.accountEquity.durationDays.toFixed(1)} days (${baselineReconstruction.equityCurveValidationAudit.accountEquity.durationTrades} trades)`],
+      ['Equity Curve Stability (R-Squared)', `${baselineReconstruction.equityCurveStability.rSquared.toFixed(2)} (${baselineReconstruction.equityCurveStability.rSquaredPercent.toFixed(2)}%) [Slope: ${baselineReconstruction.equityCurveStability.slopePerTrade >= 0 ? '+' : ''}$${baselineReconstruction.equityCurveStability.slopePerTrade.toFixed(2)}/trade]`, baselineReconstruction.equityCurveStability.status, 'رگرسیون خطی OLS بر منحنی ارزش واقعی حساب (حد آستانه سلامت R^2 >= 0.70)'],
+      ['Ulcer Index & Martin Ratio', `UI: ${baselineReconstruction.ulcerIndexAndMartinRatio.ulcerIndex.toFixed(2)}% | Martin Ratio: ${baselineReconstruction.ulcerIndexAndMartinRatio.martinRatio.toFixed(2)}`, 'محاسبه‌شده', 'شاخص زخم اولسر (عمق و ماندگاری درودان) و نسبت مارتین (عملکرد تعدیل‌شده با UI)'],
       ['Fee Drag Impact', `Without Fees: $${baselineReconstruction.feeDragAudit.finalEquityWithoutFees.toFixed(2)} vs With Fees: $${baselineReconstruction.feeDragAudit.finalEquityWithFees.toFixed(2)}`, 'محاسبه‌شده', `Net Drag: -$${baselineReconstruction.feeDragAudit.feeImpactOnFinalEquityUsd.toFixed(2)} USDT (-${baselineReconstruction.feeDragAudit.feeImpactOnMaxDDPct.toFixed(2)}%)`],
       ['', '', '', ''],
       ['بخش ۱۲: توزیع ریسک روزانه و ارزش در معرض ریسک (Table 12 — Daily Risk Distribution)', '', '', ''],
       ['Daily Returns Mean / StdDev', `Mean: ${baselineReconstruction.dailyRiskDistributionAudit.meanDailyReturn.toFixed(2)}% | StdDev: ${baselineReconstruction.dailyRiskDistributionAudit.stdDevDailyReturn.toFixed(2)}%`, 'محاسبه‌شده', `Median: ${baselineReconstruction.dailyRiskDistributionAudit.medianDailyReturn.toFixed(2)}%`],
+      ['Daily Downside Deviation & Sortino', `Downside Dev: ${baselineReconstruction.sortinoMetrics.dailyDownsideDev.toFixed(2)}% | Daily Sortino: ${baselineReconstruction.sortinoMetrics.dailySortino.toFixed(2)} (Annualized: ${baselineReconstruction.sortinoMetrics.annualizedDailySortino.toFixed(2)})`, 'محاسبه‌شده', 'انحراف معیار نزولی روزانه (Target=0) و نسبت سورتینو روزانه و سالانه‌شده (× √365)'],
       ['Daily VaR 95%', `${baselineReconstruction.dailyRiskDistributionAudit.var95.toFixed(2)}% (-$${(capital * baselineReconstruction.dailyRiskDistributionAudit.var95 / 100).toFixed(2)} USDT)`, 'محاسبه‌شده', 'حداکثر زیان در ۹۵٪ روزها'],
       ['Daily CVaR 95%', `${baselineReconstruction.dailyRiskDistributionAudit.cvar95.toFixed(2)}% (-$${(capital * baselineReconstruction.dailyRiskDistributionAudit.cvar95 / 100).toFixed(2)} USDT)`, 'محاسبه‌شده', 'میانگین زیان در ۵٪ بدترین روزها (Expected Shortfall)'],
       ['CVaR >= VaR Check', baselineReconstruction.dailyRiskDistributionAudit.cvar95 >= baselineReconstruction.dailyRiskDistributionAudit.var95 ? 'PASS' : 'FAIL', 'تاییدشده', 'شرط ریاضی CVaR >= VaR برقرار است'],

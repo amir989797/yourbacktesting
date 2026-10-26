@@ -7,10 +7,17 @@ import crypto from 'crypto';
 import https from 'https';
 import fs from 'fs';
 import { WebSocket, WebSocketServer } from 'ws';
-import { calculateATR, calculateAtrZigZag, analyzeZigZagLegs } from './src/utils/indicators.ts';
-import { runStrategy1Backtest, runStrategy2Backtest } from './src/utils/strategyEngine.ts';
-import { DEFAULT_STRATEGY_CONFIG, StrategyConfig } from './src/types/strategy.ts';
-import { calculateExactTradeSizing, getSymbolLotRule, calculateXtContractQuantity } from './src/utils/exchangePrecision.ts';
+import {
+  evaluateSymbolForLiveSignal,
+  calculateXtContractQuantity,
+  CandidateSignal,
+  calculateATR,
+  calculateAtrZigZag,
+  analyzeZigZagLegs,
+  runStrategy1Backtest,
+  runStrategy2Backtest,
+} from './src/server/engine';
+import { initDatabase, testDatabaseConnection, pool, db } from './src/db/index';
 
 dotenv.config();
 
@@ -1144,7 +1151,7 @@ app.get('/api/market/recent-trades', async (req, res) => {
   }
 });
 
-// 3. Server-Side Complete Market Parallel Download into Server Buffer & Cloud SQL
+// 3. Server-Side Complete Market Parallel Download into Server Buffer & Remote PostgreSQL
 app.post('/api/market/server-scan-download', async (req, res) => {
   const {
     timeframe = '5m',
@@ -1241,7 +1248,7 @@ app.post('/api/market/server-scan-download', async (req, res) => {
       },
     };
 
-    // Auto-save to Cloud SQL as temporary live dataset if requested
+    // Auto-save to remote PostgreSQL as temporary live dataset if requested
     if (autoSaveCloudSql && results.length > 0) {
       try {
         const { db } = await import('./src/db/index.ts');
@@ -1285,9 +1292,9 @@ app.post('/api/market/server-scan-download', async (req, res) => {
             createdAt: new Date(),
           });
         }
-        console.log(`Auto-saved ${results.length} symbols (${totalCandles} candles) to Cloud SQL as ${tempId}`);
+        console.log(`Auto-saved ${results.length} symbols (${totalCandles} candles) to remote PostgreSQL as ${tempId}`);
       } catch (sqlErr) {
-        console.warn('Failed auto-save to Cloud SQL:', sqlErr);
+        console.warn('Failed auto-save to remote PostgreSQL:', sqlErr);
       }
     }
 
@@ -1325,10 +1332,10 @@ app.get('/api/market/server-buffer-data', (req, res) => {
 });
 
 // =========================================================================
-// CLOUD SQL POSTGRESQL PERSISTENCE & HEALTH ROUTES (/api/cloudsql/*)
+// REMOTE POSTGRESQL (193.142.58.196) PERSISTENCE & HEALTH ROUTES (/api/cloudsql/*)
 // =========================================================================
 
-// 0. Cloud SQL Status & Storage Capacity Diagnostics
+// 0. Remote PostgreSQL Status & Storage Capacity Diagnostics
 app.get('/api/cloudsql/status', async (req, res) => {
   try {
     const { createPool } = await import('./src/db/index.ts');
@@ -1338,12 +1345,15 @@ app.get('/api/cloudsql/status', async (req, res) => {
     const dbSizeRes = await pool.query(
       'SELECT pg_size_pretty(pg_database_size(current_database())) as size, pg_database_size(current_database()) as bytes'
     );
+    const dbInfoRes = await pool.query('SELECT current_database() as db_name, current_user as db_user');
     const datasetsCountRes = await pool.query('SELECT COUNT(*) as count FROM candle_datasets');
     const chunksCountRes = await pool.query('SELECT COUNT(*) as count FROM candle_chunks');
     const totalCandlesRes = await pool.query('SELECT COALESCE(SUM(total_candles), 0) as total FROM candle_datasets');
 
     const dbSize = dbSizeRes.rows[0]?.size || '0 B';
     const dbSizeBytes = parseInt(dbSizeRes.rows[0]?.bytes || '0', 10);
+    const currentDbName = dbInfoRes.rows[0]?.db_name || 'crypto_strategy_lab';
+    const currentDbUser = dbInfoRes.rows[0]?.db_user || 'admin';
     const datasetCount = parseInt(datasetsCountRes.rows[0]?.count || '0', 10);
     const chunkCount = parseInt(chunksCountRes.rows[0]?.count || '0', 10);
     const totalCandlesStored = parseInt(totalCandlesRes.rows[0]?.total || '0', 10);
@@ -1351,7 +1361,9 @@ app.get('/api/cloudsql/status', async (req, res) => {
     res.json({
       success: true,
       connected: true,
-      databaseName: process.env.SQL_DB_NAME,
+      serverHost: '193.142.58.196:5432',
+      databaseName: currentDbName,
+      databaseUser: currentDbUser,
       dbSize,
       dbSizeBytes,
       datasetCount,
@@ -1359,10 +1371,10 @@ app.get('/api/cloudsql/status', async (req, res) => {
       totalCandlesStored,
       hasAdequateSpace: true,
       spaceNote:
-        'فضای دیتابیس Cloud SQL کاملاً کافی و پایدار است. ذخیره ۳.۵ میلیون کندل ۵ دقیقه‌ای برای ۷۰۰+ ارز حدود ۱۷۵ مگابایت مصرف می‌کند که کمتر از ۲٪ ظرفیت سرور ابری است.',
+        'دیتابیس سرور PostgreSQL اختصاصی (193.142.58.196:5432) کاملاً متصل و پایدار است.',
     });
   } catch (error: any) {
-    console.error('Cloud SQL status check error:', error);
+    console.error('[Remote PostgreSQL] status check error:', error);
     res.status(500).json({
       success: false,
       connected: false,
@@ -1371,7 +1383,7 @@ app.get('/api/cloudsql/status', async (req, res) => {
   }
 });
 
-// 1. Save Candle Dataset directly to Cloud SQL
+// 1. Save Candle Dataset directly to Remote PostgreSQL
 app.post('/api/cloudsql/save-dataset', async (req, res) => {
   try {
     const {
@@ -1382,9 +1394,43 @@ app.post('/api/cloudsql/save-dataset', async (req, res) => {
       datasetId: customId,
     } = req.body || {};
 
-    const entries = Array.from(SERVER_CANDLE_BUFFER.values());
+    let entries = Array.from(SERVER_CANDLE_BUFFER.values());
+    const sourceDatasetId = customId || serverBacktestState.datasetId;
+
+    if (entries.length === 0 && sourceDatasetId) {
+      // Copy or promote from source range in PostgreSQL
+      const srcRes = await pool.query(`SELECT * FROM candle_datasets WHERE id = $1 LIMIT 1;`, [sourceDatasetId]);
+      if (srcRes.rows.length > 0) {
+        const src = srcRes.rows[0];
+        const newId = `saved_ds_${Date.now()}`;
+
+        // Copy metadata
+        await pool.query(
+          `INSERT INTO candle_datasets (id, name, user_id, timeframe, exchange, start_time, end_time, symbol_count, total_candles, symbols_list, data_size_bytes, data_size_formatted, status, is_temporary, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'COMPLETED', false, NOW(), NOW());`,
+          [newId, name, userId, src.timeframe, src.exchange, src.start_time, src.end_time, src.symbol_count, src.total_candles, src.symbols_list, src.data_size_bytes, src.data_size_formatted]
+        );
+
+        // Copy chunks
+        await pool.query(
+          `INSERT INTO candle_chunks (dataset_id, chunk_index, items_json, created_at)
+           SELECT $1, chunk_index, items_json, NOW() FROM candle_chunks WHERE dataset_id = $2;`,
+          [newId, sourceDatasetId]
+        );
+
+        return res.json({
+          success: true,
+          datasetId: newId,
+          message: 'Saved dataset to PostgreSQL successfully',
+          sizeFormatted: src.data_size_formatted,
+          totalCandles: src.total_candles,
+          symbolCount: src.symbol_count,
+        });
+      }
+    }
+
     if (entries.length === 0) {
-      return res.status(400).json({ success: false, error: 'No candles in server buffer to save' });
+      return res.status(400).json({ success: false, error: 'هیچ کندلی برای ذخیره‌سازی یافت نشد. لطفاً ابتدا اسکن را اجرا کنید.' });
     }
 
     const { db } = await import('./src/db/index.ts');
@@ -1442,50 +1488,73 @@ app.post('/api/cloudsql/save-dataset', async (req, res) => {
     res.json({
       success: true,
       datasetId,
-      message: 'Saved to Cloud SQL successfully',
+      message: 'Saved to remote PostgreSQL successfully',
       sizeFormatted,
       totalCandles,
       symbolCount: entries.length,
     });
   } catch (error: any) {
-    console.error('Cloud SQL save dataset error:', error);
+    console.error('[Remote PostgreSQL] save dataset error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// 2. List Datasets from Cloud SQL
+// 2. List Datasets from Remote PostgreSQL
 app.get('/api/cloudsql/datasets', async (req, res) => {
   try {
-    const { db } = await import('./src/db/index.ts');
+    const { db, withDbRetry } = await import('./src/db/index.ts');
     const { candleDatasets } = await import('./src/db/schema.ts');
     const { desc } = await import('drizzle-orm');
 
-    const list = await db.select().from(candleDatasets).orderBy(desc(candleDatasets.createdAt));
+    const list = await withDbRetry(() =>
+      db
+        .select({
+          id: candleDatasets.id,
+          name: candleDatasets.name,
+          userId: candleDatasets.userId,
+          timeframe: candleDatasets.timeframe,
+          exchange: candleDatasets.exchange,
+          startTime: candleDatasets.startTime,
+          endTime: candleDatasets.endTime,
+          symbolCount: candleDatasets.symbolCount,
+          totalCandles: candleDatasets.totalCandles,
+          dataSizeBytes: candleDatasets.dataSizeBytes,
+          dataSizeFormatted: candleDatasets.dataSizeFormatted,
+          isTemporary: candleDatasets.isTemporary,
+          status: candleDatasets.status,
+          createdAt: candleDatasets.createdAt,
+          updatedAt: candleDatasets.updatedAt,
+        })
+        .from(candleDatasets)
+        .orderBy(desc(candleDatasets.createdAt))
+    );
     res.json({ success: true, datasets: list });
   } catch (error: any) {
-    console.error('Cloud SQL list datasets error:', error);
+    console.error('[Remote PostgreSQL] list datasets error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// 3. Load Dataset from Cloud SQL
+// 3. Load Dataset from Remote PostgreSQL
 app.get('/api/cloudsql/dataset/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { db } = await import('./src/db/index.ts');
+    const { db, withDbRetry } = await import('./src/db/index.ts');
     const { candleDatasets, candleChunks } = await import('./src/db/schema.ts');
     const { eq, asc } = await import('drizzle-orm');
 
-    const meta = await db.select().from(candleDatasets).where(eq(candleDatasets.id, id)).limit(1);
+    const meta = await withDbRetry(() => db.select().from(candleDatasets).where(eq(candleDatasets.id, id)).limit(1));
     if (meta.length === 0) {
       return res.status(404).json({ success: false, error: 'Dataset not found' });
     }
 
-    const chunks = await db
-      .select()
-      .from(candleChunks)
-      .where(eq(candleChunks.datasetId, id))
-      .orderBy(asc(candleChunks.chunkIndex));
+    const chunks = await withDbRetry(() =>
+      db
+        .select()
+        .from(candleChunks)
+        .where(eq(candleChunks.datasetId, id))
+        .orderBy(asc(candleChunks.chunkIndex))
+    );
 
     const entries: ServerCandleEntry[] = [];
 
@@ -1528,12 +1597,12 @@ app.get('/api/cloudsql/dataset/:id', async (req, res) => {
       count: entries.length,
     });
   } catch (error: any) {
-    console.error('Cloud SQL load dataset error:', error);
+    console.error('[Remote PostgreSQL] load dataset error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// 4. Promote Temporary Dataset in Cloud SQL
+// 4. Promote Temporary Dataset in Remote PostgreSQL
 app.post('/api/cloudsql/promote-dataset', async (req, res) => {
   try {
     const { datasetId, newName } = req.body || {};
@@ -1545,13 +1614,13 @@ app.post('/api/cloudsql/promote-dataset', async (req, res) => {
       .set({ name: newName, isTemporary: false, updatedAt: new Date() })
       .where(eq(candleDatasets.id, datasetId));
 
-    res.json({ success: true, message: 'Dataset promoted to permanent in Cloud SQL' });
+    res.json({ success: true, message: 'Dataset promoted to permanent in remote PostgreSQL' });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// 5. Delete Dataset in Cloud SQL
+// 5. Delete Dataset in Remote PostgreSQL
 app.delete('/api/cloudsql/dataset/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -1562,7 +1631,7 @@ app.delete('/api/cloudsql/dataset/:id', async (req, res) => {
     await db.delete(candleChunks).where(eq(candleChunks.datasetId, id));
     await db.delete(candleDatasets).where(eq(candleDatasets.id, id));
 
-    res.json({ success: true, message: 'Deleted from Cloud SQL' });
+    res.json({ success: true, message: 'Deleted from remote PostgreSQL' });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -1581,6 +1650,732 @@ app.post('/api/auth/login', (req, res) => {
     return res.status(401).json({ success: false, error: 'نام کاربری یا رمز عبور اشتباه است.' });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// =========================================================================
+// 6.5 AUTONOMOUS SERVER-SIDE BACKTEST & POSTGRESQL DATASET ENGINE
+// =========================================================================
+
+interface ServerBacktestProgress {
+  current: number;
+  total: number;
+  percent: number;
+  currentSymbol: string;
+}
+
+const serverBacktestState = {
+  isScanning: false,
+  shouldStop: false,
+  datasetId: null as string | null,
+  stage: 'idle' as 'idle' | 'downloading' | 'analyzing' | 'completed' | 'error',
+  exchange: 'xt',
+  timeframe: '5m',
+  startTime: null as number | null,
+  endTime: null as number | null,
+  progress: {
+    current: 0,
+    total: 0,
+    percent: 0,
+    currentSymbol: '',
+  } as ServerBacktestProgress,
+  results: [] as any[],
+  allTrades: [] as any[],
+  errorMsg: null as string | null,
+  lastRunAt: null as string | null,
+  lastStartedAt: 0,
+  symbolCount: 0,
+  totalCandles: 0,
+  dataSizeFormatted: '0 B',
+};
+
+function getRangeDatasetId(exchange: string, timeframe: string, startTime?: number | null, endTime?: number | null): string {
+  const ex = (exchange || 'xt').toLowerCase();
+  const tf = timeframe || '5m';
+  const s = startTime && Number(startTime) > 0 ? Number(startTime) : 0;
+  const e = endTime && Number(endTime) > 0 ? Number(endTime) : 0;
+  return `range_${ex}_${tf}_${s}_${e}`;
+}
+
+async function runServerBacktestCycle(params: {
+  exchange: string;
+  timeframe: string;
+  startTime?: number | null;
+  endTime?: number | null;
+  symbols: string[];
+  workersCount?: number;
+  strategyId: string;
+  strategyConfig: any;
+  forceRedownload?: boolean;
+}) {
+  const { exchange, timeframe, startTime, endTime, symbols, workersCount, strategyId, strategyConfig, forceRedownload } = params;
+  const datasetId = getRangeDatasetId(exchange, timeframe, startTime, endTime);
+
+  serverBacktestState.isScanning = true;
+  serverBacktestState.lastStartedAt = Date.now();
+  serverBacktestState.shouldStop = false;
+  serverBacktestState.datasetId = datasetId;
+  serverBacktestState.exchange = exchange;
+  serverBacktestState.timeframe = timeframe;
+  serverBacktestState.startTime = startTime || null;
+  serverBacktestState.endTime = endTime || null;
+  serverBacktestState.errorMsg = null;
+  serverBacktestState.results = [];
+  serverBacktestState.allTrades = [];
+  serverBacktestState.progress = { current: 0, total: symbols.length, percent: 0, currentSymbol: 'آماده‌سازی...' };
+
+  const cfg = strategyConfig || {};
+  const capital = Number(cfg.capital) || 10000;
+  const riskMode = cfg.riskMode || 'percent';
+  const riskAmountFixed = Number(cfg.riskAmountFixed) || 10;
+  const riskPercent = Number(cfg.riskPercent) || 1.0;
+  const effectiveRiskPercent = riskMode === 'fixed' && capital > 0 ? (riskAmountFixed / capital) * 100 : riskPercent;
+  const atrPeriod = Number(cfg.atrPeriod) || 24;
+  const atrMultiplier = Number(cfg.atrMultiplier) || 2.4;
+  const minCandles = Number(cfg.minCandles) || 2;
+  const minCandlesForLongLeg = Number(cfg.minCandlesForLongLeg) || 10;
+  const longLegAtrMultiplier = Number(cfg.longLegAtrMultiplier) || 8.0;
+  const maxBlueLegPercent = Number(cfg.maxBlueLegPercent) || 50;
+  const maxBreakoutAtrMultiplier = Number(cfg.maxBreakoutAtrMultiplier) || 3.0;
+  const maxRiskReward = Number(cfg.maxRiskReward) || 3.0;
+  const maxCandlesToEnter = Number(cfg.maxCandlesToEnter) || 35;
+  const entryCommission = Number(cfg.entryCommissionPercent) || 0.06;
+  const exitCommission = Number(cfg.exitCommissionPercent) || 0.06;
+  const timeStopEnabled = cfg.timeStopEnabled !== false;
+  const timeStopCandles = Number(cfg.timeStopCandles) || 80;
+
+  const processSymbolStrategy = (pair: { symbol: string; baseAsset: string; quoteAsset: string }, candles: CandleData[]) => {
+    if (!candles || candles.length < 50) return null;
+
+    const atrResult = calculateATR(candles, atrPeriod);
+    const zzResult = calculateAtrZigZag(candles, atrResult.atrValues, atrMultiplier, minCandles);
+    const legs = analyzeZigZagLegs(zzResult.points, minCandlesForLongLeg, longLegAtrMultiplier, maxBlueLegPercent, maxBreakoutAtrMultiplier);
+
+    const stratConfig: any = {
+      capital,
+      selectedStrategyId: strategyId,
+      riskMode,
+      riskAmountFixed,
+      riskPercent,
+      entryCommissionPercent: entryCommission,
+      exitCommissionPercent: exitCommission,
+      commissionPercent: parseFloat((entryCommission + exitCommission).toFixed(4)),
+      maxRiskReward,
+      maxCandlesToEnter,
+      maxTradesPerLeg: 1,
+      showOnChart: true,
+      noConcurrentPositions: true,
+      symbol: pair.symbol,
+      timeStopEnabled,
+      timeStopCandles,
+    };
+
+    let backtestRes: any;
+    if (strategyId === 'strategy_2_next_pivot') {
+      backtestRes = runStrategy2Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, atrMultiplier, minCandles);
+    } else {
+      backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig);
+    }
+
+    const { trades, metrics } = backtestRes;
+    let optimalRiskForDD20 = 0;
+    if (metrics.maxDrawdownPercent > 0) {
+      optimalRiskForDD20 = parseFloat(((effectiveRiskPercent * 19.0) / metrics.maxDrawdownPercent).toFixed(2));
+    } else if (metrics.totalTrades > 0) {
+      optimalRiskForDD20 = 5.0;
+    }
+
+    const lastTrade = trades.length > 0 ? trades[trades.length - 1] : undefined;
+
+    const resultItem = {
+      pair,
+      stage: 'RAW / PRE-FILTER',
+      candlesCount: candles.length,
+      totalTrades: metrics.totalTrades,
+      winTrades: metrics.winTrades,
+      lossTrades: metrics.lossTrades,
+      breakevenTrades: metrics.breakevenTrades || 0,
+      activeTrades: metrics.activeTrades,
+      winRate: metrics.winRate,
+      grossProfit: metrics.grossProfit || 0,
+      grossLoss: metrics.grossLoss || 0,
+      grossPnl: metrics.grossPnl || 0,
+      netProfit: metrics.netProfit,
+      netProfitPercent: metrics.netProfitPercent,
+      totalProfit: metrics.totalProfit,
+      totalLoss: metrics.totalLoss,
+      totalFee: metrics.totalFee || 0,
+      profitFactor: metrics.profitFactor,
+      profitFactorLabel: metrics.profitFactorLabel,
+      avgRiskReward: metrics.avgRiskReward,
+      maxDrawdown: metrics.maxDrawdown,
+      maxDrawdownPercent: metrics.maxDrawdownPercent,
+      optimalRiskForDD20,
+      openPositionsCount: metrics.openPositionsCount || 0,
+      openPositionsUnrealizedPnl: metrics.openPositionsUnrealizedPnl || 0,
+      openPositionsFee: metrics.openPositionsFee || 0,
+      lastTradeStatus: lastTrade?.status,
+      trades,
+    };
+
+    const finishedTrades = (trades || [])
+      .filter((t: any) => t.status === 'WIN' || t.status === 'LOSS' || t.status === 'BREAKEVEN')
+      .map((t: any, tIdx: number) => ({
+        ...t,
+        id: `${pair.symbol}-${t.id || tIdx}`,
+        symbol: pair.symbol,
+        stage: 'RAW / PRE-FILTER',
+      }));
+
+    return { resultItem, finishedTrades };
+  };
+
+  try {
+    let entries: ServerCandleEntry[] = [];
+
+    // 1. Check if dataset already exists in PostgreSQL
+    if (!forceRedownload) {
+      serverBacktestState.stage = 'downloading';
+      serverBacktestState.progress.currentSymbol = 'بررسی داده‌های ذخیره‌شده در دیتابیس PostgreSQL...';
+
+      const dsRes = await pool.query(`SELECT * FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
+      if (dsRes.rows.length > 0) {
+        const chunksRes = await pool.query(
+          `SELECT items_json FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC;`,
+          [datasetId]
+        );
+        if (chunksRes.rows.length > 0) {
+          for (const chunkRow of chunksRes.rows) {
+            try {
+              const items = JSON.parse(chunkRow.items_json);
+              for (const item of items) {
+                const candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
+                  time: t[0],
+                  open: t[1],
+                  high: t[2],
+                  low: t[3],
+                  close: t[4],
+                  volume: t[5],
+                }));
+                entries.push({
+                  pair: {
+                    symbol: item.symbol,
+                    baseAsset: item.baseAsset,
+                    quoteAsset: item.quoteAsset,
+                  },
+                  candles,
+                  timeframe: item.timeframe || timeframe,
+                });
+              }
+            } catch {}
+          }
+        }
+      }
+    }
+
+    // 2. If existing entries found in DB, run parallel workers to calculate and stream results live!
+    if (entries.length > 0) {
+      serverBacktestState.stage = 'analyzing';
+      const total = entries.length;
+      serverBacktestState.progress = { current: 0, total, percent: 0, currentSymbol: 'محاسبه استراتژی روی داده‌های دیتابیس...' };
+
+      const queue = [...entries];
+      const concurrency = Math.min(Math.max(1, Number(workersCount) || 16), entries.length);
+      let completed = 0;
+
+      const worker = async () => {
+        while (queue.length > 0 && !serverBacktestState.shouldStop) {
+          const entry = queue.shift();
+          if (!entry) break;
+
+          try {
+            const calculated = processSymbolStrategy(entry.pair, entry.candles);
+            if (calculated) {
+              serverBacktestState.results.push(calculated.resultItem);
+              serverBacktestState.allTrades.push(...calculated.finishedTrades);
+            }
+          } catch (err: any) {
+            console.warn(`[Backtest Calc Error] ${entry.pair.symbol}:`, err.message);
+          } finally {
+            completed++;
+            serverBacktestState.progress.current = completed;
+            serverBacktestState.progress.percent = Math.round((completed / total) * 100);
+            serverBacktestState.progress.currentSymbol = entry.pair.symbol;
+          }
+        }
+      };
+
+      await Promise.all(Array.from({ length: concurrency }, () => worker()));
+    } else {
+      // 3. Download from exchange with CONCURRENT WORKERS, stream results live, and persist chunks to PostgreSQL
+      serverBacktestState.stage = 'downloading';
+      let targetSymbols = symbols && symbols.length > 0 ? symbols : [];
+
+      if (targetSymbols.length === 0) {
+        if (exchange === 'xt') {
+          const xtPairs = await fetchXtServerPairs();
+          targetSymbols = xtPairs.slice(0, 1000).map((p) => p.symbol);
+        } else {
+          const sPairs = await fetchServerPairs('futures', 1000);
+          targetSymbols = sPairs.map((p) => p.symbol);
+        }
+      }
+
+      const total = targetSymbols.length;
+      serverBacktestState.progress.total = total;
+      serverBacktestState.progress.current = 0;
+      serverBacktestState.progress.percent = 0;
+
+      const downloadedEntries: ServerCandleEntry[] = [];
+      const isFutures = exchange !== 'spot';
+
+      // Clean prior range data in PostgreSQL before fresh write
+      await pool.query(`DELETE FROM candle_chunks WHERE dataset_id = $1;`, [datasetId]);
+      await pool.query(`DELETE FROM candle_datasets WHERE id = $1;`, [datasetId]);
+
+      const rangeName = `بازه ${exchange.toUpperCase()} ${timeframe} (${startTime ? new Date(startTime).toLocaleDateString('fa-IR') : 'آغاز'} تا ${endTime ? new Date(endTime).toLocaleDateString('fa-IR') : 'اکنون'})`;
+      await pool.query(
+        `INSERT INTO candle_datasets (id, name, user_id, timeframe, exchange, start_time, end_time, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+         ON CONFLICT (id) DO UPDATE SET status = $8, updated_at = NOW();`,
+        [datasetId, rangeName, 'amir', timeframe, exchange, startTime ? String(startTime) : '0', endTime ? String(endTime) : '0', 'DOWNLOADING']
+      );
+
+      let chunkIdx = 0;
+      let batchToSave: ServerCandleEntry[] = [];
+      const queue = [...targetSymbols];
+      const concurrency = Math.min(Math.max(1, Number(workersCount) || 16), targetSymbols.length);
+      let completedCount = 0;
+
+      const worker = async () => {
+        while (queue.length > 0 && !serverBacktestState.shouldStop) {
+          const sym = queue.shift();
+          if (!sym) break;
+
+          try {
+            let candles: CandleData[] = [];
+            if (exchange === 'xt') {
+              candles = await fetchXtServerKlines(sym, timeframe, 1000, startTime || undefined, endTime || undefined);
+            } else {
+              const clean = sym.replace('_', '').toUpperCase();
+              candles = await fetchServerKlines(clean, timeframe, 1500, isFutures, startTime || undefined, endTime || undefined);
+            }
+
+            if (candles && candles.length >= 50) {
+              const baseAsset = sym.includes('_') ? sym.split('_')[0].toUpperCase() : sym.replace(/USDT$/i, '');
+              const pair = { symbol: sym, baseAsset, quoteAsset: 'USDT' };
+              const entry: ServerCandleEntry = { pair, candles, timeframe };
+
+              downloadedEntries.push(entry);
+              batchToSave.push(entry);
+
+              // IMMEDIATELY compute strategy for this pair and STREAM live results!
+              const calculated = processSymbolStrategy(pair, candles);
+              if (calculated) {
+                serverBacktestState.results.push(calculated.resultItem);
+                serverBacktestState.allTrades.push(...calculated.finishedTrades);
+              }
+
+              // Save chunk to PostgreSQL every 5 symbols
+              if (batchToSave.length >= 5) {
+                const toFlush = [...batchToSave];
+                batchToSave = [];
+                const items = toFlush.map((e) => ({
+                  symbol: e.pair.symbol,
+                  baseAsset: e.pair.baseAsset,
+                  quoteAsset: e.pair.quoteAsset,
+                  timeframe: e.timeframe,
+                  tuples: e.candles.map((c) => [c.time, c.open, c.high, c.low, c.close, c.volume]),
+                }));
+
+                await pool.query(
+                  `INSERT INTO candle_chunks (dataset_id, chunk_index, items_json, created_at)
+                   VALUES ($1, $2, $3, NOW());`,
+                  [datasetId, chunkIdx++, JSON.stringify(items)]
+                ).catch((err) => console.warn('[Chunk Save Error]:', err.message));
+              }
+            }
+          } catch (err: any) {
+            console.warn(`[Backtest Worker Error] ${sym}:`, err.message);
+          } finally {
+            completedCount++;
+            serverBacktestState.progress.current = completedCount;
+            serverBacktestState.progress.percent = Math.round((completedCount / total) * 100);
+            serverBacktestState.progress.currentSymbol = sym;
+          }
+
+          await sleep(20);
+        }
+      };
+
+      // Run parallel workers in Node.js backend
+      await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+      // Save remaining batch
+      if (batchToSave.length > 0) {
+        const items = batchToSave.map((e) => ({
+          symbol: e.pair.symbol,
+          baseAsset: e.pair.baseAsset,
+          quoteAsset: e.pair.quoteAsset,
+          timeframe: e.timeframe,
+          tuples: e.candles.map((c) => [c.time, c.open, c.high, c.low, c.close, c.volume]),
+        }));
+
+        await pool.query(
+          `INSERT INTO candle_chunks (dataset_id, chunk_index, items_json, created_at)
+           VALUES ($1, $2, $3, NOW());`,
+          [datasetId, chunkIdx++, JSON.stringify(items)]
+        ).catch(() => {});
+      }
+
+      entries = downloadedEntries;
+    }
+
+    if (entries.length === 0 && serverBacktestState.results.length === 0) {
+      throw new Error('هیچ داده کندلی در این بازه زمانی از صرافی دریافت نشد.');
+    }
+
+    const totalCandles = entries.reduce((acc, e) => acc + e.candles.length, 0);
+    const dataSizeBytes = Math.round(totalCandles * 48);
+    const dataSizeFormatted = dataSizeBytes > 1048576 ? `${(dataSizeBytes / 1048576).toFixed(1)} MB` : `${(dataSizeBytes / 1024).toFixed(0)} KB`;
+    const symbolsListJson = JSON.stringify(entries.map((e) => e.pair.symbol));
+
+    serverBacktestState.symbolCount = entries.length;
+    serverBacktestState.totalCandles = totalCandles;
+    serverBacktestState.dataSizeFormatted = dataSizeFormatted;
+    serverBacktestState.lastRunAt = new Date().toISOString();
+    serverBacktestState.stage = 'completed';
+    serverBacktestState.isScanning = false;
+
+    // 4. Persist final results in PostgreSQL
+    const resultsJson = JSON.stringify({ results: serverBacktestState.results, allTrades: serverBacktestState.allTrades });
+    await pool.query(
+      `UPDATE candle_datasets 
+       SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
+           status = 'COMPLETED', results_json = $6, strategy_id = $7, strategy_config_json = $8, updated_at = NOW()
+       WHERE id = $9;`,
+      [entries.length, totalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, resultsJson, strategyId, JSON.stringify(cfg), datasetId]
+    );
+
+    console.log(`[Server Backtest] ✅ Completed backtest for ${datasetId} on ${serverBacktestState.results.length} pairs in PostgreSQL.`);
+  } catch (err: any) {
+    console.error(`[Server Backtest] ❌ Backtest error:`, err.message);
+    serverBacktestState.isScanning = false;
+    serverBacktestState.stage = 'error';
+    serverBacktestState.errorMsg = err.message;
+  }
+}
+
+// 6.5.1 Check if candles or backtest results exist for a specific time range in PostgreSQL
+app.get('/api/backtest/range-status', async (req, res) => {
+  try {
+    const exchange = (req.query.exchange || 'xt').toString();
+    const timeframe = (req.query.timeframe || '5m').toString();
+    const startTime = req.query.startTime ? Number(req.query.startTime) : null;
+    const endTime = req.query.endTime ? Number(req.query.endTime) : null;
+    const datasetId = getRangeDatasetId(exchange, timeframe, startTime, endTime);
+
+    const dsRes = await pool.query(`SELECT * FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
+    if (dsRes.rows.length === 0) {
+      return res.json({
+        success: true,
+        exists: false,
+        datasetId,
+      });
+    }
+
+    const row = dsRes.rows[0];
+    let parsedResults = null;
+    let parsedTrades = null;
+    if (row.results_json) {
+      try {
+        const parsed = JSON.parse(row.results_json);
+        parsedResults = parsed.results || null;
+        parsedTrades = parsed.allTrades || null;
+      } catch {}
+    }
+
+    return res.json({
+      success: true,
+      exists: true,
+      datasetId,
+      dataset: {
+        id: row.id,
+        name: row.name,
+        exchange: row.exchange,
+        timeframe: row.timeframe,
+        startTime: row.start_time,
+        endTime: row.end_time,
+        symbolCount: row.symbol_count,
+        totalCandles: row.total_candles,
+        dataSizeFormatted: row.data_size_formatted,
+        status: row.status,
+        updatedAt: row.updated_at,
+        hasResults: Boolean(parsedResults && parsedResults.length > 0),
+      },
+      results: parsedResults,
+      allTrades: parsedTrades,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 6.5.2 Start or Resume Autonomous Server-Side Backtest
+app.post('/api/backtest/start', async (req, res) => {
+  try {
+    const { exchange, timeframe, startTime, endTime, symbols, workersCount, strategyId, strategyConfig, forceRedownload } = req.body || {};
+
+    const isStale = serverBacktestState.isScanning && (Date.now() - (serverBacktestState.lastStartedAt || 0) > 180000);
+    if (serverBacktestState.isScanning && !forceRedownload && !isStale) {
+      return res.json({
+        success: true,
+        message: 'اسکن بک‌تست در حال حاضر در سرور در حال اجرا است...',
+        state: serverBacktestState,
+      });
+    }
+
+    if (serverBacktestState.isScanning && (forceRedownload || isStale)) {
+      console.warn('[Server Backtest] Force restart or stale recovery triggered. Resetting scan state.');
+      serverBacktestState.shouldStop = true;
+      serverBacktestState.isScanning = false;
+    }
+
+    // Launch background task with parallel workers
+    runServerBacktestCycle({
+      exchange: exchange || 'xt',
+      timeframe: timeframe || '5m',
+      startTime: startTime ? Number(startTime) : null,
+      endTime: endTime ? Number(endTime) : null,
+      symbols: Array.isArray(symbols) ? symbols : [],
+      workersCount: Number(workersCount) || 16,
+      strategyId: strategyId || 'strategy_1_e_breakout',
+      strategyConfig: strategyConfig || {},
+      forceRedownload: Boolean(forceRedownload),
+    }).catch((err) => {
+      console.error('[Server Backtest Background Task Error]:', err.message);
+    });
+
+    res.json({
+      success: true,
+      message: 'فرآیند اسکن و دانلود بک‌تست به طور مستقل روی سرور و پایگاه‌داده آغاز شد.',
+      datasetId: getRangeDatasetId(exchange || 'xt', timeframe || '5m', startTime, endTime),
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 6.5.2.1 Reset Server Backtest State
+app.post('/api/backtest/reset', (_req, res) => {
+  serverBacktestState.shouldStop = true;
+  serverBacktestState.isScanning = false;
+  serverBacktestState.stage = 'idle';
+  serverBacktestState.errorMsg = null;
+  serverBacktestState.progress = { current: 0, total: 0, percent: 0, currentSymbol: '' };
+  res.json({ success: true, message: 'وضعیت اسکن سرور ریست شد و آماده اجرای جدید است.' });
+});
+
+// 6.5.3 Get Current Server Backtest Status & Live Progress
+app.get('/api/backtest/status', (_req, res) => {
+  res.json({
+    success: true,
+    state: {
+      isScanning: serverBacktestState.isScanning,
+      stage: serverBacktestState.stage,
+      datasetId: serverBacktestState.datasetId,
+      exchange: serverBacktestState.exchange,
+      timeframe: serverBacktestState.timeframe,
+      startTime: serverBacktestState.startTime,
+      endTime: serverBacktestState.endTime,
+      progress: serverBacktestState.progress,
+      resultsCount: serverBacktestState.results.length,
+      results: serverBacktestState.results,
+      allTrades: serverBacktestState.allTrades,
+      errorMsg: serverBacktestState.errorMsg,
+      lastRunAt: serverBacktestState.lastRunAt,
+      totalCandles: serverBacktestState.totalCandles,
+      symbolCount: serverBacktestState.symbolCount,
+      dataSizeFormatted: serverBacktestState.dataSizeFormatted,
+    },
+  });
+});
+
+// 6.5.4 Stop In-Flight Server Backtest
+app.post('/api/backtest/stop', (_req, res) => {
+  serverBacktestState.shouldStop = true;
+  serverBacktestState.isScanning = false;
+  serverBacktestState.stage = 'idle';
+  res.json({ success: true, message: 'دستور توقف اسکن سرور ثبت شد.' });
+});
+
+// 6.5.5 Delete ONLY Specific Time Range Dataset from PostgreSQL
+app.delete('/api/backtest/range', async (req, res) => {
+  try {
+    const exchange = (req.query.exchange || req.body?.exchange || 'xt').toString();
+    const timeframe = (req.query.timeframe || req.body?.timeframe || '5m').toString();
+    const startTime = req.query.startTime ? Number(req.query.startTime) : (req.body?.startTime ? Number(req.body.startTime) : null);
+    const endTime = req.query.endTime ? Number(req.query.endTime) : (req.body?.endTime ? Number(req.body.endTime) : null);
+    const datasetId = (req.query.datasetId || req.body?.datasetId || getRangeDatasetId(exchange, timeframe, startTime, endTime)).toString();
+
+    await pool.query(`DELETE FROM candle_chunks WHERE dataset_id = $1;`, [datasetId]);
+    await pool.query(`DELETE FROM candle_datasets WHERE id = $1;`, [datasetId]);
+
+    if (serverBacktestState.datasetId === datasetId) {
+      serverBacktestState.isScanning = false;
+      serverBacktestState.stage = 'idle';
+      serverBacktestState.results = [];
+      serverBacktestState.allTrades = [];
+      serverBacktestState.datasetId = null;
+    }
+
+    res.json({
+      success: true,
+      message: `داده‌های بازه زمانی ${datasetId} با موفقیت فقط از این بازه در PostgreSQL حذف شد.`,
+      datasetId,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// =========================================================================
+// 6.6 POSTGRESQL TEST CONFIGURATIONS (test_configs table)
+// =========================================================================
+app.get('/api/test-configs', async (req, res) => {
+  try {
+    const userId = (req.query.userId || 'amir').toString();
+    const result = await pool.query(
+      `SELECT * FROM test_configs WHERE user_id = $1 OR user_id = 'amir' ORDER BY updated_at DESC;`,
+      [userId]
+    );
+    const configs = result.rows.map((row) => {
+      let extra = {};
+      try {
+        extra = JSON.parse(row.config_data_json);
+      } catch {}
+      return {
+        id: row.id,
+        name: row.name,
+        userId: row.user_id,
+        timeframe: row.timeframe,
+        capital: row.capital,
+        riskPercent: parseFloat(row.risk_percent || '2'),
+        selectedStrategyId: row.selected_strategy_id,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        ...extra,
+      };
+    });
+    res.json({ success: true, configs });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/test-configs', async (req, res) => {
+  try {
+    const cfg = req.body || {};
+    const id = cfg.id || `config_${Date.now()}`;
+    const name = cfg.name || 'کانفیگ بدون نام';
+    const userId = cfg.userId || 'amir';
+    const timeframe = cfg.timeframe || '5m';
+    const capital = Number(cfg.capital) || 1000;
+    const riskPercent = String(cfg.riskPercent || '2');
+    const selectedStrategyId = cfg.selectedStrategyId || 'strategy_1_e_breakout';
+
+    await pool.query(
+      `INSERT INTO test_configs (id, name, user_id, timeframe, capital, risk_percent, selected_strategy_id, config_data_json, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         name = $2,
+         timeframe = $4,
+         capital = $5,
+         risk_percent = $6,
+         selected_strategy_id = $7,
+         config_data_json = $8,
+         updated_at = NOW();`,
+      [id, name, userId, timeframe, capital, riskPercent, selectedStrategyId, JSON.stringify(cfg)]
+    );
+    res.json({ success: true, id, message: 'Config saved to PostgreSQL successfully' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/test-configs/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    await pool.query(`DELETE FROM test_configs WHERE id = $1;`, [id]);
+    res.json({ success: true, message: 'Config deleted from PostgreSQL successfully' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// =========================================================================
+// 6.7 POSTGRESQL ALLOWED PAIRS LISTS (allowed_pairs table)
+// =========================================================================
+app.get('/api/allowed-pairs', async (req, res) => {
+  try {
+    const userId = (req.query.userId || 'amir').toString();
+    const exchange = (req.query.exchange || 'xt').toString();
+    const result = await pool.query(
+      `SELECT * FROM allowed_pairs WHERE (user_id = $1 OR user_id = 'amir') AND exchange = $2 ORDER BY updated_at DESC;`,
+      [userId, exchange]
+    );
+    const lists = result.rows.map((row) => {
+      let syms: string[] = [];
+      try {
+        syms = JSON.parse(row.symbols_list || '[]');
+      } catch {
+        syms = [];
+      }
+      return {
+        id: row.id,
+        userId: row.user_id,
+        exchange: row.exchange,
+        listName: row.name,
+        name: row.name,
+        symbols: syms,
+        count: syms.length,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      };
+    });
+    res.json({ success: true, lists });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/allowed-pairs', async (req, res) => {
+  try {
+    const { id, userId = 'amir', exchange = 'xt', listName, name, symbols = [] } = req.body || {};
+    const effectiveName = listName || name || 'پیش‌فرض';
+    const safeId = id || `${userId}_${exchange}_${Date.now()}`;
+    await pool.query(
+      `INSERT INTO allowed_pairs (id, user_id, exchange, name, symbols_list, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         name = $4,
+         symbols_list = $5,
+         updated_at = NOW();`,
+      [safeId, userId, exchange, effectiveName, JSON.stringify(symbols)]
+    );
+    res.json({ success: true, id: safeId, message: 'Allowed pairs saved to PostgreSQL successfully' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/allowed-pairs/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    await pool.query(`DELETE FROM allowed_pairs WHERE id = $1;`, [id]);
+    res.json({ success: true, message: 'Allowed pairs deleted from PostgreSQL successfully' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -1856,100 +2651,33 @@ async function runServerScannerCycle() {
 
         if (!candles || candles.length < 50) continue;
 
-        // Run technical indicators
-        const atrResult = calculateATR(candles, cfg.atrPeriod || 14);
-        const zzResult = calculateAtrZigZag(
+        // Evaluate using backend strategy engine (100% in-memory, pure Node.js)
+        const signal = evaluateSymbolForLiveSignal({
+          symbol: sym,
           candles,
-          atrResult.atrValues,
-          cfg.atrMultiplier || 2.0,
-          cfg.minCandles || 5
-        );
-        const analyzedLegs = analyzeZigZagLegs(
-          zzResult.points,
-          cfg.minCandlesForLongLeg || 5,
-          cfg.longLegAtrMultiplier || 3.0,
-          cfg.maxBlueLegPercent || 70,
-          cfg.maxBreakoutAtrMultiplier || 3.0
-        );
+          config: {
+            strategyId: (cfg.strategyId as any) || 'strategy_2_next_pivot',
+            timeframe: cfg.timeframe,
+            atrPeriod: cfg.atrPeriod || 14,
+            atrMultiplier: cfg.atrMultiplier || 2.0,
+            minCandles: cfg.minCandles || 5,
+            minCandlesForLongLeg: cfg.minCandlesForLongLeg || 5,
+            longLegAtrMultiplier: cfg.longLegAtrMultiplier || 3.0,
+            maxBlueLegPercent: cfg.maxBlueLegPercent || 70,
+            maxBreakoutAtrMultiplier: cfg.maxBreakoutAtrMultiplier || 3.0,
+            riskRewardRatio: cfg.riskRewardRatio || 2.0,
+            riskMode: cfg.riskMode || 'percent',
+            riskAmountFixed: cfg.riskAmountFixed || 50,
+            riskPercent: cfg.riskPercent || 1.0,
+            maxCandlesToEnter: 35,
+            noConcurrentPositions: Boolean(cfg.noConcurrentPositions),
+          },
+          availableBalance,
+          hasExistingPosition: openPositionsCount > 0,
+        });
 
-        const stratConfig: StrategyConfig = {
-          ...DEFAULT_STRATEGY_CONFIG,
-          capital: availableBalance,
-          riskPercent: cfg.riskPercent || 1,
-          maxRiskReward: cfg.riskRewardRatio || 2,
-          selectedStrategyId: cfg.strategyId || 'strategy_2_next_pivot',
-          maxCandlesToEnter: 35,
-          noConcurrentPositions: Boolean(cfg.noConcurrentPositions),
-        };
-
-        let evalTrades: any[] = [];
-        if (cfg.strategyId === 'strategy_2_next_pivot') {
-          const res = runStrategy2Backtest(
-            candles,
-            zzResult.points,
-            analyzedLegs,
-            stratConfig,
-            atrResult.atrValues,
-            cfg.atrMultiplier || 2.0,
-            cfg.minCandles || 5
-          );
-          evalTrades = res.trades;
-        } else {
-          const res = runStrategy1Backtest(candles, zzResult.points, analyzedLegs, stratConfig);
-          evalTrades = res.trades;
-        }
-
-        if (evalTrades.length > 0) {
-          const lastTrade = evalTrades[evalTrades.length - 1];
-          const isCurrentCandleEntry = lastTrade.entryCandleIdx >= candles.length - 2;
-
-          if (isCurrentCandleEntry && (lastTrade.status === 'ACTIVE' || lastTrade.status === 'OPEN')) {
-            const side = lastTrade.direction === 'BUY' ? 'BUY' : 'SELL';
-            const posSide = lastTrade.direction === 'BUY' ? 'LONG' : 'SHORT';
-            const curPrice = candles[candles.length - 1].close;
-            const stopLoss = parseFloat(Number(lastTrade.stopLoss || curPrice * (posSide === 'LONG' ? 0.98 : 1.02)).toFixed(4));
-            const takeProfit = parseFloat(Number(lastTrade.takeProfit || curPrice * (posSide === 'LONG' ? 1.06 : 0.94)).toFixed(4));
-            const maxLev = getMaxLeverageForSymbol(sym);
-
-            const riskBudgetUsdt = cfg.riskMode === 'fixed' && cfg.riskAmountFixed && cfg.riskAmountFixed > 0
-              ? cfg.riskAmountFixed
-              : availableBalance * ((cfg.riskPercent || 1) / 100);
-
-            // محاسبه دقیق حجم و زیان استاپ بر مبنای اعشار و استپ‌سایز صرافی بایننس و XT
-            const sizing = calculateExactTradeSizing(
-              riskBudgetUsdt,
-              curPrice,
-              stopLoss,
-              takeProfit,
-              0.0006,
-              0.0006,
-              sym
-            );
-
-            const contractQty = sizing.quantizedPositionSize;
-            const notionalUsdt = sizing.positionValue;
-            const requiredMargin = parseFloat((notionalUsdt / maxLev).toFixed(2));
-            const actualRiskUsdt = sizing.actualLossAtSL; // زیان واقعی با احتساب استپ‌سایز صرافی (مثلاً ۹۸.۵$)
-
-            candidateSignals.push({
-              symbol: sym,
-              posSide,
-              side,
-              curPrice,
-              stopLoss,
-              takeProfit,
-              contractQty,
-              stepSize: sizing.stepSize,
-              qtyPrecision: sizing.qtyPrecision,
-              maxLeverage: maxLev,
-              requiredMargin,
-              notionalUsdt: parseFloat(notionalUsdt.toFixed(2)),
-              riskUsdt: parseFloat(actualRiskUsdt.toFixed(2)),
-              targetRiskUsdt: parseFloat(riskBudgetUsdt.toFixed(2)),
-              strategyName: cfg.strategyId === 'strategy_2_next_pivot' ? 'استراتژی ۲ (Next-Pivot)' : 'استراتژی ۱ (E-Breakout)',
-              discoveredAt: new Date().toISOString(),
-            });
-          }
+        if (signal) {
+          candidateSignals.push(signal);
         }
       } catch (err: any) {
         // continue scanning other pairs
@@ -2229,6 +2957,31 @@ app.get('/api/live-scanner/status', (_req, res) => {
   });
 });
 
+// 7.4.1 Trigger Immediate Manual Scan on Server
+app.post('/api/live-scanner/scan-now', async (_req, res) => {
+  try {
+    if (serverScannerState.isScanning) {
+      return res.json({
+        success: true,
+        message: 'اسکن هم‌اکنون در سرور در حال انجام است...',
+        state: getScannerPublicState(),
+      });
+    }
+
+    addServerScannerLog('info', '🔍 اسکن دستی فوری سرور توسط کاربر درخواست شد.');
+    await runServerScannerCycle();
+
+    return res.json({
+      success: true,
+      message: 'اسکن سرور با موفقیت به پایان رسید.',
+      state: getScannerPublicState(),
+    });
+  } catch (err: any) {
+    addServerScannerLog('error', `❌ خطا در اجرای اسکن فوری سرور: ${err.message}`);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // 7.5 Execute Instant Test Live Trade ($0.10 Risk or Exchange Minimum)
 app.post('/api/live-scanner/test-trade', async (req, res) => {
   try {
@@ -2485,6 +3238,22 @@ wss.on('connection', (clientWs, request) => {
 });
 
 // =========================================================================
+// POSTGRESQL DATABASE HEALTH & AUTO-INIT
+// =========================================================================
+app.get('/api/db-test', async (_req, res) => {
+  try {
+    const testResult = await testDatabaseConnection();
+    res.json(testResult);
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      status: 'INTERNAL_ERROR',
+      error: err.message,
+    });
+  }
+});
+
+// =========================================================================
 // VITE DEV MIDDLEWARE & STATIC ASSETS
 // =========================================================================
 async function startServer() {
@@ -2508,6 +3277,19 @@ async function startServer() {
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`⚡ Server-side crypto trading platform running on http://0.0.0.0:${PORT}`);
+
+    // Run PostgreSQL database table verification asynchronously in background so port 3000 opens instantly
+    initDatabase()
+      .then((dbInitResult) => {
+        if (dbInitResult.success) {
+          console.log(`[PostgreSQL] 🚀 Auto-initialized ${dbInitResult.tablesCreated.length} tables on remote database.`);
+        } else {
+          console.warn(`[PostgreSQL] ⚠️ Database auto-init warning:`, dbInitResult.error);
+        }
+      })
+      .catch((dbErr: any) => {
+        console.warn(`[PostgreSQL] ⚠️ Database startup warning:`, dbErr.message);
+      });
   });
 }
 

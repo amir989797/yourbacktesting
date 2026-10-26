@@ -80,24 +80,12 @@ export async function saveAllowedPairsToFirestore(
   exchange: 'xt' | 'binance' = 'xt',
   listName: string = 'پیش‌فرض'
 ): Promise<{ success: boolean; message: string; record?: AllowedPairsRecord }> {
-  const safeUserId = userId || 'default_user';
+  const safeUserId = userId || 'amir';
   const cleanName = (listName || 'پیش‌فرض').trim();
   const slug = cleanName.toLowerCase().replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, '_');
   const docId = `${safeUserId}_${exchange}_${slug}`;
 
-  // First check existing lists to enforce max 10 lists per exchange
-  let existingLists = await loadAllAllowedPairsListsFromFirestore(safeUserId, exchange);
-  const isUpdatingExisting = existingLists.some((item) => item.id === docId || item.listName === cleanName);
-
-  if (!isUpdatingExisting && existingLists.length >= MAX_SAVED_LISTS_PER_EXCHANGE) {
-    return {
-      success: false,
-      message: `حداکثر می‌توانید تا ${MAX_SAVED_LISTS_PER_EXCHANGE} لیست اختصاصی برای صرافی ${exchange.toUpperCase()} ذخیره کنید. لطفاً ابتدا یکی از لیست‌های قبلی را حذف کنید.`,
-    };
-  }
-
   const now = new Date().toISOString();
-  const existingRecord = existingLists.find((item) => item.id === docId || item.listName === cleanName);
   const record: AllowedPairsRecord = {
     id: docId,
     userId: safeUserId,
@@ -105,43 +93,45 @@ export async function saveAllowedPairsToFirestore(
     listName: cleanName,
     symbols,
     count: symbols.length,
-    createdAt: existingRecord?.createdAt || now,
+    createdAt: now,
     updatedAt: now,
   };
 
   try {
-    const docRef = doc(db, 'allowedPairs', docId);
-    await setDoc(docRef, record, { merge: true });
-    if (safeUserId) {
-      await setDoc(
-        doc(db, 'users', safeUserId),
-        {
-          settings: {
-            [`backtestAllowedPairs_${exchange}`]: symbols,
-            [`lastPairsList_${exchange}`]: cleanName,
-          },
-          updatedAt: now,
-        },
-        { merge: true }
-      );
+    const res = await fetch('/api/allowed-pairs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(record),
+    });
+    const data = await res.json();
+    if (data && data.success) {
+      // update local mirror
+      try {
+        localStorage.setItem(`allowed_pairs_lists_${safeUserId}_${exchange}`, JSON.stringify([record]));
+        localStorage.setItem(`backtest_selected_allowed_symbols_${exchange}`, JSON.stringify(symbols));
+        localStorage.setItem('backtest_selected_allowed_symbols', JSON.stringify(symbols));
+      } catch {}
+      return {
+        success: true,
+        message: `لیست «${cleanName}» با موفقیت در پایگاه‌داده ذخیره شد.`,
+        record,
+      };
     }
   } catch (err) {
-    console.warn('saveAllowedPairsToFirestore cloud error, saving to localStorage:', err);
+    console.warn('saveAllowedPairsToFirestore PostgreSQL error:', err);
   }
 
   // Update local cache of lists
   try {
     const localKey = `allowed_pairs_lists_${safeUserId}_${exchange}`;
-    const updated = existingLists.filter((item) => item.id !== docId && item.listName !== cleanName);
-    updated.unshift(record);
-    localStorage.setItem(localKey, JSON.stringify(updated.slice(0, MAX_SAVED_LISTS_PER_EXCHANGE)));
+    localStorage.setItem(localKey, JSON.stringify([record]));
     localStorage.setItem(`backtest_selected_allowed_symbols_${exchange}`, JSON.stringify(symbols));
     localStorage.setItem('backtest_selected_allowed_symbols', JSON.stringify(symbols));
   } catch {}
 
   return {
     success: true,
-    message: `لیست «${cleanName}» با موفقیت در دیتابیس صرافی ${exchange.toUpperCase()} ذخیره شد.`,
+    message: `لیست «${cleanName}» با موفقیت ذخیره شد.`,
     record,
   };
 }
@@ -150,32 +140,15 @@ export async function loadAllAllowedPairsListsFromFirestore(
   userId: string,
   exchange: 'xt' | 'binance' = 'xt'
 ): Promise<AllowedPairsRecord[]> {
-  const safeUserId = userId || 'default_user';
-  const lists: AllowedPairsRecord[] = [];
-
+  const safeUserId = userId || 'amir';
   try {
-    const coll = collection(db, 'allowedPairs');
-    const snap = await getDocs(coll);
-    snap.forEach((d) => {
-      const data = d.data() as AllowedPairsRecord;
-      if (data && (data.userId === safeUserId || data.userId === 'amir' || !data.userId)) {
-        if (!data.exchange || data.exchange === exchange) {
-          lists.push({ ...data, id: d.id, exchange: data.exchange || exchange });
-        }
-      }
-    });
-
-    if (lists.length > 0) {
-      // Sort newest first
-      lists.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
-      // Save to localStorage mirror
-      try {
-        localStorage.setItem(`allowed_pairs_lists_${safeUserId}_${exchange}`, JSON.stringify(lists));
-      } catch {}
-      return lists.slice(0, MAX_SAVED_LISTS_PER_EXCHANGE);
+    const res = await fetch(`/api/allowed-pairs?userId=${encodeURIComponent(safeUserId)}&exchange=${encodeURIComponent(exchange)}`);
+    const data = await res.json();
+    if (data && data.success && Array.isArray(data.lists) && data.lists.length > 0) {
+      return data.lists;
     }
   } catch (err) {
-    console.warn('loadAllAllowedPairsListsFromFirestore error, trying localStorage:', err);
+    console.warn('loadAllAllowedPairsListsFromFirestore PostgreSQL error, trying localStorage:', err);
   }
 
   // Fallback to localStorage
@@ -198,9 +171,9 @@ export async function deleteAllowedPairsFromFirestore(
   docId: string,
   exchange: 'xt' | 'binance' = 'xt'
 ): Promise<boolean> {
-  const safeUserId = userId || 'default_user';
+  const safeUserId = userId || 'amir';
   try {
-    await deleteDoc(doc(db, 'allowedPairs', docId));
+    await fetch(`/api/allowed-pairs/${encodeURIComponent(docId)}`, { method: 'DELETE' });
   } catch (err) {
     console.warn('deleteAllowedPairsFromFirestore error:', err);
   }
@@ -275,41 +248,46 @@ export interface TestParameterConfigRecord {
 }
 
 export async function saveTestConfigToFirestore(userId: string, record: TestParameterConfigRecord): Promise<boolean> {
+  const safeUserId = userId || 'amir';
   try {
-    const docRef = doc(db, 'testConfigs', record.id);
-    await setDoc(docRef, { ...record, userId, updatedAt: new Date().toISOString() }, { merge: true });
-    return true;
-  } catch (err) {
-    console.warn('saveTestConfigToFirestore error:', err);
-    try {
-      const saved = JSON.parse(localStorage.getItem(`test_configs_${userId}`) || '[]');
-      const filtered = saved.filter((r: any) => r.id !== record.id);
-      filtered.push(record);
-      localStorage.setItem(`test_configs_${userId}`, JSON.stringify(filtered));
+    const res = await fetch('/api/test-configs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...record, userId: safeUserId }),
+    });
+    const data = await res.json();
+    if (data && data.success) {
       return true;
-    } catch {
-      return false;
     }
+  } catch (err) {
+    console.warn('saveTestConfigToFirestore PostgreSQL error, falling back to local storage:', err);
+  }
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(`test_configs_${safeUserId}`) || '[]');
+    const filtered = saved.filter((r: any) => r.id !== record.id);
+    filtered.push(record);
+    localStorage.setItem(`test_configs_${safeUserId}`, JSON.stringify(filtered));
+    return true;
+  } catch {
+    return false;
   }
 }
 
 export async function loadTestConfigsFromFirestore(userId: string): Promise<TestParameterConfigRecord[]> {
+  const safeUserId = userId || 'amir';
   try {
-    const coll = collection(db, 'testConfigs');
-    const snap = await getDocs(coll);
-    const results: TestParameterConfigRecord[] = [];
-    snap.forEach((d) => {
-      const data = d.data() as any;
-      if (!data.userId || data.userId === userId || userId === 'amir') {
-        results.push({ ...data, id: d.id });
-      }
-    });
-    if (results.length > 0) return results;
+    const res = await fetch(`/api/test-configs?userId=${encodeURIComponent(safeUserId)}`);
+    const data = await res.json();
+    if (data && data.success && Array.isArray(data.configs) && data.configs.length > 0) {
+      return data.configs;
+    }
   } catch (err) {
-    console.warn('loadTestConfigsFromFirestore error, using fallback:', err);
+    console.warn('loadTestConfigsFromFirestore PostgreSQL error, trying localStorage:', err);
   }
+
   try {
-    return JSON.parse(localStorage.getItem(`test_configs_${userId}`) || '[]');
+    return JSON.parse(localStorage.getItem(`test_configs_${safeUserId}`) || '[]');
   } catch {
     return [];
   }
@@ -318,7 +296,9 @@ export async function loadTestConfigsFromFirestore(userId: string): Promise<Test
 export async function deleteTestConfigFromFirestore(userIdOrId: string, maybeId?: string): Promise<boolean> {
   const id = maybeId || userIdOrId;
   try {
-    await deleteDoc(doc(db, 'testConfigs', id));
+    const res = await fetch(`/api/test-configs/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data && data.success) return true;
   } catch (e) {
     console.warn('deleteTestConfigFromFirestore error:', e);
   }

@@ -1,12 +1,14 @@
 /**
- * Cloud SQL (PostgreSQL via Drizzle) Client Service
+ * Remote PostgreSQL (193.142.58.196) Client Service
  * Provides direct persistence, retrieval, and health status for market candle datasets.
  */
 
 export interface CloudSqlStatus {
   success: boolean;
   connected: boolean;
+  serverHost?: string;
   databaseName?: string;
+  databaseUser?: string;
   dbSize?: string;
   dbSizeBytes?: number;
   datasetCount?: number;
@@ -33,7 +35,7 @@ export interface CloudSqlDatasetMeta {
 }
 
 /**
- * Check Cloud SQL PostgreSQL connection health and storage capacity
+ * Check Remote PostgreSQL connection health and storage capacity
  */
 export async function getCloudSqlStatus(): Promise<CloudSqlStatus> {
   try {
@@ -53,19 +55,19 @@ export async function getCloudSqlStatus(): Promise<CloudSqlStatus> {
     return {
       success: false,
       connected: false,
-      error: err?.message || 'خطا در ارتباط با سرویس Cloud SQL',
+      error: err?.message || 'خطا در ارتباط با سرور PostgreSQL اختصاصی (193.142.58.196)',
     };
   }
 }
 
 /**
- * Fetch list of all saved datasets in Cloud SQL
+ * Fetch list of all saved datasets in Remote PostgreSQL
  */
 export async function getCloudSqlDatasets(): Promise<CloudSqlDatasetMeta[]> {
   try {
     const res = await fetch('/api/cloudsql/datasets', {
       headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(30000),
     });
     if (res.ok) {
       const data = await res.json();
@@ -74,13 +76,13 @@ export async function getCloudSqlDatasets(): Promise<CloudSqlDatasetMeta[]> {
       }
     }
   } catch (e) {
-    console.warn('Failed to load datasets from Cloud SQL:', e);
+    console.warn('Failed to load datasets from Remote PostgreSQL:', e);
   }
   return [];
 }
 
 /**
- * Save current server buffer or dataset to Cloud SQL
+ * Save current server buffer or dataset to Remote PostgreSQL
  */
 export async function saveDatasetToCloudSql(params: {
   name: string;
@@ -100,19 +102,19 @@ export async function saveDatasetToCloudSql(params: {
         isTemporary: !!params.isTemporary,
         datasetId: params.datasetId,
       }),
-      signal: AbortSignal.timeout(60000), // allow up to 60s for large 700+ symbol datasets
+      signal: AbortSignal.timeout(90000), // allow up to 90s for large 700+ symbol datasets
     });
     return await res.json();
   } catch (err: any) {
     return {
       success: false,
-      error: err?.message || 'خطا در ذخیره‌سازی بسته در Cloud SQL',
+      error: err?.message || 'خطا در ذخیره‌سازی بسته در سرور PostgreSQL اختصاصی',
     };
   }
 }
 
 /**
- * Load complete dataset candles from Cloud SQL into server buffer & return entries
+ * Load complete dataset candles from Remote PostgreSQL into server buffer & return entries
  */
 export async function loadDatasetFromCloudSql(id: string): Promise<{
   success: boolean;
@@ -124,19 +126,19 @@ export async function loadDatasetFromCloudSql(id: string): Promise<{
   try {
     const res = await fetch(`/api/cloudsql/dataset/${encodeURIComponent(id)}`, {
       headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(45000),
+      signal: AbortSignal.timeout(90000), // allow up to 90s for large datasets
     });
     return await res.json();
   } catch (err: any) {
     return {
       success: false,
-      error: err?.message || 'خطا در بازیابی بسته از Cloud SQL',
+      error: err?.message || 'خطا در بازیابی بسته از سرور PostgreSQL اختصاصی',
     };
   }
 }
 
 /**
- * Promote temporary dataset to permanent in Cloud SQL
+ * Promote temporary dataset to permanent in Remote PostgreSQL
  */
 export async function promoteDatasetInCloudSql(
   datasetId: string,
@@ -156,7 +158,7 @@ export async function promoteDatasetInCloudSql(
 }
 
 /**
- * Delete a dataset and its candle chunks from Cloud SQL
+ * Delete a dataset and its candle chunks from Remote PostgreSQL
  */
 export async function deleteDatasetFromCloudSql(id: string): Promise<{ success: boolean; error?: string }> {
   try {

@@ -17,6 +17,8 @@ export interface StrategyParams {
   showOnChart: boolean;
   noConcurrentPositions?: boolean; // عدم ورود به معامله جدید در صورت وجود پوزیشن باز
   symbol?: string; // نماد جفت‌ارز اختیاری برای اعمال گام اعشار و استپ‌سایز صرافی
+  timeStopEnabled?: boolean; // فعال‌بودن خروج زمانی (Time-Stop)
+  timeStopCandles?: number; // حداکثر تعداد کندل مجاز برای ماندن در معامله (مثلاً ۸۰ کندل)
 }
 
 export type StrategyConfig = StrategyParams;
@@ -35,6 +37,8 @@ export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
   commissionPercent: 0.12, // مجموع ورود و خروج: 0.06% + 0.06% = 0.12%
   entryCommissionPercent: 0.06, // 0.06% ورود
   exitCommissionPercent: 0.06, // 0.06% خروج
+  timeStopEnabled: true,
+  timeStopCandles: 80,
 };
 
 export type TradeStatus = 'PENDING' | 'ACTIVE' | 'WIN' | 'LOSS' | 'BREAKEVEN' | 'EXPIRED' | 'OPEN';

@@ -366,18 +366,33 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   }, [timeframe]);
 
   // Cached Candles in Memory to avoid repeated downloads!
-  const [cachedCount, setCachedCount] = useState<number>(() => {
-    const uniqueSymbols = new Set<string>();
-    for (const entry of Array.from(GLOBAL_CANDLE_CACHE.values())) {
-      if (entry && entry.candles && entry.candles.length >= 50) {
-        if (!entry.timeframe || entry.timeframe === '5m') {
-          const sym = entry.pair?.symbol;
-          if (sym) uniqueSymbols.add(sym.toUpperCase());
-        }
-      }
-    }
-    return uniqueSymbols.size;
-  });
+  const [cachedCount, setCachedCount] = useState<number>(0);
+
+  // وضعیت و متادیتای بازه زمانی جاری در پایگاه داده PostgreSQL
+  interface RangeStatusData {
+    exists: boolean;
+    datasetId?: string;
+    dataset?: {
+      id: string;
+      name: string;
+      exchange: string;
+      timeframe: string;
+      startTime: number | null;
+      endTime: number | null;
+      symbolCount: number;
+      totalCandles: number;
+      dataSizeFormatted: string;
+      status: string;
+      updatedAt: string;
+      hasResults: boolean;
+    };
+    results?: BacktestResultItem[] | null;
+    allTrades?: StrategyTrade[] | null;
+  }
+  const [rangeStatus, setRangeStatus] = useState<RangeStatusData | null>(null);
+  const [isCheckingRange, setIsCheckingRange] = useState<boolean>(false);
+  const [isRescanPromptOpen, setIsRescanPromptOpen] = useState<boolean>(false);
+  const [isDeleteRangePromptOpen, setIsDeleteRangePromptOpen] = useState<boolean>(false);
 
   useEffect(() => {
     setCachedCount(getCachedUniqueCount());
@@ -496,6 +511,24 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const [optMaxRiskReward, setOptMaxRiskReward] = useState<number>(2.0);
   const [lockMaxRiskReward, setLockMaxRiskReward] = useState<boolean>(false);
 
+  const [optTimeStopEnabled, setOptTimeStopEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('backtest_time_stop_enabled');
+      return saved !== null ? saved === 'true' : true;
+    } catch {
+      return true;
+    }
+  });
+  const [optTimeStopCandles, setOptTimeStopCandles] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('backtest_time_stop_candles');
+      return saved !== null ? parseInt(saved, 10) : 80;
+    } catch {
+      return 80;
+    }
+  });
+  const [lockTimeStopCandles, setLockTimeStopCandles] = useState<boolean>(false);
+
   // همگام‌سازی با تنظیمات زیگ‌زاگ وارده توسط کاربر در چارت
   useEffect(() => {
     if (!zigzagSettings) return;
@@ -558,9 +591,15 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
   // محاسبه لحظه‌ای و دقیق حجم داده‌های کش کندل‌ها
   const currentCandleDatasetStats = useMemo(() => {
+    if (rangeStatus?.dataset) {
+      return {
+        totalCandles: rangeStatus.dataset.totalCandles || 0,
+        formatted: rangeStatus.dataset.dataSizeFormatted || '0 KB',
+      };
+    }
     const entries = Array.from(GLOBAL_CANDLE_CACHE.values());
     return calculateDatasetSizeInBytes(entries);
-  }, [GLOBAL_CANDLE_CACHE.size, isSaveCandleModalOpen]);
+  }, [GLOBAL_CANDLE_CACHE.size, isSaveCandleModalOpen, rangeStatus]);
 
   // =========================================================================
   // مدل بهینه‌سازی سبک و کم‌حجم (فقط ۱۰ تست برتر + رنج‌های بهینه‌شونده پارامترها)
@@ -721,460 +760,258 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     return () => clearInterval(interval);
   }, [isOptimizing, sessionSecondsLeft]);
 
+  // بررسی وجود داده‌ها در پایگاه داده PostgreSQL برای بازه زمانی انتخابی
+  // بررسی وجود داده‌ها در پایگاه داده PostgreSQL برای بازه زمانی انتخابی
+  const checkCurrentRangeStatus = useCallback(async () => {
+    setIsCheckingRange(true);
+    try {
+      const res = await fetch(
+        `/api/backtest/range-status?exchange=${encodeURIComponent(selectedExchange)}&timeframe=${encodeURIComponent(timeframe)}&startTime=${timeRangeStartMs}&endTime=${timeRangeEndMs}`
+      );
+      const data = await res.json();
+      if (data && data.success) {
+        setRangeStatus(data);
+        if (data.exists && data.dataset) {
+          setCachedCount(data.dataset.symbolCount || 0);
+          if (Array.isArray(data.results) && data.results.length > 0) {
+            setResults(data.results);
+            if (Array.isArray(data.allTrades)) {
+              setAllCollectedTrades(data.allTrades);
+            }
+          }
+          // بارگذاری خودکار کندل‌ها به حافظه کش رم اگر خالی باشد
+          if (GLOBAL_CANDLE_CACHE.size === 0 && data.datasetId) {
+            loadDatasetFromCloudSql(data.datasetId).then((sqlRes) => {
+              if (sqlRes && sqlRes.success && Array.isArray(sqlRes.entries)) {
+                for (const entry of sqlRes.entries) {
+                  if (entry.pair && entry.pair.symbol && entry.candles) {
+                    GLOBAL_CANDLE_CACHE.set(entry.pair.symbol, {
+                      candles: entry.candles,
+                      timeframe: entry.timeframe || timeframe,
+                      pair: entry.pair,
+                    });
+                    GLOBAL_CANDLE_CACHE.set(`${selectedExchange}_${entry.pair.symbol}_${timeframe}`, {
+                      candles: entry.candles,
+                      timeframe: entry.timeframe || timeframe,
+                      pair: entry.pair,
+                    });
+                  }
+                }
+                setCachedCount(getCachedUniqueCount());
+              }
+            }).catch(() => {});
+          }
+        } else {
+          setCachedCount(0);
+        }
+      }
+    } catch (err) {
+      console.warn('Range status check failed:', err);
+    } finally {
+      setIsCheckingRange(false);
+    }
+  }, [selectedExchange, timeframe, timeRangeStartMs, timeRangeEndMs, getCachedUniqueCount]);
+
+  const [isSyncingCandles, setIsSyncingCandles] = useState<boolean>(false);
+
+  // همگام‌سازی مستقیم کندل‌های آخرین بکتست از PostgreSQL به کش حافظه مرورگر برای بهینه‌ساز و صفحه آمار
+  const syncRangeCandlesToMemory = useCallback(async (notifyUser: boolean = true) => {
+    const targetDatasetId =
+      rangeStatus?.datasetId ||
+      activeSessionDatasetId ||
+      `range_${(selectedExchange || 'xt').toLowerCase()}_${timeframe}_${timeRangeStartMs || 0}_${timeRangeEndMs || 0}`;
+
+    setIsSyncingCandles(true);
+    try {
+      const sqlRes = await loadDatasetFromCloudSql(targetDatasetId);
+      if (sqlRes && sqlRes.success && Array.isArray(sqlRes.entries) && sqlRes.entries.length > 0) {
+        for (const entry of sqlRes.entries) {
+          if (entry.pair && entry.pair.symbol && entry.candles) {
+            GLOBAL_CANDLE_CACHE.set(entry.pair.symbol, {
+              candles: entry.candles,
+              timeframe: entry.timeframe || timeframe,
+              pair: entry.pair,
+            });
+            GLOBAL_CANDLE_CACHE.set(`${selectedExchange}_${entry.pair.symbol}_${timeframe}`, {
+              candles: entry.candles,
+              timeframe: entry.timeframe || timeframe,
+              pair: entry.pair,
+            });
+          }
+        }
+        const count = getCachedUniqueCount();
+        setCachedCount(count);
+        if (notifyUser) {
+          showToast(`⚡ ${count} جفت‌ارز بکتست با موفقیت با بهینه‌ساز و آمار همگام شدند!`);
+        }
+        return true;
+      } else {
+        if (notifyUser) {
+          showToast('⚠️ داده کندل‌ها در پایگاه‌داده یافت نشد.');
+        }
+        return false;
+      }
+    } catch (err) {
+      console.warn('Failed to sync candles to memory:', err);
+      if (notifyUser) {
+        showToast('❌ خطا در همگام‌سازی کندل‌ها با پایگاه داده.');
+      }
+      return false;
+    } finally {
+      setIsSyncingCandles(false);
+    }
+  }, [rangeStatus?.datasetId, activeSessionDatasetId, selectedExchange, timeframe, timeRangeStartMs, timeRangeEndMs, getCachedUniqueCount]);
+
+  // همگام‌سازی خودکار در هنگام جابه‌جایی تب به بهینه‌ساز یا آمار
+  useEffect(() => {
+    if ((activeTab === 'optimizer' || activeTab === 'stats') && GLOBAL_CANDLE_CACHE.size === 0 && rangeStatus?.exists) {
+      syncRangeCandlesToMemory(false);
+    }
+  }, [activeTab, rangeStatus?.exists, syncRangeCandlesToMemory]);
+
+  useEffect(() => {
+    checkCurrentRangeStatus();
+  }, [checkCurrentRangeStatus]);
+
+  const hasSyncedDatasetIdRef = useRef<string | null>(null);
+
+  // پایش بی‌وقفه و همگام وضعیت اسکن در پس‌زمینه سرور (حفظ وضعیت در صورت ریلود یا بستن تب)
+  useEffect(() => {
+    let interval: any;
+    const pollStatus = async () => {
+      try {
+        const res = await fetch('/api/backtest/status');
+        const data = await res.json();
+        if (data && data.success && data.state) {
+          const st = data.state;
+          if (st.isScanning) {
+            setIsScanning(true);
+            if (st.progress) {
+              setProgress({
+                current: st.progress.current || 0,
+                total: st.progress.total || 0,
+                currentSymbol: st.progress.currentSymbol || `در حال پردازش موازی در پس‌زمینه سرور (${st.stage || ''})...`,
+              });
+            }
+            if (Array.isArray(st.results) && st.results.length > 0) {
+              setResults([...st.results]);
+            }
+            if (Array.isArray(st.allTrades) && st.allTrades.length > 0) {
+              setAllCollectedTrades([...st.allTrades]);
+            }
+          } else if (st.stage === 'completed' && Array.isArray(st.results) && st.results.length > 0) {
+            setResults([...st.results]);
+            if (Array.isArray(st.allTrades)) {
+              setAllCollectedTrades([...st.allTrades]);
+            }
+            setIsScanning(false);
+            // همگام‌سازی سریع کندل‌های دریافتی با حافظه کش مرورگر (تنها یک‌بار پس از اتمام، نه در هر تیک پولینگ)
+            if (st.datasetId && hasSyncedDatasetIdRef.current !== st.datasetId) {
+              hasSyncedDatasetIdRef.current = st.datasetId;
+              syncRangeCandlesToMemory(false);
+            }
+          } else {
+            setIsScanning(false);
+          }
+        }
+      } catch {}
+    };
+
+    pollStatus();
+    interval = setInterval(pollStatus, 1000);
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [syncRangeCandlesToMemory]);
+
   // =========================================================
-  // اسکن کامل بازار: تمام ارزهای بالای ۱ میلیون دلار بدون برش
+  // اسکن مستقل و پایدار بک‌تست در پس‌زمینه سرور (ذخیره مستقیم در PostgreSQL)
   // =========================================================
-  const handleStartScan = async (useCachedOnly: boolean = false) => {
+  const handleStartScan = async (forceRedownload?: boolean) => {
+    // اگر داده‌های این بازه در دیتابیس وجود دارد و هنوز انتخابی انجام نشده، مودال تایید را نشان بده
+    if (forceRedownload === undefined && rangeStatus?.exists) {
+      setIsRescanPromptOpen(true);
+      return;
+    }
+
+    setIsRescanPromptOpen(false);
     setIsScanning(true);
     abortControllerRef.current = false;
     setErrorMsg(null);
     setResults([]);
     setAllCollectedTrades([]);
-    setScanMaxDrawdown(0);
+    setProgress({
+      current: 0,
+      total: selectedAllowedSymbols?.length || 50,
+      currentSymbol: `در حال ارسال درخواست به سرور با ${scanWorkersCount} ورکر موازی...`,
+    });
 
     try {
-      const universeParam =
-        universeOption === 'all_spot'
-          ? 'spot'
-          : universeOption === 'all_futures'
-          ? 'futures'
-          : universeOption === 'top_50' || universeOption === 'top_30'
-          ? 'futures'
-          : 'all_market';
-
-      const maxCount =
-        universeOption === 'top_30'
-          ? 30
-          : universeOption === 'top_50'
-          ? 50
-          : 1500; // بدون برش ۸۰ تایی - دریافت کامل بیش از ۷۰۰ ارز واقعی بازار بالای ۱ میلیون دلار
-
-      const isFuturesUniverse = universeParam !== 'spot';
-
-      // ۱. دریافت سریع لیست جفت‌ارزهای معتبر بازار از سرور یا XT (پیش‌فرض صرافی XT)
-      setProgress({ current: 0, total: 0, currentSymbol: `در حال دریافت لیست ارزهای فعال (${selectedExchange.toUpperCase()})...` });
-      
-      let targetPairs: CryptoPair[] = [];
-      if (selectedExchange === 'xt') {
-        const xtPairs = await fetchXtPairs();
-        targetPairs = xtPairs.slice(0, maxCount);
-      } else {
-        const pairsRes = await fetch(`/api/market/pairs?exchange=binance&universe=${universeParam}&limit=${maxCount}&minVolume=1000000`)
-          .then((r) => r.json())
-          .catch(() => null);
-
-        targetPairs =
-          pairsRes && pairsRes.success && Array.isArray(pairsRes.pairs) && pairsRes.pairs.length > 0
-            ? pairsRes.pairs
-            : universeParam === 'spot'
-            ? await fetchUSDTMarketPairs(1000000)
-            : await fetchFuturesMarketPairs(200000);
-      }
-
-      // فیلتر هوشمند بر مبنای ارزهای مجاز انتخابی کاربر
-      if (selectedAllowedSymbols && selectedAllowedSymbols.length > 0) {
-        const allowedSet = new Set(selectedAllowedSymbols.map((s) => s.toLowerCase().replace(/[^a-z0-9]/g, '')));
-        targetPairs = targetPairs.filter((p) => {
-          const s1 = p.symbol.toLowerCase().replace(/[^a-z0-9]/g, '');
-          const base = (p.baseAsset || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-          return allowedSet.has(s1) || allowedSet.has(`${base}usdt`) || allowedSet.has(base);
-        });
-      } else if (selectedAllowedSymbols && selectedAllowedSymbols.length === 0) {
-        setErrorMsg('⚠️ هیچ ارزی انتخاب نشده است. لطفاً ابتدا از بخش «ارزهای مجاز اسکن بازار» ارزهای مورد نظر خود را انتخاب کنید.');
-        setIsScanning(false);
-        return;
-      }
-
-      const total = targetPairs.length;
-      if (total === 0) {
-        setErrorMsg('هیچ جفت‌ارزی برای اسکن یافت نشد. لطفاً اتصال اینترنت را بررسی کنید.');
-        setIsScanning(false);
-        return;
-      }
-
-      setProgress({ current: 0, total, currentSymbol: `شروع اسکن و دانلود زنده از ${selectedExchange.toUpperCase()}...` });
-
-      const collectedResults: BacktestResultItem[] = [];
-      const collectedTrades: StrategyTrade[] = [];
-      const queue = [...targetPairs];
-      let completedCount = 0;
-      let lastUiCommit = 0;
-
-      const triggerThrottledCommit = (force: boolean = false) => {
-        const now = Date.now();
-        if (force || now - lastUiCommit > 250) {
-          lastUiCommit = now;
-          setResults([...collectedResults]);
-          setAllCollectedTrades([...collectedTrades]);
-        }
-      };
-
-      let lastProgressTime = 0;
-
-      const worker = async () => {
-        while (queue.length > 0 && !abortControllerRef.current) {
-          const pair = queue.shift();
-          if (!pair) break;
-
-          try {
-            // ۱. بررسی حافظه کش سریع رم بر اساس صرافی، نماد، تایم‌فریم و بازه زمانی (۰ میلی‌ثانیه)
-            const cacheKey = `${selectedExchange}_${pair.symbol}_${timeframe}_${timeRangeStartMs}_${timeRangeEndMs}`;
-            let candles: CandleData[] = [];
-            const cached = GLOBAL_CANDLE_CACHE.get(cacheKey);
-            if (cached && cached.candles && cached.candles.length >= 50 && cached.timeframe === timeframe) {
-              candles = cached.candles;
-            } else {
-              // ۲. بررسی دیتابیس پایدار مرورگر (IndexedDB - ۱ میلی‌ثانیه بدون ترافیک شبکه)
-              const idbCached = await getCachedCandlesFromDb(selectedExchange, pair.symbol, timeframe);
-              if (idbCached && idbCached.candles && idbCached.candles.length >= 50) {
-                candles = idbCached.candles;
-                GLOBAL_CANDLE_CACHE.set(cacheKey, { pair, candles, timeframe });
-                setCachedCount(getCachedUniqueCount());
-              } else {
-                // ۳. دانلود موازی و بهینه‌شده از اندپوینت سرور (با پشتیبانی از startTime و endTime برای XT و Binance)
-                const klineRes = await fetch(
-                  `/api/market/klines?exchange=${selectedExchange}&symbol=${encodeURIComponent(pair.symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${candleHistoryLimit}&isFutures=${isFuturesUniverse}&startTime=${timeRangeStartMs}&endTime=${timeRangeEndMs}`
-                )
-                  .then((r) => r.json())
-                  .catch(() => null);
-
-                if (klineRes && klineRes.success && Array.isArray(klineRes.candles) && klineRes.candles.length >= 50) {
-                  candles = klineRes.candles;
-                  GLOBAL_CANDLE_CACHE.set(cacheKey, { pair, candles, timeframe });
-                  // ذخیره ماندگار در IndexedDB در پس‌زمینه بدون مسدودسازی ورکر
-                  saveCandlesToDb(selectedExchange, pair.symbol, timeframe, pair, candles).catch(() => {});
-                  setCachedCount(getCachedUniqueCount());
-                }
-              }
-            }
-
-            if (candles.length >= 50) {
-              const atrMetrics = calculateATR(candles, optAtrPeriod);
-              const { points } = calculateAtrZigZag(
-                candles,
-                atrMetrics.atrValues,
-                optAtrMultiplier,
-                optMinCandles
-              );
-              const legs = analyzeZigZagLegs(
-                points,
-                optMinCandlesLong,
-                optLongLegAtrMult,
-                optMaxBlueLegPercent,
-                optMaxBreakoutAtr
-              );
-
-              // ارزیابی هر دارایی با سرمایه پایه کاربر به صورت کاملاً مستقل، تکرارپذیر و پایدار
-              const tempConfig: StrategyConfig = {
-                capital,
-                selectedStrategyId,
-                riskMode,
-                riskAmountFixed,
-                riskPercent,
-                entryCommissionPercent,
-                exitCommissionPercent,
-                commissionPercent,
-                maxRiskReward: optMaxRiskReward,
-                maxCandlesToEnter,
-                maxTradesPerLeg: 1,
-                showOnChart: true,
-                noConcurrentPositions: true, // در تایم‌لاین یک ارز از ورود به معامله دوم قبل از بسته‌شدن اولی جلوگیری می‌شود
-              };
-
-              let backtestRes;
-              if (selectedStrategyId === 'strategy_2_next_pivot') {
-                backtestRes = runStrategy2Backtest(
-                  candles,
-                  points,
-                  legs,
-                  tempConfig,
-                  atrMetrics.atrValues,
-                  optAtrMultiplier,
-                  optMinCandles
-                );
-              } else {
-                backtestRes = runStrategy1Backtest(candles, points, legs, tempConfig);
-              }
-
-              const { trades, metrics } = backtestRes;
-
-              let optimalRiskForDD20 = 0;
-              if (metrics.maxDrawdownPercent > 0) {
-                optimalRiskForDD20 = parseFloat(((effectiveRiskPercent * 19.0) / metrics.maxDrawdownPercent).toFixed(2));
-              } else if (metrics.totalTrades > 0) {
-                optimalRiskForDD20 = 5.0;
-              }
-
-              const lastTrade = trades.length > 0 ? trades[trades.length - 1] : undefined;
-
-              const resultItem: BacktestResultItem = {
-                pair,
-                stage: 'RAW / PRE-FILTER',
-                candlesCount: candles.length,
-                totalTrades: metrics.totalTrades,
-                winTrades: metrics.winTrades,
-                lossTrades: metrics.lossTrades,
-                breakevenTrades: metrics.breakevenTrades || 0,
-                activeTrades: metrics.activeTrades,
-                winRate: metrics.winRate,
-                grossProfit: metrics.grossProfit || 0,
-                grossLoss: metrics.grossLoss || 0,
-                grossPnl: metrics.grossPnl || 0,
-                netProfit: metrics.netProfit,
-                netProfitPercent: metrics.netProfitPercent,
-                totalProfit: metrics.totalProfit,
-                totalLoss: metrics.totalLoss,
-                totalFee: metrics.totalFee || 0,
-                profitFactor: metrics.profitFactor,
-                profitFactorLabel: metrics.profitFactorLabel,
-                avgRiskReward: metrics.avgRiskReward,
-                maxDrawdown: metrics.maxDrawdown,
-                maxDrawdownPercent: metrics.maxDrawdownPercent,
-                optimalRiskForDD20,
-                openPositionsCount: metrics.openPositionsCount || 0,
-                openPositionsUnrealizedPnl: metrics.openPositionsUnrealizedPnl || 0,
-                openPositionsFee: metrics.openPositionsFee || 0,
-                lastTradeStatus:
-                  lastTrade?.status === 'WIN' || lastTrade?.status === 'LOSS' || lastTrade?.status === 'BREAKEVEN' || lastTrade?.status === 'ACTIVE'
-                    ? lastTrade.status
-                    : undefined,
-                trades,
-              };
-
-              collectedResults.push(resultItem);
-              const finishedTrades = trades
-                .filter((t) => t.status === 'WIN' || t.status === 'LOSS' || t.status === 'BREAKEVEN')
-                .map((t, tIdx) => ({
-                  ...t,
-                  id: `${pair.symbol}-${t.id || tIdx}`,
-                  symbol: pair.symbol,
-                  stage: 'RAW / PRE-FILTER' as const,
-                }));
-              collectedTrades.push(...finishedTrades);
-            }
-          } catch (itemErr) {
-            console.warn(`Error scanning ${pair.symbol}:`, itemErr);
-          } finally {
-            completedCount++;
-            const nowP = Date.now();
-            if (nowP - lastProgressTime > 100 || completedCount === total) {
-              lastProgressTime = nowP;
-              setProgress({
-                current: completedCount,
-                total,
-                currentSymbol: pair.symbol,
-              });
-            }
-            triggerThrottledCommit(false);
-          }
-        }
-      };
-
-      // اجرای واقعی تعداد ورکر انتخابی کاربر (بدون محدودیت غیرضروری روی ۱۰ ورکر)
-      const concurrency = Math.max(1, scanWorkersCount || 20);
-      await Promise.all(Array.from({ length: concurrency }, () => worker()));
-
-      triggerThrottledCommit(true);
-
-      // ذخیره‌سازی خودکار در Cloud SQL پس از اتمام اسکن
-      if (GLOBAL_CANDLE_CACHE.size > 0 && !abortControllerRef.current) {
-        saveDatasetToCloudSql({
-          name: `پیش‌نویس موقت اسکن اخیر (${timeframe})`,
-          userId: currentUser || 'amir',
+      const res = await fetch('/api/backtest/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          exchange: selectedExchange,
           timeframe,
-          isTemporary: true,
-        })
-          .then((res) => {
-            if (res.success && res.datasetId) {
-              setActiveSessionDatasetId(res.datasetId);
-            }
-          })
-          .catch(() => {});
+          startTime: timeRangeStartMs,
+          endTime: timeRangeEndMs,
+          symbols: selectedAllowedSymbols,
+          workersCount: scanWorkersCount,
+          strategyId: selectedStrategyId,
+          forceRedownload: Boolean(forceRedownload),
+          strategyConfig: {
+            capital,
+            riskMode,
+            riskPercent,
+            riskAmountFixed,
+            entryCommissionPercent,
+            exitCommissionPercent,
+            maxRiskReward: optMaxRiskReward,
+            maxCandlesToEnter,
+            optAtrPeriod,
+            optAtrMultiplier,
+            optMinCandles,
+            optMinCandlesLong,
+            optLongLegAtrMult,
+            optMaxBlueLegPercent,
+            optMaxBreakoutAtr,
+            noConcurrentPositions,
+            timeStopEnabled: optTimeStopEnabled,
+            timeStopCandles: optTimeStopCandles,
+          },
+        }),
+      });
+
+      const data = await res.json();
+      if (data && data.success) {
+        showToast(
+          forceRedownload
+            ? `🚀 دانلود مجدد و اسکن با ${scanWorkersCount} ورکر موازی در سرور آغاز شد.`
+            : `⚡ بک‌تست موازی با استفاده از داده‌های ذخیره‌شده در PostgreSQL آغاز شد.`
+        );
+      } else {
+        setErrorMsg(data?.error || 'خطا در آغاز اسکن سرور.');
+        setIsScanning(false);
       }
-    } catch (e: any) {
-      setErrorMsg(e?.message || 'خطا در ارتباط با سرور دانلود دیتای بازار.');
-    } finally {
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'خطا در برقراری ارتباط با سرور.');
       setIsScanning(false);
     }
   };
 
-  // =========================================================
-  // محاسبه و آپدیت مجدد فوری نتایج بک‌تست بر اساس پارامترهای جدید
-  // روی دیتایی که قبلاً دانلود شده است (بدون دانلود مجدد از اینترنت)
-  // =========================================================
-  const handleRerunOnCachedData = async () => {
-    const uniqueMap = new Map<string, { pair: CryptoPair; candles: CandleData[]; timeframe: string }>();
-    for (const entry of Array.from(GLOBAL_CANDLE_CACHE.values())) {
-      if (entry && entry.candles && entry.candles.length >= 50 && (!entry.timeframe || entry.timeframe === timeframe)) {
-        if (entry.pair && entry.pair.symbol) {
-          uniqueMap.set(entry.pair.symbol.toUpperCase(), entry);
-        }
-      }
-    }
-    const cachedEntries = Array.from(uniqueMap.values());
-    if (cachedEntries.length === 0) {
-      showToast(`⚠️ هیچ کندلی برای تایم‌فریم ${timeframe} در حافظه نیست. لطفاً ابتدا اسکن را اجرا کنید.`);
-      return;
-    }
-
-    setIsScanning(true);
-    abortControllerRef.current = false;
-    setErrorMsg(null);
-    setResults([]);
-    setAllCollectedTrades([]);
-    setScanMaxDrawdown(0);
-
-    const total = cachedEntries.length;
-    setProgress({ current: 0, total, currentSymbol: '' });
-
-    const collectedResults: BacktestResultItem[] = [];
-    const collectedTrades: StrategyTrade[] = [];
-
-    const queue = [...cachedEntries];
-    let completedCount = 0;
-    let lastUiCommit = 0;
-
-    const triggerThrottledCommit = (force: boolean = false) => {
-      const now = Date.now();
-      if (force || now - lastUiCommit > 250) {
-        lastUiCommit = now;
-        setResults([...collectedResults]);
-        setAllCollectedTrades([...collectedTrades]);
-      }
-    };
-
-    const runWorker = async () => {
-      while (queue.length > 0 && !abortControllerRef.current) {
-        const item = queue.shift();
-        if (!item) break;
-
-        const pair = item.pair;
-        const candles = item.candles;
-        if (candles.length >= 50) {
-          const atrMetrics = calculateATR(candles, optAtrPeriod);
-          const { points } = calculateAtrZigZag(
-            candles,
-            atrMetrics.atrValues,
-            optAtrMultiplier,
-            optMinCandles
-          );
-          const legs = analyzeZigZagLegs(
-            points,
-            optMinCandlesLong,
-            optLongLegAtrMult,
-            optMaxBlueLegPercent,
-            optMaxBreakoutAtr
-          );
-
-          const tempConfig: StrategyConfig = {
-            capital,
-            selectedStrategyId,
-            riskMode,
-            riskAmountFixed,
-            riskPercent,
-            entryCommissionPercent,
-            exitCommissionPercent,
-            commissionPercent,
-            maxRiskReward: optMaxRiskReward,
-            maxCandlesToEnter,
-            maxTradesPerLeg: 1,
-            showOnChart: true,
-            noConcurrentPositions: true,
-          };
-
-          let backtestRes;
-          if (selectedStrategyId === 'strategy_2_next_pivot') {
-            backtestRes = runStrategy2Backtest(
-              candles,
-              points,
-              legs,
-              tempConfig,
-              atrMetrics.atrValues,
-              optAtrMultiplier,
-              optMinCandles
-            );
-          } else {
-            backtestRes = runStrategy1Backtest(candles, points, legs, tempConfig);
-          }
-
-          const { trades, metrics } = backtestRes;
-
-          let optimalRiskForDD20 = 0;
-          if (metrics.maxDrawdownPercent > 0) {
-            optimalRiskForDD20 = parseFloat(((effectiveRiskPercent * 19.0) / metrics.maxDrawdownPercent).toFixed(2));
-          } else if (metrics.totalTrades > 0) {
-            optimalRiskForDD20 = 5.0;
-          }
-
-          const lastTrade = trades.length > 0 ? trades[trades.length - 1] : undefined;
-
-          collectedResults.push({
-            pair,
-            stage: 'RAW / PRE-FILTER',
-            candlesCount: candles.length,
-            totalTrades: metrics.totalTrades,
-            winTrades: metrics.winTrades,
-            lossTrades: metrics.lossTrades,
-            breakevenTrades: metrics.breakevenTrades || 0,
-            activeTrades: metrics.activeTrades,
-            winRate: metrics.winRate,
-            grossProfit: metrics.grossProfit || 0,
-            grossLoss: metrics.grossLoss || 0,
-            grossPnl: metrics.grossPnl || 0,
-            netProfit: metrics.netProfit,
-            netProfitPercent: metrics.netProfitPercent,
-            totalProfit: metrics.totalProfit,
-            totalLoss: metrics.totalLoss,
-            totalFee: metrics.totalFee || 0,
-            profitFactor: metrics.profitFactor,
-            profitFactorLabel: metrics.profitFactorLabel,
-            avgRiskReward: metrics.avgRiskReward,
-            maxDrawdown: metrics.maxDrawdown,
-            maxDrawdownPercent: metrics.maxDrawdownPercent,
-            optimalRiskForDD20,
-            openPositionsCount: metrics.openPositionsCount || 0,
-            openPositionsUnrealizedPnl: metrics.openPositionsUnrealizedPnl || 0,
-            openPositionsFee: metrics.openPositionsFee || 0,
-            lastTradeStatus:
-              lastTrade?.status === 'WIN' || lastTrade?.status === 'LOSS' || lastTrade?.status === 'BREAKEVEN' || lastTrade?.status === 'ACTIVE'
-                ? lastTrade.status
-                : undefined,
-            trades,
-          });
-
-          const finishedTrades = trades
-            .filter((t) => t.status === 'WIN' || t.status === 'LOSS' || t.status === 'BREAKEVEN')
-            .map((t, tIdx) => ({
-              ...t,
-              id: `${pair.symbol}-${t.id || tIdx}`,
-              symbol: pair.symbol,
-              stage: 'RAW / PRE-FILTER' as const,
-            }));
-          collectedTrades.push(...finishedTrades);
-        }
-
-        completedCount++;
-        setProgress({
-          current: completedCount,
-          total,
-          currentSymbol: pair.symbol,
-        });
-        triggerThrottledCommit(false);
-      }
-    };
-
-    const concurrency = Math.min(scanWorkersCount, cachedEntries.length);
-    await Promise.all(Array.from({ length: concurrency }, () => runWorker()));
-
-    triggerThrottledCommit(true);
-
-    setIsScanning(false);
-    showToast(`✅ نتایج بک‌تست بر اساس پارامترهای جدید با موفقیت روی ${collectedResults.length} جفت‌ارز به‌روزرسانی شد!`);
+  // اجرای سریع بک‌تست با استفاده از داده‌های موجود در دیتابیس
+  const handleRerunOnCachedData = () => {
+    handleStartScan(false);
   };
 
-  const handleStopScan = () => {
+  const handleStopScan = async () => {
     abortControllerRef.current = true;
     setIsScanning(false);
+    try {
+      await fetch('/api/backtest/stop', { method: 'POST' });
+      showToast('⏸️ دستور توقف اسکن سرور ثبت شد.');
+    } catch {}
   };
 
   const handleClearResults = () => {
@@ -1191,10 +1028,30 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   };
 
   const handleClearCandleCache = () => {
-    GLOBAL_CANDLE_CACHE.clear();
-    clearCandleDbStore().catch(() => {});
-    setCachedCount(0);
-    showToast('🗑️ حافظه کش کندل‌های دانلودشده و دیتابیس پایدار با موفقیت پاک شد.');
+    setIsDeleteRangePromptOpen(true);
+  };
+
+  const handleConfirmDeleteCurrentRange = async () => {
+    try {
+      const res = await fetch(
+        `/api/backtest/range?exchange=${encodeURIComponent(selectedExchange)}&timeframe=${encodeURIComponent(timeframe)}&startTime=${timeRangeStartMs}&endTime=${timeRangeEndMs}`,
+        { method: 'DELETE' }
+      );
+      const data = await res.json();
+      if (data && data.success) {
+        setResults([]);
+        setAllCollectedTrades([]);
+        setScanMaxDrawdown(0);
+        setCachedCount(0);
+        setRangeStatus({ exists: false });
+        setIsDeleteRangePromptOpen(false);
+        showToast('🗑️ داده‌های بازه زمانی فعلی با موفقیت از دیتابیس PostgreSQL حذف شدند. سایر بازه‌ها حفظ شدند.');
+      } else {
+        showToast('❌ خطا در حذف داده‌های بازه از دیتابیس.');
+      }
+    } catch (err) {
+      showToast('❌ خطا در برقراری ارتباط با دیتابیس.');
+    }
   };
 
   // =========================================================
@@ -1623,7 +1480,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const handleOpenSaveCandleModal = () => {
     const dateStr = new Date().toLocaleDateString('fa-IR');
     const timeStr = new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
-    const defaultName = `بسته کندل‌های ${timeframe} (${GLOBAL_CANDLE_CACHE.size} ارز) - ${dateStr} ${timeStr}`;
+    const count = rangeStatus?.dataset?.symbolCount || cachedCount || results.length || GLOBAL_CANDLE_CACHE.size;
+    const defaultName = `بسته کندل‌های ${timeframe} (${count} ارز) - ${dateStr} ${timeStr}`;
     setCustomDatasetName(defaultName);
     setIsSaveCandleModalOpen(true);
   };
@@ -1635,19 +1493,19 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       showToast('⚠️ لطفاً یک نام برای بسته کندل‌ها وارد کنید.');
       return;
     }
-    if (GLOBAL_CANDLE_CACHE.size === 0) {
-      showToast('⚠️ هیچ کندلی در حافظه کش موجود نیست. ابتدا اسکن را اجرا کنید.');
+    if (cachedCount === 0 && !rangeStatus?.exists && results.length === 0 && GLOBAL_CANDLE_CACHE.size === 0) {
+      showToast('⚠️ هیچ کندلی در حافظه یا دیتابیس موجود نیست. ابتدا اسکن را اجرا کنید.');
       return;
     }
 
     setIsSavingCandles(true);
 
-    // ۱. اگر دیتا در دیتابیس به صورت بافر موقت اسکن اخیر موجود است، بلافاصله آن را در Cloud SQL دائمی کن
+    // ۱. اگر دیتا در دیتابیس به صورت بافر موقت اسکن اخیر موجود است، بلافاصله آن را در PostgreSQL اختصاصی دائمی کن
     if (activeSessionDatasetId) {
       try {
         await promoteDatasetInCloudSql(activeSessionDatasetId, trimmedName).catch(() => {});
         await makeTemporaryDatasetPermanent(currentUser || 'amir', activeSessionDatasetId, trimmedName).catch(() => {});
-        showToast(`⚡ بسته کندل‌های «${trimmedName}» به صورت آنی در Cloud SQL دائمی شد (بدون نیاز به آپلود مجدد)!`);
+        showToast(`⚡ بسته کندل‌های «${trimmedName}» به صورت آنی در PostgreSQL دائمی شد (بدون نیاز به آپلود مجدد)!`);
         setIsSaveCandleModalOpen(false);
         setActiveSessionDatasetId(null);
         setIsSavingCandles(false);
@@ -1657,24 +1515,25 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       }
     }
 
-    // ۲. ذخیره‌سازی در Cloud SQL (PostgreSQL با ظرفیت و سرعت بالا)
+    // ۲. ذخیره‌سازی در PostgreSQL (با ظرفیت و سرعت بالا)
     setUploadProgress({
       currentChunk: 0,
-      totalChunks: Math.ceil(GLOBAL_CANDLE_CACHE.size / 5),
-      percent: 15,
-      statusText: 'در حال ذخیره‌سازی مستقیم در دیتابیس ابری Cloud SQL...',
+      totalChunks: Math.ceil((rangeStatus?.dataset?.symbolCount || cachedCount || 10) / 5),
+      percent: 30,
+      statusText: 'در حال ذخیره‌سازی مستقیم در پایگاه‌داده PostgreSQL...',
     });
     try {
-      // ذخیره در Cloud SQL سرور
+      // ذخیره در PostgreSQL سرور
       const sqlRes = await saveDatasetToCloudSql({
         name: trimmedName,
         userId: currentUser || 'amir',
         timeframe,
         isTemporary: false,
+        datasetId: rangeStatus?.datasetId || activeSessionDatasetId || undefined,
       });
 
       if (sqlRes.success) {
-        showToast(`✅ بسته کندل‌های «${trimmedName}» با موفقیت در دیتابیس Cloud SQL ذخیره شد!`);
+        showToast(`✅ بسته کندل‌های «${trimmedName}» با موفقیت در دیتابیس PostgreSQL ذخیره شد!`);
         setIsSaveCandleModalOpen(false);
       } else {
         // Fallback به Firestore اگر سرور بافر نداشت
@@ -1714,7 +1573,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       ]);
       if (sqlStatus) setCloudSqlStatus(sqlStatus);
 
-      // ادغام لیست‌ها با اولویت Cloud SQL
+      // ادغام لیست‌ها با اولویت دیتابیس PostgreSQL سرور اختصاصی
       const map = new Map<string, MarketCandleDatasetMetadata>();
       for (const item of firestoreList) {
         map.set(item.id, item);
@@ -1754,12 +1613,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       currentChunk: 0,
       totalChunks: dataset.chunkCount || 1,
       percent: 10,
-      statusText: 'در حال دریافت فوق‌سریع داده‌های کندل از Cloud SQL...',
+      statusText: 'در حال دریافت فوق‌سریع داده‌های کندل از سرور PostgreSQL اختصاصی...',
     });
     try {
       let entries: { pair: any; candles: any[]; timeframe: string }[] = [];
 
-      // تلاش اول: لود سریع از Cloud SQL سرور
+      // تلاش اول: لود سریع از سرور PostgreSQL اختصاصی
       const sqlRes = await loadDatasetFromCloudSql(dataset.id);
       if (sqlRes && sqlRes.success && Array.isArray(sqlRes.entries) && sqlRes.entries.length > 0) {
         entries = sqlRes.entries;
@@ -1793,7 +1652,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       }
 
       setIsLoadCandleModalOpen(false);
-      showToast(`⚡ ${entries.length} جفت‌ارز با موفقیت از Cloud SQL بازیابی شدند!`);
+      showToast(`⚡ ${entries.length} جفت‌ارز با موفقیت از سرور PostgreSQL بازیابی شدند!`);
     } catch (err) {
       console.error('Error applying candle dataset:', err);
       showToast('❌ خطا در بازیابی بسته کندل‌ها.');
@@ -2459,32 +2318,46 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   };
 
   // =========================================================================
-  // ارزیابی یک ترکیب ۸تایی روی تمام جفت‌ارزهای کش‌شده
+  // ارزیابی یک ترکیب روی تمام جفت‌ارزهای کش‌شده (تطابق ۱۰۰٪ ریاضی با اسکن دستی)
   // =========================================================================
-  const evaluateSingleCombination = (params: {
-    atrPeriod: number;
-    minCandles: number;
-    minCandlesForLongLeg: number;
-    atrMultiplier: number;
-    longLegAtrMultiplier: number;
-    maxBlueLegPercent: number;
-    maxBreakoutAtrMultiplier: number;
-    maxRiskReward: number;
-  }) => {
-    const cachedEntries = Array.from(GLOBAL_CANDLE_CACHE.values());
+  const evaluateSingleCombination = (
+    params: {
+      atrPeriod: number;
+      minCandles: number;
+      minCandlesForLongLeg: number;
+      atrMultiplier: number;
+      longLegAtrMultiplier: number;
+      maxBlueLegPercent: number;
+      maxBreakoutAtrMultiplier: number;
+      maxRiskReward: number;
+      timeStopCandles?: number;
+    },
+    overrideNoConcurrent?: boolean
+  ) => {
+    // ۱. استخراج جفت‌ارزهای یکتا از کش برای جلوگیری از شمارش مضاعف (Deduplication)
+    const allowedSet =
+      selectedAllowedSymbols && selectedAllowedSymbols.length > 0
+        ? new Set(selectedAllowedSymbols.map((s) => s.toUpperCase()))
+        : null;
+
+    const uniqueMap = new Map<string, { pair: CryptoPair; candles: CandleData[]; timeframe: string }>();
+    for (const entry of Array.from(GLOBAL_CANDLE_CACHE.values())) {
+      if (entry && entry.candles && entry.candles.length >= 50 && entry.pair?.symbol) {
+        const sym = entry.pair.symbol.toUpperCase();
+        if (allowedSet && !allowedSet.has(sym)) continue;
+        if (!entry.timeframe || entry.timeframe === timeframe) {
+          if (!uniqueMap.has(sym)) {
+            uniqueMap.set(sym, entry);
+          }
+        }
+      }
+    }
+    const cachedEntries = Array.from(uniqueMap.values());
     if (cachedEntries.length === 0) return null;
 
-    let totalTradesSum = 0;
-    let winTradesSum = 0;
-    let lossTradesSum = 0;
-    let netProfitSum = 0;
-    let grossProfitSum = 0;
-    let grossLossSum = 0;
-    let totalFeesSum = 0;
     const allTrades: StrategyTrade[] = [];
 
-    let rollingEvalCapital = capital;
-
+    // ۲. اجرای بک‌تست هر نماد با سرمایه اولیه ثابت (دقیقاً مشابه اسکن دستی سرور)
     for (const item of cachedEntries) {
       const candles = item.candles;
       const atrMetrics = calculateATR(candles, params.atrPeriod);
@@ -2503,7 +2376,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       );
 
       const tempConfig: StrategyConfig = {
-        capital: rollingEvalCapital,
+        capital, // سرمایه ثابت اولیه، بدون تغییر ترتیبی بین ارزها
         selectedStrategyId,
         riskMode,
         riskAmountFixed,
@@ -2515,7 +2388,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         maxCandlesToEnter,
         maxTradesPerLeg: 1,
         showOnChart: false,
-        noConcurrentPositions,
+        noConcurrentPositions: true, // در سطح تک‌ارز: عدم ورود به معامله جدید تا خروج پوزیشن قبلی همان ارز
+        symbol: item.pair.symbol,
+        timeStopEnabled: optTimeStopEnabled,
+        timeStopCandles: params.timeStopCandles || optTimeStopCandles || 80,
       };
 
       let res;
@@ -2533,76 +2409,185 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         res = runStrategy1Backtest(candles, points, legs, tempConfig);
       }
 
-      rollingEvalCapital = Math.max(10, parseFloat((rollingEvalCapital + res.metrics.netProfit).toFixed(2)));
-
-      totalTradesSum += res.metrics.totalTrades;
-      winTradesSum += res.metrics.winTrades;
-      lossTradesSum += res.metrics.lossTrades;
-      netProfitSum += res.metrics.netProfit;
-      grossProfitSum += res.metrics.totalProfit;
-      grossLossSum += res.metrics.totalLoss;
-      totalFeesSum += res.metrics.totalFee || 0;
-
-      const closed = res.trades.filter((t) => t.status === 'WIN' || t.status === 'LOSS');
+      const closed = (res.trades || [])
+        .filter(
+          (t: any) =>
+            t.status === 'WIN' ||
+            t.status === 'LOSS' ||
+            t.status === 'BREAKEVEN' ||
+            (t.exitPrice !== undefined && t.exitPrice > 0)
+        )
+        .map((t: any, tIdx: number) => ({
+          ...t,
+          id: `${item.pair.symbol}-${t.id || tIdx}`,
+          symbol: item.pair.symbol,
+        }));
       allTrades.push(...closed);
     }
 
-    let evaluatedTrades = allTrades;
-    if (noConcurrentPositions) {
-      // اعمال دقیق عدم محاسبه معاملات همزمان در بهینه‌ساز در سطح کل پرتفوی
-      const sortedByEntry = [...allTrades].sort((a, b) => (a.entryTime || a.timeF || 0) - (b.entryTime || b.timeF || 0));
-      const nonConcurrent: StrategyTrade[] = [];
+    // ۳. رتبه‌بندی قطعی و بدون اریب نگاه به آینده (کاملاً مطابق فیلتر معاملات همزمان اسکن دستی)
+    // اولویت ۱: زمان ورود کندل
+    // اولویت ۲: نمره/اعتبار سیگنال
+    // اولویت ۳: ترتیب الفبایی نماد
+    const sorted = [...allTrades].sort((a, b) => {
+      const eA = a.entryTime || a.timeF || 0;
+      const eB = b.entryTime || b.timeF || 0;
+      if (eA !== eB) return eA - eB;
+      const sA = (a as any).score || (a as any).confidence || 0;
+      const sB = (b as any).score || (b as any).confidence || 0;
+      if (sB !== sA) return sB - sA;
+      return ((a as any).symbol || '').localeCompare((b as any).symbol || '');
+    });
+
+    const isNoConcurrent = overrideNoConcurrent !== undefined ? overrideNoConcurrent : noConcurrentPositions;
+
+    let effectiveTrades: StrategyTrade[] = [];
+    if (!isNoConcurrent) {
+      // حالت همزمان فعال: پذیرش تمام معاملات
+      effectiveTrades = sorted;
+    } else {
+      // حالت تک‌پوزیشن پورتفوی: حذف تداخلات در کل سبد سرمایه
       let lastExitTime = 0;
-      for (const t of sortedByEntry) {
+      for (const t of sorted) {
         const eTime = t.entryTime || t.timeF || 0;
         const xTime = t.exitTime || eTime;
         if (eTime >= lastExitTime) {
-          nonConcurrent.push(t);
+          effectiveTrades.push(t);
           lastExitTime = Math.max(lastExitTime, xTime);
         }
       }
-      evaluatedTrades = nonConcurrent;
-      totalTradesSum = evaluatedTrades.length;
-      winTradesSum = evaluatedTrades.filter((t) => t.status === 'WIN').length;
-      lossTradesSum = evaluatedTrades.filter((t) => t.status === 'LOSS').length;
-      grossProfitSum = evaluatedTrades.filter((t) => t.pnl > 0).reduce((acc, t) => acc + t.pnl, 0);
-      grossLossSum = evaluatedTrades.filter((t) => t.pnl < 0).reduce((acc, t) => acc + Math.abs(t.pnl), 0);
-      netProfitSum = evaluatedTrades.reduce((acc, t) => acc + t.pnl, 0);
-      totalFeesSum = evaluatedTrades.reduce((acc, t) => acc + (t.fee || t.commission || 0), 0);
     }
 
-    evaluatedTrades.sort((a, b) => (a.exitTime || a.entryTime || 0) - (b.exitTime || b.entryTime || 0));
+    // ۴. محاسبه شاخص‌های نهایی بر مبنای معاملات موثر سبد (همانند تب اسکن دستی)
+    const totalTrades = effectiveTrades.length;
+    const winTrades = effectiveTrades.filter((t) => t.status === 'WIN').length;
+    const lossTrades = effectiveTrades.filter((t) => t.status === 'LOSS').length;
+    const grossProfitSum = effectiveTrades.filter((t) => t.pnl > 0).reduce((acc, t) => acc + t.pnl, 0);
+    const grossLossSum = effectiveTrades.filter((t) => t.pnl < 0).reduce((acc, t) => acc + Math.abs(t.pnl), 0);
+    const netProfitSum = effectiveTrades.reduce((acc, t) => acc + t.pnl, 0);
+    const totalFeesSum = effectiveTrades.reduce((acc, t) => acc + (t.fee || t.commission || 0), 0);
+
+    const winRate = totalTrades > 0 ? parseFloat(((winTrades / totalTrades) * 100).toFixed(1)) : 0;
+    const profitFactor =
+      grossLossSum > 0
+        ? parseFloat((grossProfitSum / grossLossSum).toFixed(2))
+        : grossProfitSum > 0
+        ? 99.9
+        : 0;
+    const netProfit = parseFloat(netProfitSum.toFixed(2));
+    const totalFees = parseFloat(totalFeesSum.toFixed(2));
+
+    // ۵. محاسبه دقیق درودان اوج تا افت (Peak-to-Trough Drawdown) در کل منحنی سرمایه زمانی
+    const sortedByExit = [...effectiveTrades].sort(
+      (a, b) => (a.exitTime || a.entryTime || 0) - (b.exitTime || b.entryTime || 0)
+    );
     let curEq = capital;
     let peakEq = capital;
     let maxDd = 0;
-    for (const t of evaluatedTrades) {
+    for (const t of sortedByExit) {
       curEq += t.pnl;
       if (curEq > peakEq) peakEq = curEq;
       const dd = peakEq > 0 ? ((peakEq - curEq) / peakEq) * 100 : 0;
       if (dd > maxDd) maxDd = dd;
     }
-
-    const winRate = totalTradesSum > 0 ? parseFloat(((winTradesSum / totalTradesSum) * 100).toFixed(1)) : 0;
-    const profitFactor = grossLossSum > 0 ? parseFloat((grossProfitSum / grossLossSum).toFixed(2)) : grossProfitSum > 0 ? 99.9 : 0;
-    const netProfit = parseFloat(netProfitSum.toFixed(2));
     const maxDrawdown = parseFloat(maxDd.toFixed(2));
 
     const isValid =
       maxDrawdown <= targetMaxDrawdown &&
       winRate >= targetMinWinRate &&
-      totalTradesSum >= targetMinTrades;
+      totalTrades >= targetMinTrades;
 
     return {
-      totalTrades: totalTradesSum,
-      winTrades: winTradesSum,
-      lossTrades: lossTradesSum,
+      totalTrades,
+      winTrades,
+      lossTrades,
       winRate,
       profitFactor,
       netProfit,
-      totalFees: parseFloat(totalFeesSum.toFixed(2)),
+      totalFees,
       maxDrawdown,
       isValid,
     };
+  };
+
+  // به‌روزرسانی آنی جدول ۱۰ تست برتر بهینه‌ساز هنگام تغییر حالت معاملات همزمان (تک‌پوزیشن یا همزمان)
+  useEffect(() => {
+    if (top10Trials.length > 0 && GLOBAL_CANDLE_CACHE.size > 0 && !isOptimizing) {
+      setTop10Trials((prev) => {
+        let hasChanges = false;
+        const updated = prev.map((trial) => {
+          const evalRes = evaluateSingleCombination(trial, noConcurrentPositions);
+          if (
+            evalRes &&
+            (evalRes.netProfit !== trial.netProfit ||
+              evalRes.winRate !== trial.winRate ||
+              evalRes.totalTrades !== trial.totalTrades ||
+              evalRes.maxDrawdown !== trial.maxDrawdown)
+          ) {
+            hasChanges = true;
+            const qualityScore = calculateQualityScore({
+              netProfit: evalRes.netProfit,
+              profitFactor: evalRes.profitFactor,
+              winRate: evalRes.winRate,
+              maxDrawdown: evalRes.maxDrawdown,
+              totalTrades: evalRes.totalTrades,
+              targetMaxDrawdown,
+              targetMinWinRate,
+              targetMinTrades,
+            });
+            return {
+              ...trial,
+              ...evalRes,
+              qualityScore,
+            };
+          }
+          return trial;
+        });
+        return hasChanges ? updated : prev;
+      });
+    }
+  }, [noConcurrentPositions]);
+
+  // تست و ارزیابی مستقیم و آنی پارامترهای دستی جاری در بهینه‌ساز جهت اعتبارسنجی تطابق ۱۰۰٪
+  const handleEvaluateCurrentManualConfig = () => {
+    const candidate = {
+      atrPeriod: optAtrPeriod,
+      minCandles: optMinCandles,
+      minCandlesForLongLeg: optMinCandlesLong,
+      atrMultiplier: optAtrMultiplier,
+      longLegAtrMultiplier: optLongLegAtrMult,
+      maxBlueLegPercent: optMaxBlueLegPercent,
+      maxBreakoutAtrMultiplier: optMaxBreakoutAtr,
+      maxRiskReward: optMaxRiskReward,
+      timeStopCandles: optTimeStopCandles,
+    };
+    const evalRes = evaluateSingleCombination(candidate);
+    if (!evalRes) {
+      showToast('⚠️ داده‌های کندل در حافظه کش یافت نشد. لطفاً ابتدا روی «همگام‌سازی کندل‌های بکتست» کلیک کنید.');
+      return;
+    }
+    const hash = generateConfigHash(candidate);
+    const qualityScore = calculateQualityScore({
+      netProfit: evalRes.netProfit,
+      profitFactor: evalRes.profitFactor,
+      winRate: evalRes.winRate,
+      maxDrawdown: evalRes.maxDrawdown,
+      totalTrades: evalRes.totalTrades,
+      targetMaxDrawdown,
+      targetMinWinRate,
+      targetMinTrades,
+    });
+    const trial: OptimizationTrial = {
+      id: totalEvaluatedCount + 1,
+      hash,
+      timestamp: new Date().toLocaleTimeString('fa-IR'),
+      qualityScore,
+      ...candidate,
+      ...evalRes,
+    };
+    setTop10Trials((prev) => updateTop10List(prev, trial));
+    setTotalEvaluatedCount((prev) => prev + 1);
+    showToast(`🎯 کانفیگ دستی جاری در بهینه‌ساز آزمایش شد: سود ${evalRes.netProfit >= 0 ? '+' : ''}${evalRes.netProfit} USDT | وین‌ریت ${evalRes.winRate}% | درودان ${evalRes.maxDrawdown}%`);
   };
 
   /**
@@ -2621,6 +2606,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     maxBlueLegPercent: number;
     maxBreakoutAtrMultiplier: number;
     maxRiskReward: number;
+    timeStopCandles: number;
   } | null => {
     const sampleParam = (r: ParameterRange, isLocked: boolean, lockedVal: number) => {
       if (isLocked) return lockedVal;
@@ -2661,6 +2647,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         maxBlueLegPercent: sampleParam(ranges.maxBlueLegPercent, lockMaxBlueLegPercent, optMaxBlueLegPercent),
         maxBreakoutAtrMultiplier: sampleParam(ranges.maxBreakoutAtrMultiplier, lockMaxBreakoutAtr, optMaxBreakoutAtr),
         maxRiskReward: sampleParam(ranges.maxRiskReward, lockMaxRiskReward, optMaxRiskReward),
+        timeStopCandles: sampleParam(ranges.timeStopCandles, lockTimeStopCandles, optTimeStopCandles),
       };
 
       const hash = generateConfigHash(candidate);
@@ -2697,8 +2684,14 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   // حلقه پیوسته بهینه‌سازی (اجرای خودکار تا ۱۵ دقیقه یا توقف کاربر)
   const handleStartAutoOptimization = async () => {
     if (GLOBAL_CANDLE_CACHE.size === 0) {
-      showToast('در حال دانلود اولیه داده‌های بازار برای کش...');
-      await handleStartScan(false);
+      if (rangeStatus?.exists) {
+        showToast('در حال همگام‌سازی کندل‌های بکتست از دیتابیس...');
+        await syncRangeCandlesToMemory(false);
+      }
+      if (GLOBAL_CANDLE_CACHE.size === 0) {
+        showToast('در حال دانلود اولیه داده‌های بازار برای کش...');
+        await handleStartScan(false);
+      }
     }
 
     setIsOptimizing(true);
@@ -3176,6 +3169,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setOptMaxBreakoutAtr={setOptMaxBreakoutAtr}
             optMaxRiskReward={optMaxRiskReward}
             setOptMaxRiskReward={setOptMaxRiskReward}
+            optTimeStopEnabled={optTimeStopEnabled}
+            setOptTimeStopEnabled={setOptTimeStopEnabled}
+            optTimeStopCandles={optTimeStopCandles}
+            setOptTimeStopCandles={setOptTimeStopCandles}
             onUpdateZigZagSettings={onUpdateZigZagSettings}
             zigzagSettings={zigzagSettings}
             scanWorkersCount={scanWorkersCount}
@@ -3185,6 +3182,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             handleClearCandleCache={handleClearCandleCache}
             handleStopScan={handleStopScan}
             cachedCount={cachedCount}
+            rangeStatus={rangeStatus}
+            isCheckingRange={isCheckingRange}
             handleOpenSaveConfigModal={handleOpenSaveConfigModal}
             handleOpenLoadConfigModal={handleOpenLoadConfigModal}
             handleOpenSaveCandleModal={handleOpenSaveCandleModal}
@@ -3308,6 +3307,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setOptMaxBreakoutAtr={setOptMaxBreakoutAtr}
             optMaxRiskReward={optMaxRiskReward}
             setOptMaxRiskReward={setOptMaxRiskReward}
+            lockTimeStopCandles={lockTimeStopCandles}
+            setLockTimeStopCandles={setLockTimeStopCandles}
+            optTimeStopCandles={optTimeStopCandles}
+            setOptTimeStopCandles={setOptTimeStopCandles}
+            onSyncCandles={() => syncRangeCandlesToMemory(true)}
+            onEvaluateCurrentManualConfig={handleEvaluateCurrentManualConfig}
           />
         )}
 
@@ -3441,6 +3446,120 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           onApply={handleApplyTimeRange}
           showToast={showToast}
         />
+
+        {/* ========================================================= */}
+        {/* MODAL: RESCAN CHOICE (USE POSTGRESQL DATA OR REDOWNLOAD) */}
+        {/* ========================================================= */}
+        {isRescanPromptOpen && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+            <div className="bg-[#101622] border border-[#233147] rounded-2xl p-6 max-w-lg w-full shadow-2xl text-right animate-in fade-in zoom-in-95 duration-150">
+              <div className="flex items-center gap-3 mb-4 text-amber-400">
+                <Database className="w-6 h-6 shrink-0" />
+                <h3 className="text-base font-extrabold text-white">
+                  داده‌های این بازه در دیتابیس PostgreSQL موجود است
+                </h3>
+              </div>
+
+              <div className="bg-[#172030] p-4 rounded-xl border border-[#2b3a52] text-xs text-gray-300 space-y-2 mb-5">
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-400">بازه زمانی:</span>
+                  <span className="text-amber-300 font-bold font-mono">{timeRangeLabel}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-400">تایم‌فریم و صرافی:</span>
+                  <span className="text-cyan-300 font-bold font-mono">{timeframe} | {selectedExchange.toUpperCase()}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-400">داده‌های ذخیره‌شده:</span>
+                  <span className="text-emerald-400 font-bold font-mono">
+                    {rangeStatus?.dataset?.symbolCount || cachedCount} نماد ({rangeStatus?.dataset?.totalCandles?.toLocaleString() || 0} کندل - {rangeStatus?.dataset?.dataSizeFormatted || ''})
+                  </span>
+                </div>
+                <p className="pt-2 text-gray-300 text-[11px] leading-relaxed border-t border-[#2b3a52]">
+                  آیا می‌خواهید از داده‌های ذخیره‌شده در PostgreSQL برای اجرای سریع و بدون دانلود استفاده کنید یا داده‌ها دوباره از صرافی دانلود و در این بازه جایگزین شوند؟
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => handleStartScan(false)}
+                  className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-black font-extrabold text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 cursor-pointer transition-all"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  <span>⚡ استفاده از داده‌های ذخیره‌شده PostgreSQL (سریع و بدون دانلود مجدد)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleStartScan(true)}
+                  className="w-full py-2.5 px-4 rounded-xl bg-[#1e293b] hover:bg-[#2b3952] text-cyan-300 border border-cyan-500/30 text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-all"
+                >
+                  <Download className="w-4 h-4 text-cyan-400" />
+                  <span>🔄 دانلود مجدد کامل از صرافی و جایگزینی در دیتابیس</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsRescanPromptOpen(false)}
+                  className="w-full py-2 px-4 rounded-xl bg-transparent hover:bg-gray-800 text-gray-400 text-xs font-bold cursor-pointer transition-all"
+                >
+                  انصراف
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* MODAL: DELETE ONLY CURRENT TIME RANGE FROM POSTGRESQL */}
+        {/* ========================================================= */}
+        {isDeleteRangePromptOpen && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+            <div className="bg-[#101622] border border-rose-500/40 rounded-2xl p-6 max-w-md w-full shadow-2xl text-right animate-in fade-in zoom-in-95 duration-150">
+              <div className="flex items-center gap-3 mb-4 text-rose-400">
+                <AlertTriangle className="w-6 h-6 shrink-0" />
+                <h3 className="text-base font-extrabold text-white">
+                  حذف داده‌های این بازه از دیتابیس PostgreSQL
+                </h3>
+              </div>
+
+              <div className="bg-[#1c151e] p-4 rounded-xl border border-rose-500/30 text-xs text-gray-300 space-y-2 mb-5">
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-400">بازه زمانی جاری:</span>
+                  <span className="text-amber-300 font-bold font-mono">{timeRangeLabel}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-400">تایم‌فریم و صرافی:</span>
+                  <span className="text-cyan-300 font-bold font-mono">{timeframe} | {selectedExchange.toUpperCase()}</span>
+                </div>
+                <p className="pt-2 text-rose-300 text-[11px] leading-relaxed border-t border-rose-500/20">
+                  ⚠️ آیا اطمینان دارید که می‌خواهید کندل‌ها و نتایج <strong className="underline">فقط برای همین بازه زمانی</strong> از پایگاه‌داده <span className="font-mono text-white">crypto_strategy_lab</span> حذف شوند؟
+                </p>
+                <p className="text-emerald-400 text-[10px] flex items-center gap-1 font-bold pt-1">
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                  <span>داده‌های سایر بازه‌های زمانی بدون تغییر در دیتابیس باقی می‌مانند.</span>
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsDeleteRangePromptOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-bold cursor-pointer transition-all"
+                >
+                  انصراف
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmDeleteCurrentRange}
+                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-extrabold text-xs flex items-center gap-2 shadow-lg shadow-rose-600/30 cursor-pointer transition-all"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>بله، پاکسازی فقط این بازه از دیتابیس</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -9,7 +9,10 @@
     "lint": "tsc --noEmit",
     "test": "tsx tests/accountingRegression.ts",
     "preview": "vite preview",
-    "start": "node server.ts"
+    "start": "node server.ts",
+    "db:push": "drizzle-kit push --config=src/db/drizzle.config.ts",
+    "db:generate": "drizzle-kit generate --config=src/db/drizzle.config.ts",
+    "db:init": "tsx scripts/init-db.ts"
   },
   "dependencies": {
     "@google/genai": "^2.24.0",

@@ -56,8 +56,27 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
   );
   const [maxCandlesInput, setMaxCandlesInput] = useState<string>(String(config.maxCandlesToEnter));
   const [maxRRInput, setMaxRRInput] = useState<string>(String(config.maxRiskReward || 2));
+  const [timeStopCandlesInput, setTimeStopCandlesInput] = useState<string>(
+    String(config.timeStopCandles ?? 80)
+  );
+  const [timeStopEnabled, setTimeStopEnabled] = useState<boolean>(
+    config.timeStopEnabled !== false
+  );
 
   if (!isOpen) return null;
+
+  const handleTimeStopChange = (val: string) => {
+    setTimeStopCandlesInput(val);
+    const num = parseInt(val, 10);
+    if (!isNaN(num) && num > 0) {
+      onUpdateConfig({ ...config, timeStopCandles: num });
+    }
+  };
+
+  const handleToggleTimeStop = (enabled: boolean) => {
+    setTimeStopEnabled(enabled);
+    onUpdateConfig({ ...config, timeStopEnabled: enabled });
+  };
 
   const handleCapitalChange = (val: string) => {
     setCapitalInput(val);
@@ -247,7 +266,7 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
             </div>
 
             {/* Strategy Inputs Side-by-Side */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
               {/* Risk % */}
               <div className="bg-[#0e121a] p-2 rounded-lg border border-[#252f42]">
                 <div className="text-[10px] text-gray-300 font-semibold mb-1 flex items-center justify-between">
@@ -319,6 +338,37 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                   className="w-full py-1 text-xs font-mono font-bold text-center text-amber-400 bg-[#161c28] border border-[#2b364a] rounded focus:outline-none focus:border-amber-400"
                   placeholder="0.06"
                   title="کارمزد خروج از پوزیشن (پیش‌فرض ۰.۰۶٪)"
+                />
+              </div>
+
+              {/* Time-Stop (خروج زمانی بر مبنای تعداد کندل) */}
+              <div className="bg-[#0e121a] p-2 rounded-lg border border-cyan-500/30">
+                <div className="text-[10px] text-cyan-300 font-semibold mb-1 flex items-center justify-between">
+                  <span className="flex items-center gap-1">
+                    <Clock className="w-3 h-3 text-cyan-400" />
+                    <span>Time-Stop</span>
+                  </span>
+                  <label className="flex items-center gap-1 cursor-pointer" title="فعال/غیرفعال‌سازی حد زمان معامله">
+                    <input
+                      type="checkbox"
+                      checked={timeStopEnabled}
+                      onChange={(e) => handleToggleTimeStop(e.target.checked)}
+                      className="w-3 h-3 accent-cyan-400 rounded cursor-pointer"
+                    />
+                    <span className="text-cyan-400 font-mono text-[9px]">کندل</span>
+                  </label>
+                </div>
+                <input
+                  type="number"
+                  min={5}
+                  max={500}
+                  step={5}
+                  value={timeStopCandlesInput}
+                  onChange={(e) => handleTimeStopChange(e.target.value)}
+                  disabled={!timeStopEnabled}
+                  className="w-full py-1 text-xs font-mono font-bold text-center text-cyan-300 bg-[#161c28] border border-[#2b364a] rounded focus:outline-none focus:border-cyan-400 disabled:opacity-40"
+                  placeholder="80"
+                  title="حداکثر تعداد کندل ماندن در معامله (چه در سود چه در ضرر بسته می‌شود)"
                 />
               </div>
 

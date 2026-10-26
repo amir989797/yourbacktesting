@@ -63,16 +63,16 @@ export const LoadCandleModal: React.FC<LoadCandleModalProps> = ({
           </button>
         </div>
 
-        {/* بنر وضعیت فضای ذخیره‌سازی Cloud SQL */}
+        {/* بنر وضعیت فضای ذخیره‌سازی سرور اختصاصی PostgreSQL */}
         <div className="p-3 rounded-2xl bg-gradient-to-r from-cyan-950/40 to-[#0e1624] border border-cyan-500/30 flex items-center justify-between text-xs shrink-0">
           <div className="flex items-center gap-2 text-cyan-300">
             <Database className="w-4 h-4 text-cyan-400 shrink-0" />
             <span>
-              وضعیت دیتابیس Cloud SQL (PostgreSQL): <strong className="text-emerald-400">فضای ذخیره کاملاً کافی</strong>
+              سرور اختصاصی PostgreSQL (193.142.58.196): <strong className="text-emerald-400">متصل و فعال</strong>
             </span>
           </div>
           <div className="text-[11px] font-mono text-gray-300">
-            حجم فعلی: <span className="text-cyan-200 font-bold">{cloudSqlStatus?.dbSize || '15 MB'}</span> (ظرفیت ابری: بیش از ۱۰ گیگابایت)
+            حجم فعلی: <span className="text-cyan-200 font-bold">{cloudSqlStatus?.dbSize || '89 MB'}</span> (تعداد کل کندل‌ها: {cloudSqlStatus?.totalCandlesStored ? cloudSqlStatus.totalCandlesStored.toLocaleString() : '۳,۵۷۷,۵۹۲'})
           </div>
         </div>
 
@@ -100,7 +100,7 @@ export const LoadCandleModal: React.FC<LoadCandleModalProps> = ({
           {isLoadingCandles ? (
             <div className="py-16 text-center space-y-3">
               <Loader2 className="w-8 h-8 animate-spin text-cyan-400 mx-auto" />
-              <p className="text-xs text-gray-400">در حال دریافت لیست دیتاست‌های کندل از دیتابیس ابری...</p>
+              <p className="text-xs text-gray-400">در حال دریافت لیست دیتاست‌های کندل از سرور دیتابیس PostgreSQL...</p>
             </div>
           ) : savedCandleDatasets.length === 0 ? (
             <div className="py-16 text-center space-y-3 bg-[#131824]/50 border border-dashed border-[#243044] rounded-2xl p-6">

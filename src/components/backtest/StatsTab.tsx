@@ -1262,17 +1262,23 @@ export const StatsTab: React.FC<StatsTabProps> = ({
                       </td>
                     </tr>
 
-                    {/* 6. Sortino */}
+                    {/* 6. Sortino Ratio (Per-Trade / Annualized) */}
                     <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
                       <td className="py-3 px-4 font-sans font-bold text-gray-200">
-                        <div>نسبت سورتینو برون‌یابی‌شده</div>
-                        <div className="text-[10px] text-gray-400 font-mono font-normal">Sortino (Annualized estimate)</div>
+                        <div>نسبت سورتینو (به ازای معامله / سالانه‌شده)</div>
+                        <div className="text-[10px] text-gray-400 font-mono font-normal">Sortino Ratio (Per-Trade / Annualized)</div>
                       </td>
                       <td className="py-3 px-4 font-bold">
-                        <span className={baselineReconstruction.sortinoRatio >= 2.0 ? 'text-emerald-400' : baselineReconstruction.sortinoRatio >= 1.0 ? 'text-cyan-300' : 'text-amber-300'}>
-                          {baselineReconstruction.sortinoRatio.toFixed(2)}
-                        </span>
-                        <span className="text-gray-400 text-[10px] font-sans mr-1.5">(تخمینی سالانه — تمرکز ریسک بر نوسانات منفی)</span>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-cyan-300">
+                            Per-Trade: <strong className={(baselineReconstruction.sortinoMetrics?.perTradeSortino ?? 0) >= 0.5 ? 'text-emerald-400' : 'text-amber-300'}>{(baselineReconstruction.sortinoMetrics?.perTradeSortino ?? baselineReconstruction.sortinoRatio).toFixed(2)}</strong>
+                          </span>
+                          <span className="text-gray-500">|</span>
+                          <span className="font-mono text-cyan-300">
+                            Annualized: <strong className={(baselineReconstruction.sortinoMetrics?.annualizedDailySortino ?? 0) >= 2.0 ? 'text-emerald-400' : (baselineReconstruction.sortinoMetrics?.annualizedDailySortino ?? 0) >= 1.0 ? 'text-cyan-300' : 'text-amber-300'}>{(baselineReconstruction.sortinoMetrics?.annualizedDailySortino ?? baselineReconstruction.sortinoRatio).toFixed(2)}</strong>
+                          </span>
+                          <span className="text-gray-400 text-[10px] font-sans mr-1">(انحراف نزولی با Rf=0)</span>
+                        </div>
                       </td>
                     </tr>
 
@@ -2194,8 +2200,12 @@ export const StatsTab: React.FC<StatsTabProps> = ({
                     ${baselineReconstruction.executionCostAudit.sumGrossTradePnl.toFixed(2)} - ${baselineReconstruction.executionCostAudit.totalTradingFees.toFixed(2)} - ${baselineReconstruction.executionCostAudit.netFunding.toFixed(2)} = <strong className={baselineReconstruction.executionCostAudit.finalAccountNetProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}>${baselineReconstruction.executionCostAudit.finalAccountNetProfit.toFixed(2)} USDT</strong>
                   </div>
                 </div>
-                <span className="px-3 py-1 rounded-xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold text-xs">
-                  ✅ انطباق کامل با تلرانس اعشاری ۰.۰۵$
+                <span className={`px-3 py-1 rounded-xl font-bold text-xs border ${
+                  baselineReconstruction.executionCostAudit.reconciliationPassed
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                    : 'bg-rose-500/20 text-rose-300 border-rose-500/30'
+                }`}>
+                  {baselineReconstruction.executionCostAudit.reconciliationPassed ? '✅ انطباق کامل با تلرانس اعشاری ۰.۱۰$' : '❌ مغایرت حسابداری'}
                 </span>
               </div>
 
@@ -2541,6 +2551,58 @@ export const StatsTab: React.FC<StatsTabProps> = ({
                 </div>
               </div>
 
+              {/* کارت‌های پایداری رگرسیون خطی و شاخص اولسر / نسبت مارتین */}
+              <div className="p-3.5 bg-[#101622] border-t border-[#1f283a] text-xs">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 font-mono">
+                  {/* Equity Curve Stability (R^2) */}
+                  <div className="p-3 rounded-xl bg-[#141b27] border border-[#222c3d] flex flex-col justify-between">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="font-sans font-bold text-gray-200">
+                        📈 پایداری منحنی سرمایه (Equity Curve Stability R²):
+                      </span>
+                      <span className={`px-2 py-0.5 rounded-full font-bold text-[10px] border ${
+                        (baselineReconstruction.equityCurveStability?.status || (baselineReconstruction.equityCurveR2 >= 0.70 ? 'PASS' : 'WARN')) === 'PASS'
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                          : 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                      }`}>
+                        {(baselineReconstruction.equityCurveStability?.status || (baselineReconstruction.equityCurveR2 >= 0.70 ? 'PASS' : 'WARN')) === 'PASS' ? '✅ PASS (خطی و یکنواخت)' : '⚠️ WARN (کمتر از ۰.۷۰)'}
+                      </span>
+                    </div>
+                    <div className="text-gray-300 text-xs">
+                      ضریب تعیین (R²): <strong className="text-cyan-300">{(baselineReconstruction.equityCurveStability?.rSquared ?? baselineReconstruction.equityCurveR2 ?? 0).toFixed(2)}</strong> ({(baselineReconstruction.equityCurveStability?.rSquaredPercent ?? ((baselineReconstruction.equityCurveR2 ?? 0) * 100)).toFixed(2)}%)
+                    </div>
+                    <div className="text-gray-400 text-[11px] mt-0.5">
+                      شیب رگرسیون خطی OLS: <strong className={(baselineReconstruction.equityCurveStability?.slopePerTrade ?? baselineReconstruction.equityCurveSlope ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                        {(baselineReconstruction.equityCurveStability?.slopePerTrade ?? baselineReconstruction.equityCurveSlope ?? 0) >= 0 ? '+' : ''}${(baselineReconstruction.equityCurveStability?.slopePerTrade ?? baselineReconstruction.equityCurveSlope ?? 0).toFixed(2)} USDT به ازای هر معامله
+                      </strong>
+                    </div>
+                  </div>
+
+                  {/* Ulcer Index & Martin Ratio */}
+                  <div className="p-3 rounded-xl bg-[#141b27] border border-[#222c3d] flex flex-col justify-between">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="font-sans font-bold text-gray-200">
+                        🩹 شاخص زخم اولسر و نسبت مارتین (UI & UPI):
+                      </span>
+                      <span className="text-[10px] text-gray-400 font-sans">
+                        استرس عمق و مدت درودان
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-gray-300">
+                        شاخص اولسر (UI): <strong className="text-amber-400">{(baselineReconstruction.ulcerIndexAndMartinRatio?.ulcerIndex ?? baselineReconstruction.ulcerIndex ?? 0).toFixed(2)}%</strong>
+                      </span>
+                      <span className="text-gray-300">
+                        نسبت مارتین (UPI): <strong className={(baselineReconstruction.ulcerIndexAndMartinRatio?.martinRatio ?? baselineReconstruction.martinRatio ?? 0) >= 2.0 ? 'text-emerald-400' : 'text-cyan-300'}>{(baselineReconstruction.ulcerIndexAndMartinRatio?.martinRatio ?? baselineReconstruction.martinRatio ?? 0).toFixed(2)}</strong>
+                      </span>
+                    </div>
+                    <div className="text-gray-400 text-[11px] mt-0.5 font-sans">
+                      UI: {(baselineReconstruction.ulcerIndexAndMartinRatio?.ulcerIndex ?? baselineReconstruction.ulcerIndex ?? 0).toFixed(2)}% | Martin Ratio: {(baselineReconstruction.ulcerIndexAndMartinRatio?.martinRatio ?? baselineReconstruction.martinRatio ?? 0).toFixed(2)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               {/* کارت تحلیل اصطکاک تجربی کارمزدها (Empirical Fee Drag) */}
               <div className="p-3.5 bg-[#121824] border-t border-[#1f283a] text-xs">
                 <div className="font-bold text-amber-300 mb-2 font-sans">
@@ -2590,7 +2652,7 @@ export const StatsTab: React.FC<StatsTabProps> = ({
                 </div>
               </div>
 
-              <div className="p-4 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 text-xs font-mono">
+              <div className="p-4 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 text-xs font-mono">
                 <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
                   <div className="text-[10px] text-gray-400 font-sans">میانگین بازده روزانه:</div>
                   <div className="text-sm font-bold text-cyan-300">{baselineReconstruction.dailyRiskDistributionAudit.meanDailyReturn.toFixed(2)}%</div>
@@ -2604,6 +2666,17 @@ export const StatsTab: React.FC<StatsTabProps> = ({
                   <div className="text-sm font-bold text-amber-300">{baselineReconstruction.dailyRiskDistributionAudit.stdDevDailyReturn.toFixed(2)}%</div>
                 </div>
                 <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">انحراف نزولی روزانه:</div>
+                  <div className="text-sm font-bold text-amber-400">{(baselineReconstruction.sortinoMetrics?.dailyDownsideDev ?? baselineReconstruction.dailyRiskDistributionAudit.downsideDeviation ?? 0).toFixed(2)}%</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
+                  <div className="text-[10px] text-gray-400 font-sans">سورتینو روزانه (سالانه):</div>
+                  <div className="text-sm font-bold text-cyan-300">
+                    {(baselineReconstruction.sortinoMetrics?.dailySortino ?? baselineReconstruction.dailyRiskDistributionAudit.dailySortino ?? 0).toFixed(2)}
+                    <span className="text-[10px] text-gray-400 mr-1">({(baselineReconstruction.sortinoMetrics?.annualizedDailySortino ?? baselineReconstruction.dailyRiskDistributionAudit.annualizedSortino ?? 0).toFixed(2)})</span>
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
                   <div className="text-[10px] text-gray-400 font-sans">ارزش در معرض ریسک (VaR 95%):</div>
                   <div className="text-sm font-bold text-amber-400">{baselineReconstruction.dailyRiskDistributionAudit.var95.toFixed(2)}% (-${((capital * baselineReconstruction.dailyRiskDistributionAudit.var95) / 100).toFixed(2)})</div>
                 </div>
@@ -2614,6 +2687,27 @@ export const StatsTab: React.FC<StatsTabProps> = ({
                 <div className="p-2.5 rounded-xl bg-[#141b27] border border-[#222c3d]">
                   <div className="text-[10px] text-gray-400 font-sans">کسری موردانتظار (CVaR 99%):</div>
                   <div className="text-sm font-bold text-rose-500">{baselineReconstruction.dailyRiskDistributionAudit.cvar99.toFixed(2)}% (-${((capital * baselineReconstruction.dailyRiskDistributionAudit.cvar99) / 100).toFixed(2)})</div>
+                </div>
+              </div>
+
+              {/* بخش تکمیلی انحراف معیار نزولی روزانه و نسبت سورتینو */}
+              <div className="px-4 pb-3.5 pt-0 text-xs font-mono">
+                <div className="p-2.5 rounded-xl bg-[#111724] border border-[#1f283a] flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="font-sans font-bold text-gray-200">📉 انحراف معیار نزولی روزانه و سورتینو:</span>
+                    <span className="text-gray-300">
+                      Downside Dev: <strong className="text-amber-400">{(baselineReconstruction.sortinoMetrics?.dailyDownsideDev ?? 0).toFixed(2)}%</strong>
+                    </span>
+                    <span className="text-gray-500">|</span>
+                    <span className="text-gray-300">
+                      Daily Sortino: <strong className="text-cyan-300">{(baselineReconstruction.sortinoMetrics?.dailySortino ?? 0).toFixed(2)}</strong>
+                    </span>
+                    <span className="text-gray-500">|</span>
+                    <span className="text-gray-300">
+                      Annualized Sortino (× √365): <strong className={(baselineReconstruction.sortinoMetrics?.annualizedDailySortino ?? 0) >= 2.0 ? 'text-emerald-400' : 'text-cyan-300'}>{(baselineReconstruction.sortinoMetrics?.annualizedDailySortino ?? 0).toFixed(2)}</strong>
+                    </span>
+                  </div>
+                  <span className="text-gray-400 text-[10px] font-sans">محاسبه بر کلیه روزهای تقویمی با بازده هدف صفر (Rf=0)</span>
                 </div>
               </div>
             </div>

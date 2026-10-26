@@ -9,6 +9,7 @@ import {
   Square,
   RefreshCw,
   Trash2,
+  Database,
   Save,
   FolderOpen,
   CloudUpload,
@@ -81,6 +82,10 @@ export interface ManualBacktestTabProps {
   setOptMaxBreakoutAtr: (val: number) => void;
   optMaxRiskReward: number;
   setOptMaxRiskReward: (val: number) => void;
+  optTimeStopEnabled: boolean;
+  setOptTimeStopEnabled: (val: boolean) => void;
+  optTimeStopCandles: number;
+  setOptTimeStopCandles: (val: number) => void;
   onUpdateZigZagSettings?: (settings: Partial<ZigZagSettings>) => void;
   zigzagSettings?: ZigZagSettings;
   scanWorkersCount: number;
@@ -132,12 +137,16 @@ export interface ManualBacktestTabProps {
   hoveredEquityPoint: any;
   setHoveredEquityPoint: (val: any) => void;
   isChartDragging: boolean;
+  rangeStatus?: any;
+  isCheckingRange?: boolean;
 }
 
 export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
   selectedStrategyId,
   setSelectedStrategyId,
   isScanning,
+  rangeStatus,
+  isCheckingRange,
   selectedAllowedSymbols = [],
   onOpenAllowedPairsModal,
   onOpenTimeRangeModal,
@@ -182,6 +191,10 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
   setOptMaxBreakoutAtr,
   optMaxRiskReward,
   setOptMaxRiskReward,
+  optTimeStopEnabled,
+  setOptTimeStopEnabled,
+  optTimeStopCandles,
+  setOptTimeStopCandles,
   onUpdateZigZagSettings,
   zigzagSettings,
   scanWorkersCount,
@@ -426,6 +439,32 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-emerald-400 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
                     />
                   </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[10px] font-semibold text-cyan-300">Time-Stop:</label>
+                      <label className="flex items-center gap-1 cursor-pointer" title="فعال/غیرفعال‌سازی حد زمان معامله">
+                        <input
+                          type="checkbox"
+                          checked={optTimeStopEnabled}
+                          onChange={(e) => setOptTimeStopEnabled(e.target.checked)}
+                          disabled={isScanning}
+                          className="w-3 h-3 accent-cyan-400 rounded cursor-pointer"
+                        />
+                        <span className="text-[9px] text-cyan-400 font-mono">کندل</span>
+                      </label>
+                    </div>
+                    <input
+                      type="number"
+                      min={5}
+                      max={500}
+                      step={5}
+                      value={optTimeStopCandles}
+                      onChange={(e) => setOptTimeStopCandles(parseInt(e.target.value, 10) || 80)}
+                      disabled={isScanning || !optTimeStopEnabled}
+                      className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-cyan-300 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
+                      title="حداکثر تعداد کندل ماندن در معامله (خروج زمانی چه در سود چه در ضرر)"
+                    />
+                  </div>
                 </div>
 
                 {/* چک‌باکس عدم محاسبه معاملات همزمان در اسکن دستی */}
@@ -585,12 +624,31 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
               </div>
 
               <div className="flex flex-wrap items-center justify-between gap-3 pt-0.5">
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* بج وضعیت ذخیره در PostgreSQL */}
+                  {rangeStatus?.exists ? (
+                    <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-950/40 border border-emerald-500/40 rounded-xl text-xs shadow-inner">
+                      <Database className="w-3.5 h-3.5 text-emerald-400" />
+                      <span className="text-emerald-300 font-bold">دیتابیس PostgreSQL:</span>
+                      <span className="text-white font-mono font-bold">
+                        {rangeStatus.dataset?.symbolCount || cachedCount} نماد ({rangeStatus.dataset?.totalCandles?.toLocaleString() || 0} کندل)
+                      </span>
+                      {rangeStatus.dataset?.dataSizeFormatted && (
+                        <span className="text-emerald-400 font-mono text-[11px]">({rangeStatus.dataset.dataSizeFormatted})</span>
+                      )}
+                    </div>
+                  ) : isCheckingRange ? (
+                    <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-[#121824] border border-[#233044] rounded-xl text-xs">
+                      <Loader2 className="w-3.5 h-3.5 text-cyan-400 animate-spin" />
+                      <span className="text-gray-400 text-[11px]">بررسی دیتابیس...</span>
+                    </div>
+                  ) : null}
+
                   {!isScanning ? (
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => handleStartScan(false)}
+                        onClick={() => handleStartScan(rangeStatus?.exists ? undefined : false)}
                         className="px-5 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-extrabold text-xs flex items-center gap-2 shadow-lg shadow-amber-500/25 transition-all cursor-pointer"
                       >
                         <Play className="w-4 h-4 fill-current" />
@@ -599,22 +657,22 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                         </span>
                       </button>
 
-                      {cachedCount > 0 && (
+                      {(cachedCount > 0 || rangeStatus?.exists) && (
                         <div className="flex items-center gap-1.5">
                           <button
                             type="button"
                             onClick={handleRerunOnCachedData}
                             className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500/20 to-teal-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-md"
-                            title="اجرای مجدد بک‌تست با پارامترهای جدید بدون نیاز به دانلود مجدد"
+                            title="اجرای مجدد بک‌تست با استفاده از داده‌های ذخیره‌شده در PostgreSQL"
                           >
                             <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />
-                            <span>⚡ اجرای سریع با پارامترهای جدید ({cachedCount} ارز دانلودشده)</span>
+                            <span>⚡ اجرای سریع با داده‌های دیتابیس ({rangeStatus?.dataset?.symbolCount || cachedCount} ارز)</span>
                           </button>
                           <button
                             type="button"
                             onClick={handleClearCandleCache}
                             className="p-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-bold flex items-center gap-1 cursor-pointer transition-all"
-                            title="پاک کردن حافظه کش کندل‌ها"
+                            title="پاک کردن داده‌های بازه زمانی فعلی از دیتابیس PostgreSQL"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>

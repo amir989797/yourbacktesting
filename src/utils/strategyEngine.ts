@@ -157,6 +157,7 @@ export function runStrategy1Backtest(
           let exitPrice: number | undefined;
           let pnl = 0;
           let pnlPercent = 0;
+          let reason: string | undefined = undefined;
 
           // ریسک پویا: در حالت درصد بر اساس موجودی شناور حساب و در حالت ثابت همیشه مقدار معین دلاری
           const riskBudget =
@@ -269,6 +270,25 @@ export function runStrategy1Backtest(
                 break;
               }
             }
+
+            // خروج زمانی (Time-Stop): حداکثر تعداد کندل مجاز در معامله (چه در سود چه در ضرر)
+            const timeStopActive = config.timeStopEnabled !== false && typeof config.timeStopCandles === 'number' && config.timeStopCandles > 0;
+            const candlesInTrade = k - entryCandleIdx + 1;
+            if (status === 'ACTIVE' && timeStopActive && candlesInTrade >= config.timeStopCandles) {
+              exitPrice = ck.close;
+              exitTime = ck.time;
+              exitCandleIdx = k;
+              const exitFee = (positionSize * exitPrice) * exitFeeRate;
+              const tradeFee = entryFee + exitFee;
+              const grossTradePnl = direction === 'BUY'
+                ? positionSize * (exitPrice - entryPrice)
+                : positionSize * (entryPrice - exitPrice);
+              pnl = grossTradePnl - tradeFee;
+              pnlPercent = (pnl / rollingCapital) * 100;
+              status = pnl > 0.0001 ? 'WIN' : (pnl < -0.0001 ? 'LOSS' : 'BREAKEVEN');
+              reason = 'TIME_STOP';
+              break;
+            }
           }
 
           // If neither TP nor SL hit up to the latest candle
@@ -337,6 +357,7 @@ export function runStrategy1Backtest(
             capitalAfterTrade: rollingCapital,
             entryNotional: parseFloat((positionSize * entryPrice).toFixed(2)),
             exitNotional: parseFloat((positionSize * actualExitPrice).toFixed(2)),
+            reason: reason || (status === 'WIN' ? 'Take Profit' : status === 'LOSS' ? 'Stop Loss' : 'Active'),
           });
 
           lastTradeExitCandleIdx = Math.max(
@@ -513,6 +534,7 @@ export function runStrategy2Backtest(
               let exitPrice: number | undefined;
               let pnl = 0;
               let pnlPercent = 0;
+              let reason: string | undefined = undefined;
 
               for (let k = entryCandleIdx; k < candles.length; k++) {
                 const ck = candles[k];
@@ -551,6 +573,23 @@ export function runStrategy2Backtest(
                   const grossTradePnl = positionSize * (entryPrice - exitPrice);
                   pnl = grossTradePnl - tradeFee;
                   pnlPercent = (pnl / config.capital) * 100;
+                  break;
+                }
+
+                // خروج زمانی (Time-Stop): حداکثر زمان ماندن در پوزیشن (تعداد کندل)
+                const timeStopActive = config.timeStopEnabled !== false && typeof config.timeStopCandles === 'number' && config.timeStopCandles > 0;
+                const candlesInTrade = k - entryCandleIdx + 1;
+                if (status === 'ACTIVE' && timeStopActive && candlesInTrade >= config.timeStopCandles) {
+                  exitPrice = ck.close;
+                  exitTime = ck.time;
+                  exitCandleIdx = k;
+                  const exitFee = (positionSize * exitPrice) * exitFeeRate;
+                  const tradeFee = entryFee + exitFee;
+                  const grossTradePnl = positionSize * (entryPrice - exitPrice);
+                  pnl = grossTradePnl - tradeFee;
+                  pnlPercent = (pnl / config.capital) * 100;
+                  status = pnl > 0.0001 ? 'WIN' : (pnl < -0.0001 ? 'LOSS' : 'BREAKEVEN');
+                  reason = 'TIME_STOP';
                   break;
                 }
               }
@@ -616,6 +655,7 @@ export function runStrategy2Backtest(
                 capitalAfterTrade: Math.max(10, parseFloat((rollingCapital + (positionSize * (entryPrice - actualExitPrice) - tradeTotalFee)).toFixed(2))),
                 entryNotional: parseFloat((positionSize * entryPrice).toFixed(2)),
                 exitNotional: parseFloat((positionSize * actualExitPrice).toFixed(2)),
+                reason: reason || (status === 'WIN' ? 'Take Profit' : status === 'LOSS' ? 'Stop Loss' : 'Active'),
               });
 
               rollingCapital = Math.max(10, parseFloat((rollingCapital + (positionSize * (entryPrice - actualExitPrice) - tradeTotalFee)).toFixed(2)));
@@ -693,6 +733,7 @@ export function runStrategy2Backtest(
               let exitPrice: number | undefined;
               let pnl = 0;
               let pnlPercent = 0;
+              let reason: string | undefined = undefined;
 
               for (let k = entryCandleIdx; k < candles.length; k++) {
                 const ck = candles[k];
@@ -731,6 +772,23 @@ export function runStrategy2Backtest(
                   const grossTradePnl = positionSize * (exitPrice - entryPrice);
                   pnl = grossTradePnl - tradeFee;
                   pnlPercent = (pnl / rollingCapital) * 100;
+                  break;
+                }
+
+                // خروج زمانی (Time-Stop): حداکثر زمان ماندن در پوزیشن (تعداد کندل)
+                const timeStopActive = config.timeStopEnabled !== false && typeof config.timeStopCandles === 'number' && config.timeStopCandles > 0;
+                const candlesInTrade = k - entryCandleIdx + 1;
+                if (status === 'ACTIVE' && timeStopActive && candlesInTrade >= config.timeStopCandles) {
+                  exitPrice = ck.close;
+                  exitTime = ck.time;
+                  exitCandleIdx = k;
+                  const exitFee = (positionSize * exitPrice) * exitFeeRate;
+                  const tradeFee = entryFee + exitFee;
+                  const grossTradePnl = positionSize * (exitPrice - entryPrice);
+                  pnl = grossTradePnl - tradeFee;
+                  pnlPercent = (pnl / rollingCapital) * 100;
+                  status = pnl > 0.0001 ? 'WIN' : (pnl < -0.0001 ? 'LOSS' : 'BREAKEVEN');
+                  reason = 'TIME_STOP';
                   break;
                 }
               }
@@ -796,6 +854,7 @@ export function runStrategy2Backtest(
                 capitalAfterTrade: Math.max(10, parseFloat((rollingCapital + (positionSize * (actualExitPrice - entryPrice) - tradeTotalFee)).toFixed(2))),
                 entryNotional: parseFloat((positionSize * entryPrice).toFixed(2)),
                 exitNotional: parseFloat((positionSize * actualExitPrice).toFixed(2)),
+                reason: reason || (status === 'WIN' ? 'Take Profit' : status === 'LOSS' ? 'Stop Loss' : 'Active'),
               });
 
               rollingCapital = Math.max(10, parseFloat((rollingCapital + (positionSize * (actualExitPrice - entryPrice) - tradeTotalFee)).toFixed(2)));
