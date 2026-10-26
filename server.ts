@@ -1730,19 +1730,21 @@ async function runServerBacktestCycle(params: {
   const riskAmountFixed = Number(cfg.riskAmountFixed) || 10;
   const riskPercent = Number(cfg.riskPercent) || 1.0;
   const effectiveRiskPercent = riskMode === 'fixed' && capital > 0 ? (riskAmountFixed / capital) * 100 : riskPercent;
-  const atrPeriod = Number(cfg.atrPeriod) || 24;
-  const atrMultiplier = Number(cfg.atrMultiplier) || 2.4;
-  const minCandles = Number(cfg.minCandles) || 2;
-  const minCandlesForLongLeg = Number(cfg.minCandlesForLongLeg) || 10;
-  const longLegAtrMultiplier = Number(cfg.longLegAtrMultiplier) || 8.0;
-  const maxBlueLegPercent = Number(cfg.maxBlueLegPercent) || 50;
-  const maxBreakoutAtrMultiplier = Number(cfg.maxBreakoutAtrMultiplier) || 3.0;
-  const maxRiskReward = Number(cfg.maxRiskReward) || 3.0;
+  const atrPeriod = Number(cfg.optAtrPeriod ?? cfg.atrPeriod) || 24;
+  const atrMultiplier = Number(cfg.optAtrMultiplier ?? cfg.atrMultiplier) || 2.4;
+  const minCandles = Number(cfg.optMinCandles ?? cfg.minCandles) || 2;
+  const minCandlesForLongLeg = Number(cfg.optMinCandlesLong ?? cfg.minCandlesForLongLeg) || 10;
+  const longLegAtrMultiplier = Number(cfg.optLongLegAtrMult ?? cfg.longLegAtrMultiplier) || 8.0;
+  const maxBlueLegPercent = Number(cfg.optMaxBlueLegPercent ?? cfg.maxBlueLegPercent) || 50;
+  const maxBreakoutAtrMultiplier = Number(cfg.optMaxBreakoutAtr ?? cfg.maxBreakoutAtrMultiplier) || 3.0;
+  const maxRiskReward = Number(cfg.optMaxRiskReward ?? cfg.maxRiskReward) || 3.0;
   const maxCandlesToEnter = Number(cfg.maxCandlesToEnter) || 35;
   const entryCommission = Number(cfg.entryCommissionPercent) || 0.06;
   const exitCommission = Number(cfg.exitCommissionPercent) || 0.06;
-  const timeStopEnabled = cfg.timeStopEnabled !== false;
-  const timeStopCandles = Number(cfg.timeStopCandles) || 80;
+  const timeStopEnabled = cfg.timeStopEnabled !== false && cfg.optTimeStopEnabled !== false;
+  const timeStopCandles = Number(cfg.optTimeStopCandles ?? cfg.timeStopCandles) || 80;
+
+  console.log(`[Server Backtest] 🚀 Starting cycle: Strategy=${strategyId}, ATR=${atrPeriod}, Mult=${atrMultiplier}, minCandles=${minCandles}, minLong=${minCandlesForLongLeg}, longMult=${longLegAtrMultiplier}, blue%=${maxBlueLegPercent}, breakoutMult=${maxBreakoutAtrMultiplier}, RR=${maxRiskReward}, timeStop=${timeStopCandles}, capital=${capital}, risk=${riskPercent}%`);
 
   const processSymbolStrategy = (pair: { symbol: string; baseAsset: string; quoteAsset: string }, candles: CandleData[]) => {
     if (!candles || candles.length < 50) return null;
@@ -1845,10 +1847,19 @@ async function runServerBacktestCycle(params: {
           [datasetId]
         );
         if (chunksRes.rows.length > 0) {
+          const symbolsFilterSet = symbols && symbols.length > 0
+            ? new Set(symbols.map((s: string) => s.toUpperCase().replace('_', '')))
+            : null;
+          const seenSymbols = new Map<string, ServerCandleEntry>();
+
           for (const chunkRow of chunksRes.rows) {
             try {
               const items = JSON.parse(chunkRow.items_json);
               for (const item of items) {
+                const cleanSym = (item.symbol || '').toUpperCase().replace('_', '');
+                if (symbolsFilterSet && !symbolsFilterSet.has(cleanSym)) continue;
+                if (seenSymbols.has(cleanSym)) continue;
+
                 const candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
                   time: t[0],
                   open: t[1],
@@ -1857,7 +1868,7 @@ async function runServerBacktestCycle(params: {
                   close: t[4],
                   volume: t[5],
                 }));
-                entries.push({
+                seenSymbols.set(cleanSym, {
                   pair: {
                     symbol: item.symbol,
                     baseAsset: item.baseAsset,
@@ -1869,6 +1880,7 @@ async function runServerBacktestCycle(params: {
               }
             } catch {}
           }
+          entries = Array.from(seenSymbols.values());
         }
       }
     }

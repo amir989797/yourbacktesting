@@ -102,6 +102,8 @@ export interface OptimizerTabProps {
   setOptTimeStopCandles?: (val: number) => void;
   onSyncCandles?: () => void;
   onEvaluateCurrentManualConfig?: () => void;
+  onApplyTrialToManualScan?: (trial: OptimizationTrial) => void;
+  onRunTrialInManualScan?: (trial: OptimizationTrial) => void;
 }
 
 export const OptimizerTab: React.FC<OptimizerTabProps> = ({
@@ -184,6 +186,8 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
   setOptTimeStopCandles,
   onSyncCandles,
   onEvaluateCurrentManualConfig,
+  onApplyTrialToManualScan,
+  onRunTrialInManualScan,
 }) => {
   return (
           <div className="flex-1 flex flex-col overflow-y-auto p-4 space-y-3.5">
@@ -1102,15 +1106,28 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                 </div>
 
                 {bestWinningRow && (
-                  <button
-                    type="button"
-                    onClick={handleApplyBestToChart}
-                    className="px-4 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer"
-                    title="اعمال مستقیم برنده جدول به اندیکاتور زیگ‌زاگ چارت"
-                  >
-                    <Award className="w-4 h-4 text-emerald-400" />
-                    <span>اعمال بهترین ترکیب برنده به چارت اصلی</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleApplyBestToChart}
+                      className="px-4 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer"
+                      title="اعمال مستقیم برنده جدول به ورودی‌های اسکن دستی و اندیکاتور زیگ‌زاگ چارت"
+                    >
+                      <Award className="w-4 h-4 text-emerald-400" />
+                      <span>اعمال برنده به ورودی‌های اسکن و چارت</span>
+                    </button>
+                    {onRunTrialInManualScan && (
+                      <button
+                        type="button"
+                        onClick={() => onRunTrialInManualScan(bestWinningRow)}
+                        className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-md shadow-emerald-900/40"
+                        title="انتقال پارامترهای ترکیب برنده به اسکن دستی و اجرای فوری بک‌تست"
+                      >
+                        <Play className="w-3.5 h-3.5 fill-white" />
+                        <span>اجرای فوری در اسکن دستی</span>
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
@@ -1217,12 +1234,13 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                         PF {renderOptSortArrow('profitFactor')}
                       </th>
                       <th className="py-2.5 px-2.5 text-center">وضعیت</th>
+                      <th className="py-2.5 px-2.5 text-center text-cyan-300 font-bold">اقدام / تست</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#1e2736] font-mono text-[11px]">
                     {sortedTop10.length === 0 ? (
                       <tr>
-                        <td colSpan={18} className="py-8 text-center text-gray-500 font-sans">
+                        <td colSpan={19} className="py-8 text-center text-gray-500 font-sans">
                           هنوز آزمایشی ثبت نشده است. با زدن «شروع بهینه‌سازی رنج‌محور»، تست‌ها شروع شده و ۱۰ ترکیب برتر اینجا نمایش داده می‌شوند.
                         </td>
                       </tr>
@@ -1282,6 +1300,30 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                                   ❌ رد
                                 </span>
                               )}
+                            </td>
+                            <td className="py-2 px-2 text-center">
+                              <div className="flex items-center justify-center gap-1 font-sans">
+                                <button
+                                  type="button"
+                                  onClick={() => onApplyTrialToManualScan?.(row)}
+                                  className="px-2 py-1 rounded bg-[#1e293b] hover:bg-cyan-950 hover:text-cyan-300 border border-[#334155] hover:border-cyan-500/50 text-[10px] text-gray-300 font-bold flex items-center gap-1 cursor-pointer transition-all"
+                                  title="کپی کردن پارامترهای این ردیف به ورودی‌های اسکن دستی"
+                                >
+                                  <CheckCircle2 className="w-3 h-3 text-cyan-400" />
+                                  <span>اعمال</span>
+                                </button>
+                                {onRunTrialInManualScan && (
+                                  <button
+                                    type="button"
+                                    onClick={() => onRunTrialInManualScan(row)}
+                                    className="px-2 py-1 rounded bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-500/40 text-[10px] text-emerald-300 font-bold flex items-center gap-1 cursor-pointer transition-all"
+                                    title="انتقال پارامترها به اسکن دستی و اجرای فوری تست"
+                                  >
+                                    <Play className="w-2.5 h-2.5 text-emerald-400 fill-emerald-400" />
+                                    <span>تست</span>
+                                  </button>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         );

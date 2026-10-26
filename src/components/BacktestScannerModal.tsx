@@ -968,17 +968,27 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             entryCommissionPercent,
             exitCommissionPercent,
             maxRiskReward: optMaxRiskReward,
+            optMaxRiskReward,
             maxCandlesToEnter,
+            atrPeriod: optAtrPeriod,
             optAtrPeriod,
+            atrMultiplier: optAtrMultiplier,
             optAtrMultiplier,
+            minCandles: optMinCandles,
             optMinCandles,
+            minCandlesForLongLeg: optMinCandlesLong,
             optMinCandlesLong,
+            longLegAtrMultiplier: optLongLegAtrMult,
             optLongLegAtrMult,
+            maxBlueLegPercent: optMaxBlueLegPercent,
             optMaxBlueLegPercent,
+            maxBreakoutAtrMultiplier: optMaxBreakoutAtr,
             optMaxBreakoutAtr,
             noConcurrentPositions,
             timeStopEnabled: optTimeStopEnabled,
+            optTimeStopEnabled,
             timeStopCandles: optTimeStopCandles,
+            optTimeStopCandles,
           },
         }),
       });
@@ -2795,20 +2805,52 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     });
   }, [top10Trials, optSortColumn, optSortDirection]);
 
-  // اعمال بهترین پارامترهای برنده به چارت زنده
+  // اعمال پارامترهای هر ردیف به ورودی‌های اسکن دستی و اندیکاتور چارت
+  const applyTrialToManualInputs = useCallback((trial: OptimizationTrial, andNotify: boolean = true) => {
+    if (!trial) return;
+    setOptAtrPeriod(trial.atrPeriod);
+    setOptMinCandles(trial.minCandles);
+    setOptMinCandlesLong(trial.minCandlesForLongLeg);
+    setOptAtrMultiplier(trial.atrMultiplier);
+    setOptLongLegAtrMult(trial.longLegAtrMultiplier);
+    setOptMaxBlueLegPercent(trial.maxBlueLegPercent);
+    setOptMaxBreakoutAtr(trial.maxBreakoutAtrMultiplier);
+    setOptMaxRiskReward(trial.maxRiskReward);
+    if (trial.timeStopCandles) {
+      setOptTimeStopCandles(trial.timeStopCandles);
+    }
+    if (onUpdateZigZagSettings) {
+      onUpdateZigZagSettings({
+        atrPeriod: trial.atrPeriod,
+        minCandles: trial.minCandles,
+        minCandlesForLongLeg: trial.minCandlesForLongLeg,
+        atrMultiplier: trial.atrMultiplier,
+        longLegAtrMultiplier: trial.longLegAtrMultiplier,
+        maxBlueLegPercent: trial.maxBlueLegPercent,
+        maxBreakoutAtrMultiplier: trial.maxBreakoutAtrMultiplier,
+      });
+    }
+    if (andNotify) {
+      showToast(`✨ تنظیمات ردیف #${trial.id} به ورودی‌های اسکن دستی و چارت اعمال شد.`);
+    }
+  }, [onUpdateZigZagSettings]);
+
+  // اعمال بهترین پارامترهای برنده به چارت زنده و ورودی‌های اسکن دستی
   const handleApplyBestToChart = () => {
-    if (!bestWinningRow || !onUpdateZigZagSettings) return;
-    onUpdateZigZagSettings({
-      atrPeriod: bestWinningRow.atrPeriod,
-      minCandles: bestWinningRow.minCandles,
-      minCandlesForLongLeg: bestWinningRow.minCandlesForLongLeg,
-      atrMultiplier: bestWinningRow.atrMultiplier,
-      longLegAtrMultiplier: bestWinningRow.longLegAtrMultiplier,
-      maxBlueLegPercent: bestWinningRow.maxBlueLegPercent,
-      maxBreakoutAtrMultiplier: bestWinningRow.maxBreakoutAtrMultiplier,
-    });
-    setOptMaxRiskReward(bestWinningRow.maxRiskReward);
-    showToast('✨ بهترین ترکیب برنده جدول به اندیکاتور زیگ‌زاگ چارت اعمال شد!');
+    if (!bestWinningRow) return;
+    applyTrialToManualInputs(bestWinningRow, false);
+    showToast('✨ بهترین ترکیب برنده جدول به ورودی‌های اسکن دستی و اندیکاتور چارت اعمال شد!');
+  };
+
+  // اعمال مستقیم یک ردیف جدول و انتقال به تب اسکن دستی و اجرای فوری
+  const handleRunTrialInManualScan = (trial: OptimizationTrial) => {
+    if (!trial) return;
+    applyTrialToManualInputs(trial, false);
+    setActiveTab('scanner');
+    showToast(`🚀 پارامترهای ردیف #${trial.id} به اسکن دستی منتقل شد. در حال شروع اسکن...`);
+    setTimeout(() => {
+      handleStartScan(false);
+    }, 250);
   };
 
   // خروجی JSON فوق سبک (تنها ۱۰ تست برتر + رنج‌های بهینه)
@@ -3313,6 +3355,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setOptTimeStopCandles={setOptTimeStopCandles}
             onSyncCandles={() => syncRangeCandlesToMemory(true)}
             onEvaluateCurrentManualConfig={handleEvaluateCurrentManualConfig}
+            onApplyTrialToManualScan={applyTrialToManualInputs}
+            onRunTrialInManualScan={handleRunTrialInManualScan}
           />
         )}
 
