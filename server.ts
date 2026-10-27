@@ -1697,6 +1697,63 @@ function getRangeDatasetId(exchange: string, timeframe: string, startTime?: numb
   return `range_${ex}_${tf}_${s}_${e}`;
 }
 
+const serverDatasetCandleCache = new Map<string, ServerCandleEntry[]>();
+
+async function loadDatasetEntriesFromPostgres(datasetId: string, symbolsFilter?: string[]): Promise<ServerCandleEntry[]> {
+  if (serverDatasetCandleCache.has(datasetId)) {
+    const cached = serverDatasetCandleCache.get(datasetId);
+    if (cached && cached.length > 0) return cached;
+  }
+
+  const chunksRes = await pool.query(
+    `SELECT items_json FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC;`,
+    [datasetId]
+  );
+  if (chunksRes.rows.length === 0) return [];
+
+  const symbolsFilterSet = symbolsFilter && symbolsFilter.length > 0
+    ? new Set(symbolsFilter.map((s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '')))
+    : null;
+
+  const seenSymbols = new Map<string, ServerCandleEntry>();
+  for (const chunkRow of chunksRes.rows) {
+    try {
+      const items = JSON.parse(chunkRow.items_json);
+      for (const item of items) {
+        const cleanSym = (item.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+        if (symbolsFilterSet && !symbolsFilterSet.has(cleanSym)) continue;
+        if (seenSymbols.has(cleanSym)) continue;
+
+        const candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
+          time: t[0],
+          open: t[1],
+          high: t[2],
+          low: t[3],
+          close: t[4],
+          volume: t[5],
+        }));
+        if (candles.length >= 50) {
+          seenSymbols.set(cleanSym, {
+            pair: {
+              symbol: item.symbol,
+              baseAsset: item.baseAsset,
+              quoteAsset: item.quoteAsset,
+            },
+            candles,
+            timeframe: item.timeframe || '5m',
+          });
+        }
+      }
+    } catch {}
+  }
+
+  const entries = Array.from(seenSymbols.values());
+  if (entries.length > 0) {
+    serverDatasetCandleCache.set(datasetId, entries);
+  }
+  return entries;
+}
+
 async function runServerBacktestCycle(params: {
   exchange: string;
   timeframe: string;
@@ -1918,6 +1975,9 @@ async function runServerBacktestCycle(params: {
       };
 
       await Promise.all(Array.from({ length: concurrency }, () => worker()));
+      if (entries.length > 0) {
+        serverDatasetCandleCache.set(datasetId, entries);
+      }
     } else {
       // 3. Download from exchange with CONCURRENT WORKERS, stream results live, and persist chunks to PostgreSQL
       serverBacktestState.stage = 'downloading';
@@ -2041,6 +2101,9 @@ async function runServerBacktestCycle(params: {
       }
 
       entries = downloadedEntries;
+      if (entries.length > 0) {
+        serverDatasetCandleCache.set(datasetId, entries);
+      }
     }
 
     if (entries.length === 0 && serverBacktestState.results.length === 0) {
@@ -2246,6 +2309,775 @@ app.delete('/api/backtest/range', async (req, res) => {
       message: `داده‌های بازه زمانی ${datasetId} با موفقیت فقط از این بازه در PostgreSQL حذف شد.`,
       datasetId,
     });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// =========================================================================
+// 6.5.6 AUTONOMOUS SERVER-SIDE OPTIMIZER ENGINE (Connected directly to PostgreSQL)
+// =========================================================================
+
+interface ServerOptimizerTrial {
+  id: number;
+  hash: string;
+  timestamp: string;
+  qualityScore: number;
+  atrPeriod: number;
+  minCandles: number;
+  minCandlesForLongLeg: number;
+  atrMultiplier: number;
+  longLegAtrMultiplier: number;
+  maxBlueLegPercent: number;
+  maxBreakoutAtrMultiplier: number;
+  maxRiskReward: number;
+  timeStopCandles: number;
+  totalTrades: number;
+  winTrades: number;
+  lossTrades: number;
+  winRate: number;
+  profitFactor: number;
+  netProfit: number;
+  totalFees: number;
+  maxDrawdown: number;
+  isValid: boolean;
+}
+
+const serverOptimizerState = {
+  isOptimizing: false,
+  shouldStop: false,
+  datasetId: null as string | null,
+  exchange: 'xt',
+  timeframe: '5m',
+  strategyId: 'strategy_1_e_breakout',
+  totalEvaluatedCount: 0,
+  sessionSecondsLeft: 900,
+  top10Trials: [] as ServerOptimizerTrial[],
+  adaptiveRanges: null as any,
+  autoAdaptiveEnabled: true,
+  lastStartedAt: 0,
+  lastUpdatedAt: null as string | null,
+  errorMsg: null as string | null,
+  statusText: 'آماده برای بهینه‌سازی در سرور با اتصال مستقیم به PostgreSQL',
+};
+
+function generateConfigHash(p: {
+  atrPeriod: number;
+  minCandles: number;
+  minCandlesForLongLeg: number;
+  atrMultiplier: number;
+  longLegAtrMultiplier: number;
+  maxBlueLegPercent: number;
+  maxBreakoutAtrMultiplier: number;
+  maxRiskReward: number;
+  timeStopCandles?: number;
+}): string {
+  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxRiskReward}_${p.timeStopCandles || 80}`;
+}
+
+function calculateQualityScore(trial: {
+  netProfit: number;
+  profitFactor: number;
+  winRate: number;
+  maxDrawdown: number;
+  totalTrades: number;
+  targetMaxDrawdown: number;
+  targetMinWinRate: number;
+  targetMinTrades: number;
+}): number {
+  if (trial.totalTrades < 5) return -1000;
+  let penalty = 0;
+  if (trial.maxDrawdown > trial.targetMaxDrawdown) {
+    penalty += (trial.maxDrawdown - trial.targetMaxDrawdown) * 15;
+  }
+  if (trial.winRate < trial.targetMinWinRate) {
+    penalty += (trial.targetMinWinRate - trial.winRate) * 10;
+  }
+  if (trial.totalTrades < trial.targetMinTrades) {
+    penalty += (trial.targetMinTrades - trial.totalTrades) * 2;
+  }
+
+  const profitScore = Math.max(-500, trial.netProfit) * 0.15;
+  const pfScore = Math.min(trial.profitFactor, 10) * 35;
+  const winRateScore = trial.winRate * 2.2;
+  const ddSafety = Math.max(0, 25 - trial.maxDrawdown) * 4;
+  const tradeVolumeBonus = Math.min(trial.totalTrades, 500) * 0.15;
+
+  return parseFloat((profitScore + pfScore + winRateScore + ddSafety + tradeVolumeBonus - penalty).toFixed(2));
+}
+
+function refineAdaptiveRangesSmart(
+  currentRanges: any,
+  eliteTrials: any[],
+  totalEvaluated: number,
+  autoAdaptiveEnabled: boolean
+): any {
+  if (!autoAdaptiveEnabled || !eliteTrials || eliteTrials.length < 2) return currentRanges;
+
+  const validElites = eliteTrials.filter((t) => t.isValid && t.netProfit > 0);
+  const samplePool = validElites.length >= 2 ? validElites : eliteTrials.slice(0, 5);
+  if (samplePool.length === 0) return currentRanges;
+
+  const nextRanges: any = { ...currentRanges };
+  const keys = [
+    'atrPeriod',
+    'minCandles',
+    'minCandlesForLongLeg',
+    'atrMultiplier',
+    'longLegAtrMultiplier',
+    'maxBlueLegPercent',
+    'maxBreakoutAtrMultiplier',
+    'maxRiskReward',
+  ];
+
+  for (const key of keys) {
+    if (!nextRanges[key]) continue;
+    const r = { ...nextRanges[key] };
+    if (r.isManualOverride) continue;
+
+    const values = samplePool.map((t) => Number(t[key]) || 0);
+    let weightedSum = 0;
+    let totalWeight = 0;
+    for (const t of samplePool) {
+      const weight = Math.max(1, t.netProfit > 0 ? t.netProfit : 1);
+      weightedSum += (Number(t[key]) || 0) * weight;
+      totalWeight += weight;
+    }
+    const center = totalWeight > 0 ? weightedSum / totalWeight : values.reduce((a, b) => a + b, 0) / values.length;
+
+    const variance = values.reduce((sum, v) => sum + Math.pow(v - center, 2), 0) / values.length;
+    const stdDev = Math.sqrt(variance);
+
+    const coolingFactor = Math.max(0.45, 1.0 - (totalEvaluated / 1200));
+    const spread = Math.max(r.step * 1.5, (stdDev * 1.6 + r.step * 2) * coolingFactor);
+
+    let newMin = Math.max(r.globalMin, center - spread);
+    let newMax = Math.min(r.globalMax, center + spread);
+
+    newMin = Math.round(newMin / r.step) * r.step;
+    newMax = Math.round(newMax / r.step) * r.step;
+
+    if (newMax - newMin < r.step * 3) {
+      newMin = Math.max(r.globalMin, center - r.step * 2);
+      newMax = Math.min(r.globalMax, center + r.step * 2);
+    }
+
+    const bestTrial = samplePool[0];
+    r.bestVal = Number(bestTrial[key]);
+    r.min = parseFloat(newMin.toFixed(2));
+    r.max = parseFloat(newMax.toFixed(2));
+
+    const span = r.max - r.min;
+    const globalSpan = r.globalMax - r.globalMin;
+    r.convergence = Math.round(Math.max(0, Math.min(100, (1 - span / globalSpan) * 100)));
+
+    nextRanges[key] = r;
+  }
+
+  return nextRanges;
+}
+
+function getDefaultRangesForTimeframe(timeframe: string): any {
+  const isScalp = timeframe === '5m';
+  const isSwing = timeframe === '1h' || timeframe === '4h' || timeframe === '1d' || timeframe === '1w';
+
+  const makeRange = (min: number, max: number, globalMin: number, globalMax: number, bestVal: number, step: number) => {
+    const span = max - min;
+    const globalSpan = globalMax - globalMin;
+    const convergence = Math.round(Math.max(10, Math.min(95, (1 - span / globalSpan) * 100)));
+    return { min, max, globalMin, globalMax, bestVal, step, convergence, isManualOverride: false };
+  };
+
+  if (isScalp) {
+    return {
+      atrPeriod: makeRange(20, 65, 12, 100, 45, 5),
+      minCandles: makeRange(2, 5, 1, 8, 3, 1),
+      minCandlesForLongLeg: makeRange(8, 22, 5, 36, 14, 2),
+      atrMultiplier: makeRange(2.0, 4.25, 1.5, 6.0, 3.0, 0.25),
+      longLegAtrMultiplier: makeRange(6.0, 14.5, 4.0, 22.0, 9.5, 0.5),
+      maxBlueLegPercent: makeRange(35, 75, 20, 90, 55, 5),
+      maxBreakoutAtrMultiplier: makeRange(2.0, 5.5, 1.0, 8.0, 3.5, 0.5),
+      maxRiskReward: makeRange(1.5, 4.5, 1.0, 10.0, 2.5, 0.25),
+      timeStopCandles: makeRange(20, 120, 10, 200, 80, 10),
+    };
+  }
+
+  if (isSwing) {
+    return {
+      atrPeriod: makeRange(14, 45, 8, 80, 24, 2),
+      minCandles: makeRange(1, 4, 1, 6, 2, 1),
+      minCandlesForLongLeg: makeRange(5, 16, 4, 24, 10, 1),
+      atrMultiplier: makeRange(1.5, 3.5, 1.0, 5.0, 2.4, 0.2),
+      longLegAtrMultiplier: makeRange(4.5, 12.0, 3.0, 18.0, 8.0, 0.5),
+      maxBlueLegPercent: makeRange(30, 70, 20, 85, 50, 5),
+      maxBreakoutAtrMultiplier: makeRange(1.5, 5.0, 1.0, 7.0, 3.0, 0.5),
+      maxRiskReward: makeRange(1.5, 7.0, 1.0, 12.0, 3.5, 0.5),
+      timeStopCandles: makeRange(20, 120, 10, 200, 60, 10),
+    };
+  }
+
+  return {
+    atrPeriod: makeRange(18, 55, 10, 90, 32, 4),
+    minCandles: makeRange(1, 5, 1, 8, 3, 1),
+    minCandlesForLongLeg: makeRange(6, 20, 5, 30, 14, 2),
+    atrMultiplier: makeRange(1.8, 4.0, 1.2, 5.5, 2.8, 0.25),
+    longLegAtrMultiplier: makeRange(5.0, 14.0, 3.5, 20.0, 9.0, 0.5),
+    maxBlueLegPercent: makeRange(35, 75, 25, 85, 55, 5),
+    maxBreakoutAtrMultiplier: makeRange(1.8, 5.5, 1.0, 7.5, 3.5, 0.5),
+    maxRiskReward: makeRange(1.5, 6.0, 1.0, 10.0, 3.0, 0.5),
+    timeStopCandles: makeRange(20, 120, 10, 200, 80, 10),
+  };
+}
+
+function getNextCandidateFromAdaptiveRanges(
+  ranges: any,
+  visited: Set<string>,
+  totalEvaluated: number,
+  locks: any
+) {
+  const l = locks || {};
+  const sampleParam = (r: any, isLocked: boolean, lockedVal: number) => {
+    if (!r) return lockedVal || 0;
+    if (isLocked) return lockedVal;
+    const rand = Math.random();
+
+    // 70% sample around bestVal
+    if (rand < 0.70 && r.bestVal !== undefined) {
+      const offset = (Math.floor(Math.random() * 3) - 1) * r.step;
+      const val = Math.max(r.min, Math.min(r.max, r.bestVal + offset));
+      return parseFloat(val.toFixed(2));
+    }
+
+    // 15% explore active range
+    if (rand < 0.85) {
+      const count = Math.max(1, Math.round((r.max - r.min) / r.step));
+      const idx = Math.floor(Math.random() * (count + 1));
+      const val = r.min + idx * r.step;
+      return parseFloat(Math.min(r.max, Math.max(r.min, val)).toFixed(2));
+    }
+
+    // 15% mutation across global bounds
+    const effectiveMin = Math.min(r.min, r.globalMin);
+    const effectiveMax = Math.max(r.max, r.globalMax);
+    const globalSpan = Math.max(r.step, effectiveMax - effectiveMin);
+    const globalCount = Math.max(1, Math.round(globalSpan / r.step));
+    const gIdx = Math.floor(Math.random() * (globalCount + 1));
+    const gVal = effectiveMin + gIdx * r.step;
+    return parseFloat(Math.min(effectiveMax, Math.max(effectiveMin, gVal)).toFixed(2));
+  };
+
+  for (let attempts = 0; attempts < 350; attempts++) {
+    const candidate = {
+      atrPeriod: sampleParam(ranges.atrPeriod, l.lockAtrPeriod, l.optAtrPeriod ?? 45),
+      minCandles: sampleParam(ranges.minCandles, l.lockMinCandles, l.optMinCandles ?? 3),
+      minCandlesForLongLeg: sampleParam(ranges.minCandlesForLongLeg, l.lockMinCandlesLong, l.optMinCandlesLong ?? 14),
+      atrMultiplier: sampleParam(ranges.atrMultiplier, l.lockAtrMultiplier, l.optAtrMultiplier ?? 3.0),
+      longLegAtrMultiplier: sampleParam(ranges.longLegAtrMultiplier, l.lockLongLegAtrMult, l.optLongLegAtrMult ?? 9.5),
+      maxBlueLegPercent: sampleParam(ranges.maxBlueLegPercent, l.lockMaxBlueLegPercent, l.optMaxBlueLegPercent ?? 55),
+      maxBreakoutAtrMultiplier: sampleParam(ranges.maxBreakoutAtrMultiplier, l.lockMaxBreakoutAtr, l.optMaxBreakoutAtr ?? 3.5),
+      maxRiskReward: sampleParam(ranges.maxRiskReward, l.lockMaxRiskReward, l.optMaxRiskReward ?? 2.5),
+      timeStopCandles: sampleParam(ranges.timeStopCandles, l.lockTimeStopCandles, l.optTimeStopCandles ?? 80),
+    };
+
+    const hash = generateConfigHash(candidate);
+    if (!visited.has(hash)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function evaluateCombinationOnServer(
+  params: {
+    atrPeriod: number;
+    minCandles: number;
+    minCandlesForLongLeg: number;
+    atrMultiplier: number;
+    longLegAtrMultiplier: number;
+    maxBlueLegPercent: number;
+    maxBreakoutAtrMultiplier: number;
+    maxRiskReward: number;
+    timeStopCandles?: number;
+  },
+  entries: ServerCandleEntry[],
+  strategyId: string,
+  baseConfig: {
+    capital: number;
+    riskMode: 'percent' | 'fixed';
+    riskAmountFixed: number;
+    riskPercent: number;
+    entryCommissionPercent: number;
+    exitCommissionPercent: number;
+    commissionPercent: number;
+    maxCandlesToEnter: number;
+    noConcurrentPositions: boolean;
+    timeStopEnabled: boolean;
+  },
+  constraints: {
+    targetMaxDrawdown: number;
+    targetMinWinRate: number;
+    targetMinTrades: number;
+  }
+) {
+  const allTrades: any[] = [];
+
+  for (const item of entries) {
+    const candles = item.candles;
+    if (!candles || candles.length < 50) continue;
+
+    const atrResult = calculateATR(candles, params.atrPeriod);
+    const zzResult = calculateAtrZigZag(candles, atrResult.atrValues, params.atrMultiplier, params.minCandles);
+    const legs = analyzeZigZagLegs(
+      zzResult.points,
+      params.minCandlesForLongLeg,
+      params.longLegAtrMultiplier,
+      params.maxBlueLegPercent,
+      params.maxBreakoutAtrMultiplier
+    );
+
+    const stratConfig: any = {
+      capital: baseConfig.capital,
+      selectedStrategyId: strategyId,
+      riskMode: baseConfig.riskMode,
+      riskAmountFixed: baseConfig.riskAmountFixed,
+      riskPercent: baseConfig.riskPercent,
+      entryCommissionPercent: baseConfig.entryCommissionPercent,
+      exitCommissionPercent: baseConfig.exitCommissionPercent,
+      commissionPercent: baseConfig.commissionPercent,
+      maxRiskReward: params.maxRiskReward,
+      maxCandlesToEnter: baseConfig.maxCandlesToEnter,
+      maxTradesPerLeg: 1,
+      showOnChart: false,
+      noConcurrentPositions: true,
+      symbol: item.pair.symbol,
+      timeStopEnabled: baseConfig.timeStopEnabled,
+      timeStopCandles: params.timeStopCandles || 80,
+    };
+
+    let backtestRes: any;
+    if (strategyId === 'strategy_2_next_pivot') {
+      backtestRes = runStrategy2Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, params.atrMultiplier, params.minCandles);
+    } else {
+      backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig);
+    }
+
+    const closed = (backtestRes.trades || [])
+      .filter((t: any) => t.status === 'WIN' || t.status === 'LOSS' || t.status === 'BREAKEVEN')
+      .map((t: any, tIdx: number) => ({
+        ...t,
+        id: `${item.pair.symbol}-${t.id || tIdx}`,
+        symbol: item.pair.symbol,
+      }));
+    allTrades.push(...closed);
+  }
+
+  // Deterministic sorting strictly identical to manual scan
+  const sorted = [...allTrades].sort((a, b) => {
+    const eA = a.entryTime || a.timeF || 0;
+    const eB = b.entryTime || b.timeF || 0;
+    if (eA !== eB) return eA - eB;
+    const sA = (a as any).score || (a as any).confidence || 0;
+    const sB = (b as any).score || (b as any).confidence || 0;
+    if (sB !== sA) return sB - sA;
+    return ((a as any).symbol || '').localeCompare((b as any).symbol || '');
+  });
+
+  let effectiveTrades: any[] = [];
+  if (!baseConfig.noConcurrentPositions) {
+    effectiveTrades = sorted;
+  } else {
+    let lastExitTime = 0;
+    for (const t of sorted) {
+      const eTime = t.entryTime || t.timeF || 0;
+      const xTime = t.exitTime || eTime;
+      if (eTime >= lastExitTime) {
+        effectiveTrades.push(t);
+        lastExitTime = Math.max(lastExitTime, xTime);
+      }
+    }
+  }
+
+  const totalTrades = effectiveTrades.length;
+  const winTrades = effectiveTrades.filter((t) => t.status === 'WIN').length;
+  const lossTrades = effectiveTrades.filter((t) => t.status === 'LOSS').length;
+  const grossProfitSum = effectiveTrades.filter((t) => t.pnl > 0).reduce((acc, t) => acc + t.pnl, 0);
+  const grossLossSum = effectiveTrades.filter((t) => t.pnl < 0).reduce((acc, t) => acc + Math.abs(t.pnl), 0);
+  const netProfitSum = effectiveTrades.reduce((acc, t) => acc + t.pnl, 0);
+  const totalFeesSum = effectiveTrades.reduce((acc, t) => acc + (t.fee || t.commission || 0), 0);
+
+  const winRate = totalTrades > 0 ? parseFloat(((winTrades / totalTrades) * 100).toFixed(1)) : 0;
+  const profitFactor =
+    grossLossSum > 0
+      ? parseFloat((grossProfitSum / grossLossSum).toFixed(2))
+      : grossProfitSum > 0
+      ? 99.9
+      : 0;
+  const netProfit = parseFloat(netProfitSum.toFixed(2));
+  const totalFees = parseFloat(totalFeesSum.toFixed(2));
+
+  // Peak-to-Trough Drawdown on timeline
+  const sortedByExit = [...effectiveTrades].sort(
+    (a, b) => (a.exitTime || a.entryTime || 0) - (b.exitTime || b.entryTime || 0)
+  );
+  let curEq = baseConfig.capital;
+  let peakEq = baseConfig.capital;
+  let maxDd = 0;
+  for (const t of sortedByExit) {
+    curEq += t.pnl;
+    if (curEq > peakEq) peakEq = curEq;
+    const dd = peakEq > 0 ? ((peakEq - curEq) / peakEq) * 100 : 0;
+    if (dd > maxDd) maxDd = dd;
+  }
+  const maxDrawdown = parseFloat(maxDd.toFixed(2));
+
+  const isValid =
+    maxDrawdown <= constraints.targetMaxDrawdown &&
+    winRate >= constraints.targetMinWinRate &&
+    totalTrades >= constraints.targetMinTrades;
+
+  return {
+    totalTrades,
+    winTrades,
+    lossTrades,
+    winRate,
+    profitFactor,
+    netProfit,
+    totalFees,
+    maxDrawdown,
+    isValid,
+  };
+}
+
+async function runServerOptimizerLoop(
+  datasetId: string,
+  entries: ServerCandleEntry[],
+  strategyId: string,
+  baseConfig: any,
+  constraints: any,
+  initialRanges: any,
+  locks: any,
+  autoAdaptiveEnabled: boolean
+) {
+  serverOptimizerState.isOptimizing = true;
+  serverOptimizerState.shouldStop = false;
+  serverOptimizerState.datasetId = datasetId;
+  serverOptimizerState.strategyId = strategyId;
+  serverOptimizerState.statusText = `در حال بهینه‌سازی مداوم روی ${entries.length} نماد در سرور...`;
+
+  const visitedHashes = new Set<string>();
+  for (const t of serverOptimizerState.top10Trials) {
+    visitedHashes.add(t.hash);
+  }
+
+  let localRanges = { ...(serverOptimizerState.adaptiveRanges || initialRanges) };
+  let localTop10 = [...serverOptimizerState.top10Trials];
+
+  const startTime = Date.now();
+  const maxSessionDurationMs = 900 * 1000; // 15 minutes
+
+  while (!serverOptimizerState.shouldStop && (Date.now() - startTime) < maxSessionDurationMs) {
+    serverOptimizerState.sessionSecondsLeft = Math.max(0, Math.round((maxSessionDurationMs - (Date.now() - startTime)) / 1000));
+
+    const candidate = getNextCandidateFromAdaptiveRanges(localRanges, visitedHashes, serverOptimizerState.totalEvaluatedCount, locks);
+    if (!candidate) {
+      serverOptimizerState.statusText = 'تمامی ترکیب‌های موجود در رنج بهینه فعلی آزمایش شدند.';
+      break;
+    }
+
+    const hash = generateConfigHash(candidate);
+    visitedHashes.add(hash);
+
+    const evalRes = evaluateCombinationOnServer(candidate, entries, strategyId, baseConfig, constraints);
+    serverOptimizerState.totalEvaluatedCount++;
+
+    if (evalRes) {
+      const qualityScore = calculateQualityScore({
+        netProfit: evalRes.netProfit,
+        profitFactor: evalRes.profitFactor,
+        winRate: evalRes.winRate,
+        maxDrawdown: evalRes.maxDrawdown,
+        totalTrades: evalRes.totalTrades,
+        targetMaxDrawdown: constraints.targetMaxDrawdown,
+        targetMinWinRate: constraints.targetMinWinRate,
+        targetMinTrades: constraints.targetMinTrades,
+      });
+
+      const trial: ServerOptimizerTrial = {
+        id: serverOptimizerState.totalEvaluatedCount,
+        hash,
+        timestamp: new Date().toLocaleTimeString('fa-IR'),
+        qualityScore,
+        ...candidate,
+        ...evalRes,
+      };
+
+      // Deduplicate by hash and update top 10
+      const filtered = localTop10.filter((t) => t.hash !== trial.hash);
+      const merged = [...filtered, trial];
+      merged.sort((a, b) => {
+        if (a.isValid && !b.isValid) return -1;
+        if (!a.isValid && b.isValid) return 1;
+        const scoreDiff = (b.qualityScore || 0) - (a.qualityScore || 0);
+        if (Math.abs(scoreDiff) > 0.01) return scoreDiff;
+        return b.netProfit - a.netProfit;
+      });
+      localTop10 = merged.slice(0, 10);
+      serverOptimizerState.top10Trials = localTop10;
+
+      // Refine adaptive ranges
+      if (autoAdaptiveEnabled) {
+        localRanges = refineAdaptiveRangesSmart(localRanges, localTop10, serverOptimizerState.totalEvaluatedCount, true);
+        serverOptimizerState.adaptiveRanges = localRanges;
+      }
+    }
+
+    serverOptimizerState.lastUpdatedAt = new Date().toISOString();
+    await sleep(15);
+  }
+
+  serverOptimizerState.isOptimizing = false;
+  serverOptimizerState.sessionSecondsLeft = 0;
+  console.log(`[Server Optimizer] Cycle ended. Total evaluations: ${serverOptimizerState.totalEvaluatedCount}`);
+}
+
+// 6.5.6.1 Start Server-Side Autonomous Optimization directly connected to PostgreSQL
+app.post('/api/optimizer/start', async (req, res) => {
+  try {
+    const {
+      exchange = 'xt',
+      timeframe = '5m',
+      startTime,
+      endTime,
+      symbols,
+      strategyId = 'strategy_1_e_breakout',
+      strategyConfig = {},
+      constraints = {},
+      ranges,
+      locks,
+      autoAdaptiveEnabled = true,
+    } = req.body || {};
+
+    let datasetId = getRangeDatasetId(exchange, timeframe, startTime, endTime);
+
+    // 1. Try to get entries from server in-memory cache
+    let entries = serverDatasetCandleCache.get(datasetId);
+
+    // 2. If not in memory, query PostgreSQL candle_chunks for this datasetId
+    if (!entries || entries.length === 0) {
+      entries = await loadDatasetEntriesFromPostgres(datasetId, symbols);
+    }
+
+    // 3. Fallback: if not found for this specific range, check for any completed dataset in PostgreSQL
+    if (!entries || entries.length === 0) {
+      const latestDs = await pool.query(
+        `SELECT id FROM candle_datasets WHERE status = 'COMPLETED' OR symbol_count > 0 ORDER BY updated_at DESC LIMIT 1;`
+      );
+      if (latestDs.rows.length > 0) {
+        const fallbackId = latestDs.rows[0].id;
+        entries = await loadDatasetEntriesFromPostgres(fallbackId, symbols);
+        if (entries && entries.length > 0) {
+          datasetId = fallbackId;
+        }
+      }
+    }
+
+    if (!entries || entries.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: '⚠️ داده کندلی در پایگاه داده PostgreSQL یافت نشد. لطفاً ابتدا در تب «اسکن دستی بازار» دکمه شروع اسکن را بزنید تا داده‌های کندل در دیتابیس ذخیره شوند.',
+      });
+    }
+
+    const cfg = strategyConfig || {};
+    const capital = Number(cfg.capital) || 10000;
+    const riskMode = cfg.riskMode || 'percent';
+    const riskAmountFixed = Number(cfg.riskAmountFixed) > 0 ? Number(cfg.riskAmountFixed) : 10;
+    const riskPercent = Number(cfg.riskPercent) || 1.0;
+    const entryCommission = Number(cfg.entryCommissionPercent) || 0.06;
+    const exitCommission = Number(cfg.exitCommissionPercent) || 0.06;
+    const commissionPercent = parseFloat((entryCommission + exitCommission).toFixed(4));
+    const maxCandlesToEnter = Number(cfg.maxCandlesToEnter) || 35;
+    const noConcurrentPositions = Boolean(cfg.noConcurrentPositions !== false);
+    const timeStopEnabled = cfg.timeStopEnabled !== false;
+
+    const baseConfig = {
+      capital,
+      riskMode,
+      riskAmountFixed,
+      riskPercent,
+      entryCommissionPercent: entryCommission,
+      exitCommissionPercent: exitCommission,
+      commissionPercent,
+      maxCandlesToEnter,
+      noConcurrentPositions,
+      timeStopEnabled,
+    };
+
+    const targetConstraints = {
+      targetMaxDrawdown: Number(constraints.targetMaxDrawdown) || 20.0,
+      targetMinWinRate: Number(constraints.targetMinWinRate) || 40.0,
+      targetMinTrades: Number(constraints.targetMinTrades) || 100,
+    };
+
+    const initialRanges = ranges || serverOptimizerState.adaptiveRanges || getDefaultRangesForTimeframe(timeframe);
+    serverOptimizerState.adaptiveRanges = initialRanges;
+    serverOptimizerState.autoAdaptiveEnabled = autoAdaptiveEnabled !== false;
+    serverOptimizerState.exchange = exchange;
+    serverOptimizerState.timeframe = timeframe;
+    serverOptimizerState.strategyId = strategyId;
+    serverOptimizerState.lastStartedAt = Date.now();
+
+    // Start background optimizer loop in server
+    runServerOptimizerLoop(
+      datasetId,
+      entries,
+      strategyId,
+      baseConfig,
+      targetConstraints,
+      initialRanges,
+      locks,
+      autoAdaptiveEnabled !== false
+    ).catch((err) => {
+      console.error('[Server Optimizer Background Error]:', err.message);
+      serverOptimizerState.isOptimizing = false;
+      serverOptimizerState.errorMsg = err.message;
+    });
+
+    res.json({
+      success: true,
+      message: `بهینه‌سازی مستقل در سرور با ${entries.length} نماد از پایگاه‌داده آغاز شد.`,
+      datasetId,
+      symbolCount: entries.length,
+      state: serverOptimizerState,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 6.5.6.2 Get Current Server Optimizer Live State & Top 10 Trials
+app.get('/api/optimizer/status', (_req, res) => {
+  res.json({
+    success: true,
+    state: serverOptimizerState,
+  });
+});
+
+// 6.5.6.3 Stop Server Optimizer
+app.post('/api/optimizer/stop', (_req, res) => {
+  serverOptimizerState.shouldStop = true;
+  serverOptimizerState.isOptimizing = false;
+  serverOptimizerState.statusText = 'بهینه‌سازی در سرور متوقف شد.';
+  res.json({ success: true, message: 'دستور توقف بهینه‌سازی سرور ثبت شد.' });
+});
+
+// 6.5.6.4 Reset Server Optimizer Trials & Ranges
+app.post('/api/optimizer/reset', (req, res) => {
+  serverOptimizerState.shouldStop = true;
+  serverOptimizerState.isOptimizing = false;
+  serverOptimizerState.top10Trials = [];
+  serverOptimizerState.totalEvaluatedCount = 0;
+  serverOptimizerState.sessionSecondsLeft = 900;
+  const tf = (req.body?.timeframe || serverOptimizerState.timeframe || '5m').toString();
+  serverOptimizerState.adaptiveRanges = getDefaultRangesForTimeframe(tf);
+  serverOptimizerState.statusText = 'آزمایش‌ها و رنج‌های بهینه‌ساز در سرور بازنشانی شدند.';
+  res.json({ success: true, message: 'بهینه‌ساز سرور با موفقیت ریست شد.' });
+});
+
+// 6.5.6.5 Directly Evaluate Current Manual Config on Server Dataset
+app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
+  try {
+    const {
+      exchange = 'xt',
+      timeframe = '5m',
+      startTime,
+      endTime,
+      symbols,
+      strategyId = 'strategy_1_e_breakout',
+      candidate,
+      strategyConfig = {},
+      constraints = {},
+    } = req.body || {};
+
+    let datasetId = getRangeDatasetId(exchange, timeframe, startTime, endTime);
+    let entries = serverDatasetCandleCache.get(datasetId);
+    if (!entries || entries.length === 0) {
+      entries = await loadDatasetEntriesFromPostgres(datasetId, symbols);
+    }
+    if (!entries || entries.length === 0) {
+      const latestDs = await pool.query(
+        `SELECT id FROM candle_datasets WHERE status = 'COMPLETED' OR symbol_count > 0 ORDER BY updated_at DESC LIMIT 1;`
+      );
+      if (latestDs.rows.length > 0) {
+        entries = await loadDatasetEntriesFromPostgres(latestDs.rows[0].id, symbols);
+      }
+    }
+
+    if (!entries || entries.length === 0) {
+      return res.status(400).json({ success: false, error: 'داده کندلی در دیتابیس یافت نشد.' });
+    }
+
+    const cfg = strategyConfig || {};
+    const baseConfig = {
+      capital: Number(cfg.capital) || 10000,
+      riskMode: cfg.riskMode || 'percent',
+      riskAmountFixed: Number(cfg.riskAmountFixed) > 0 ? Number(cfg.riskAmountFixed) : 10,
+      riskPercent: Number(cfg.riskPercent) || 1.0,
+      entryCommissionPercent: Number(cfg.entryCommissionPercent) || 0.06,
+      exitCommissionPercent: Number(cfg.exitCommissionPercent) || 0.06,
+      commissionPercent: Number(cfg.commissionPercent) || 0.12,
+      maxCandlesToEnter: Number(cfg.maxCandlesToEnter) || 35,
+      noConcurrentPositions: Boolean(cfg.noConcurrentPositions !== false),
+      timeStopEnabled: cfg.timeStopEnabled !== false,
+    };
+
+    const targetConstraints = {
+      targetMaxDrawdown: Number(constraints.targetMaxDrawdown) || 20.0,
+      targetMinWinRate: Number(constraints.targetMinWinRate) || 40.0,
+      targetMinTrades: Number(constraints.targetMinTrades) || 100,
+    };
+
+    const evalRes = evaluateCombinationOnServer(candidate, entries, strategyId, baseConfig, targetConstraints);
+    if (!evalRes) {
+      return res.status(500).json({ success: false, error: 'ارزیابی انجام نشد.' });
+    }
+
+    const qualityScore = calculateQualityScore({
+      netProfit: evalRes.netProfit,
+      profitFactor: evalRes.profitFactor,
+      winRate: evalRes.winRate,
+      maxDrawdown: evalRes.maxDrawdown,
+      totalTrades: evalRes.totalTrades,
+      targetMaxDrawdown: targetConstraints.targetMaxDrawdown,
+      targetMinWinRate: targetConstraints.targetMinWinRate,
+      targetMinTrades: targetConstraints.targetMinTrades,
+    });
+
+    const hash = generateConfigHash(candidate);
+    const trial: ServerOptimizerTrial = {
+      id: serverOptimizerState.totalEvaluatedCount + 1,
+      hash,
+      timestamp: new Date().toLocaleTimeString('fa-IR'),
+      qualityScore,
+      ...candidate,
+      ...evalRes,
+    };
+
+    // Add to top 10 on server
+    const filtered = serverOptimizerState.top10Trials.filter((t) => t.hash !== trial.hash);
+    const merged = [...filtered, trial];
+    merged.sort((a, b) => {
+      if (a.isValid && !b.isValid) return -1;
+      if (!a.isValid && b.isValid) return 1;
+      const scoreDiff = (b.qualityScore || 0) - (a.qualityScore || 0);
+      if (Math.abs(scoreDiff) > 0.01) return scoreDiff;
+      return b.netProfit - a.netProfit;
+    });
+    serverOptimizerState.top10Trials = merged.slice(0, 10);
+    serverOptimizerState.totalEvaluatedCount++;
+
+    res.json({ success: true, trial });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

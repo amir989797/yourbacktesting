@@ -100,7 +100,6 @@ export interface OptimizerTabProps {
   setLockTimeStopCandles?: (val: boolean) => void;
   optTimeStopCandles?: number;
   setOptTimeStopCandles?: (val: number) => void;
-  onSyncCandles?: () => void;
   onEvaluateCurrentManualConfig?: () => void;
   onApplyTrialToManualScan?: (trial: OptimizationTrial) => void;
   onRunTrialInManualScan?: (trial: OptimizationTrial) => void;
@@ -184,7 +183,6 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
   setLockTimeStopCandles,
   optTimeStopCandles = 80,
   setOptTimeStopCandles,
-  onSyncCandles,
   onEvaluateCurrentManualConfig,
   onApplyTrialToManualScan,
   onRunTrialInManualScan,
@@ -1058,29 +1056,16 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                     </button>
                   )}
 
-                  {onSyncCandles && (
-                    <button
-                      type="button"
-                      onClick={onSyncCandles}
-                      disabled={isOptimizing}
-                      className="px-3.5 py-2 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
-                      title="بارگذاری و همگام‌سازی کندل‌های آخرین اسکن بکتست در حافظه بهینه‌ساز"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5 text-cyan-400" />
-                      <span>همگام‌سازی کندل‌های بکتست ({cachedCount} جفت‌ارز)</span>
-                    </button>
-                  )}
-
                   {onEvaluateCurrentManualConfig && (
                     <button
                       type="button"
                       onClick={onEvaluateCurrentManualConfig}
                       disabled={isOptimizing}
                       className="px-3.5 py-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
-                      title="ارزیابی مستقیم پارامترهای دستی فعلی در بهینه‌ساز جهت مقایسه و تطابق ۱۰۰٪ آمار"
+                      title="ارزیابی مستقیم پارامترهای دستی فعلی در بهینه‌ساز سرور جهت مقایسه و تطابق ۱۰۰٪ آمار"
                     >
                       <Zap className="w-3.5 h-3.5 text-amber-400" />
-                      <span>تست فوری کانفیگ دستی جاری</span>
+                      <span>تست فوری کانفیگ دستی در سرور</span>
                     </button>
                   )}
 

@@ -760,6 +760,43 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     return () => clearInterval(interval);
   }, [isOptimizing, sessionSecondsLeft]);
 
+  // همگام‌سازی پیوسته وضعیت بهینه‌ساز با بک‌اند سرور و دیتابیس PostgreSQL
+  useEffect(() => {
+    if (!isOpen || (activeTab !== 'optimizer' && !isOptimizing)) return;
+
+    let isSubscribed = true;
+    const fetchOptimizerStatus = async () => {
+      try {
+        const res = await fetch('/api/optimizer/status');
+        const data = await res.json();
+        if (isSubscribed && data && data.success && data.state) {
+          const s = data.state;
+          setIsOptimizing(Boolean(s.isOptimizing));
+          if (Array.isArray(s.top10Trials) && s.top10Trials.length > 0) {
+            setTop10Trials(s.top10Trials);
+          }
+          if (typeof s.totalEvaluatedCount === 'number') {
+            setTotalEvaluatedCount(s.totalEvaluatedCount);
+          }
+          if (typeof s.sessionSecondsLeft === 'number') {
+            setSessionSecondsLeft(s.sessionSecondsLeft);
+            sessionSecondsRef.current = s.sessionSecondsLeft;
+          }
+          if (s.adaptiveRanges && typeof s.adaptiveRanges === 'object') {
+            setAdaptiveRanges(s.adaptiveRanges);
+          }
+        }
+      } catch {}
+    };
+
+    fetchOptimizerStatus();
+    const interval = setInterval(fetchOptimizerStatus, 1000);
+    return () => {
+      isSubscribed = false;
+      clearInterval(interval);
+    };
+  }, [isOpen, activeTab, isOptimizing]);
+
   // بررسی وجود داده‌ها در پایگاه داده PostgreSQL برای بازه زمانی انتخابی
   // بررسی وجود داده‌ها در پایگاه داده PostgreSQL برای بازه زمانی انتخابی
   const checkCurrentRangeStatus = useCallback(async () => {
@@ -2580,8 +2617,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     }
   }, [noConcurrentPositions]);
 
-  // تست و ارزیابی مستقیم و آنی پارامترهای دستی جاری در بهینه‌ساز جهت اعتبارسنجی تطابق ۱۰۰٪
-  const handleEvaluateCurrentManualConfig = () => {
+  // تست و ارزیابی مستقیم و آنی پارامترهای دستی جاری در بهینه‌ساز بک‌اند و اتصال مستقیم به دیتابیس PostgreSQL
+  const handleEvaluateCurrentManualConfig = async () => {
     const candidate = {
       atrPeriod: optAtrPeriod,
       minCandles: optMinCandles,
@@ -2593,33 +2630,53 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       maxRiskReward: optMaxRiskReward,
       timeStopCandles: optTimeStopCandles,
     };
-    const evalRes = evaluateSingleCombination(candidate);
-    if (!evalRes) {
-      showToast('⚠️ داده‌های کندل در حافظه کش یافت نشد. لطفاً ابتدا روی «همگام‌سازی کندل‌های بکتست» کلیک کنید.');
-      return;
+    try {
+      showToast('⏳ در حال ارزیابی مستقیم کانفیگ در بک‌اند سرور با دیتابیس PostgreSQL...');
+      const res = await fetch('/api/optimizer/evaluate-candidate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          exchange: selectedExchange,
+          timeframe: timeframe,
+          startTime: timeRangeStartMs,
+          endTime: timeRangeEndMs,
+          symbols: selectedAllowedSymbols,
+          strategyId: selectedStrategyId,
+          candidate,
+          strategyConfig: {
+            capital,
+            riskMode,
+            riskPercent,
+            riskAmountFixed,
+            entryCommissionPercent,
+            exitCommissionPercent,
+            tradingFeePercent: (entryCommissionPercent || 0.05) + (exitCommissionPercent || 0.05),
+            noConcurrentPositions,
+            maxRiskReward: optMaxRiskReward,
+            optMaxRiskReward,
+            timeStopCandles: optTimeStopCandles,
+          },
+          constraints: {
+            targetMaxDrawdown,
+            targetMinWinRate,
+            targetMinTrades,
+          },
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        showToast(`⚠️ خطا در ارزیابی سرور: ${data.error || 'ارزیابی انجام نشد'}`);
+        return;
+      }
+      const trial = data.trial;
+      if (trial) {
+        setTop10Trials((prev) => updateTop10List(prev, trial));
+        setTotalEvaluatedCount((prev) => prev + 1);
+        showToast(`🎯 کانفیگ دستی جاری در سرور آزمایش شد: سود ${trial.netProfit >= 0 ? '+' : ''}${trial.netProfit} USDT | وین‌ریت ${trial.winRate}% | درودان ${trial.maxDrawdown}%`);
+      }
+    } catch (err: any) {
+      showToast(`خطا در ارتباط با سرور: ${err.message}`);
     }
-    const hash = generateConfigHash(candidate);
-    const qualityScore = calculateQualityScore({
-      netProfit: evalRes.netProfit,
-      profitFactor: evalRes.profitFactor,
-      winRate: evalRes.winRate,
-      maxDrawdown: evalRes.maxDrawdown,
-      totalTrades: evalRes.totalTrades,
-      targetMaxDrawdown,
-      targetMinWinRate,
-      targetMinTrades,
-    });
-    const trial: OptimizationTrial = {
-      id: totalEvaluatedCount + 1,
-      hash,
-      timestamp: new Date().toLocaleTimeString('fa-IR'),
-      qualityScore,
-      ...candidate,
-      ...evalRes,
-    };
-    setTop10Trials((prev) => updateTop10List(prev, trial));
-    setTotalEvaluatedCount((prev) => prev + 1);
-    showToast(`🎯 کانفیگ دستی جاری در بهینه‌ساز آزمایش شد: سود ${evalRes.netProfit >= 0 ? '+' : ''}${evalRes.netProfit} USDT | وین‌ریت ${evalRes.winRate}% | درودان ${evalRes.maxDrawdown}%`);
   };
 
   /**
@@ -2715,99 +2772,92 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     return merged.slice(0, 10);
   };
 
-  // حلقه پیوسته بهینه‌سازی (اجرای خودکار تا ۱۵ دقیقه یا توقف کاربر)
+  // حلقه پیوسته بهینه‌سازی در بک‌اند سرور با اتصال مستقیم به پایگاه‌داده PostgreSQL
   const handleStartAutoOptimization = async () => {
-    if (GLOBAL_CANDLE_CACHE.size === 0) {
-      showToast('در حال بررسی و همگام‌سازی کندل‌های بکتست از پایگاه داده PostgreSQL...');
-      if (rangeStatus?.exists || rangeStatus?.datasetId) {
-        await syncRangeCandlesToMemory(false);
-      }
-      if (GLOBAL_CANDLE_CACHE.size === 0) {
-        try {
-          const datasets = await getCloudSqlDatasets();
-          if (Array.isArray(datasets) && datasets.length > 0) {
-            await handleApplyCandleDataset(datasets[0] as any);
-          }
-        } catch {}
-      }
-    }
-
-    if (GLOBAL_CANDLE_CACHE.size === 0) {
-      showToast('⚠️ داده کندلی در حافظه کش یافت نشد. لطفاً ابتدا در تب «اسکن دستی بازار» دکمه شروع اسکن را بزنید تا داده‌ها دانلود شوند.');
-      setIsOptimizing(false);
-      return;
-    }
-
     setIsOptimizing(true);
-    stopOptimizerRef.current = false;
-
-    if (sessionSecondsLeft <= 0) {
-      setSessionSecondsLeft(900);
-      sessionSecondsRef.current = 900;
-    }
-
-    let localTop10 = [...top10Trials];
-    let localRanges = { ...adaptiveRanges };
-    let evaluatedCount = totalEvaluatedCount;
-
-    while (!stopOptimizerRef.current && sessionSecondsRef.current > 0) {
-      // تولید کاندیدای بعدی با استفاده از رنج‌های تطبیق‌پذیر
-      const candidate = getNextCandidateFromAdaptiveRanges(localRanges, visitedHashesRef.current, evaluatedCount);
-      if (!candidate) {
-        showToast('✅ تمامی ترکیب‌های موجود در رنج بهینه فعلی بدون تکرار آزمایش شدند.');
-        break;
-      }
-
-      const hash = generateConfigHash(candidate);
-      visitedHashesRef.current.add(hash);
-
-      const evalRes = evaluateSingleCombination(candidate);
-      evaluatedCount++;
-      setTotalEvaluatedCount(evaluatedCount);
-
-      if (evalRes) {
-        const qualityScore = calculateQualityScore({
-          netProfit: evalRes.netProfit,
-          profitFactor: evalRes.profitFactor,
-          winRate: evalRes.winRate,
-          maxDrawdown: evalRes.maxDrawdown,
-          totalTrades: evalRes.totalTrades,
+    showToast('🚀 در حال راه‌اندازی فرآیند بهینه‌سازی در بک‌اند سرور با اتصال مستقیم به PostgreSQL...');
+    try {
+      const payload = {
+        exchange: selectedExchange,
+        timeframe: timeframe,
+        startTime: timeRangeStartMs,
+        endTime: timeRangeEndMs,
+        symbols: selectedAllowedSymbols,
+        strategyId: selectedStrategyId,
+        strategyConfig: {
+          capital,
+          riskMode,
+          riskPercent,
+          riskAmountFixed,
+          entryCommissionPercent,
+          exitCommissionPercent,
+          tradingFeePercent: (entryCommissionPercent || 0.05) + (exitCommissionPercent || 0.05),
+          noConcurrentPositions,
+          atrPeriod: optAtrPeriod,
+          minCandles: optMinCandles,
+          minCandlesForLongLeg: optMinCandlesLong,
+          atrMultiplier: optAtrMultiplier,
+          longLegAtrMultiplier: optLongLegAtrMult,
+          maxBlueLegPercent: optMaxBlueLegPercent,
+          maxBreakoutAtrMultiplier: optMaxBreakoutAtr,
+          maxRiskReward: optMaxRiskReward,
+          optMaxRiskReward,
+          timeStopCandles: optTimeStopCandles,
+        },
+        constraints: {
           targetMaxDrawdown,
           targetMinWinRate,
           targetMinTrades,
-        });
+        },
+        ranges: adaptiveRanges,
+        locks: {
+          lockAtrPeriod,
+          lockMinCandles,
+          lockMinCandlesLong,
+          lockAtrMultiplier,
+          lockLongLegAtrMult,
+          lockMaxBlueLegPercent,
+          lockMaxBreakoutAtr,
+          lockMaxRiskReward,
+          lockTimeStopCandles,
+        },
+        autoAdaptiveEnabled,
+      };
 
-        const trial: OptimizationTrial = {
-          id: evaluatedCount,
-          hash,
-          timestamp: new Date().toLocaleTimeString('fa-IR'),
-          qualityScore,
-          ...candidate,
-          ...evalRes,
-        };
-
-        // ۱. به‌روزرسانی جدول (فقط ۱۰ تست برتر) بر مبنای کیفیت چندمعیاره
-        localTop10 = updateTop10List(localTop10, trial);
-        setTop10Trials(localTop10);
-
-        // ۲. به‌روزرسانی هوشمند بیزی رنج‌های پارامترها و انقباض حول خوشه برنده
-        localRanges = refineAdaptiveRangesSmart(localRanges, localTop10, evaluatedCount, autoAdaptiveEnabled);
-        setAdaptiveRanges(localRanges);
+      const res = await fetch('/api/optimizer/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        setIsOptimizing(false);
+        showToast(`❌ خطا در اجرای بهینه‌ساز در سرور: ${data.error || 'خطای سرور'}`);
+        return;
       }
-
-      // تاخیر کوتاه ۲۰ میلی‌ثانیه‌ای برای روانی مطلق مرورگر
-      await new Promise((r) => setTimeout(r, 20));
+      setIsOptimizing(true);
+      showToast(data.message || '✅ بهینه‌سازی هوشمند در سرور با موفقیت آغاز شد.');
+    } catch (err: any) {
+      setIsOptimizing(false);
+      showToast(`❌ خطا در ارتباط با سرور: ${err.message}`);
     }
-
-    setIsOptimizing(false);
   };
 
-  const handleStopOptimization = () => {
-    stopOptimizerRef.current = true;
+  const handleStopOptimization = async () => {
     setIsOptimizing(false);
+    try {
+      const res = await fetch('/api/optimizer/stop', { method: 'POST' });
+      const data = await res.json();
+      showToast(data.message || '⏸️ بهینه‌سازی در سرور متوقف شد.');
+    } catch (err: any) {
+      showToast('خطا در توقف بهینه‌ساز سرور');
+    }
   };
 
-  const handleResetOptimizer = () => {
+  const handleResetOptimizer = async () => {
+    try {
+      await fetch('/api/optimizer/reset', { method: 'POST' });
+    } catch {}
     setTop10Trials([]);
     setAdaptiveRanges(DEFAULT_RANGES);
     setTotalEvaluatedCount(0);
@@ -2819,7 +2869,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       localStorage.removeItem('zigzag_opt_ranges_v5');
       localStorage.removeItem('zigzag_opt_total_count_v5');
     } catch {}
-    showToast('🔄 تمام آزمایش‌ها، ترکیب‌ها و رنج‌های بهینه‌ساز با موفقیت پاک و بازنشانی شدند.');
+    showToast('🔄 تمام آزمایش‌ها، ترکیب‌ها و رنج‌های بهینه‌ساز با موفقیت در سرور و کلاینت پاک و بازنشانی شدند.');
   };
 
   // بهترین ترکیب برنده مستقیماً از ردیف اول ۱۰ تست برتر
@@ -3397,7 +3447,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setLockTimeStopCandles={setLockTimeStopCandles}
             optTimeStopCandles={optTimeStopCandles}
             setOptTimeStopCandles={setOptTimeStopCandles}
-            onSyncCandles={() => syncRangeCandlesToMemory(true)}
             onEvaluateCurrentManualConfig={handleEvaluateCurrentManualConfig}
             onApplyTrialToManualScan={applyTrialToManualInputs}
             onRunTrialInManualScan={handleRunTrialInManualScan}
