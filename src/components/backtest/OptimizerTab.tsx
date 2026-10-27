@@ -1249,7 +1249,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                         const isTheBest = idx === 0;
                         return (
                           <tr
-                            key={row.hash || row.id}
+                            key={`${row.hash || row.id}_${idx}`}
                             className={`hover:bg-[#161c28] transition-colors ${
                               isTheBest ? 'bg-amber-950/30 border-r-4 border-amber-400' : ''
                             }`}

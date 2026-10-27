@@ -928,7 +928,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   // =========================================================
   // اسکن مستقل و پایدار بک‌تست در پس‌زمینه سرور (ذخیره مستقیم در PostgreSQL)
   // =========================================================
-  const handleStartScan = async (forceRedownload?: boolean) => {
+  const handleStartScan = async (forceRedownload?: boolean, overrideConfig?: Partial<StrategyConfig>) => {
     // اگر داده‌های این بازه در دیتابیس وجود دارد و هنوز انتخابی انجام نشده، مودال تایید را نشان بده
     if (forceRedownload === undefined && rangeStatus?.exists) {
       setIsRescanPromptOpen(true);
@@ -961,34 +961,34 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           strategyId: selectedStrategyId,
           forceRedownload: Boolean(forceRedownload),
           strategyConfig: {
-            capital,
-            riskMode,
-            riskPercent,
-            riskAmountFixed,
-            entryCommissionPercent,
-            exitCommissionPercent,
-            maxRiskReward: optMaxRiskReward,
-            optMaxRiskReward,
-            maxCandlesToEnter,
-            atrPeriod: optAtrPeriod,
-            optAtrPeriod,
-            atrMultiplier: optAtrMultiplier,
-            optAtrMultiplier,
-            minCandles: optMinCandles,
-            optMinCandles,
-            minCandlesForLongLeg: optMinCandlesLong,
-            optMinCandlesLong,
-            longLegAtrMultiplier: optLongLegAtrMult,
-            optLongLegAtrMult,
-            maxBlueLegPercent: optMaxBlueLegPercent,
-            optMaxBlueLegPercent,
-            maxBreakoutAtrMultiplier: optMaxBreakoutAtr,
-            optMaxBreakoutAtr,
-            noConcurrentPositions,
-            timeStopEnabled: optTimeStopEnabled,
-            optTimeStopEnabled,
-            timeStopCandles: optTimeStopCandles,
-            optTimeStopCandles,
+            capital: overrideConfig?.capital ?? capital,
+            riskMode: overrideConfig?.riskMode ?? riskMode,
+            riskPercent: overrideConfig?.riskPercent ?? riskPercent,
+            riskAmountFixed: overrideConfig?.riskAmountFixed ?? riskAmountFixed,
+            entryCommissionPercent: overrideConfig?.entryCommissionPercent ?? entryCommissionPercent,
+            exitCommissionPercent: overrideConfig?.exitCommissionPercent ?? exitCommissionPercent,
+            maxRiskReward: overrideConfig?.maxRiskReward ?? optMaxRiskReward,
+            optMaxRiskReward: overrideConfig?.maxRiskReward ?? optMaxRiskReward,
+            maxCandlesToEnter: overrideConfig?.maxCandlesToEnter ?? maxCandlesToEnter,
+            atrPeriod: overrideConfig?.atrPeriod ?? optAtrPeriod,
+            optAtrPeriod: overrideConfig?.atrPeriod ?? optAtrPeriod,
+            atrMultiplier: overrideConfig?.atrMultiplier ?? optAtrMultiplier,
+            optAtrMultiplier: overrideConfig?.atrMultiplier ?? optAtrMultiplier,
+            minCandles: overrideConfig?.minCandles ?? optMinCandles,
+            optMinCandles: overrideConfig?.minCandles ?? optMinCandles,
+            minCandlesForLongLeg: overrideConfig?.minCandlesForLongLeg ?? optMinCandlesLong,
+            optMinCandlesLong: overrideConfig?.minCandlesForLongLeg ?? optMinCandlesLong,
+            longLegAtrMultiplier: overrideConfig?.longLegAtrMultiplier ?? optLongLegAtrMult,
+            optLongLegAtrMult: overrideConfig?.longLegAtrMultiplier ?? optLongLegAtrMult,
+            maxBlueLegPercent: overrideConfig?.maxBlueLegPercent ?? optMaxBlueLegPercent,
+            optMaxBlueLegPercent: overrideConfig?.maxBlueLegPercent ?? optMaxBlueLegPercent,
+            maxBreakoutAtrMultiplier: overrideConfig?.maxBreakoutAtrMultiplier ?? optMaxBreakoutAtr,
+            optMaxBreakoutAtr: overrideConfig?.maxBreakoutAtrMultiplier ?? optMaxBreakoutAtr,
+            noConcurrentPositions: overrideConfig?.noConcurrentPositions ?? noConcurrentPositions,
+            timeStopEnabled: overrideConfig?.timeStopEnabled ?? optTimeStopEnabled,
+            optTimeStopEnabled: overrideConfig?.timeStopEnabled ?? optTimeStopEnabled,
+            timeStopCandles: overrideConfig?.timeStopCandles ?? optTimeStopCandles,
+            optTimeStopCandles: overrideConfig?.timeStopCandles ?? optTimeStopCandles,
           },
         }),
       });
@@ -1100,7 +1100,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     }
 
     const rawTrades = [...allCollectedTrades].filter(
-      (t) => t.status === 'WIN' || t.status === 'LOSS' || (t.exitPrice !== undefined && t.exitPrice > 0)
+      (t) => t.status === 'WIN' || t.status === 'LOSS' || t.status === 'BREAKEVEN'
     );
     const rawTradesCount = rawTrades.length;
 
@@ -2345,23 +2345,46 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     overrideNoConcurrent?: boolean
   ) => {
     // ۱. استخراج جفت‌ارزهای یکتا از کش برای جلوگیری از شمارش مضاعف (Deduplication)
+    const cleanSym = (s: string) => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
     const allowedSet =
       selectedAllowedSymbols && selectedAllowedSymbols.length > 0
-        ? new Set(selectedAllowedSymbols.map((s) => s.toUpperCase()))
+        ? new Set(selectedAllowedSymbols.map((s) => cleanSym(s)))
         : null;
 
     const uniqueMap = new Map<string, { pair: CryptoPair; candles: CandleData[]; timeframe: string }>();
+    const targetTf = (timeframe || '').toLowerCase();
+
     for (const entry of Array.from(GLOBAL_CANDLE_CACHE.values())) {
       if (entry && entry.candles && entry.candles.length >= 50 && entry.pair?.symbol) {
-        const sym = entry.pair.symbol.toUpperCase();
-        if (allowedSet && !allowedSet.has(sym)) continue;
-        if (!entry.timeframe || entry.timeframe === timeframe) {
-          if (!uniqueMap.has(sym)) {
-            uniqueMap.set(sym, entry);
+        const rawSym = entry.pair.symbol;
+        const normSym = cleanSym(rawSym);
+        if (allowedSet && !allowedSet.has(normSym)) continue;
+
+        const entryTf = (entry.timeframe || '').toLowerCase();
+        if (!entryTf || entryTf === targetTf) {
+          if (!uniqueMap.has(normSym)) {
+            uniqueMap.set(normSym, entry);
           }
         }
       }
     }
+
+    // در صورتی که فیلتر نمادها به علت تفاوت نام‌گذاری موردی را نیافت، از کلیه کندل‌های معتبر استفاده می‌شود
+    if (uniqueMap.size === 0 && allowedSet) {
+      for (const entry of Array.from(GLOBAL_CANDLE_CACHE.values())) {
+        if (entry && entry.candles && entry.candles.length >= 50 && entry.pair?.symbol) {
+          const normSym = cleanSym(entry.pair.symbol);
+          const entryTf = (entry.timeframe || '').toLowerCase();
+          if (!entryTf || entryTf === targetTf) {
+            if (!uniqueMap.has(normSym)) {
+              uniqueMap.set(normSym, entry);
+            }
+          }
+        }
+      }
+    }
+
     const cachedEntries = Array.from(uniqueMap.values());
     if (cachedEntries.length === 0) return null;
 
@@ -2424,8 +2447,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           (t: any) =>
             t.status === 'WIN' ||
             t.status === 'LOSS' ||
-            t.status === 'BREAKEVEN' ||
-            (t.exitPrice !== undefined && t.exitPrice > 0)
+            t.status === 'BREAKEVEN'
         )
         .map((t: any, tIdx: number) => ({
           ...t,
@@ -2676,7 +2698,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     currentTop10: OptimizationTrial[],
     newTrial: OptimizationTrial
   ): OptimizationTrial[] => {
-    const merged = [...currentTop10, newTrial];
+    // جلوگیری قطعی از تکرار هش یکسان در لیست ۱۰ آزمایش برتر
+    const filtered = currentTop10.filter((t) => t.hash !== newTrial.hash);
+    const merged = [...filtered, newTrial];
 
     // مرتب‌سازی بر اساس: ۱. قبولی در شروط  ۲. بیشترین نمره کیفیت هوشمند ۳. بیشترین سود خالص
     merged.sort((a, b) => {
@@ -2694,14 +2718,24 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   // حلقه پیوسته بهینه‌سازی (اجرای خودکار تا ۱۵ دقیقه یا توقف کاربر)
   const handleStartAutoOptimization = async () => {
     if (GLOBAL_CANDLE_CACHE.size === 0) {
-      if (rangeStatus?.exists) {
-        showToast('در حال همگام‌سازی کندل‌های بکتست از دیتابیس...');
+      showToast('در حال بررسی و همگام‌سازی کندل‌های بکتست از پایگاه داده PostgreSQL...');
+      if (rangeStatus?.exists || rangeStatus?.datasetId) {
         await syncRangeCandlesToMemory(false);
       }
       if (GLOBAL_CANDLE_CACHE.size === 0) {
-        showToast('در حال دانلود اولیه داده‌های بازار برای کش...');
-        await handleStartScan(false);
+        try {
+          const datasets = await getCloudSqlDatasets();
+          if (Array.isArray(datasets) && datasets.length > 0) {
+            await handleApplyCandleDataset(datasets[0] as any);
+          }
+        } catch {}
       }
+    }
+
+    if (GLOBAL_CANDLE_CACHE.size === 0) {
+      showToast('⚠️ داده کندلی در حافظه کش یافت نشد. لطفاً ابتدا در تب «اسکن دستی بازار» دکمه شروع اسکن را بزنید تا داده‌ها دانلود شوند.');
+      setIsOptimizing(false);
+      return;
     }
 
     setIsOptimizing(true);
@@ -2849,8 +2883,18 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     setActiveTab('scanner');
     showToast(`🚀 پارامترهای ردیف #${trial.id} به اسکن دستی منتقل شد. در حال شروع اسکن...`);
     setTimeout(() => {
-      handleStartScan(false);
-    }, 250);
+      handleStartScan(false, {
+        atrPeriod: trial.atrPeriod,
+        minCandles: trial.minCandles,
+        minCandlesForLongLeg: trial.minCandlesForLongLeg,
+        atrMultiplier: trial.atrMultiplier,
+        longLegAtrMultiplier: trial.longLegAtrMultiplier,
+        maxBlueLegPercent: trial.maxBlueLegPercent,
+        maxBreakoutAtrMultiplier: trial.maxBreakoutAtrMultiplier,
+        maxRiskReward: trial.maxRiskReward,
+        timeStopCandles: trial.timeStopCandles,
+      });
+    }, 200);
   };
 
   // خروجی JSON فوق سبک (تنها ۱۰ تست برتر + رنج‌های بهینه)

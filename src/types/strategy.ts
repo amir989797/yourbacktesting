@@ -19,6 +19,23 @@ export interface StrategyParams {
   symbol?: string; // نماد جفت‌ارز اختیاری برای اعمال گام اعشار و استپ‌سایز صرافی
   timeStopEnabled?: boolean; // فعال‌بودن خروج زمانی (Time-Stop)
   timeStopCandles?: number; // حداکثر تعداد کندل مجاز برای ماندن در معامله (مثلاً ۸۰ کندل)
+  atrPeriod?: number;
+  optAtrPeriod?: number;
+  atrMultiplier?: number;
+  optAtrMultiplier?: number;
+  minCandles?: number;
+  optMinCandles?: number;
+  minCandlesForLongLeg?: number;
+  optMinCandlesLong?: number;
+  longLegAtrMultiplier?: number;
+  optLongLegAtrMult?: number;
+  maxBlueLegPercent?: number;
+  optMaxBlueLegPercent?: number;
+  maxBreakoutAtrMultiplier?: number;
+  optMaxBreakoutAtr?: number;
+  optMaxRiskReward?: number;
+  optTimeStopEnabled?: boolean;
+  optTimeStopCandles?: number;
 }
 
 export type StrategyConfig = StrategyParams;
