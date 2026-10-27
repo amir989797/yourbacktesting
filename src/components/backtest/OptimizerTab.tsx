@@ -626,7 +626,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   </div>
                 </div>
 
-                {/* 9. Time-Stop (خروج زمانی) - رنج با گام ۱۰ تا ۱۰ تا */}
+                {/* 9. Time-Stop (خروج زمانی) - رنج با گام ۵ تا ۵ تا */}
                 <div className="bg-[#0e121a] p-2.5 rounded-xl border border-cyan-500/40 space-y-1.5 shadow-sm">
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] font-bold text-cyan-300">۹. خروج زمانی (Time-Stop)</span>
@@ -639,12 +639,11 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                       <span>حداقل:</span>
                       <input
                         type="number"
-                        step={adaptiveRanges.timeStopCandles?.step ?? 10}
-                        min={10}
-                        max={300}
+                        step={adaptiveRanges.timeStopCandles?.step ?? 5}
+                        min={0}
                         value={adaptiveRanges.timeStopCandles?.min ?? 20}
                         disabled={isOptimizing || lockTimeStopCandles}
-                        onChange={(e) => handleUpdateParamRange('timeStopCandles', 'min', parseFloat(e.target.value) || 10)}
+                        onChange={(e) => handleUpdateParamRange('timeStopCandles', 'min', parseFloat(e.target.value) || 0)}
                         className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
                       />
                     </div>
@@ -652,19 +651,18 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                       <span>حداکثر:</span>
                       <input
                         type="number"
-                        step={adaptiveRanges.timeStopCandles?.step ?? 10}
-                        min={10}
-                        max={300}
+                        step={adaptiveRanges.timeStopCandles?.step ?? 5}
+                        min={0}
                         value={adaptiveRanges.timeStopCandles?.max ?? 120}
                         disabled={isOptimizing || lockTimeStopCandles}
-                        onChange={(e) => handleUpdateParamRange('timeStopCandles', 'max', parseFloat(e.target.value) || 120)}
+                        onChange={(e) => handleUpdateParamRange('timeStopCandles', 'max', parseFloat(e.target.value) || 0)}
                         className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
                       />
                     </div>
                   </div>
                   <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5 border-t border-[#1a2230]">
                     <span>بهترین مقدار: <strong className="text-amber-300 font-mono">{adaptiveRanges.timeStopCandles?.bestVal ?? 80} کندل</strong></span>
-                    <span className="text-cyan-400 font-mono font-bold">گام: ۱۰ کندل</span>
+                    <span className="text-cyan-400 font-mono font-bold">گام: {adaptiveRanges.timeStopCandles?.step ?? 5} کندل</span>
                   </div>
                 </div>
               </div>

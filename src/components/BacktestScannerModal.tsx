@@ -631,47 +631,31 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     showToast(`🎯 رنج‌های پارامترها با موفقیت بر اساس تایم‌فریم ${timeframe} و استراتژی هوشمندانه کالیبره شدند.`);
   };
 
-  // ویرایش دستی محدوده حداقل و حداکثر برای هر پارامتر (بدون محدودیت سقف تصنعی)
+  // ویرایش دستی محدوده حداقل و حداکثر برای هر پارامتر (بدون محدودیت سقف تصنعی یا دستکاری فیلد مقابل هنگام تایپ)
   const handleUpdateParamRange = (key: keyof AdaptiveRanges, field: 'min' | 'max', value: number) => {
     setAdaptiveRanges((prev) => {
       const cur = { ...prev[key] };
       const safeVal = isNaN(value) ? 0 : value;
 
       if (field === 'min') {
-        const nextMin = Math.max(0, parseFloat(safeVal.toFixed(2)));
-        cur.min = nextMin;
-        // در صورت عبور حداقل از حداکثر، سقف به جلو رانده می‌شود تا پارامتر مسدود نشود
-        if (cur.min >= cur.max) {
-          cur.max = parseFloat((cur.min + cur.step).toFixed(2));
-        }
-        if (cur.min < cur.globalMin) {
-          cur.globalMin = cur.min;
-        }
-        if (cur.max > cur.globalMax) {
-          cur.globalMax = cur.max;
-        }
+        cur.min = Math.max(0, parseFloat(safeVal.toFixed(2)));
+        if (cur.min < cur.globalMin) cur.globalMin = cur.min;
+        if (cur.min > cur.globalMax) cur.globalMax = cur.min;
       } else {
-        // فیلد حداکثر: بدون هیچ‌گونه سقف یا محدودیت بالا؛ کاربر می‌تواند به هر میزان دلخواه آن را افزایش دهد
-        const nextMax = Math.max(0, parseFloat(safeVal.toFixed(2)));
-        cur.max = nextMax;
-        // در صورت کاهش حداکثر به کمتر از حداقل، حداقل تنظیم می‌شود
-        if (cur.max <= cur.min) {
-          cur.min = Math.max(0, parseFloat((cur.max - cur.step).toFixed(2)));
-        }
-        // گسترش خودکار دامنه کلی جهت پوشش کامل رنج دلخواه کاربر
-        if (cur.max > cur.globalMax) {
-          cur.globalMax = cur.max;
-        }
-        if (cur.min < cur.globalMin) {
-          cur.globalMin = cur.min;
-        }
+        cur.max = Math.max(0, parseFloat(safeVal.toFixed(2)));
+        if (cur.max > cur.globalMax) cur.globalMax = cur.max;
+        if (cur.max < cur.globalMin) cur.globalMin = cur.max;
       }
 
       cur.isManualOverride = true;
-      const span = Math.max(0, cur.max - cur.min);
+      const span = Math.abs(cur.max - cur.min);
       const globalSpan = Math.max(span, cur.globalMax - cur.globalMin);
       cur.convergence = globalSpan > 0 ? Math.round(Math.max(0, Math.min(100, (1 - span / globalSpan) * 100))) : 50;
-      return { ...prev, [key]: cur };
+      const updated = { ...prev, [key]: cur };
+      try {
+        localStorage.setItem('zigzag_opt_ranges_v5', JSON.stringify(updated));
+      } catch {}
+      return updated;
     });
   };
 
@@ -782,7 +766,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setSessionSecondsLeft(s.sessionSecondsLeft);
             sessionSecondsRef.current = s.sessionSecondsLeft;
           }
-          if (s.adaptiveRanges && typeof s.adaptiveRanges === 'object') {
+          // بسیار مهم: فقط در صورتی که بهینه‌ساز در سرور در حال اجرا باشد (s.isOptimizing)، رنج‌های تطبیق‌پذیر سرور دریافت می‌شوند
+          // تا تغییرات دستی و تایپ کاربر در ورودی‌های رنج با مقادیر سرور بازنویسی و ریست نشوند!
+          if (s.isOptimizing && s.adaptiveRanges && typeof s.adaptiveRanges === 'object') {
             setAdaptiveRanges(s.adaptiveRanges);
           }
         }
@@ -790,7 +776,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     };
 
     fetchOptimizerStatus();
-    const interval = setInterval(fetchOptimizerStatus, 1000);
+    const interval = setInterval(fetchOptimizerStatus, isOptimizing ? 1000 : 3000);
     return () => {
       isSubscribed = false;
       clearInterval(interval);

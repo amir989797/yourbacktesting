@@ -147,7 +147,7 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
       maxBlueLegPercent: makeRange(35, 75, 20, 90, 55, 5),
       maxBreakoutAtrMultiplier: makeRange(2.0, 5.5, 1.0, 8.0, 3.5, 0.5),
       maxRiskReward: makeRange(1.5, 4.5, 1.0, 10.0, 2.5, 0.25),
-      timeStopCandles: makeRange(20, 120, 10, 200, 80, 10),
+      timeStopCandles: makeRange(20, 120, 5, 200, 80, 5),
     };
   }
 
@@ -161,7 +161,7 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
       maxBlueLegPercent: makeRange(30, 70, 20, 85, 50, 5),
       maxBreakoutAtrMultiplier: makeRange(1.5, 5.0, 1.0, 7.0, 3.0, 0.5),
       maxRiskReward: makeRange(1.5, 7.0, 1.0, 12.0, 3.5, 0.5),
-      timeStopCandles: makeRange(20, 120, 10, 200, 60, 10),
+      timeStopCandles: makeRange(20, 120, 5, 200, 60, 5),
     };
   }
 
@@ -175,7 +175,7 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
     maxBlueLegPercent: makeRange(35, 75, 25, 85, 55, 5),
     maxBreakoutAtrMultiplier: makeRange(1.8, 5.5, 1.0, 7.5, 3.5, 0.5),
     maxRiskReward: makeRange(1.5, 6.0, 1.0, 10.0, 3.0, 0.5),
-    timeStopCandles: makeRange(20, 120, 10, 200, 80, 10),
+    timeStopCandles: makeRange(20, 120, 5, 200, 80, 5),
   };
 }
 
@@ -234,6 +234,7 @@ export function refineAdaptiveRangesSmart(
     'maxBlueLegPercent',
     'maxBreakoutAtrMultiplier',
     'maxRiskReward',
+    'timeStopCandles',
   ];
 
   for (const key of keys) {
