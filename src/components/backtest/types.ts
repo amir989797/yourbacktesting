@@ -65,6 +65,10 @@ export interface ParameterRange {
   max: number;
   globalMin: number;
   globalMax: number;
+  boundMin?: number;
+  boundMax?: number;
+  userMin?: number;
+  userMax?: number;
   bestVal: number;
   bestValProfit?: number;
   bestValScore?: number;
@@ -130,6 +134,10 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
       max,
       globalMin,
       globalMax,
+      boundMin: min,
+      boundMax: max,
+      userMin: min,
+      userMax: max,
       bestVal,
       step,
       convergence,

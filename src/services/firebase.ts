@@ -12,16 +12,23 @@ import {
 import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-export const auth = getAuth(app);
+let _authInstance: any = null;
+export function getAuthInstance() {
+  if (!_authInstance) {
+    _authInstance = getAuth(app);
+  }
+  return _authInstance;
+}
+export const auth = null as any; // Legacy placeholder; no active eager iframe instantiation
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 
 export async function loginWithGoogle() {
   const provider = new GoogleAuthProvider();
-  return signInWithPopup(auth, provider);
+  return signInWithPopup(getAuthInstance(), provider);
 }
 
 export async function logoutUser() {
-  return signOut(auth);
+  return signOut(getAuthInstance());
 }
 
 export async function recordUserLoginInFirestore(username: string): Promise<void> {

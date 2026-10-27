@@ -2410,7 +2410,8 @@ function refineAdaptiveRangesSmart(
   currentRanges: any,
   eliteTrials: any[],
   totalEvaluated: number,
-  autoAdaptiveEnabled: boolean
+  autoAdaptiveEnabled: boolean,
+  locks?: any
 ): any {
   if (!autoAdaptiveEnabled || !eliteTrials || eliteTrials.length < 2) return currentRanges;
 
@@ -2431,10 +2432,59 @@ function refineAdaptiveRangesSmart(
     'timeStopCandles',
   ];
 
+  const lockKeyMap: Record<string, { lockProp: string; valProp: string }> = {
+    atrPeriod: { lockProp: 'lockAtrPeriod', valProp: 'optAtrPeriod' },
+    minCandles: { lockProp: 'lockMinCandles', valProp: 'optMinCandles' },
+    minCandlesForLongLeg: { lockProp: 'lockMinCandlesLong', valProp: 'optMinCandlesLong' },
+    atrMultiplier: { lockProp: 'lockAtrMultiplier', valProp: 'optAtrMultiplier' },
+    longLegAtrMultiplier: { lockProp: 'lockLongLegAtrMult', valProp: 'optLongLegAtrMult' },
+    maxBlueLegPercent: { lockProp: 'lockMaxBlueLegPercent', valProp: 'optMaxBlueLegPercent' },
+    maxBreakoutAtrMultiplier: { lockProp: 'lockMaxBreakoutAtr', valProp: 'optMaxBreakoutAtr' },
+    maxRiskReward: { lockProp: 'lockMaxRiskReward', valProp: 'optMaxRiskReward' },
+    timeStopCandles: { lockProp: 'lockTimeStopCandles', valProp: 'optTimeStopCandles' },
+  };
+
   for (const key of keys) {
     if (!nextRanges[key]) continue;
     const r = { ...nextRanges[key] };
-    if (r.isManualOverride) continue;
+
+    // Pin locked parameters strictly to locked value with 100% convergence
+    const mapping = lockKeyMap[key];
+    if (locks && mapping && locks[mapping.lockProp]) {
+      const lockedVal = Number(locks[mapping.valProp]);
+      if (!isNaN(lockedVal)) {
+        r.bestVal = lockedVal;
+        r.min = lockedVal;
+        r.max = lockedVal;
+        r.boundMin = lockedVal;
+        r.boundMax = lockedVal;
+        r.userMin = lockedVal;
+        r.userMax = lockedVal;
+        r.convergence = 100;
+        r.isManualOverride = true;
+        nextRanges[key] = r;
+        continue;
+      }
+    }
+
+    // Determine user-defined hard boundaries
+    const boundMin = Number(r.userMin ?? r.boundMin ?? r.min);
+    const boundMax = Number(r.userMax ?? r.boundMax ?? r.max);
+    const hardMin = Math.min(boundMin, boundMax);
+    const hardMax = Math.max(boundMin, boundMax);
+
+    if (hardMin >= hardMax) {
+      r.min = hardMin;
+      r.max = hardMax;
+      r.boundMin = hardMin;
+      r.boundMax = hardMax;
+      r.userMin = hardMin;
+      r.userMax = hardMax;
+      r.bestVal = hardMin;
+      r.convergence = 100;
+      nextRanges[key] = r;
+      continue;
+    }
 
     const values = samplePool.map((t) => Number(t[key]) || 0);
     let weightedSum = 0;
@@ -2445,32 +2495,49 @@ function refineAdaptiveRangesSmart(
       totalWeight += weight;
     }
     const center = totalWeight > 0 ? weightedSum / totalWeight : values.reduce((a, b) => a + b, 0) / values.length;
+    const safeCenter = Math.max(hardMin, Math.min(hardMax, center));
 
-    const variance = values.reduce((sum, v) => sum + Math.pow(v - center, 2), 0) / values.length;
+    const variance = values.reduce((sum, v) => sum + Math.pow(v - safeCenter, 2), 0) / values.length;
     const stdDev = Math.sqrt(variance);
 
-    const coolingFactor = Math.max(0.45, 1.0 - (totalEvaluated / 1200));
-    const spread = Math.max(r.step * 1.5, (stdDev * 1.6 + r.step * 2) * coolingFactor);
+    // Simulated annealing cooling factor: contracts gracefully over iterations
+    const coolingFactor = Math.max(0.35, 1.0 - (totalEvaluated / 1200));
+    const step = Number(r.step) > 0 ? Number(r.step) : 1;
+    const spread = Math.max(step * 1.5, (stdDev * 1.5 + step * 2) * coolingFactor);
 
-    let newMin = Math.max(r.globalMin, center - spread);
-    let newMax = Math.min(r.globalMax, center + spread);
+    // Narrowed range around winning cluster
+    let newMin = safeCenter - spread;
+    let newMax = safeCenter + spread;
 
-    newMin = Math.round(newMin / r.step) * r.step;
-    newMax = Math.round(newMax / r.step) * r.step;
+    newMin = Math.round(newMin / step) * step;
+    newMax = Math.round(newMax / step) * step;
 
-    if (newMax - newMin < r.step * 3) {
-      newMin = Math.max(r.globalMin, center - r.step * 2);
-      newMax = Math.min(r.globalMax, center + r.step * 2);
+    // STRICT INVARIANT: newMin and newMax MUST NEVER fall outside [hardMin, hardMax]!
+    newMin = Math.max(hardMin, Math.min(hardMax, newMin));
+    newMax = Math.min(hardMax, Math.max(hardMin, newMax));
+
+    if (newMax - newMin < step * 2) {
+      newMin = Math.max(hardMin, safeCenter - step);
+      newMax = Math.min(hardMax, safeCenter + step);
     }
 
+    // Re-verify strictly within bounds
+    newMin = Math.max(hardMin, Math.min(hardMax, newMin));
+    newMax = Math.min(hardMax, Math.max(hardMin, newMax));
+
     const bestTrial = samplePool[0];
-    r.bestVal = Number(bestTrial[key]);
+    const rawBestVal = Number(bestTrial[key]);
+    r.bestVal = Math.max(hardMin, Math.min(hardMax, isNaN(rawBestVal) ? safeCenter : rawBestVal));
     r.min = parseFloat(newMin.toFixed(2));
     r.max = parseFloat(newMax.toFixed(2));
+    r.boundMin = hardMin;
+    r.boundMax = hardMax;
+    r.userMin = hardMin;
+    r.userMax = hardMax;
 
     const span = r.max - r.min;
-    const globalSpan = r.globalMax - r.globalMin;
-    r.convergence = Math.round(Math.max(0, Math.min(100, (1 - span / globalSpan) * 100)));
+    const totalSpan = hardMax - hardMin;
+    r.convergence = totalSpan > 0 ? Math.round(Math.max(0, Math.min(100, (1 - span / totalSpan) * 100))) : 100;
 
     nextRanges[key] = r;
   }
@@ -2486,7 +2553,7 @@ function getDefaultRangesForTimeframe(timeframe: string): any {
     const span = max - min;
     const globalSpan = globalMax - globalMin;
     const convergence = Math.round(Math.max(10, Math.min(95, (1 - span / globalSpan) * 100)));
-    return { min, max, globalMin, globalMax, bestVal, step, convergence, isManualOverride: false };
+    return { min, max, globalMin, globalMax, boundMin: min, boundMax: max, userMin: min, userMax: max, bestVal, step, convergence, isManualOverride: false };
   };
 
   if (isScalp) {
@@ -2537,34 +2604,52 @@ function getNextCandidateFromAdaptiveRanges(
   locks: any
 ) {
   const l = locks || {};
-  const sampleParam = (r: any, isLocked: boolean, lockedVal: number) => {
-    if (!r) return lockedVal || 0;
-    if (isLocked) return lockedVal;
+  const sampleParam = (r: any, isLocked: boolean, lockedVal: any) => {
+    const numLocked = Number(lockedVal);
+    if (isLocked) return !isNaN(numLocked) ? parseFloat(numLocked.toFixed(2)) : 0;
+    if (!r) return !isNaN(numLocked) ? parseFloat(numLocked.toFixed(2)) : 0;
+
+    const boundMin = Number(r.userMin ?? r.boundMin ?? r.min);
+    const boundMax = Number(r.userMax ?? r.boundMax ?? r.max);
+    const hardMin = Math.min(boundMin, boundMax);
+    const hardMax = Math.max(boundMin, boundMax);
+
+    if (hardMin >= hardMax) {
+      return parseFloat(hardMin.toFixed(2));
+    }
+
+    const curMin = Math.max(hardMin, Math.min(hardMax, Number(r.min) || hardMin));
+    const curMax = Math.min(hardMax, Math.max(hardMin, Number(r.max) || hardMax));
+    const step = Number(r.step) > 0 ? Number(r.step) : 1;
+
+    let candidateVal: number;
     const rand = Math.random();
 
-    // 70% sample around bestVal
+    // 70% sample around bestVal (contracted exploitation)
     if (rand < 0.70 && r.bestVal !== undefined) {
-      const offset = (Math.floor(Math.random() * 3) - 1) * r.step;
-      const val = Math.max(r.min, Math.min(r.max, r.bestVal + offset));
-      return parseFloat(val.toFixed(2));
+      const best = Math.max(curMin, Math.min(curMax, Number(r.bestVal)));
+      const offset = (Math.floor(Math.random() * 3) - 1) * step;
+      candidateVal = Math.max(curMin, Math.min(curMax, best + offset));
     }
-
-    // 15% explore active range
-    if (rand < 0.85) {
-      const count = Math.max(1, Math.round((r.max - r.min) / r.step));
+    // 20% explore within active contracted range [curMin, curMax]
+    else if (rand < 0.90) {
+      const count = Math.max(1, Math.round((curMax - curMin) / step));
       const idx = Math.floor(Math.random() * (count + 1));
-      const val = r.min + idx * r.step;
-      return parseFloat(Math.min(r.max, Math.max(r.min, val)).toFixed(2));
+      candidateVal = curMin + idx * step;
+    }
+    // 10% explore across user's full defined range [hardMin, hardMax]
+    // NEVER go outside [hardMin, hardMax]!
+    else {
+      const fullCount = Math.max(1, Math.round((hardMax - hardMin) / step));
+      const gIdx = Math.floor(Math.random() * (fullCount + 1));
+      candidateVal = hardMin + gIdx * step;
     }
 
-    // 15% mutation across global bounds
-    const effectiveMin = Math.min(r.min, r.globalMin);
-    const effectiveMax = Math.max(r.max, r.globalMax);
-    const globalSpan = Math.max(r.step, effectiveMax - effectiveMin);
-    const globalCount = Math.max(1, Math.round(globalSpan / r.step));
-    const gIdx = Math.floor(Math.random() * (globalCount + 1));
-    const gVal = effectiveMin + gIdx * r.step;
-    return parseFloat(Math.min(effectiveMax, Math.max(effectiveMin, gVal)).toFixed(2));
+    // Absolute hard clamp: can NEVER be outside [hardMin, hardMax]
+    const clamped = Math.min(hardMax, Math.max(hardMin, candidateVal));
+    const rounded = Math.round(clamped / step) * step;
+    const finalVal = Math.min(hardMax, Math.max(hardMin, rounded));
+    return parseFloat(finalVal.toFixed(2));
   };
 
   for (let attempts = 0; attempts < 350; attempts++) {
@@ -2650,7 +2735,7 @@ function evaluateCombinationOnServer(
       maxCandlesToEnter: baseConfig.maxCandlesToEnter,
       maxTradesPerLeg: 1,
       showOnChart: false,
-      noConcurrentPositions: true,
+      noConcurrentPositions: baseConfig.noConcurrentPositions,
       symbol: item.pair.symbol,
       timeStopEnabled: baseConfig.timeStopEnabled,
       timeStopCandles: params.timeStopCandles || 80,
@@ -2828,7 +2913,7 @@ async function runServerOptimizerLoop(
 
       // Refine adaptive ranges
       if (autoAdaptiveEnabled) {
-        localRanges = refineAdaptiveRangesSmart(localRanges, localTop10, serverOptimizerState.totalEvaluatedCount, true);
+        localRanges = refineAdaptiveRangesSmart(localRanges, localTop10, serverOptimizerState.totalEvaluatedCount, true, locks);
         serverOptimizerState.adaptiveRanges = localRanges;
       }
     }
@@ -2921,7 +3006,90 @@ app.post('/api/optimizer/start', async (req, res) => {
       targetMinTrades: Number(constraints.targetMinTrades) || 100,
     };
 
+    const effectiveLocks = {
+      lockAtrPeriod: Boolean(locks?.lockAtrPeriod),
+      lockMinCandles: Boolean(locks?.lockMinCandles),
+      lockMinCandlesLong: Boolean(locks?.lockMinCandlesLong),
+      lockAtrMultiplier: Boolean(locks?.lockAtrMultiplier),
+      lockLongLegAtrMult: Boolean(locks?.lockLongLegAtrMult),
+      lockMaxBlueLegPercent: Boolean(locks?.lockMaxBlueLegPercent),
+      lockMaxBreakoutAtr: Boolean(locks?.lockMaxBreakoutAtr),
+      lockMaxRiskReward: Boolean(locks?.lockMaxRiskReward),
+      lockTimeStopCandles: Boolean(locks?.lockTimeStopCandles),
+      optAtrPeriod: Number(locks?.optAtrPeriod ?? cfg?.atrPeriod ?? cfg?.optAtrPeriod ?? 45),
+      optMinCandles: Number(locks?.optMinCandles ?? cfg?.minCandles ?? cfg?.optMinCandles ?? 3),
+      optMinCandlesLong: Number(locks?.optMinCandlesLong ?? cfg?.minCandlesForLongLeg ?? cfg?.optMinCandlesLong ?? 14),
+      optAtrMultiplier: Number(locks?.optAtrMultiplier ?? cfg?.atrMultiplier ?? cfg?.optAtrMultiplier ?? 3.0),
+      optLongLegAtrMult: Number(locks?.optLongLegAtrMult ?? cfg?.longLegAtrMultiplier ?? cfg?.optLongLegAtrMult ?? 9.5),
+      optMaxBlueLegPercent: Number(locks?.optMaxBlueLegPercent ?? cfg?.maxBlueLegPercent ?? cfg?.optMaxBlueLegPercent ?? 55),
+      optMaxBreakoutAtr: Number(locks?.optMaxBreakoutAtr ?? cfg?.maxBreakoutAtrMultiplier ?? cfg?.optMaxBreakoutAtr ?? 3.5),
+      optMaxRiskReward: Number(locks?.optMaxRiskReward ?? cfg?.maxRiskReward ?? cfg?.optMaxRiskReward ?? 2.5),
+      optTimeStopCandles: Number(locks?.optTimeStopCandles ?? cfg?.timeStopCandles ?? cfg?.optTimeStopCandles ?? 80),
+    };
+
     const initialRanges = ranges || serverOptimizerState.adaptiveRanges || getDefaultRangesForTimeframe(timeframe);
+
+    // Initialize and enforce immutable user boundaries on all parameters
+    const paramKeys = [
+      'atrPeriod',
+      'minCandles',
+      'minCandlesForLongLeg',
+      'atrMultiplier',
+      'longLegAtrMultiplier',
+      'maxBlueLegPercent',
+      'maxBreakoutAtrMultiplier',
+      'maxRiskReward',
+      'timeStopCandles',
+    ];
+    for (const key of paramKeys) {
+      if (initialRanges[key]) {
+        const r = initialRanges[key];
+        const lowerBound = Number(r.userMin ?? r.boundMin ?? r.min);
+        const upperBound = Number(r.userMax ?? r.boundMax ?? r.max);
+        const hardMin = Math.min(lowerBound, upperBound);
+        const hardMax = Math.max(lowerBound, upperBound);
+        r.boundMin = hardMin;
+        r.userMin = hardMin;
+        r.boundMax = hardMax;
+        r.userMax = hardMax;
+        r.min = Math.max(hardMin, Math.min(hardMax, Number(r.min) || hardMin));
+        r.max = Math.min(hardMax, Math.max(hardMin, Number(r.max) || hardMax));
+        if (r.bestVal !== undefined) {
+          r.bestVal = Math.max(hardMin, Math.min(hardMax, Number(r.bestVal)));
+        }
+      }
+    }
+    
+    // Pin locked parameters strictly inside initialRanges
+    const lockKeyMap: Record<string, { lockProp: keyof typeof effectiveLocks; valProp: keyof typeof effectiveLocks }> = {
+      atrPeriod: { lockProp: 'lockAtrPeriod', valProp: 'optAtrPeriod' },
+      minCandles: { lockProp: 'lockMinCandles', valProp: 'optMinCandles' },
+      minCandlesForLongLeg: { lockProp: 'lockMinCandlesLong', valProp: 'optMinCandlesLong' },
+      atrMultiplier: { lockProp: 'lockAtrMultiplier', valProp: 'optAtrMultiplier' },
+      longLegAtrMultiplier: { lockProp: 'lockLongLegAtrMult', valProp: 'optLongLegAtrMult' },
+      maxBlueLegPercent: { lockProp: 'lockMaxBlueLegPercent', valProp: 'optMaxBlueLegPercent' },
+      maxBreakoutAtrMultiplier: { lockProp: 'lockMaxBreakoutAtr', valProp: 'optMaxBreakoutAtr' },
+      maxRiskReward: { lockProp: 'lockMaxRiskReward', valProp: 'optMaxRiskReward' },
+      timeStopCandles: { lockProp: 'lockTimeStopCandles', valProp: 'optTimeStopCandles' },
+    };
+
+    for (const [k, m] of Object.entries(lockKeyMap)) {
+      if (effectiveLocks[m.lockProp] && initialRanges[k]) {
+        const val = Number(effectiveLocks[m.valProp]);
+        if (!isNaN(val)) {
+          initialRanges[k].bestVal = val;
+          initialRanges[k].min = val;
+          initialRanges[k].max = val;
+          initialRanges[k].boundMin = val;
+          initialRanges[k].boundMax = val;
+          initialRanges[k].userMin = val;
+          initialRanges[k].userMax = val;
+          initialRanges[k].convergence = 100;
+          initialRanges[k].isManualOverride = true;
+        }
+      }
+    }
+
     serverOptimizerState.adaptiveRanges = initialRanges;
     serverOptimizerState.autoAdaptiveEnabled = autoAdaptiveEnabled !== false;
     serverOptimizerState.exchange = exchange;
@@ -2937,7 +3105,7 @@ app.post('/api/optimizer/start', async (req, res) => {
       baseConfig,
       targetConstraints,
       initialRanges,
-      locks,
+      effectiveLocks,
       autoAdaptiveEnabled !== false
     ).catch((err) => {
       console.error('[Server Optimizer Background Error]:', err.message);

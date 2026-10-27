@@ -638,17 +638,31 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       const safeVal = isNaN(value) ? 0 : value;
 
       if (field === 'min') {
-        cur.min = Math.max(0, parseFloat(safeVal.toFixed(2)));
+        const v = Math.max(0, parseFloat(safeVal.toFixed(2)));
+        cur.min = v;
+        cur.boundMin = v;
+        cur.userMin = v;
         if (cur.min < cur.globalMin) cur.globalMin = cur.min;
         if (cur.min > cur.globalMax) cur.globalMax = cur.min;
+        if (cur.bestVal < cur.min) cur.bestVal = cur.min;
       } else {
-        cur.max = Math.max(0, parseFloat(safeVal.toFixed(2)));
+        const v = Math.max(0, parseFloat(safeVal.toFixed(2)));
+        cur.max = v;
+        cur.boundMax = v;
+        cur.userMax = v;
         if (cur.max > cur.globalMax) cur.globalMax = cur.max;
         if (cur.max < cur.globalMin) cur.globalMin = cur.max;
+        if (cur.bestVal > cur.max) cur.bestVal = cur.max;
       }
 
       cur.isManualOverride = true;
-      const span = Math.abs(cur.max - cur.min);
+      const lower = Math.min(cur.min, cur.max);
+      const upper = Math.max(cur.min, cur.max);
+      cur.boundMin = lower;
+      cur.userMin = lower;
+      cur.boundMax = upper;
+      cur.userMax = upper;
+      const span = upper - lower;
       const globalSpan = Math.max(span, cur.globalMax - cur.globalMin);
       cur.convergence = globalSpan > 0 ? Math.round(Math.max(0, Math.min(100, (1 - span / globalSpan) * 100))) : 50;
       const updated = { ...prev, [key]: cur };
@@ -2684,32 +2698,50 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     timeStopCandles: number;
   } | null => {
     const sampleParam = (r: ParameterRange, isLocked: boolean, lockedVal: number) => {
-      if (isLocked) return lockedVal;
+      const numLocked = Number(lockedVal);
+      if (isLocked) return !isNaN(numLocked) ? parseFloat(numLocked.toFixed(2)) : 0;
+      if (!r) return !isNaN(numLocked) ? parseFloat(numLocked.toFixed(2)) : 0;
+
+      const boundMin = Number(r.userMin ?? r.boundMin ?? r.min);
+      const boundMax = Number(r.userMax ?? r.boundMax ?? r.max);
+      const hardMin = Math.min(boundMin, boundMax);
+      const hardMax = Math.max(boundMin, boundMax);
+
+      if (hardMin >= hardMax) {
+        return parseFloat(hardMin.toFixed(2));
+      }
+
+      const curMin = Math.max(hardMin, Math.min(hardMax, Number(r.min) || hardMin));
+      const curMax = Math.min(hardMax, Math.max(hardMin, Number(r.max) || hardMax));
+      const step = Number(r.step) > 0 ? Number(r.step) : 1;
+
+      let candidateVal: number;
       const rand = Math.random();
 
       // ۷۰٪ شانس: نمونه‌برداری متمرکز در مجاورت بهترین مقدار (bestVal) و مرکز رنج بهینه
       if (rand < 0.70 && r.bestVal !== undefined) {
-        const offset = (Math.floor(Math.random() * 3) - 1) * r.step;
-        const val = Math.max(r.min, Math.min(r.max, r.bestVal + offset));
-        return parseFloat(val.toFixed(2));
+        const best = Math.max(curMin, Math.min(curMax, Number(r.bestVal)));
+        const offset = (Math.floor(Math.random() * 3) - 1) * step;
+        candidateVal = Math.max(curMin, Math.min(curMax, best + offset));
       }
-
-      // ۱۵٪ شانس: کاوش لبه‌ها و نقاط میانی رنج فعال
-      if (rand < 0.85) {
-        const count = Math.max(1, Math.round((r.max - r.min) / r.step));
+      // ۲۰٪ شانس: کاوش لبه‌ها و نقاط میانی رنج فعال
+      else if (rand < 0.90) {
+        const count = Math.max(1, Math.round((curMax - curMin) / step));
         const idx = Math.floor(Math.random() * (count + 1));
-        const val = r.min + idx * r.step;
-        return parseFloat(Math.min(r.max, Math.max(r.min, val)).toFixed(2));
+        candidateVal = curMin + idx * step;
+      }
+      // ۱۰٪ شانس: کاوش تصادفی در کل دامنه رنج تعریف‌شده کاربر (بدون خروج از مرزهای حداقل و حداکثر)
+      else {
+        const fullCount = Math.max(1, Math.round((hardMax - hardMin) / step));
+        const gIdx = Math.floor(Math.random() * (fullCount + 1));
+        candidateVal = hardMin + gIdx * step;
       }
 
-      // ۱۵٪ جهش بیزی/ژنتیک (Annealing Mutation) در کل دامنه مجاز کاربر برای کشف خوشه‌های جدید
-      const effectiveMin = Math.min(r.min, r.globalMin);
-      const effectiveMax = Math.max(r.max, r.globalMax);
-      const globalSpan = Math.max(r.step, effectiveMax - effectiveMin);
-      const globalCount = Math.max(1, Math.round(globalSpan / r.step));
-      const gIdx = Math.floor(Math.random() * (globalCount + 1));
-      const gVal = effectiveMin + gIdx * r.step;
-      return parseFloat(Math.min(effectiveMax, Math.max(effectiveMin, gVal)).toFixed(2));
+      // مهار قطعی و سختگیرانه: مقدار آزمون هرگز نباید خارج از [hardMin, hardMax] کاربر باشد
+      const clamped = Math.min(hardMax, Math.max(hardMin, candidateVal));
+      const rounded = Math.round(clamped / step) * step;
+      const finalVal = Math.min(hardMax, Math.max(hardMin, rounded));
+      return parseFloat(finalVal.toFixed(2));
     };
 
     for (let attempts = 0; attempts < 350; attempts++) {
@@ -2806,6 +2838,15 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           lockMaxBreakoutAtr,
           lockMaxRiskReward,
           lockTimeStopCandles,
+          optAtrPeriod: Number(optAtrPeriod),
+          optMinCandles: Number(optMinCandles),
+          optMinCandlesLong: Number(optMinCandlesLong),
+          optAtrMultiplier: Number(optAtrMultiplier),
+          optLongLegAtrMult: Number(optLongLegAtrMult),
+          optMaxBlueLegPercent: Number(optMaxBlueLegPercent),
+          optMaxBreakoutAtr: Number(optMaxBreakoutAtr),
+          optMaxRiskReward: Number(optMaxRiskReward),
+          optTimeStopCandles: Number(optTimeStopCandles),
         },
         autoAdaptiveEnabled,
       };

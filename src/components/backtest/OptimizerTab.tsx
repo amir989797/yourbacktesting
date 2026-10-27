@@ -822,7 +822,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
 
               {/* گزینه‌های قفل پارامترها */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pt-1 border-t border-[#222d3e]">
-                <div className={`p-2 rounded-xl border ${lockAtrPeriod ? 'bg-[#0e1117] border-gray-700/60 opacity-60' : 'bg-[#171e2b] border-[#2a364a]'}`}>
+                <div className={`p-2 rounded-xl border transition-all ${lockAtrPeriod ? 'bg-amber-950/25 border-amber-500/70 shadow-sm shadow-amber-500/10' : 'bg-[#171e2b] border-[#2a364a]'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-gray-200">۱. دوره ATR</label>
                     <label className="flex items-center gap-1 text-[10px] text-amber-400 cursor-pointer">
@@ -832,19 +832,19 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                         onChange={(e) => setLockAtrPeriod(e.target.checked)}
                         className="rounded bg-[#0d1017] border-gray-600 text-amber-500 focus:ring-0 cursor-pointer"
                       />
-                      <span>{lockAtrPeriod ? 'قفل' : 'آزاد'}</span>
+                      <span className={lockAtrPeriod ? 'font-bold text-amber-300' : ''}>{lockAtrPeriod ? '🔒 قفل' : 'آزاد'}</span>
                     </label>
                   </div>
                   <input
                     type="number"
                     value={optAtrPeriod}
-                    disabled={lockAtrPeriod}
-                    onChange={(e) => setOptAtrPeriod(parseInt(e.target.value, 10) || 55)}
-                    className="w-full px-2 py-1 bg-[#0f131c] border border-[#2e3a4e] rounded-lg text-white font-mono text-xs disabled:bg-[#1b202c] disabled:text-gray-500 text-center"
+                    disabled={isOptimizing}
+                    onChange={(e) => setOptAtrPeriod(parseInt(e.target.value, 10) || 0)}
+                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockAtrPeriod ? 'border-amber-500/70 text-amber-300 font-bold' : 'border-[#2e3a4e] text-white'} disabled:bg-[#1b202c] disabled:text-gray-500`}
                   />
                 </div>
 
-                <div className={`p-2 rounded-xl border ${lockMinCandles ? 'bg-[#0e1117] border-gray-700/60 opacity-60' : 'bg-[#171e2b] border-[#2a364a]'}`}>
+                <div className={`p-2 rounded-xl border transition-all ${lockMinCandles ? 'bg-amber-950/25 border-amber-500/70 shadow-sm shadow-amber-500/10' : 'bg-[#171e2b] border-[#2a364a]'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-gray-200">۲. حداقل کندل</label>
                     <label className="flex items-center gap-1 text-[10px] text-amber-400 cursor-pointer">
@@ -854,19 +854,19 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                         onChange={(e) => setLockMinCandles(e.target.checked)}
                         className="rounded bg-[#0d1017] border-gray-600 text-amber-500 focus:ring-0 cursor-pointer"
                       />
-                      <span>{lockMinCandles ? 'قفل' : 'آزاد'}</span>
+                      <span className={lockMinCandles ? 'font-bold text-amber-300' : ''}>{lockMinCandles ? '🔒 قفل' : 'آزاد'}</span>
                     </label>
                   </div>
                   <input
                     type="number"
                     value={optMinCandles}
-                    disabled={lockMinCandles}
-                    onChange={(e) => setOptMinCandles(parseInt(e.target.value, 10) || 3)}
-                    className="w-full px-2 py-1 bg-[#0f131c] border border-[#2e3a4e] rounded-lg text-white font-mono text-xs disabled:bg-[#1b202c] disabled:text-gray-500 text-center"
+                    disabled={isOptimizing}
+                    onChange={(e) => setOptMinCandles(parseInt(e.target.value, 10) || 0)}
+                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockMinCandles ? 'border-amber-500/70 text-amber-300 font-bold' : 'border-[#2e3a4e] text-white'} disabled:bg-[#1b202c] disabled:text-gray-500`}
                   />
                 </div>
 
-                <div className={`p-2 rounded-xl border ${lockMinCandlesLong ? 'bg-[#0e1117] border-gray-700/60 opacity-60' : 'bg-[#171e2b] border-[#2a364a]'}`}>
+                <div className={`p-2 rounded-xl border transition-all ${lockMinCandlesLong ? 'bg-amber-950/25 border-amber-500/70 shadow-sm shadow-amber-500/10' : 'bg-[#171e2b] border-[#2a364a]'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-gray-200">۳. کندل لگ بلند</label>
                     <label className="flex items-center gap-1 text-[10px] text-amber-400 cursor-pointer">
@@ -876,19 +876,19 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                         onChange={(e) => setLockMinCandlesLong(e.target.checked)}
                         className="rounded bg-[#0d1017] border-gray-600 text-amber-500 focus:ring-0 cursor-pointer"
                       />
-                      <span>{lockMinCandlesLong ? 'قفل' : 'آزاد'}</span>
+                      <span className={lockMinCandlesLong ? 'font-bold text-amber-300' : ''}>{lockMinCandlesLong ? '🔒 قفل' : 'آزاد'}</span>
                     </label>
                   </div>
                   <input
                     type="number"
                     value={optMinCandlesLong}
-                    disabled={lockMinCandlesLong}
-                    onChange={(e) => setOptMinCandlesLong(parseInt(e.target.value, 10) || 20)}
-                    className="w-full px-2 py-1 bg-[#0f131c] border border-[#2e3a4e] rounded-lg text-white font-mono text-xs disabled:bg-[#1b202c] disabled:text-gray-500 text-center"
+                    disabled={isOptimizing}
+                    onChange={(e) => setOptMinCandlesLong(parseInt(e.target.value, 10) || 0)}
+                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockMinCandlesLong ? 'border-amber-500/70 text-amber-300 font-bold' : 'border-[#2e3a4e] text-white'} disabled:bg-[#1b202c] disabled:text-gray-500`}
                   />
                 </div>
 
-                <div className={`p-2 rounded-xl border ${lockAtrMultiplier ? 'bg-[#0e1117] border-gray-700/60 opacity-60' : 'bg-[#171e2b] border-[#2a364a]'}`}>
+                <div className={`p-2 rounded-xl border transition-all ${lockAtrMultiplier ? 'bg-amber-950/25 border-amber-500/70 shadow-sm shadow-amber-500/10' : 'bg-[#171e2b] border-[#2a364a]'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-gray-200">۴. ضریب عادی</label>
                     <label className="flex items-center gap-1 text-[10px] text-amber-400 cursor-pointer">
@@ -898,20 +898,20 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                         onChange={(e) => setLockAtrMultiplier(e.target.checked)}
                         className="rounded bg-[#0d1017] border-gray-600 text-amber-500 focus:ring-0 cursor-pointer"
                       />
-                      <span>{lockAtrMultiplier ? 'قفل' : 'آزاد'}</span>
+                      <span className={lockAtrMultiplier ? 'font-bold text-amber-300' : ''}>{lockAtrMultiplier ? '🔒 قفل' : 'آزاد'}</span>
                     </label>
                   </div>
                   <input
                     type="number"
                     step={0.1}
                     value={optAtrMultiplier}
-                    disabled={lockAtrMultiplier}
-                    onChange={(e) => setOptAtrMultiplier(parseFloat(e.target.value) || 3.0)}
-                    className="w-full px-2 py-1 bg-[#0f131c] border border-[#2e3a4e] rounded-lg text-white font-mono text-xs disabled:bg-[#1b202c] disabled:text-gray-500 text-center"
+                    disabled={isOptimizing}
+                    onChange={(e) => setOptAtrMultiplier(parseFloat(e.target.value) || 0)}
+                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockAtrMultiplier ? 'border-amber-500/70 text-amber-300 font-bold' : 'border-[#2e3a4e] text-white'} disabled:bg-[#1b202c] disabled:text-gray-500`}
                   />
                 </div>
 
-                <div className={`p-2 rounded-xl border ${lockLongLegAtrMult ? 'bg-[#0e1117] border-gray-700/60 opacity-60' : 'bg-[#171e2b] border-[#2a364a]'}`}>
+                <div className={`p-2 rounded-xl border transition-all ${lockLongLegAtrMult ? 'bg-amber-950/25 border-amber-500/70 shadow-sm shadow-amber-500/10' : 'bg-[#171e2b] border-[#2a364a]'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-gray-200">۵. ضریب لگ بزرگ</label>
                     <label className="flex items-center gap-1 text-[10px] text-amber-400 cursor-pointer">
@@ -921,20 +921,20 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                         onChange={(e) => setLockLongLegAtrMult(e.target.checked)}
                         className="rounded bg-[#0d1017] border-gray-600 text-amber-500 focus:ring-0 cursor-pointer"
                       />
-                      <span>{lockLongLegAtrMult ? 'قفل' : 'آزاد'}</span>
+                      <span className={lockLongLegAtrMult ? 'font-bold text-amber-300' : ''}>{lockLongLegAtrMult ? '🔒 قفل' : 'آزاد'}</span>
                     </label>
                   </div>
                   <input
                     type="number"
                     step={0.5}
                     value={optLongLegAtrMult}
-                    disabled={lockLongLegAtrMult}
-                    onChange={(e) => setOptLongLegAtrMult(parseFloat(e.target.value) || 10.0)}
-                    className="w-full px-2 py-1 bg-[#0f131c] border border-[#2e3a4e] rounded-lg text-white font-mono text-xs disabled:bg-[#1b202c] disabled:text-gray-500 text-center"
+                    disabled={isOptimizing}
+                    onChange={(e) => setOptLongLegAtrMult(parseFloat(e.target.value) || 0)}
+                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockLongLegAtrMult ? 'border-amber-500/70 text-amber-300 font-bold' : 'border-[#2e3a4e] text-white'} disabled:bg-[#1b202c] disabled:text-gray-500`}
                   />
                 </div>
 
-                <div className={`p-2 rounded-xl border ${lockMaxBlueLegPercent ? 'bg-[#0e1117] border-gray-700/60 opacity-60' : 'bg-[#171e2b] border-[#2a364a]'}`}>
+                <div className={`p-2 rounded-xl border transition-all ${lockMaxBlueLegPercent ? 'bg-amber-950/25 border-amber-500/70 shadow-sm shadow-amber-500/10' : 'bg-[#171e2b] border-[#2a364a]'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-gray-200">۶. سقف لگ آبی %</label>
                     <label className="flex items-center gap-1 text-[10px] text-amber-400 cursor-pointer">
@@ -944,20 +944,20 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                         onChange={(e) => setLockMaxBlueLegPercent(e.target.checked)}
                         className="rounded bg-[#0d1017] border-gray-600 text-amber-500 focus:ring-0 cursor-pointer"
                       />
-                      <span>{lockMaxBlueLegPercent ? 'قفل' : 'آزاد'}</span>
+                      <span className={lockMaxBlueLegPercent ? 'font-bold text-amber-300' : ''}>{lockMaxBlueLegPercent ? '🔒 قفل' : 'آزاد'}</span>
                     </label>
                   </div>
                   <input
                     type="number"
                     step={5}
                     value={optMaxBlueLegPercent}
-                    disabled={lockMaxBlueLegPercent}
-                    onChange={(e) => setOptMaxBlueLegPercent(parseFloat(e.target.value) || 60)}
-                    className="w-full px-2 py-1 bg-[#0f131c] border border-[#2e3a4e] rounded-lg text-white font-mono text-xs disabled:bg-[#1b202c] disabled:text-gray-500 text-center"
+                    disabled={isOptimizing}
+                    onChange={(e) => setOptMaxBlueLegPercent(parseFloat(e.target.value) || 0)}
+                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockMaxBlueLegPercent ? 'border-amber-500/70 text-amber-300 font-bold' : 'border-[#2e3a4e] text-white'} disabled:bg-[#1b202c] disabled:text-gray-500`}
                   />
                 </div>
 
-                <div className={`p-2 rounded-xl border ${lockMaxBreakoutAtr ? 'bg-[#0e1117] border-gray-700/60 opacity-60' : 'bg-[#171e2b] border-[#2a364a]'}`}>
+                <div className={`p-2 rounded-xl border transition-all ${lockMaxBreakoutAtr ? 'bg-amber-950/25 border-amber-500/70 shadow-sm shadow-amber-500/10' : 'bg-[#171e2b] border-[#2a364a]'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-gray-200">۷. نفوذ شکست (ATR)</label>
                     <label className="flex items-center gap-1 text-[10px] text-amber-400 cursor-pointer">
@@ -967,20 +967,20 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                         onChange={(e) => setLockMaxBreakoutAtr(e.target.checked)}
                         className="rounded bg-[#0d1017] border-gray-600 text-amber-500 focus:ring-0 cursor-pointer"
                       />
-                      <span>{lockMaxBreakoutAtr ? 'قفل' : 'آزاد'}</span>
+                      <span className={lockMaxBreakoutAtr ? 'font-bold text-amber-300' : ''}>{lockMaxBreakoutAtr ? '🔒 قفل' : 'آزاد'}</span>
                     </label>
                   </div>
                   <input
                     type="number"
                     step={0.5}
                     value={optMaxBreakoutAtr}
-                    disabled={lockMaxBreakoutAtr}
-                    onChange={(e) => setOptMaxBreakoutAtr(parseFloat(e.target.value) || 5.0)}
-                    className="w-full px-2 py-1 bg-[#0f131c] border border-[#2e3a4e] rounded-lg text-white font-mono text-xs disabled:bg-[#1b202c] disabled:text-gray-500 text-center"
+                    disabled={isOptimizing}
+                    onChange={(e) => setOptMaxBreakoutAtr(parseFloat(e.target.value) || 0)}
+                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockMaxBreakoutAtr ? 'border-amber-500/70 text-amber-300 font-bold' : 'border-[#2e3a4e] text-white'} disabled:bg-[#1b202c] disabled:text-gray-500`}
                   />
                 </div>
 
-                <div className={`p-2 rounded-xl border ${lockMaxRiskReward ? 'bg-[#0e1117] border-gray-700/60 opacity-60' : 'bg-[#171e2b] border-[#2a364a]'}`}>
+                <div className={`p-2 rounded-xl border transition-all ${lockMaxRiskReward ? 'bg-amber-950/25 border-amber-500/70 shadow-sm shadow-amber-500/10' : 'bg-[#171e2b] border-[#2a364a]'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-gray-200">۸. ریسک به ریوارد (R:R)</label>
                     <label className="flex items-center gap-1 text-[10px] text-amber-400 cursor-pointer">
@@ -990,21 +990,21 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                         onChange={(e) => setLockMaxRiskReward(e.target.checked)}
                         className="rounded bg-[#0d1017] border-gray-600 text-amber-500 focus:ring-0 cursor-pointer"
                       />
-                      <span>{lockMaxRiskReward ? 'قفل' : 'آزاد'}</span>
+                      <span className={lockMaxRiskReward ? 'font-bold text-amber-300' : ''}>{lockMaxRiskReward ? '🔒 قفل' : 'آزاد'}</span>
                     </label>
                   </div>
                   <input
                     type="number"
-                    step={0.5}
+                    step={0.25}
                     value={optMaxRiskReward}
-                    disabled={lockMaxRiskReward}
-                    onChange={(e) => setOptMaxRiskReward(parseFloat(e.target.value) || 5.0)}
-                    className="w-full px-2 py-1 bg-[#0f131c] border border-[#2e3a4e] rounded-lg text-emerald-400 font-bold font-mono text-xs disabled:bg-[#1b202c] disabled:text-gray-500 text-center"
+                    disabled={isOptimizing}
+                    onChange={(e) => setOptMaxRiskReward(parseFloat(e.target.value) || 0)}
+                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockMaxRiskReward ? 'border-amber-500/70 text-amber-300 font-bold' : 'border-[#2e3a4e] text-emerald-400'} disabled:bg-[#1b202c] disabled:text-gray-500`}
                   />
                 </div>
 
                 {/* ۹. قفل/تنظیم دستی Time-Stop */}
-                <div className={`p-2 rounded-xl border ${lockTimeStopCandles ? 'bg-[#0e1117] border-gray-700/60 opacity-60' : 'bg-[#171e2b] border-cyan-500/30'}`}>
+                <div className={`p-2 rounded-xl border transition-all ${lockTimeStopCandles ? 'bg-cyan-950/30 border-cyan-400/80 shadow-sm shadow-cyan-500/10' : 'bg-[#171e2b] border-cyan-500/30'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-cyan-300">۹. خروج زمانی (کندل)</label>
                     <label className="flex items-center gap-1 text-[10px] text-cyan-400 cursor-pointer">
@@ -1014,17 +1014,17 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                         onChange={(e) => setLockTimeStopCandles?.(e.target.checked)}
                         className="rounded bg-[#0d1017] border-gray-600 text-cyan-500 focus:ring-0 cursor-pointer"
                       />
-                      <span>{lockTimeStopCandles ? 'قفل' : 'آزاد'}</span>
+                      <span className={lockTimeStopCandles ? 'font-bold text-cyan-300' : ''}>{lockTimeStopCandles ? '🔒 قفل' : 'آزاد'}</span>
                     </label>
                   </div>
                   <input
                     type="number"
-                    step={10}
+                    step={5}
                     value={optTimeStopCandles}
-                    disabled={lockTimeStopCandles}
-                    onChange={(e) => setOptTimeStopCandles?.(parseInt(e.target.value, 10) || 80)}
-                    className="w-full px-2 py-1 bg-[#0f131c] border border-[#2e3a4e] rounded-lg text-cyan-300 font-bold font-mono text-xs disabled:bg-[#1b202c] disabled:text-gray-500 text-center"
-                    title="تعداد کندل ماندن در معامله قبل از خروج اجباری (با گام ۱۰ تا ۱۰ تا)"
+                    disabled={isOptimizing}
+                    onChange={(e) => setOptTimeStopCandles?.(parseInt(e.target.value, 10) || 0)}
+                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockTimeStopCandles ? 'border-cyan-400/80 text-cyan-300 font-bold' : 'border-[#2e3a4e] text-cyan-400'} disabled:bg-[#1b202c] disabled:text-gray-500`}
+                    title="تعداد کندل ماندن در معامله قبل از خروج اجباری (با گام ۵ تا ۵ تا)"
                   />
                 </div>
               </div>
