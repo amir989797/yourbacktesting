@@ -336,8 +336,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     setTimeRangeEndMs(params.endTimeMs);
     setTimeRangeLabel(params.label);
     setEstimatedCandles(params.estimatedCandles);
-    const limit = Math.min(params.estimatedCandles, selectedExchange === 'xt' ? 1000 : 5000);
-    setCandleHistoryLimit(Math.max(50, limit));
+    const limit = Math.max(50, params.estimatedCandles);
+    setCandleHistoryLimit(limit);
     try {
       localStorage.setItem('backtest_time_range_start_ms', String(params.startTimeMs));
       localStorage.setItem('backtest_time_range_end_ms', String(params.endTimeMs));

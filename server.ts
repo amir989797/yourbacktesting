@@ -360,16 +360,27 @@ async function fetchServerKlines(
   const now = Date.now();
   const maxPerChunk = isFutures ? 1500 : 1000;
   const baseEnd = endTime && endTime > 0 ? endTime : now;
+  const baseStart = startTime && startTime > 0 ? startTime : 0;
 
-  // Build optimal chunk specifications
+  // Accurately determine total candles needed for the date range
+  let totalCandlesTarget = targetLimit;
+  if (baseStart > 0 && baseEnd > baseStart) {
+    const rangeCandles = Math.ceil((baseEnd - baseStart) / stepMs);
+    totalCandlesTarget = Math.max(targetLimit, rangeCandles);
+  }
+  // Sanity ceiling: up to 50,000 candles for long-span backtests
+  totalCandlesTarget = Math.min(totalCandlesTarget, 50000);
+
+  // Build sequential chunk specifications
   const chunks: { limit: number; endParam: string }[] = [];
-  let remaining = targetLimit;
+  let remaining = totalCandlesTarget;
   let offsetCandles = 0;
+  const maxChunksCount = Math.min(45, Math.ceil(totalCandlesTarget / maxPerChunk) + 1);
 
-  while (remaining > 0 && chunks.length < 6) {
+  while (remaining > 0 && chunks.length < maxChunksCount) {
     const chunkLimit = Math.min(remaining, maxPerChunk);
     const chunkEndTime = baseEnd - offsetCandles * stepMs;
-    if (startTime && chunkEndTime < startTime) break;
+    if (baseStart > 0 && chunkEndTime < baseStart) break;
     const endParam = `&endTime=${chunkEndTime}`;
     chunks.push({ limit: chunkLimit, endParam });
     remaining -= chunkLimit;
@@ -386,50 +397,66 @@ async function fetchServerKlines(
       const basePath = isF ? '/fapi/v1/klines' : '/api/v3/klines';
 
       try {
-        const batchPromises = chunks.map((chunk) => {
-          const url = `${mirror}${basePath}?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(timeframe)}&limit=${chunk.limit}${chunk.endParam}`;
-          return fetch(url, {
-            headers: { Accept: 'application/json' },
-            signal: AbortSignal.timeout(4000),
-          })
-            .then(async (r) => {
-              // Track rate-limit weight from Binance header
-              const usedWeight = parseInt(r.headers.get('x-mbx-used-weight-1m') || '0', 10);
-              if (usedWeight > 0) {
-                binanceUsedWeight1m = usedWeight;
-                lastWeightTime = Date.now();
-              }
-
-              if (r.status === 418) {
-                bannedHosts.set(mirror, Date.now() + 30 * 1000); // 30s pause, not 1hr
-                return [];
-              }
-              if (r.status === 429) {
-                const retryAfter = parseInt(r.headers.get('retry-after') || '2', 10);
-                await sleep(Math.min(retryAfter, 4) * 1000);
-                return [];
-              }
-              return r.ok ? await r.json() : [];
-            })
-            .catch(() => []);
-        });
-
-        const batchResults = await Promise.all(batchPromises);
         const timeMap = new Map<number, CandleData>();
 
-        for (const b of batchResults) {
-          if (Array.isArray(b)) {
-            for (const k of b) {
-              const timeSec = Math.floor(Number(k[0]) / 1000);
-              timeMap.set(timeSec, {
-                time: timeSec,
-                open: parseFloat(String(k[1])),
-                high: parseFloat(String(k[2])),
-                low: parseFloat(String(k[3])),
-                close: parseFloat(String(k[4])),
-                volume: parseFloat(String(k[5])),
-              });
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk = chunks[i];
+          const url = `${mirror}${basePath}?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(timeframe)}&limit=${chunk.limit}${chunk.endParam}`;
+
+          try {
+            const r = await fetch(url, {
+              headers: { Accept: 'application/json' },
+              signal: AbortSignal.timeout(6000),
+            });
+
+            // Track rate-limit weight from Binance header
+            const usedWeight = parseInt(r.headers.get('x-mbx-used-weight-1m') || '0', 10);
+            if (usedWeight > 0) {
+              binanceUsedWeight1m = usedWeight;
+              lastWeightTime = Date.now();
             }
+
+            if (r.status === 418) {
+              bannedHosts.set(mirror, Date.now() + 30 * 1000);
+              break;
+            }
+            if (r.status === 429) {
+              const retryAfter = parseInt(r.headers.get('retry-after') || '2', 10);
+              await sleep(Math.min(retryAfter, 5) * 1000);
+              i--; // Retry this chunk after backoff delay
+              continue;
+            }
+
+            if (r.ok) {
+              const klines = await r.json();
+              if (Array.isArray(klines) && klines.length > 0) {
+                for (const k of klines) {
+                  const timeSec = Math.floor(Number(k[0]) / 1000);
+                  timeMap.set(timeSec, {
+                    time: timeSec,
+                    open: parseFloat(String(k[1])),
+                    high: parseFloat(String(k[2])),
+                    low: parseFloat(String(k[3])),
+                    close: parseFloat(String(k[4])),
+                    volume: parseFloat(String(k[5])),
+                  });
+                }
+                // If fewer candles returned than requested, we reached beginning of coin history
+                if (klines.length < 50) break;
+              } else {
+                break;
+              }
+            } else {
+              break;
+            }
+          } catch {
+            break;
+          }
+
+          // Sequential API delay pacing between chunks to bypass exchange rate limits safely
+          if (chunks.length > 1 && i < chunks.length - 1) {
+            const delayMs = binanceUsedWeight1m > 1800 ? 250 : 80;
+            await sleep(delayMs);
           }
         }
 
@@ -441,7 +468,9 @@ async function fetchServerKlines(
           if (endTime && endTime > 0) {
             sorted = sorted.filter(c => c.time * 1000 <= endTime);
           }
-          sorted = sorted.slice(-targetLimit);
+          if (!startTime || startTime <= 0) {
+            sorted = sorted.slice(-targetLimit);
+          }
           SERVER_KLINE_CACHE.set(cacheKey, { candles: sorted, timestamp: Date.now() });
           return sorted;
         }
@@ -559,7 +588,7 @@ function toXtSymbol(symbol: string): string {
   return s + '_usdt';
 }
 
-// XT Public Kline fetcher with startTime and endTime support
+// XT Public Kline fetcher with automated multi-batch pagination, API delay pacing & date range support
 async function fetchXtServerKlines(
   symbol: string,
   interval: string,
@@ -568,34 +597,91 @@ async function fetchXtServerKlines(
   endTime?: number
 ): Promise<CandleData[]> {
   const xtSymbol = toXtSymbol(symbol);
+  const stepMs = timeframeToMs(interval);
+  const now = Date.now();
+  const endMs = endTime && endTime > 0 ? endTime : now;
+  const startMs = startTime && startTime > 0 ? startTime : 0;
 
-  let url = `https://${XT_FAPI_HOST}/future/market/v1/public/q/kline?symbol=${xtSymbol}&interval=${interval}&limit=${Math.min(limit, 1000)}`;
-  if (startTime && startTime > 0) {
-    url += `&startTime=${startTime}`;
-  }
-  if (endTime && endTime > 0) {
-    url += `&endTime=${endTime}`;
-  }
-
-  const response = await fetch(url);
-  const data = await response.json();
-
-  if (data?.result && Array.isArray(data.result)) {
-    const candles: CandleData[] = data.result.map((item: any) => ({
-      time: Math.floor(Number(item.t) / 1000),
-      open: parseFloat(item.o),
-      high: parseFloat(item.h),
-      low: parseFloat(item.l),
-      close: parseFloat(item.c),
-      volume: parseFloat(item.v || item.a || '0'),
-      quoteVolume: parseFloat(item.v || '0'),
-      trades: Number(item.a || 0),
-    }));
-
-    return candles.sort((a, b) => a.time - b.time);
+  // Accurately determine total candles needed for the requested range
+  let targetCandles = limit;
+  if (startMs > 0 && endMs > startMs) {
+    const spanCandles = Math.ceil((endMs - startMs) / stepMs);
+    targetCandles = Math.min(Math.max(targetCandles, spanCandles), 50000);
   }
 
-  return [];
+  const candleMap = new Map<number, CandleData>();
+  let curEnd = endMs;
+  let iterations = 0;
+  const maxIterations = Math.min(50, Math.ceil(targetCandles / 1000) + 2);
+
+  while (candleMap.size < targetCandles && iterations < maxIterations) {
+    iterations++;
+    const chunkLimit = Math.min(1000, targetCandles - candleMap.size);
+    let url = `https://${XT_FAPI_HOST}/future/market/v1/public/q/kline?symbol=${encodeURIComponent(xtSymbol)}&interval=${encodeURIComponent(interval)}&limit=${chunkLimit}`;
+    if (startMs > 0) {
+      url += `&startTime=${startMs}`;
+    }
+    if (curEnd > 0) {
+      url += `&endTime=${curEnd}`;
+    }
+
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(6000) });
+      if (!response.ok) {
+        if (response.status === 429) {
+          await sleep(1000);
+          continue;
+        }
+        break;
+      }
+
+      const data = await response.json();
+      if (!data?.result || !Array.isArray(data.result) || data.result.length === 0) {
+        break;
+      }
+
+      let batchOldestTimeMs = Infinity;
+      for (const item of data.result) {
+        const timeSec = Math.floor(Number(item.t) / 1000);
+        const tMs = Number(item.t);
+        if (tMs < batchOldestTimeMs) batchOldestTimeMs = tMs;
+        candleMap.set(timeSec, {
+          time: timeSec,
+          open: parseFloat(item.o),
+          high: parseFloat(item.h),
+          low: parseFloat(item.l),
+          close: parseFloat(item.c),
+          volume: parseFloat(item.v || item.a || '0'),
+        });
+      }
+
+      if (startMs > 0 && batchOldestTimeMs <= startMs) {
+        break;
+      }
+      if (data.result.length < 50 || batchOldestTimeMs >= curEnd) {
+        break;
+      }
+
+      curEnd = batchOldestTimeMs - 1;
+
+      // API delay pacing between chunks to bypass exchange rate limits safely
+      if (iterations < maxIterations && candleMap.size < targetCandles) {
+        await sleep(100);
+      }
+    } catch (err: any) {
+      console.warn(`[XT Klines Chunk Error] ${xtSymbol}:`, err.message);
+      break;
+    }
+  }
+
+  let sorted = Array.from(candleMap.values()).sort((a, b) => a.time - b.time);
+  if (startMs > 0) {
+    sorted = sorted.filter((c) => c.time * 1000 >= startMs);
+  }
+  if (endMs > 0) {
+    sorted = sorted.filter((c) => c.time * 1000 <= endMs);
+  }
+  return sorted;
 }
 
 // XT Public Tickers & Pairs fetcher
@@ -2016,8 +2102,14 @@ async function runServerBacktestCycle(params: {
       let chunkIdx = 0;
       let batchToSave: ServerCandleEntry[] = [];
       const queue = [...targetSymbols];
-      const concurrency = Math.min(Math.max(1, Number(workersCount) || 16), targetSymbols.length);
+      const concurrency = Math.min(Math.max(1, Number(workersCount) || 8), 12, targetSymbols.length);
       let completedCount = 0;
+
+      const stepMs = timeframeToMs(timeframe);
+      let neededLimit = 5000;
+      if (startTime && endTime && endTime > startTime) {
+        neededLimit = Math.max(50, Math.ceil((endTime - startTime) / stepMs));
+      }
 
       const worker = async () => {
         while (queue.length > 0 && !serverBacktestState.shouldStop) {
@@ -2027,10 +2119,10 @@ async function runServerBacktestCycle(params: {
           try {
             let candles: CandleData[] = [];
             if (exchange === 'xt') {
-              candles = await fetchXtServerKlines(sym, timeframe, 1000, startTime || undefined, endTime || undefined);
+              candles = await fetchXtServerKlines(sym, timeframe, neededLimit, startTime || undefined, endTime || undefined);
             } else {
               const clean = sym.replace('_', '').toUpperCase();
-              candles = await fetchServerKlines(clean, timeframe, 1500, isFutures, startTime || undefined, endTime || undefined);
+              candles = await fetchServerKlines(clean, timeframe, neededLimit, isFutures, startTime || undefined, endTime || undefined);
             }
 
             if (candles && candles.length >= 50) {

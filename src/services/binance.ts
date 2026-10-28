@@ -377,7 +377,7 @@ export async function fetchKlines(
       const numRemainingBatches = Math.ceil(remainingCount / 1000);
       const earliestTimeMs = batch0[0].time * 1000;
 
-      const parallelRequests: Promise<CandleData[]>[] = [];
+      const otherBatches: CandleData[][] = [];
       for (let b = 0; b < numRemainingBatches; b++) {
         const batchLimit = Math.min(1000, remainingCount - b * 1000);
         if (batchLimit <= 0) break;
@@ -385,12 +385,14 @@ export async function fetchKlines(
         const targetEndTime = earliestTimeMs - 1 - (b * 1000 * intervalMs);
         // Distribute requests across available mirror endpoints to avoid rate limit choke
         const endpointUrl = endpoints[(epIndex + b + 1) % endpoints.length];
-        parallelRequests.push(
-          fetchBatch(endpointUrl, symbol, interval, batchLimit, targetEndTime)
-        );
+        const batchRes = await fetchBatch(endpointUrl, symbol, interval, batchLimit, targetEndTime);
+        if (batchRes && batchRes.length > 0) {
+          otherBatches.push(batchRes);
+        }
+        if (numRemainingBatches > 1 && b < numRemainingBatches - 1) {
+          await new Promise((r) => setTimeout(r, 60)); // API delay to prevent exchange rate limits
+        }
       }
-
-      const otherBatches = await Promise.all(parallelRequests);
 
       // Merge and deduplicate all candles
       const candleMap = new Map<number, CandleData>();
