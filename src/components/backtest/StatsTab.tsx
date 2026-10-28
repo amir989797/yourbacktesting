@@ -148,11 +148,11 @@ export const StatsTab: React.FC<StatsTabProps> = ({
                 <button
                   type="button"
                   onClick={handleExportDatasetAuditCSV}
-                  className="px-3 py-1.5 rounded-xl bg-[#1d2636] hover:bg-[#28354c] text-gray-200 border border-[#2d3a50] text-xs font-medium transition-colors flex items-center gap-1.5 cursor-pointer"
-                  title="دانلود فایل CSV اعتبارسنجی"
+                  className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600/30 to-teal-600/30 hover:from-emerald-600/50 hover:to-teal-600/50 text-emerald-300 border border-emerald-500/40 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-sm shadow-emerald-500/10"
+                  title="دانلود فایل CSV جامع شامل تمام ۱۳ جدول ممیزی و ژورنال کامل معاملات"
                 >
                   <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>دانلود CSV</span>
+                  <span>دانلود CSV همه آمار</span>
                 </button>
 
                 <button
@@ -274,8 +274,8 @@ export const StatsTab: React.FC<StatsTabProps> = ({
                           <span>
                             شامل نمادهای فعال USDT-M مانند{' '}
                             <span className="font-mono text-cyan-300">
-                              {datasetAudit.perAssetCandleCounts.slice(0, 5).map(p => p.symbol).join(', ')}
-                              {datasetAudit.perAssetCandleCounts.length > 5 ? ` و ${datasetAudit.perAssetCandleCounts.length - 5} جفت‌ارز دیگر` : ''}
+                              {(datasetAudit.perAssetCandleCounts || []).slice(0, 5).map((p: any) => p.symbol).join(', ')}
+                              {(datasetAudit.perAssetCandleCounts || []).length > 5 ? ` و ${(datasetAudit.perAssetCandleCounts || []).length - 5} جفت‌ارز دیگر` : ''}
                             </span>
                           </span>
                         ) : (
@@ -316,7 +316,7 @@ export const StatsTab: React.FC<StatsTabProps> = ({
                           <span>
                             شامل <strong className="text-emerald-400">{datasetAudit.buyWinCount + datasetAudit.sellWinCount}</strong> معامله سودده،{' '}
                             <strong className="text-rose-400">{datasetAudit.buyLossCount + datasetAudit.sellLossCount}</strong> معامله ضررده و{' '}
-                            <strong className="text-amber-400">{effectivePortfolioTrades.filter(t => t.status === 'ACTIVE').length}</strong> پوزیشن باز.
+                            <strong className="text-amber-400">{(effectivePortfolioTrades || []).filter(t => t.status === 'ACTIVE').length}</strong> پوزیشن باز.
                             {datasetAudit.filteredConcurrentTradesCount > 0 && (
                               <span className="block mt-1 text-gray-400 text-[10px]">
                                 ℹ️ تعداد {datasetAudit.filteredConcurrentTradesCount} سیگنال همزمان به دلیل قانون تک‌معامله فعال فیلتر شدند.
@@ -2769,6 +2769,58 @@ export const StatsTab: React.FC<StatsTabProps> = ({
                     ✅ <strong>تاییدیه عدم اریب نگاه به آینده:</strong> در الگوریتم گره‌گشایی منحصراً از اطلاعات موجود در همان لحظه ورود استفاده شده و هیچ پارامتری از سود آینده، قیمت خروج، یا مدت زمان باز ماندن ترید دخیل داده نشده است.
                   </div>
                 </div>
+              </div>
+            </div>
+
+            {/* کارت پایانی: دانلود و خروجی جامع کلیه آمار و جداول */}
+            <div className="p-4 rounded-2xl bg-gradient-to-r from-[#141b27] via-[#161f30] to-[#121722] border border-[#2b394f] shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4 shrink-0 mt-2">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-black font-extrabold shadow-lg shadow-emerald-500/20 shrink-0">
+                  <FileSpreadsheet className="w-5 h-5" />
+                </div>
+                <div>
+                  <h5 className="text-sm font-extrabold text-white flex items-center gap-2">
+                    <span>خروجی و دانلود جامع کلیه آمار و ژورنال معاملات</span>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      ۱۳ جدول + ژورنال کامل
+                    </span>
+                  </h5>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    فایل CSV خروجی شامل تمام ۱۳ جدول ممیزی ریاضی، ریسک، هزینه، کارمزد، مارجین، عملکرد ماهانه و ژورنال تک‌تک تریدهای پورتفوی با فرمت استاندارد UTF-8 BOM جهت باز شدن تمیز در اکسل است.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2.5 flex-wrap self-end md:self-center">
+                <button
+                  type="button"
+                  onClick={handleExportDatasetAuditCSV}
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-black font-extrabold text-xs shadow-lg shadow-emerald-500/20 transition-all flex items-center gap-1.5 cursor-pointer"
+                  title="دانلود فایل CSV جامع شامل تمام ۱۳ جدول و ژورنال معاملات"
+                >
+                  <FileSpreadsheet className="w-4 h-4" />
+                  <span>دانلود CSV همه آمار</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleExportDatasetAuditJSON}
+                  className="px-3.5 py-2 rounded-xl bg-[#1d2636] hover:bg-[#28354c] text-amber-300 border border-[#2d3a50] text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer"
+                  title="دانلود فایل جامع ساختاریافته JSON"
+                >
+                  <FileJson className="w-4 h-4 text-amber-400" />
+                  <span>دانلود JSON</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleCopyAuditReport}
+                  className="px-3.5 py-2 rounded-xl bg-[#1d2636] hover:bg-[#28354c] text-gray-200 border border-[#2d3a50] text-xs font-medium transition-colors flex items-center gap-1.5 cursor-pointer"
+                  title="کپی گزارش متنی کامل در کلیپ‌بورد"
+                >
+                  <Copy className="w-4 h-4 text-cyan-400" />
+                  <span>کپی گزارش متن</span>
+                </button>
               </div>
             </div>
           </div>
