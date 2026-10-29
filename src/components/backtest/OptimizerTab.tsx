@@ -103,6 +103,11 @@ export interface OptimizerTabProps {
   onEvaluateCurrentManualConfig?: () => void;
   onApplyTrialToManualScan?: (trial: OptimizationTrial) => void;
   onRunTrialInManualScan?: (trial: OptimizationTrial) => void;
+  activeDatasetId?: string | null;
+  activeDatasetName?: string | null;
+  datasetSymbolCount?: number;
+  exchange?: string;
+  timeRangeLabel?: string;
 }
 
 export const OptimizerTab: React.FC<OptimizerTabProps> = ({
@@ -116,6 +121,11 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
   effectiveRiskUsdt,
   riskPercent,
   capital,
+  activeDatasetId,
+  activeDatasetName,
+  datasetSymbolCount,
+  exchange,
+  timeRangeLabel,
   handleExportJSON,
   handleImportJSONClick,
   handleResetOptimizer,
@@ -204,8 +214,26 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                         : 'استراتژی ۲: اولین تشکیل لگ بعد از F (تارگت R:R)'}
                     </span>
                   </div>
-                  <span className="text-[11px] text-gray-400 mt-0.5 block">
-                    تایم‌فریم تست: <strong className="text-white font-mono">{timeframe}</strong> | ریسک: <strong className="text-white font-mono">{riskMode === 'fixed' ? `${riskAmountFixed} USDT (${effectiveRiskPercent}%)` : `${riskPercent}% (${effectiveRiskUsdt.toLocaleString()} USDT)`}</strong> | سرمایه: <strong className="text-white font-mono">{capital.toLocaleString()} USDT</strong>
+                  <span className="text-[11px] text-gray-400 mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span>تایم‌فریم: <strong className="text-white font-mono">{timeframe}</strong></span>
+                    <span>|</span>
+                    <span>صرافی: <strong className="text-amber-300 font-mono">{(exchange || 'XT').toUpperCase()}</strong></span>
+                    <span>|</span>
+                    <span>داده فعال: <strong className="text-cyan-300 font-mono">{activeDatasetName || activeDatasetId || 'پایگاه‌داده PostgreSQL'}</strong></span>
+                    {datasetSymbolCount ? (
+                      <span className="text-emerald-400 bg-emerald-950/70 border border-emerald-500/30 px-1.5 py-0.2 rounded font-mono text-[10px]">
+                        ({datasetSymbolCount} نماد کامل)
+                      </span>
+                    ) : null}
+                    {timeRangeLabel ? (
+                      <span className="text-gray-300 bg-[#161f2e] px-1.5 py-0.2 rounded text-[10px]">
+                        {timeRangeLabel}
+                      </span>
+                    ) : null}
+                    <span>|</span>
+                    <span>ریسک: <strong className="text-white font-mono">{riskMode === 'fixed' ? `${riskAmountFixed} USDT (${effectiveRiskPercent}%)` : `${riskPercent}% (${effectiveRiskUsdt.toLocaleString()} USDT)`}</strong></span>
+                    <span>|</span>
+                    <span>سرمایه: <strong className="text-white font-mono">{capital.toLocaleString()} USDT</strong></span>
                   </span>
                 </div>
               </div>

@@ -331,6 +331,9 @@ export interface MarketCandleDatasetMetadata {
   dataSizeBytes?: number;
   dataSizeFormatted?: string;
   isTemporary?: boolean;
+  startTime?: number | string;
+  endTime?: number | string;
+  exchange?: string;
   createdAt: string;
   updatedAt?: string;
 }

@@ -1791,12 +1791,12 @@ async function loadDatasetEntriesFromPostgres(datasetId: string, symbolsFilter?:
     if (cached && cached.length > 0) return cached;
   }
 
-  const MAX_SYMBOLS = 35;
+  const MAX_SYMBOLS = 50;
   const symbolsFilterSet = symbolsFilter && symbolsFilter.length > 0
     ? new Set(symbolsFilter.map((s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '')))
     : null;
 
-  const targetSymbolsCount = symbolsFilterSet ? Math.min(symbolsFilterSet.size, 45) : MAX_SYMBOLS;
+  const targetSymbolsCount = symbolsFilterSet ? Math.min(symbolsFilterSet.size, 100) : MAX_SYMBOLS;
   const seenSymbols = new Map<string, ServerCandleEntry>();
   let offset = 0;
   const pageSize = 5;
@@ -1821,7 +1821,8 @@ async function loadDatasetEntriesFromPostgres(datasetId: string, symbolsFilter?:
           if (symbolsFilterSet && !symbolsFilterSet.has(cleanSym)) continue;
           if (seenSymbols.has(cleanSym)) continue;
 
-          let candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
+          // Preserve the FULL candle series from the database (identical to manual scan!)
+          const candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
             time: t[0],
             open: t[1],
             high: t[2],
@@ -1830,11 +1831,6 @@ async function loadDatasetEntriesFromPostgres(datasetId: string, symbolsFilter?:
             volume: t[5],
           }));
           if (candles.length >= 50) {
-            // Keep up to latest 7,000 candles per symbol for optimizer (~24 days of 5m data)
-            // Slicing keeps evaluation fast (100-200ms per trial) while providing ample trade count
-            if (candles.length > 7000) {
-              candles = candles.slice(-7000);
-            }
             seenSymbols.set(cleanSym, {
               pair: {
                 symbol: item.symbol,
@@ -2341,9 +2337,22 @@ app.get('/api/backtest/range-status', async (req, res) => {
     const timeframe = (req.query.timeframe || '5m').toString();
     const startTime = req.query.startTime ? Number(req.query.startTime) : null;
     const endTime = req.query.endTime ? Number(req.query.endTime) : null;
-    const datasetId = getRangeDatasetId(exchange, timeframe, startTime, endTime);
+    const explicitDatasetId = req.query.datasetId ? req.query.datasetId.toString() : null;
+    let datasetId = explicitDatasetId || getRangeDatasetId(exchange, timeframe, startTime, endTime);
 
-    const dsRes = await pool.query(`SELECT * FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
+    let dsRes = await pool.query(`SELECT * FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
+    if (dsRes.rows.length === 0 && !explicitDatasetId) {
+      // If specific range not found, find the latest completed dataset for this exchange & timeframe
+      const matchDs = await pool.query(
+        `SELECT * FROM candle_datasets WHERE exchange = $1 AND timeframe = $2 AND total_candles > 0 ORDER BY updated_at DESC LIMIT 1;`,
+        [exchange, timeframe]
+      );
+      if (matchDs.rows.length > 0) {
+        dsRes = matchDs;
+        datasetId = matchDs.rows[0].id;
+      }
+    }
+
     if (dsRes.rows.length === 0) {
       return res.json({
         success: true,
@@ -3200,23 +3209,45 @@ app.post('/api/optimizer/start', async (req, res) => {
     );
 
     if (dsRes.rows.length === 0 || !dsRes.rows[0].total_candles || Number(dsRes.rows[0].total_candles) === 0) {
-      // Check fallback to any completed dataset in PostgreSQL
-      const fallbackDs = await pool.query(
-        `SELECT id, total_candles, symbol_count FROM candle_datasets WHERE total_candles > 0 ORDER BY updated_at DESC LIMIT 1;`
-      );
-      if (fallbackDs.rows.length > 0) {
-        targetDatasetId = fallbackDs.rows[0].id;
-      } else {
-        // Also check if any chunks exist for this dataset
-        const chunkCheck = await pool.query(
-          `SELECT dataset_id FROM candle_chunks WHERE dataset_id = $1 LIMIT 1;`,
-          [datasetId]
+      // Priority 1: Check if the user just ran an active manual backtest on the server
+      if (serverBacktestState.datasetId && serverBacktestState.datasetId !== datasetId) {
+        const backtestDs = await pool.query(
+          `SELECT id, total_candles, symbol_count FROM candle_datasets WHERE id = $1 LIMIT 1;`,
+          [serverBacktestState.datasetId]
         );
-        if (chunkCheck.rows.length === 0) {
-          return res.status(400).json({
-            success: false,
-            error: '⚠️ داده کندلی در پایگاه داده PostgreSQL یافت نشد. لطفاً ابتدا در تب اسکن دستی دکمه شروع اسکن را بزنید.',
-          });
+        if (backtestDs.rows.length > 0 && Number(backtestDs.rows[0].total_candles) > 0) {
+          targetDatasetId = serverBacktestState.datasetId;
+        }
+      }
+
+      // Priority 2: Check for completed dataset matching the exact exchange and timeframe
+      if (targetDatasetId === datasetId) {
+        const matchDs = await pool.query(
+          `SELECT id, total_candles, symbol_count FROM candle_datasets WHERE exchange = $1 AND timeframe = $2 AND total_candles > 0 ORDER BY updated_at DESC LIMIT 1;`,
+          [exchange, timeframe]
+        );
+        if (matchDs.rows.length > 0) {
+          targetDatasetId = matchDs.rows[0].id;
+        } else {
+          // Priority 3: Fallback to any completed dataset in PostgreSQL
+          const fallbackDs = await pool.query(
+            `SELECT id, total_candles, symbol_count FROM candle_datasets WHERE total_candles > 0 ORDER BY updated_at DESC LIMIT 1;`
+          );
+          if (fallbackDs.rows.length > 0) {
+            targetDatasetId = fallbackDs.rows[0].id;
+          } else {
+            // Also check if any chunks exist for this dataset
+            const chunkCheck = await pool.query(
+              `SELECT dataset_id FROM candle_chunks WHERE dataset_id = $1 LIMIT 1;`,
+              [datasetId]
+            );
+            if (chunkCheck.rows.length === 0) {
+              return res.status(400).json({
+                success: false,
+                error: '⚠️ داده کندلی در پایگاه داده PostgreSQL یافت نشد. لطفاً ابتدا در تب اسکن دستی دکمه شروع اسکن را بزنید.',
+              });
+            }
+          }
         }
       }
     }
@@ -3420,6 +3451,9 @@ app.post('/api/optimizer/reset', (req, res) => {
   serverOptimizerState.top10Trials = [];
   serverOptimizerState.totalEvaluatedCount = 0;
   serverOptimizerState.sessionSecondsLeft = 900;
+  serverOptimizerState.datasetId = null;
+  serverOptimizerState.errorMsg = null;
+  serverDatasetCandleCache.clear();
   const tf = (req.body?.timeframe || serverOptimizerState.timeframe || '5m').toString();
   serverOptimizerState.adaptiveRanges = getDefaultRangesForTimeframe(tf);
   serverOptimizerState.statusText = 'آزمایش‌ها و رنج‌های بهینه‌ساز در سرور بازنشانی شدند.';
@@ -3443,6 +3477,8 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
 
     const explicitDatasetId = req.body?.datasetId;
     let datasetId = explicitDatasetId || getRangeDatasetId(exchange, timeframe, startTime, endTime);
+
+    // If datasetId does not exist directly, try resolving from active manual scan or matching exchange/timeframe
     let entries = serverDatasetCandleCache.get(datasetId);
     if (!entries || entries.length === 0) {
       if (serverBacktestState.datasetId && serverDatasetCandleCache.has(serverBacktestState.datasetId)) {
@@ -3454,11 +3490,34 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
       entries = await loadDatasetEntriesFromPostgres(datasetId, symbols);
     }
     if (!entries || entries.length === 0) {
+      if (serverBacktestState.datasetId && serverBacktestState.datasetId !== datasetId) {
+        entries = await loadDatasetEntriesFromPostgres(serverBacktestState.datasetId, symbols);
+        if (entries && entries.length > 0) {
+          datasetId = serverBacktestState.datasetId;
+        }
+      }
+    }
+    if (!entries || entries.length === 0) {
+      const matchDs = await pool.query(
+        `SELECT id FROM candle_datasets WHERE exchange = $1 AND timeframe = $2 AND total_candles > 0 ORDER BY updated_at DESC LIMIT 1;`,
+        [exchange, timeframe]
+      );
+      if (matchDs.rows.length > 0) {
+        entries = await loadDatasetEntriesFromPostgres(matchDs.rows[0].id, symbols);
+        if (entries && entries.length > 0) {
+          datasetId = matchDs.rows[0].id;
+        }
+      }
+    }
+    if (!entries || entries.length === 0) {
       const latestDs = await pool.query(
         `SELECT id FROM candle_datasets WHERE status = 'COMPLETED' OR symbol_count > 0 ORDER BY updated_at DESC LIMIT 1;`
       );
       if (latestDs.rows.length > 0) {
         entries = await loadDatasetEntriesFromPostgres(latestDs.rows[0].id, symbols);
+        if (entries && entries.length > 0) {
+          datasetId = latestDs.rows[0].id;
+        }
       }
     }
 

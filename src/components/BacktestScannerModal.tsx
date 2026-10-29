@@ -770,7 +770,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         if (isSubscribed && data && data.success && data.state) {
           const s = data.state;
           setIsOptimizing(Boolean(s.isOptimizing));
-          if (Array.isArray(s.top10Trials) && s.top10Trials.length > 0) {
+          if (Array.isArray(s.top10Trials)) {
             setTop10Trials(s.top10Trials);
           }
           if (typeof s.totalEvaluatedCount === 'number') {
@@ -798,17 +798,27 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   }, [isOpen, activeTab, isOptimizing]);
 
   // بررسی وجود داده‌ها در پایگاه داده PostgreSQL برای بازه زمانی انتخابی
-  // بررسی وجود داده‌ها در پایگاه داده PostgreSQL برای بازه زمانی انتخابی
   const checkCurrentRangeStatus = useCallback(async () => {
     setIsCheckingRange(true);
     try {
+      const explicitParam = activeSessionDatasetId ? `&datasetId=${encodeURIComponent(activeSessionDatasetId)}` : '';
       const res = await fetch(
-        `/api/backtest/range-status?exchange=${encodeURIComponent(selectedExchange)}&timeframe=${encodeURIComponent(timeframe)}&startTime=${timeRangeStartMs}&endTime=${timeRangeEndMs}`
+        `/api/backtest/range-status?exchange=${encodeURIComponent(selectedExchange)}&timeframe=${encodeURIComponent(timeframe)}&startTime=${timeRangeStartMs}&endTime=${timeRangeEndMs}${explicitParam}`
       );
       const data = await res.json();
       if (data && data.success) {
         setRangeStatus(data);
         if (data.exists && data.dataset) {
+          const matchedId = data.datasetId || data.dataset.id;
+          if (matchedId) {
+            setActiveSessionDatasetId(matchedId);
+          }
+          if (data.dataset.startTime && Number(data.dataset.startTime) > 0) {
+            setTimeRangeStartMs(Number(data.dataset.startTime));
+          }
+          if (data.dataset.endTime && Number(data.dataset.endTime) > 0) {
+            setTimeRangeEndMs(Number(data.dataset.endTime));
+          }
           setCachedCount(data.dataset.symbolCount || 0);
           if (Array.isArray(data.results) && data.results.length > 0) {
             setResults(data.results);
@@ -826,7 +836,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     } finally {
       setIsCheckingRange(false);
     }
-  }, [selectedExchange, timeframe, timeRangeStartMs, timeRangeEndMs, getCachedUniqueCount]);
+  }, [selectedExchange, timeframe, timeRangeStartMs, timeRangeEndMs, activeSessionDatasetId, getCachedUniqueCount]);
 
   const [isSyncingCandles, setIsSyncingCandles] = useState<boolean>(false);
 
@@ -927,8 +937,17 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                 currentSymbol: st.stage === 'completed' ? 'اسکن کامل شد.' : 'اسکن متوقف شد.',
               });
             }
-            if (st.datasetId && hasSyncedDatasetIdRef.current !== st.datasetId) {
-              hasSyncedDatasetIdRef.current = st.datasetId;
+            if (st.datasetId) {
+              setActiveSessionDatasetId(st.datasetId);
+              if (hasSyncedDatasetIdRef.current !== st.datasetId) {
+                hasSyncedDatasetIdRef.current = st.datasetId;
+              }
+              if (st.startTime && Number(st.startTime) > 0) {
+                setTimeRangeStartMs(Number(st.startTime));
+              }
+              if (st.endTime && Number(st.endTime) > 0) {
+                setTimeRangeEndMs(Number(st.endTime));
+              }
             }
             if (wasScanningRef.current) {
               wasScanningRef.current = false;
@@ -1695,8 +1714,18 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           });
         }
       }
-      setCachedCount(GLOBAL_CANDLE_CACHE.size);
-
+      if (dataset.id) {
+        setActiveSessionDatasetId(dataset.id);
+      }
+      if (dataset.startTime && Number(dataset.startTime) > 0) {
+        setTimeRangeStartMs(Number(dataset.startTime));
+      }
+      if (dataset.endTime && Number(dataset.endTime) > 0) {
+        setTimeRangeEndMs(Number(dataset.endTime));
+      }
+      if (dataset.exchange) {
+        setSelectedExchange(dataset.exchange as any);
+      }
       if (dataset.timeframe) {
         setTimeframe(dataset.timeframe as Timeframe);
       }
@@ -2645,7 +2674,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           endTime: timeRangeEndMs,
           symbols: selectedAllowedSymbols,
           strategyId: selectedStrategyId,
-          datasetId: rangeStatus?.datasetId || activeSessionDatasetId || null,
+          datasetId: activeSessionDatasetId || rangeStatus?.datasetId || `range_${(selectedExchange || 'xt').toLowerCase()}_${timeframe}_${timeRangeStartMs || 0}_${timeRangeEndMs || 0}`,
           candidate,
           strategyConfig: {
             capital,
@@ -2853,7 +2882,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           optMaxRiskReward: Number(optMaxRiskReward),
           optTimeStopCandles: Number(optTimeStopCandles),
         },
-        datasetId: rangeStatus?.datasetId || activeSessionDatasetId || null,
+        datasetId: activeSessionDatasetId || rangeStatus?.datasetId || `range_${(selectedExchange || 'xt').toLowerCase()}_${timeframe}_${timeRangeStartMs || 0}_${timeRangeEndMs || 0}`,
         autoAdaptiveEnabled,
       };
 
@@ -2890,7 +2919,11 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
   const handleResetOptimizer = async () => {
     try {
-      await fetch('/api/optimizer/reset', { method: 'POST' });
+      await fetch('/api/optimizer/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ timeframe }),
+      });
     } catch {}
     setTop10Trials([]);
     setAdaptiveRanges(DEFAULT_RANGES);
@@ -3484,6 +3517,11 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             onEvaluateCurrentManualConfig={handleEvaluateCurrentManualConfig}
             onApplyTrialToManualScan={applyTrialToManualInputs}
             onRunTrialInManualScan={handleRunTrialInManualScan}
+            activeDatasetId={activeSessionDatasetId || rangeStatus?.datasetId}
+            activeDatasetName={rangeStatus?.dataset?.name || (rangeStatus?.exists ? `بازه ${selectedExchange.toUpperCase()} ${timeframe}` : null)}
+            datasetSymbolCount={rangeStatus?.dataset?.symbolCount || cachedCount}
+            exchange={selectedExchange}
+            timeRangeLabel={timeRangeLabel}
           />
         )}
 
