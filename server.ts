@@ -2198,6 +2198,13 @@ async function runServerBacktestCycle(params: {
       }
     }
 
+    if (serverBacktestState.shouldStop) {
+      serverBacktestState.isScanning = false;
+      serverBacktestState.stage = 'idle';
+      console.log(`[Server Backtest] Scan stopped gracefully by user.`);
+      return;
+    }
+
     if (entries.length === 0 && serverBacktestState.results.length === 0) {
       throw new Error('هیچ داده کندلی در این بازه زمانی از صرافی دریافت نشد.');
     }
@@ -2211,20 +2218,26 @@ async function runServerBacktestCycle(params: {
     serverBacktestState.totalCandles = totalCandles;
     serverBacktestState.dataSizeFormatted = dataSizeFormatted;
     serverBacktestState.lastRunAt = new Date().toISOString();
+    serverBacktestState.progress.current = serverBacktestState.progress.total || entries.length;
+    serverBacktestState.progress.percent = 100;
+    serverBacktestState.progress.currentSymbol = 'پایان اسکن';
     serverBacktestState.stage = 'completed';
     serverBacktestState.isScanning = false;
 
-    // 4. Persist final results in PostgreSQL
-    const resultsJson = JSON.stringify({ results: serverBacktestState.results, allTrades: serverBacktestState.allTrades });
-    await pool.query(
-      `UPDATE candle_datasets 
-       SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
-           status = 'COMPLETED', results_json = $6, strategy_id = $7, strategy_config_json = $8, updated_at = NOW()
-       WHERE id = $9;`,
-      [entries.length, totalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, resultsJson, strategyId, JSON.stringify(cfg), datasetId]
-    );
-
-    console.log(`[Server Backtest] ✅ Completed backtest for ${datasetId} on ${serverBacktestState.results.length} pairs in PostgreSQL.`);
+    // 4. Persist final results in PostgreSQL safely (non-blocking)
+    try {
+      const resultsJson = JSON.stringify({ results: serverBacktestState.results, allTrades: serverBacktestState.allTrades });
+      await pool.query(
+        `UPDATE candle_datasets 
+         SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
+             status = 'COMPLETED', results_json = $6, strategy_id = $7, strategy_config_json = $8, updated_at = NOW()
+         WHERE id = $9;`,
+        [entries.length, totalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, resultsJson, strategyId, JSON.stringify(cfg), datasetId]
+      );
+      console.log(`[Server Backtest] ✅ Completed backtest for ${datasetId} on ${serverBacktestState.results.length} pairs in PostgreSQL.`);
+    } catch (dbErr: any) {
+      console.warn(`[Server Backtest] Warning: Could not update candle_datasets status in PostgreSQL:`, dbErr.message);
+    }
   } catch (err: any) {
     console.error(`[Server Backtest] ❌ Backtest error:`, err.message);
     serverBacktestState.isScanning = false;
@@ -2766,7 +2779,7 @@ function getNextCandidateFromAdaptiveRanges(
   return null;
 }
 
-function evaluateCombinationOnServer(
+async function evaluateCombinationOnServer(
   params: {
     atrPeriod: number;
     minCandles: number;
@@ -2800,9 +2813,15 @@ function evaluateCombinationOnServer(
 ) {
   const allTrades: any[] = [];
 
-  for (const item of entries) {
+  for (let i = 0; i < entries.length; i++) {
+    const item = entries[i];
     const candles = item.candles;
     if (!candles || candles.length < 50) continue;
+
+    // Cooperative yielding every 4 symbols so Node.js can answer HTTP status and API requests without latency
+    if (i > 0 && i % 4 === 0) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
 
     const atrResult = calculateATR(candles, params.atrPeriod);
     const zzResult = calculateAtrZigZag(candles, atrResult.atrValues, params.atrMultiplier, params.minCandles);
@@ -2966,7 +2985,7 @@ async function runServerOptimizerLoop(
     const hash = generateConfigHash(candidate);
     visitedHashes.add(hash);
 
-    const evalRes = evaluateCombinationOnServer(candidate, entries, strategyId, baseConfig, constraints);
+    const evalRes = await evaluateCombinationOnServer(candidate, entries, strategyId, baseConfig, constraints);
     serverOptimizerState.totalEvaluatedCount++;
 
     if (evalRes) {
@@ -3011,7 +3030,7 @@ async function runServerOptimizerLoop(
     }
 
     serverOptimizerState.lastUpdatedAt = new Date().toISOString();
-    await sleep(15);
+    await sleep(35);
   }
 
   serverOptimizerState.isOptimizing = false;
@@ -3036,10 +3055,19 @@ app.post('/api/optimizer/start', async (req, res) => {
       autoAdaptiveEnabled = true,
     } = req.body || {};
 
-    let datasetId = getRangeDatasetId(exchange, timeframe, startTime, endTime);
+    const explicitDatasetId = req.body?.datasetId;
+    let datasetId = explicitDatasetId || getRangeDatasetId(exchange, timeframe, startTime, endTime);
 
     // 1. Try to get entries from server in-memory cache
     let entries = serverDatasetCandleCache.get(datasetId);
+
+    // If not found by direct ID, check if serverBacktestState has the dataset in memory
+    if (!entries || entries.length === 0) {
+      if (serverBacktestState.datasetId && serverDatasetCandleCache.has(serverBacktestState.datasetId)) {
+        datasetId = serverBacktestState.datasetId;
+        entries = serverDatasetCandleCache.get(datasetId);
+      }
+    }
 
     // 2. If not in memory, query PostgreSQL candle_chunks for this datasetId
     if (!entries || entries.length === 0) {
@@ -3261,8 +3289,15 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
       constraints = {},
     } = req.body || {};
 
-    let datasetId = getRangeDatasetId(exchange, timeframe, startTime, endTime);
+    const explicitDatasetId = req.body?.datasetId;
+    let datasetId = explicitDatasetId || getRangeDatasetId(exchange, timeframe, startTime, endTime);
     let entries = serverDatasetCandleCache.get(datasetId);
+    if (!entries || entries.length === 0) {
+      if (serverBacktestState.datasetId && serverDatasetCandleCache.has(serverBacktestState.datasetId)) {
+        datasetId = serverBacktestState.datasetId;
+        entries = serverDatasetCandleCache.get(datasetId);
+      }
+    }
     if (!entries || entries.length === 0) {
       entries = await loadDatasetEntriesFromPostgres(datasetId, symbols);
     }
@@ -3299,7 +3334,7 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
       targetMinTrades: Number(constraints.targetMinTrades) || 100,
     };
 
-    const evalRes = evaluateCombinationOnServer(candidate, entries, strategyId, baseConfig, targetConstraints);
+    const evalRes = await evaluateCombinationOnServer(candidate, entries, strategyId, baseConfig, targetConstraints);
     if (!evalRes) {
       return res.status(500).json({ success: false, error: 'ارزیابی انجام نشد.' });
     }

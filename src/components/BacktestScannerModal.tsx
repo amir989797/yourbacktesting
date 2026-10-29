@@ -765,7 +765,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     let isSubscribed = true;
     const fetchOptimizerStatus = async () => {
       try {
-        const res = await fetch('/api/optimizer/status');
+        const res = await fetch('/api/optimizer/status', { signal: AbortSignal.timeout(8000) });
         const data = await res.json();
         if (isSubscribed && data && data.success && data.state) {
           const s = data.state;
@@ -816,28 +816,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               setAllCollectedTrades(data.allTrades);
             }
           }
-          // بارگذاری خودکار کندل‌ها به حافظه کش رم اگر خالی باشد
-          if (GLOBAL_CANDLE_CACHE.size === 0 && data.datasetId) {
-            loadDatasetFromCloudSql(data.datasetId).then((sqlRes) => {
-              if (sqlRes && sqlRes.success && Array.isArray(sqlRes.entries)) {
-                for (const entry of sqlRes.entries) {
-                  if (entry.pair && entry.pair.symbol && entry.candles) {
-                    GLOBAL_CANDLE_CACHE.set(entry.pair.symbol, {
-                      candles: entry.candles,
-                      timeframe: entry.timeframe || timeframe,
-                      pair: entry.pair,
-                    });
-                    GLOBAL_CANDLE_CACHE.set(`${selectedExchange}_${entry.pair.symbol}_${timeframe}`, {
-                      candles: entry.candles,
-                      timeframe: entry.timeframe || timeframe,
-                      pair: entry.pair,
-                    });
-                  }
-                }
-                setCachedCount(getCachedUniqueCount());
-              }
-            }).catch(() => {});
-          }
+          // نتایج و معاملات قبلی مستقیماً از داده‌های سرور استفاده می‌شوند
         } else {
           setCachedCount(0);
         }
@@ -899,18 +878,14 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     }
   }, [rangeStatus?.datasetId, activeSessionDatasetId, selectedExchange, timeframe, timeRangeStartMs, timeRangeEndMs, getCachedUniqueCount]);
 
-  // همگام‌سازی خودکار در هنگام جابه‌جایی تب به بهینه‌ساز یا آمار
-  useEffect(() => {
-    if ((activeTab === 'optimizer' || activeTab === 'stats') && GLOBAL_CANDLE_CACHE.size === 0 && rangeStatus?.exists) {
-      syncRangeCandlesToMemory(false);
-    }
-  }, [activeTab, rangeStatus?.exists, syncRangeCandlesToMemory]);
+  // بهینه‌ساز و آمار کاملاً به دیتابیس متصل بوده و مستقل از کش رم مرورگر در سرور اجرا می‌شوند
 
   useEffect(() => {
     checkCurrentRangeStatus();
   }, [checkCurrentRangeStatus]);
 
   const hasSyncedDatasetIdRef = useRef<string | null>(null);
+  const wasScanningRef = useRef<boolean>(false);
 
   // پایش بی‌وقفه و همگام وضعیت اسکن در پس‌زمینه سرور (حفظ وضعیت در صورت ریلود یا بستن تب)
   useEffect(() => {
@@ -923,6 +898,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           const st = data.state;
           if (st.isScanning) {
             setIsScanning(true);
+            wasScanningRef.current = true;
             if (st.progress) {
               setProgress({
                 current: st.progress.current || 0,
@@ -936,19 +912,41 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             if (Array.isArray(st.allTrades) && st.allTrades.length > 0) {
               setAllCollectedTrades([...st.allTrades]);
             }
-          } else if (st.stage === 'completed' && Array.isArray(st.results) && st.results.length > 0) {
-            setResults([...st.results]);
+          } else if (st.stage === 'completed') {
+            setIsScanning(false);
+            if (Array.isArray(st.results)) {
+              setResults([...st.results]);
+            }
             if (Array.isArray(st.allTrades)) {
               setAllCollectedTrades([...st.allTrades]);
             }
-            setIsScanning(false);
-            // همگام‌سازی سریع کندل‌های دریافتی با حافظه کش مرورگر (تنها یک‌بار پس از اتمام، نه در هر تیک پولینگ)
+            if (st.progress) {
+              setProgress({
+                current: st.progress.total || st.progress.current || 0,
+                total: st.progress.total || st.progress.current || 0,
+                currentSymbol: 'اسکن کامل شد.',
+              });
+            }
             if (st.datasetId && hasSyncedDatasetIdRef.current !== st.datasetId) {
               hasSyncedDatasetIdRef.current = st.datasetId;
-              syncRangeCandlesToMemory(false);
+            }
+            if (wasScanningRef.current) {
+              wasScanningRef.current = false;
+              showToast('✅ اسکن جفت‌ارزها با موفقیت پایان یافت.');
+              checkCurrentRangeStatus();
+            }
+          } else if (st.stage === 'error') {
+            setIsScanning(false);
+            if (st.errorMsg) {
+              setErrorMsg(st.errorMsg);
+            }
+            if (wasScanningRef.current) {
+              wasScanningRef.current = false;
+              showToast(`❌ خطا در اجرای اسکن: ${st.errorMsg || 'خطای ناشناخته'}`);
             }
           } else {
             setIsScanning(false);
+            wasScanningRef.current = false;
           }
         }
       } catch {}
@@ -960,7 +958,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [syncRangeCandlesToMemory]);
+  }, [checkCurrentRangeStatus]);
 
   // =========================================================
   // اسکن مستقل و پایدار بک‌تست در پس‌زمینه سرور (ذخیره مستقیم در PostgreSQL)
@@ -2642,6 +2640,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           endTime: timeRangeEndMs,
           symbols: selectedAllowedSymbols,
           strategyId: selectedStrategyId,
+          datasetId: rangeStatus?.datasetId || activeSessionDatasetId || null,
           candidate,
           strategyConfig: {
             capital,
@@ -2662,6 +2661,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             targetMinTrades,
           },
         }),
+        signal: AbortSignal.timeout(30000),
       });
       const data = await res.json();
       if (!data.success) {
@@ -2848,6 +2848,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           optMaxRiskReward: Number(optMaxRiskReward),
           optTimeStopCandles: Number(optTimeStopCandles),
         },
+        datasetId: rangeStatus?.datasetId || activeSessionDatasetId || null,
         autoAdaptiveEnabled,
       };
 
@@ -2855,6 +2856,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(30000),
       });
       const data = await res.json();
       if (!data.success) {
