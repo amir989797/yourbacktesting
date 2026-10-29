@@ -912,7 +912,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             if (Array.isArray(st.allTrades) && st.allTrades.length > 0) {
               setAllCollectedTrades([...st.allTrades]);
             }
-          } else if (st.stage === 'completed') {
+          } else if (st.stage === 'completed' || (!st.isScanning && wasScanningRef.current)) {
             setIsScanning(false);
             if (Array.isArray(st.results)) {
               setResults([...st.results]);
@@ -924,7 +924,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               setProgress({
                 current: st.progress.total || st.progress.current || 0,
                 total: st.progress.total || st.progress.current || 0,
-                currentSymbol: 'اسکن کامل شد.',
+                currentSymbol: st.stage === 'completed' ? 'اسکن کامل شد.' : 'اسکن متوقف شد.',
               });
             }
             if (st.datasetId && hasSyncedDatasetIdRef.current !== st.datasetId) {
@@ -932,7 +932,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             }
             if (wasScanningRef.current) {
               wasScanningRef.current = false;
-              showToast('✅ اسکن جفت‌ارزها با موفقیت پایان یافت.');
+              if (st.stage === 'completed') {
+                showToast('✅ اسکن جفت‌ارزها با موفقیت پایان یافت.');
+              }
               checkCurrentRangeStatus();
             }
           } else if (st.stage === 'error') {
@@ -1056,6 +1058,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     try {
       await fetch('/api/backtest/stop', { method: 'POST' });
       showToast('⏸️ دستور توقف اسکن سرور ثبت شد.');
+      setTimeout(() => {
+        checkCurrentRangeStatus();
+      }, 700);
     } catch {}
   };
 

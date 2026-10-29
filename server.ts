@@ -2028,6 +2028,10 @@ async function runServerBacktestCycle(params: {
       }
     }
 
+    let savedSymbolsCount = 0;
+    let savedTotalCandles = 0;
+    const savedSymbolsList: string[] = [];
+
     // 2. If existing entries found in DB, run parallel workers to calculate and stream results live!
     if (entries.length > 0) {
       serverBacktestState.stage = 'analyzing';
@@ -2061,12 +2065,16 @@ async function runServerBacktestCycle(params: {
       };
 
       await Promise.all(Array.from({ length: concurrency }, () => worker()));
-      if (entries.length > 0) {
-        serverDatasetCandleCache.set(datasetId, entries);
+      savedSymbolsCount = entries.length;
+      savedTotalCandles = entries.reduce((acc, e) => acc + (e.candles ? e.candles.length : 0), 0);
+      for (const e of entries) {
+        savedSymbolsList.push(e.pair.symbol);
       }
     } else {
-      // 3. Download from exchange with CONCURRENT WORKERS, stream results live, and persist chunks to PostgreSQL
+      // 3. Download from exchange with STREAMING DIRECT-TO-POSTGRESQL & ZERO RAM BLOAT
       serverBacktestState.stage = 'downloading';
+      serverDatasetCandleCache.clear(); // Free old cache immediately to prevent memory leak
+
       let targetSymbols = symbols && symbols.length > 0 ? symbols : [];
 
       if (targetSymbols.length === 0) {
@@ -2084,7 +2092,6 @@ async function runServerBacktestCycle(params: {
       serverBacktestState.progress.current = 0;
       serverBacktestState.progress.percent = 0;
 
-      const downloadedEntries: ServerCandleEntry[] = [];
       const isFutures = exchange !== 'spot';
 
       // Clean prior range data in PostgreSQL before fresh write
@@ -2101,6 +2108,7 @@ async function runServerBacktestCycle(params: {
 
       let chunkIdx = 0;
       let batchToSave: ServerCandleEntry[] = [];
+      let isFlushing = false;
       const queue = [...targetSymbols];
       const concurrency = Math.min(Math.max(1, Number(workersCount) || 8), 12, targetSymbols.length);
       let completedCount = 0;
@@ -2110,6 +2118,73 @@ async function runServerBacktestCycle(params: {
       if (startTime && endTime && endTime > startTime) {
         neededLimit = Math.max(50, Math.ceil((endTime - startTime) / stepMs));
       }
+
+      // Thread-safe streaming batch flusher to PostgreSQL
+      const flushBatchToDatabase = async (force: boolean = false) => {
+        if (isFlushing) return;
+        const currentBatchCandles = batchToSave.reduce((sum, e) => sum + e.candles.length, 0);
+        if (!force && batchToSave.length < 2 && currentBatchCandles < 15000) {
+          return;
+        }
+        isFlushing = true;
+        try {
+          while (batchToSave.length > 0) {
+            let sliceCount = 0;
+            let candCount = 0;
+            for (let i = 0; i < batchToSave.length; i++) {
+              sliceCount++;
+              candCount += batchToSave[i].candles.length;
+              if (candCount >= 15000 || sliceCount >= 2) break;
+            }
+            const toFlush = batchToSave.splice(0, sliceCount);
+            if (toFlush.length === 0) break;
+
+            const items = toFlush.map((e) => ({
+              symbol: e.pair.symbol,
+              baseAsset: e.pair.baseAsset,
+              quoteAsset: e.pair.quoteAsset,
+              timeframe: e.timeframe,
+              tuples: e.candles.map((c) => [c.time, c.open, c.high, c.low, c.close, c.volume]),
+            }));
+
+            for (const e of toFlush) {
+              savedSymbolsCount++;
+              savedTotalCandles += e.candles.length;
+              savedSymbolsList.push(e.pair.symbol);
+            }
+
+            const dataSizeBytes = Math.round(savedTotalCandles * 48);
+            const dataSizeFormatted = dataSizeBytes > 1048576 ? `${(dataSizeBytes / 1048576).toFixed(1)} MB` : `${(dataSizeBytes / 1024).toFixed(0)} KB`;
+            const symbolsListJson = JSON.stringify(savedSymbolsList);
+
+            serverBacktestState.symbolCount = savedSymbolsCount;
+            serverBacktestState.totalCandles = savedTotalCandles;
+            serverBacktestState.dataSizeFormatted = dataSizeFormatted;
+
+            try {
+              // 1. Insert chunk
+              await pool.query(
+                `INSERT INTO candle_chunks (dataset_id, chunk_index, items_json, created_at)
+                 VALUES ($1, $2, $3, NOW());`,
+                [datasetId, chunkIdx++, JSON.stringify(items)]
+              );
+
+              // 2. Incrementally update candle_datasets so PostgreSQL ALWAYS shows exact progress and candles count
+              await pool.query(
+                `UPDATE candle_datasets 
+                 SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
+                     status = 'DOWNLOADING', updated_at = NOW()
+                 WHERE id = $6;`,
+                [savedSymbolsCount, savedTotalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, datasetId]
+              );
+            } catch (err: any) {
+              console.warn('[Chunk & Dataset Save Error]:', err.message);
+            }
+          }
+        } finally {
+          isFlushing = false;
+        }
+      };
 
       const worker = async () => {
         while (queue.length > 0 && !serverBacktestState.shouldStop) {
@@ -2130,7 +2205,7 @@ async function runServerBacktestCycle(params: {
               const pair = { symbol: sym, baseAsset, quoteAsset: 'USDT' };
               const entry: ServerCandleEntry = { pair, candles, timeframe };
 
-              downloadedEntries.push(entry);
+              // Add to pending save batch (will be flushed and freed from RAM immediately)
               batchToSave.push(entry);
 
               // IMMEDIATELY compute strategy for this pair and STREAM live results!
@@ -2140,24 +2215,8 @@ async function runServerBacktestCycle(params: {
                 serverBacktestState.allTrades.push(...calculated.finishedTrades);
               }
 
-              // Save chunk to PostgreSQL every 5 symbols
-              if (batchToSave.length >= 5) {
-                const toFlush = [...batchToSave];
-                batchToSave = [];
-                const items = toFlush.map((e) => ({
-                  symbol: e.pair.symbol,
-                  baseAsset: e.pair.baseAsset,
-                  quoteAsset: e.pair.quoteAsset,
-                  timeframe: e.timeframe,
-                  tuples: e.candles.map((c) => [c.time, c.open, c.high, c.low, c.close, c.volume]),
-                }));
-
-                await pool.query(
-                  `INSERT INTO candle_chunks (dataset_id, chunk_index, items_json, created_at)
-                   VALUES ($1, $2, $3, NOW());`,
-                  [datasetId, chunkIdx++, JSON.stringify(items)]
-                ).catch((err) => console.warn('[Chunk Save Error]:', err.message));
-              }
+              // Flush to PostgreSQL in small batches so RAM never bloats
+              await flushBatchToDatabase(false);
             }
           } catch (err: any) {
             console.warn(`[Backtest Worker Error] ${sym}:`, err.message);
@@ -2175,50 +2234,55 @@ async function runServerBacktestCycle(params: {
       // Run parallel workers in Node.js backend
       await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
-      // Save remaining batch
-      if (batchToSave.length > 0) {
-        const items = batchToSave.map((e) => ({
-          symbol: e.pair.symbol,
-          baseAsset: e.pair.baseAsset,
-          quoteAsset: e.pair.quoteAsset,
-          timeframe: e.timeframe,
-          tuples: e.candles.map((c) => [c.time, c.open, c.high, c.low, c.close, c.volume]),
-        }));
-
-        await pool.query(
-          `INSERT INTO candle_chunks (dataset_id, chunk_index, items_json, created_at)
-           VALUES ($1, $2, $3, NOW());`,
-          [datasetId, chunkIdx++, JSON.stringify(items)]
-        ).catch(() => {});
-      }
-
-      entries = downloadedEntries;
-      if (entries.length > 0) {
-        serverDatasetCandleCache.set(datasetId, entries);
-      }
+      // Save any remaining batch to PostgreSQL
+      await flushBatchToDatabase(true);
     }
 
+    // Handle user manual cancellation / stop
     if (serverBacktestState.shouldStop) {
       serverBacktestState.isScanning = false;
       serverBacktestState.stage = 'idle';
-      console.log(`[Server Backtest] Scan stopped gracefully by user.`);
+
+      const totalCandles = savedTotalCandles;
+      const dataSizeBytes = Math.round(totalCandles * 48);
+      const dataSizeFormatted = dataSizeBytes > 1048576 ? `${(dataSizeBytes / 1048576).toFixed(1)} MB` : `${(dataSizeBytes / 1024).toFixed(0)} KB`;
+      const symbolsListJson = JSON.stringify(savedSymbolsList);
+
+      serverBacktestState.symbolCount = savedSymbolsCount;
+      serverBacktestState.totalCandles = totalCandles;
+      serverBacktestState.dataSizeFormatted = dataSizeFormatted;
+
+      // Ensure dataset is marked COMPLETED in PostgreSQL with partial data so optimizer & stats work immediately
+      try {
+        const resultsJson = JSON.stringify({ results: serverBacktestState.results, allTrades: serverBacktestState.allTrades });
+        await pool.query(
+          `UPDATE candle_datasets 
+           SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
+               status = 'COMPLETED', results_json = $6, strategy_id = $7, strategy_config_json = $8, updated_at = NOW()
+           WHERE id = $9;`,
+          [savedSymbolsCount, totalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, resultsJson, strategyId, JSON.stringify(cfg), datasetId]
+        );
+        console.log(`[Server Backtest] ⏸️ Scan stopped gracefully by user. Saved ${savedSymbolsCount} symbols and ${totalCandles} candles.`);
+      } catch (err: any) {
+        console.warn('[Server Backtest] Warning saving stopped state:', err.message);
+      }
       return;
     }
 
-    if (entries.length === 0 && serverBacktestState.results.length === 0) {
+    if (savedSymbolsCount === 0 && serverBacktestState.results.length === 0) {
       throw new Error('هیچ داده کندلی در این بازه زمانی از صرافی دریافت نشد.');
     }
 
-    const totalCandles = entries.reduce((acc, e) => acc + e.candles.length, 0);
+    const totalCandles = savedTotalCandles;
     const dataSizeBytes = Math.round(totalCandles * 48);
     const dataSizeFormatted = dataSizeBytes > 1048576 ? `${(dataSizeBytes / 1048576).toFixed(1)} MB` : `${(dataSizeBytes / 1024).toFixed(0)} KB`;
-    const symbolsListJson = JSON.stringify(entries.map((e) => e.pair.symbol));
+    const symbolsListJson = JSON.stringify(savedSymbolsList);
 
-    serverBacktestState.symbolCount = entries.length;
+    serverBacktestState.symbolCount = savedSymbolsCount;
     serverBacktestState.totalCandles = totalCandles;
     serverBacktestState.dataSizeFormatted = dataSizeFormatted;
     serverBacktestState.lastRunAt = new Date().toISOString();
-    serverBacktestState.progress.current = serverBacktestState.progress.total || entries.length;
+    serverBacktestState.progress.current = serverBacktestState.progress.total || savedSymbolsCount;
     serverBacktestState.progress.percent = 100;
     serverBacktestState.progress.currentSymbol = 'پایان اسکن';
     serverBacktestState.stage = 'completed';
@@ -2232,9 +2296,9 @@ async function runServerBacktestCycle(params: {
          SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
              status = 'COMPLETED', results_json = $6, strategy_id = $7, strategy_config_json = $8, updated_at = NOW()
          WHERE id = $9;`,
-        [entries.length, totalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, resultsJson, strategyId, JSON.stringify(cfg), datasetId]
+        [savedSymbolsCount, totalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, resultsJson, strategyId, JSON.stringify(cfg), datasetId]
       );
-      console.log(`[Server Backtest] ✅ Completed backtest for ${datasetId} on ${serverBacktestState.results.length} pairs in PostgreSQL.`);
+      console.log(`[Server Backtest] ✅ Completed backtest for ${datasetId} on ${serverBacktestState.results.length} pairs in PostgreSQL (${totalCandles} candles).`);
     } catch (dbErr: any) {
       console.warn(`[Server Backtest] Warning: Could not update candle_datasets status in PostgreSQL:`, dbErr.message);
     }
@@ -2265,6 +2329,41 @@ app.get('/api/backtest/range-status', async (req, res) => {
     }
 
     const row = dsRes.rows[0];
+
+    // Self-healing: if dataset exists in PostgreSQL but total_candles is 0, auto-calculate from chunks!
+    if (!row.total_candles || Number(row.total_candles) === 0) {
+      try {
+        const chunksRes = await pool.query(`SELECT items_json FROM candle_chunks WHERE dataset_id = $1;`, [datasetId]);
+        if (chunksRes.rows.length > 0) {
+          let healedCandles = 0;
+          const healedSymbols = new Set<string>();
+          for (const cRow of chunksRes.rows) {
+            try {
+              const items = JSON.parse(cRow.items_json);
+              for (const it of items) {
+                if (it.symbol) healedSymbols.add(it.symbol);
+                if (Array.isArray(it.tuples)) healedCandles += it.tuples.length;
+              }
+            } catch {}
+          }
+          if (healedCandles > 0) {
+            row.total_candles = healedCandles;
+            row.symbol_count = healedSymbols.size;
+            const dataSizeBytes = Math.round(healedCandles * 48);
+            row.data_size_formatted = dataSizeBytes > 1048576 ? `${(dataSizeBytes / 1048576).toFixed(1)} MB` : `${(dataSizeBytes / 1024).toFixed(0)} KB`;
+            await pool.query(
+              `UPDATE candle_datasets 
+               SET total_candles = $1, symbol_count = $2, data_size_bytes = $3, data_size_formatted = $4, status = 'COMPLETED', updated_at = NOW() 
+               WHERE id = $5;`,
+              [healedCandles, healedSymbols.size, dataSizeBytes, row.data_size_formatted, datasetId]
+            ).catch(() => {});
+          }
+        }
+      } catch (err: any) {
+        console.warn('[Range-Status Heal Warning]:', err.message);
+      }
+    }
+
     let parsedResults = null;
     let parsedTrades = null;
     if (row.results_json) {
@@ -2357,7 +2456,8 @@ app.post('/api/backtest/reset', (_req, res) => {
 });
 
 // 6.5.3 Get Current Server Backtest Status & Live Progress
-app.get('/api/backtest/status', (_req, res) => {
+app.get('/api/backtest/status', (req, res) => {
+  const includeAllTrades = req.query.includeTrades === 'true' || !serverBacktestState.isScanning;
   res.json({
     success: true,
     state: {
@@ -2371,7 +2471,8 @@ app.get('/api/backtest/status', (_req, res) => {
       progress: serverBacktestState.progress,
       resultsCount: serverBacktestState.results.length,
       results: serverBacktestState.results,
-      allTrades: serverBacktestState.allTrades,
+      allTrades: includeAllTrades ? serverBacktestState.allTrades : [],
+      allTradesCount: serverBacktestState.allTrades.length,
       errorMsg: serverBacktestState.errorMsg,
       lastRunAt: serverBacktestState.lastRunAt,
       totalCandles: serverBacktestState.totalCandles,
