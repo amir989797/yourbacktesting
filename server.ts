@@ -1791,50 +1791,66 @@ async function loadDatasetEntriesFromPostgres(datasetId: string, symbolsFilter?:
     if (cached && cached.length > 0) return cached;
   }
 
-  const chunksRes = await pool.query(
-    `SELECT items_json FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC;`,
-    [datasetId]
-  );
-  if (chunksRes.rows.length === 0) return [];
-
+  const MAX_SYMBOLS = 150;
   const symbolsFilterSet = symbolsFilter && symbolsFilter.length > 0
     ? new Set(symbolsFilter.map((s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '')))
     : null;
 
   const seenSymbols = new Map<string, ServerCandleEntry>();
-  for (const chunkRow of chunksRes.rows) {
-    try {
-      const items = JSON.parse(chunkRow.items_json);
-      for (const item of items) {
-        const cleanSym = (item.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-        if (symbolsFilterSet && !symbolsFilterSet.has(cleanSym)) continue;
-        if (seenSymbols.has(cleanSym)) continue;
+  let offset = 0;
+  const pageSize = 25;
 
-        const candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
-          time: t[0],
-          open: t[1],
-          high: t[2],
-          low: t[3],
-          close: t[4],
-          volume: t[5],
-        }));
-        if (candles.length >= 50) {
-          seenSymbols.set(cleanSym, {
-            pair: {
-              symbol: item.symbol,
-              baseAsset: item.baseAsset,
-              quoteAsset: item.quoteAsset,
-            },
-            candles,
-            timeframe: item.timeframe || '5m',
-          });
+  // Stream chunks in pages of 25 to avoid giant 800MB TCP query buffers
+  while (true) {
+    const chunksRes = await pool.query(
+      `SELECT items_json FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC LIMIT $2 OFFSET $3;`,
+      [datasetId, pageSize, offset]
+    );
+    if (chunksRes.rows.length === 0) break;
+    offset += pageSize;
+
+    for (const chunkRow of chunksRes.rows) {
+      try {
+        const items = JSON.parse(chunkRow.items_json);
+        for (const item of items) {
+          const cleanSym = (item.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+          if (symbolsFilterSet && !symbolsFilterSet.has(cleanSym)) continue;
+          if (seenSymbols.has(cleanSym)) continue;
+
+          const candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
+            time: t[0],
+            open: t[1],
+            high: t[2],
+            low: t[3],
+            close: t[4],
+            volume: t[5],
+          }));
+          if (candles.length >= 50) {
+            seenSymbols.set(cleanSym, {
+              pair: {
+                symbol: item.symbol,
+                baseAsset: item.baseAsset,
+                quoteAsset: item.quoteAsset,
+              },
+              candles,
+              timeframe: item.timeframe || '5m',
+            });
+          }
+          if (symbolsFilterSet && seenSymbols.size >= symbolsFilterSet.size) break;
+          if (!symbolsFilterSet && seenSymbols.size >= MAX_SYMBOLS) break;
         }
-      }
-    } catch {}
+      } catch {}
+      if (symbolsFilterSet && seenSymbols.size >= symbolsFilterSet.size) break;
+      if (!symbolsFilterSet && seenSymbols.size >= MAX_SYMBOLS) break;
+    }
+
+    if (symbolsFilterSet && seenSymbols.size >= symbolsFilterSet.size) break;
+    if (!symbolsFilterSet && seenSymbols.size >= MAX_SYMBOLS) break;
   }
 
   const entries = Array.from(seenSymbols.values());
   if (entries.length > 0) {
+    serverDatasetCandleCache.clear();
     serverDatasetCandleCache.set(datasetId, entries);
   }
   return entries;
@@ -3159,41 +3175,40 @@ app.post('/api/optimizer/start', async (req, res) => {
     const explicitDatasetId = req.body?.datasetId;
     let datasetId = explicitDatasetId || getRangeDatasetId(exchange, timeframe, startTime, endTime);
 
-    // 1. Try to get entries from server in-memory cache
-    let entries = serverDatasetCandleCache.get(datasetId);
-
-    // If not found by direct ID, check if serverBacktestState has the dataset in memory
-    if (!entries || entries.length === 0) {
-      if (serverBacktestState.datasetId && serverDatasetCandleCache.has(serverBacktestState.datasetId)) {
-        datasetId = serverBacktestState.datasetId;
-        entries = serverDatasetCandleCache.get(datasetId);
-      }
+    // Stop previous optimization if already running
+    if (serverOptimizerState.isOptimizing) {
+      serverOptimizerState.shouldStop = true;
+      serverOptimizerState.isOptimizing = false;
+      await sleep(50);
     }
 
-    // 2. If not in memory, query PostgreSQL candle_chunks for this datasetId
-    if (!entries || entries.length === 0) {
-      entries = await loadDatasetEntriesFromPostgres(datasetId, symbols);
-    }
+    // 1. Quick metadata validation in PostgreSQL (< 2ms) without loading 800MB chunks synchronously!
+    let targetDatasetId = datasetId;
+    const dsRes = await pool.query(
+      `SELECT id, total_candles, symbol_count FROM candle_datasets WHERE id = $1 LIMIT 1;`,
+      [datasetId]
+    );
 
-    // 3. Fallback: if not found for this specific range, check for any completed dataset in PostgreSQL
-    if (!entries || entries.length === 0) {
-      const latestDs = await pool.query(
-        `SELECT id FROM candle_datasets WHERE status = 'COMPLETED' OR symbol_count > 0 ORDER BY updated_at DESC LIMIT 1;`
+    if (dsRes.rows.length === 0 || !dsRes.rows[0].total_candles || Number(dsRes.rows[0].total_candles) === 0) {
+      // Check fallback to any completed dataset in PostgreSQL
+      const fallbackDs = await pool.query(
+        `SELECT id, total_candles, symbol_count FROM candle_datasets WHERE total_candles > 0 ORDER BY updated_at DESC LIMIT 1;`
       );
-      if (latestDs.rows.length > 0) {
-        const fallbackId = latestDs.rows[0].id;
-        entries = await loadDatasetEntriesFromPostgres(fallbackId, symbols);
-        if (entries && entries.length > 0) {
-          datasetId = fallbackId;
+      if (fallbackDs.rows.length > 0) {
+        targetDatasetId = fallbackDs.rows[0].id;
+      } else {
+        // Also check if any chunks exist for this dataset
+        const chunkCheck = await pool.query(
+          `SELECT dataset_id FROM candle_chunks WHERE dataset_id = $1 LIMIT 1;`,
+          [datasetId]
+        );
+        if (chunkCheck.rows.length === 0) {
+          return res.status(400).json({
+            success: false,
+            error: '⚠️ داده کندلی در پایگاه داده PostgreSQL یافت نشد. لطفاً ابتدا در تب اسکن دستی دکمه شروع اسکن را بزنید.',
+          });
         }
       }
-    }
-
-    if (!entries || entries.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: '⚠️ داده کندلی در پایگاه داده PostgreSQL یافت نشد. لطفاً ابتدا در تب «اسکن دستی بازار» دکمه شروع اسکن را بزنید تا داده‌های کندل در دیتابیس ذخیره شوند.',
-      });
     }
 
     const cfg = strategyConfig || {};
@@ -3317,30 +3332,56 @@ app.post('/api/optimizer/start', async (req, res) => {
     serverOptimizerState.timeframe = timeframe;
     serverOptimizerState.strategyId = strategyId;
     serverOptimizerState.lastStartedAt = Date.now();
+    serverOptimizerState.isOptimizing = true;
+    serverOptimizerState.shouldStop = false;
+    serverOptimizerState.datasetId = targetDatasetId;
+    serverOptimizerState.totalEvaluatedCount = 0;
+    serverOptimizerState.sessionSecondsLeft = 900;
+    serverOptimizerState.top10Trials = [];
+    serverOptimizerState.errorMsg = null;
+    serverOptimizerState.statusText = 'در حال بارگذاری سریع داده‌های کندل از دیتابیس PostgreSQL...';
 
-    // Start background optimizer loop in server
-    runServerOptimizerLoop(
-      datasetId,
-      entries,
-      strategyId,
-      baseConfig,
-      targetConstraints,
-      initialRanges,
-      effectiveLocks,
-      autoAdaptiveEnabled !== false
-    ).catch((err) => {
-      console.error('[Server Optimizer Background Error]:', err.message);
-      serverOptimizerState.isOptimizing = false;
-      serverOptimizerState.errorMsg = err.message;
-    });
-
+    // 2. Respond IMMEDIATELY to HTTP client (5ms response time!) to eliminate any fetch timeout
     res.json({
       success: true,
-      message: `بهینه‌سازی مستقل در سرور با ${entries.length} نماد از پایگاه‌داده آغاز شد.`,
-      datasetId,
-      symbolCount: entries.length,
-      state: serverOptimizerState,
+      message: 'فرآیند بهینه‌سازی در سرور فعال شد و در حال آماده‌سازی داده‌ها است...',
+      datasetId: targetDatasetId,
     });
+
+    // 3. Load candle dataset and run optimizer loop asynchronously in background
+    (async () => {
+      try {
+        let entries = serverDatasetCandleCache.get(targetDatasetId);
+        if (!entries || entries.length === 0) {
+          entries = await loadDatasetEntriesFromPostgres(targetDatasetId, symbols);
+        }
+
+        if (!entries || entries.length === 0) {
+          serverOptimizerState.isOptimizing = false;
+          serverOptimizerState.errorMsg = 'هیچ داده کندلی در دیتابیس برای این بازه یافت نشد.';
+          serverOptimizerState.statusText = 'خطا: کندلی یافت نشد.';
+          return;
+        }
+
+        serverOptimizerState.statusText = `در حال بهینه‌سازی مداوم روی ${entries.length} نماد در سرور...`;
+
+        await runServerOptimizerLoop(
+          targetDatasetId,
+          entries,
+          strategyId,
+          baseConfig,
+          targetConstraints,
+          initialRanges,
+          effectiveLocks,
+          autoAdaptiveEnabled !== false
+        );
+      } catch (loopErr: any) {
+        console.error('[Server Optimizer Background Error]:', loopErr.message);
+        serverOptimizerState.isOptimizing = false;
+        serverOptimizerState.errorMsg = loopErr.message;
+        serverOptimizerState.statusText = `خطا در بهینه‌ساز: ${loopErr.message}`;
+      }
+    })();
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

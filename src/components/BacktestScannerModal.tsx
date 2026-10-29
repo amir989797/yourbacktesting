@@ -2861,7 +2861,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(60000),
       });
       const data = await res.json();
       if (!data.success) {
