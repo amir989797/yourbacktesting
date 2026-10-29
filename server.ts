@@ -1791,17 +1791,20 @@ async function loadDatasetEntriesFromPostgres(datasetId: string, symbolsFilter?:
     if (cached && cached.length > 0) return cached;
   }
 
-  const MAX_SYMBOLS = 150;
+  const MAX_SYMBOLS = 35;
   const symbolsFilterSet = symbolsFilter && symbolsFilter.length > 0
     ? new Set(symbolsFilter.map((s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '')))
     : null;
 
+  const targetSymbolsCount = symbolsFilterSet ? Math.min(symbolsFilterSet.size, 45) : MAX_SYMBOLS;
   const seenSymbols = new Map<string, ServerCandleEntry>();
   let offset = 0;
-  const pageSize = 25;
+  const pageSize = 5;
 
-  // Stream chunks in pages of 25 to avoid giant 800MB TCP query buffers
-  while (true) {
+  serverOptimizerState.statusText = `در حال بارگذاری کندل‌ها از دیتابیس (۰/${targetSymbolsCount} نماد)...`;
+
+  // Stream chunks in pages of 5 to avoid giant TCP query buffers and network latency
+  while (seenSymbols.size < targetSymbolsCount && !serverOptimizerState.shouldStop) {
     const chunksRes = await pool.query(
       `SELECT items_json FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC LIMIT $2 OFFSET $3;`,
       [datasetId, pageSize, offset]
@@ -1810,6 +1813,7 @@ async function loadDatasetEntriesFromPostgres(datasetId: string, symbolsFilter?:
     offset += pageSize;
 
     for (const chunkRow of chunksRes.rows) {
+      if (serverOptimizerState.shouldStop) break;
       try {
         const items = JSON.parse(chunkRow.items_json);
         for (const item of items) {
@@ -1817,7 +1821,7 @@ async function loadDatasetEntriesFromPostgres(datasetId: string, symbolsFilter?:
           if (symbolsFilterSet && !symbolsFilterSet.has(cleanSym)) continue;
           if (seenSymbols.has(cleanSym)) continue;
 
-          const candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
+          let candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
             time: t[0],
             open: t[1],
             high: t[2],
@@ -1826,6 +1830,11 @@ async function loadDatasetEntriesFromPostgres(datasetId: string, symbolsFilter?:
             volume: t[5],
           }));
           if (candles.length >= 50) {
+            // Keep up to latest 7,000 candles per symbol for optimizer (~24 days of 5m data)
+            // Slicing keeps evaluation fast (100-200ms per trial) while providing ample trade count
+            if (candles.length > 7000) {
+              candles = candles.slice(-7000);
+            }
             seenSymbols.set(cleanSym, {
               pair: {
                 symbol: item.symbol,
@@ -1836,16 +1845,15 @@ async function loadDatasetEntriesFromPostgres(datasetId: string, symbolsFilter?:
               timeframe: item.timeframe || '5m',
             });
           }
-          if (symbolsFilterSet && seenSymbols.size >= symbolsFilterSet.size) break;
-          if (!symbolsFilterSet && seenSymbols.size >= MAX_SYMBOLS) break;
+          if (seenSymbols.size >= targetSymbolsCount) break;
         }
       } catch {}
-      if (symbolsFilterSet && seenSymbols.size >= symbolsFilterSet.size) break;
-      if (!symbolsFilterSet && seenSymbols.size >= MAX_SYMBOLS) break;
+      if (seenSymbols.size >= targetSymbolsCount) break;
     }
 
-    if (symbolsFilterSet && seenSymbols.size >= symbolsFilterSet.size) break;
-    if (!symbolsFilterSet && seenSymbols.size >= MAX_SYMBOLS) break;
+    serverOptimizerState.statusText = `در حال بارگذاری کندل‌ها از دیتابیس (${seenSymbols.size}/${targetSymbolsCount} نماد)...`;
+    // Cooperative yielding so status API requests get served immediately
+    await new Promise((resolve) => setImmediate(resolve));
   }
 
   const entries = Array.from(seenSymbols.values());
@@ -2931,6 +2939,7 @@ async function evaluateCombinationOnServer(
   const allTrades: any[] = [];
 
   for (let i = 0; i < entries.length; i++) {
+    if (serverOptimizerState.shouldStop) break;
     const item = entries[i];
     const candles = item.candles;
     if (!candles || candles.length < 50) continue;
@@ -3103,6 +3112,7 @@ async function runServerOptimizerLoop(
     visitedHashes.add(hash);
 
     const evalRes = await evaluateCombinationOnServer(candidate, entries, strategyId, baseConfig, constraints);
+    if (serverOptimizerState.shouldStop) break;
     serverOptimizerState.totalEvaluatedCount++;
 
     if (evalRes) {
