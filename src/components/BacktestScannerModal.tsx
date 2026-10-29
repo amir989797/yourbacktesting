@@ -826,6 +826,29 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               setAllCollectedTrades(data.allTrades);
             }
           }
+          if (data.strategyId) {
+            setSelectedStrategyId(data.strategyId);
+          }
+          if (data.strategyConfig) {
+            const sc = data.strategyConfig;
+            if (sc.atrPeriod) setOptAtrPeriod(sc.atrPeriod);
+            if (sc.atrMultiplier) setOptAtrMultiplier(sc.atrMultiplier);
+            if (sc.minCandles) setOptMinCandles(sc.minCandles);
+            if (sc.minCandlesForLongLeg) setOptMinCandlesLong(sc.minCandlesForLongLeg);
+            if (sc.longLegAtrMultiplier) setOptLongLegAtrMult(sc.longLegAtrMultiplier);
+            if (sc.maxBlueLegPercent) setOptMaxBlueLegPercent(sc.maxBlueLegPercent);
+            if (sc.maxBreakoutAtrMultiplier) setOptMaxBreakoutAtr(sc.maxBreakoutAtrMultiplier);
+            if (sc.maxRiskReward) setOptMaxRiskReward(sc.maxRiskReward);
+            if (sc.timeStopCandles) setOptTimeStopCandles(sc.timeStopCandles);
+            if (sc.maxCandlesToEnter) setMaxCandlesToEnter(sc.maxCandlesToEnter);
+            if (typeof sc.noConcurrentPositions === 'boolean') {
+              setNoConcurrentPositions(sc.noConcurrentPositions);
+            }
+            if (sc.capital) setCapital(sc.capital);
+            if (sc.riskMode) setRiskMode(sc.riskMode);
+            if (sc.riskAmountFixed) setRiskAmountFixed(sc.riskAmountFixed);
+            if (sc.riskPercent) setRiskPercent(sc.riskPercent);
+          }
           // نتایج و معاملات قبلی مستقیماً از داده‌های سرور استفاده می‌شوند
         } else {
           setCachedCount(0);
@@ -997,9 +1020,13 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     setErrorMsg(null);
     setResults([]);
     setAllCollectedTrades([]);
+    const targetSymbols = universeOption === 'all_market' || forceRedownload === false
+      ? []
+      : selectedAllowedSymbols;
+
     setProgress({
       current: 0,
-      total: selectedAllowedSymbols?.length || 50,
+      total: targetSymbols.length > 0 ? targetSymbols.length : (rangeStatus?.dataset?.symbolCount || 771),
       currentSymbol: `در حال ارسال درخواست به سرور با ${scanWorkersCount} ورکر موازی...`,
     });
 
@@ -1012,7 +1039,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           timeframe,
           startTime: timeRangeStartMs,
           endTime: timeRangeEndMs,
-          symbols: selectedAllowedSymbols,
+          datasetId: activeSessionDatasetId || rangeStatus?.datasetId || undefined,
+          symbols: targetSymbols,
           workersCount: scanWorkersCount,
           strategyId: selectedStrategyId,
           forceRedownload: Boolean(forceRedownload),
@@ -2672,7 +2700,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           timeframe: timeframe,
           startTime: timeRangeStartMs,
           endTime: timeRangeEndMs,
-          symbols: selectedAllowedSymbols,
+          symbols: universeOption === 'all_market' ? [] : selectedAllowedSymbols,
           strategyId: selectedStrategyId,
           datasetId: activeSessionDatasetId || rangeStatus?.datasetId || `range_${(selectedExchange || 'xt').toLowerCase()}_${timeframe}_${timeRangeStartMs || 0}_${timeRangeEndMs || 0}`,
           candidate,
@@ -2687,6 +2715,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             noConcurrentPositions,
             maxRiskReward: optMaxRiskReward,
             optMaxRiskReward,
+            maxCandlesToEnter,
             timeStopCandles: optTimeStopCandles,
           },
           constraints: {
@@ -2834,7 +2863,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         timeframe: timeframe,
         startTime: timeRangeStartMs,
         endTime: timeRangeEndMs,
-        symbols: selectedAllowedSymbols,
+        symbols: universeOption === 'all_market' ? [] : selectedAllowedSymbols,
         strategyId: selectedStrategyId,
         strategyConfig: {
           capital,
@@ -2845,6 +2874,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           exitCommissionPercent,
           tradingFeePercent: (entryCommissionPercent || 0.05) + (exitCommissionPercent || 0.05),
           noConcurrentPositions,
+          maxCandlesToEnter,
           atrPeriod: optAtrPeriod,
           minCandles: optMinCandles,
           minCandlesForLongLeg: optMinCandlesLong,
@@ -2918,6 +2948,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   };
 
   const handleResetOptimizer = async () => {
+    setIsOptimizing(false);
     try {
       await fetch('/api/optimizer/reset', {
         method: 'POST',
@@ -2926,7 +2957,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       });
     } catch {}
     setTop10Trials([]);
-    setAdaptiveRanges(DEFAULT_RANGES);
+    setAdaptiveRanges(getDefaultRangesForContext(timeframe, 'zigzag-hybrid'));
     setTotalEvaluatedCount(0);
     visitedHashesRef.current.clear();
     setSessionSecondsLeft(900);

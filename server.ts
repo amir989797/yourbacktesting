@@ -1791,19 +1791,18 @@ async function loadDatasetEntriesFromPostgres(datasetId: string, symbolsFilter?:
     if (cached && cached.length > 0) return cached;
   }
 
-  const MAX_SYMBOLS = 50;
   const symbolsFilterSet = symbolsFilter && symbolsFilter.length > 0
     ? new Set(symbolsFilter.map((s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '')))
     : null;
 
-  const targetSymbolsCount = symbolsFilterSet ? Math.min(symbolsFilterSet.size, 100) : MAX_SYMBOLS;
+  const targetSymbolsCount = symbolsFilterSet ? symbolsFilterSet.size : 10000;
   const seenSymbols = new Map<string, ServerCandleEntry>();
   let offset = 0;
-  const pageSize = 5;
+  const pageSize = 50;
 
-  serverOptimizerState.statusText = `در حال بارگذاری کندل‌ها از دیتابیس (۰/${targetSymbolsCount} نماد)...`;
+  serverOptimizerState.statusText = `در حال بارگذاری کندل‌ها از دیتابیس (۰/${targetSymbolsCount === 10000 ? 'تمام' : targetSymbolsCount} نماد)...`;
 
-  // Stream chunks in pages of 5 to avoid giant TCP query buffers and network latency
+  // Stream chunks in pages of 50 to maximize throughput and minimize network round trips
   while (seenSymbols.size < targetSymbolsCount && !serverOptimizerState.shouldStop) {
     const chunksRes = await pool.query(
       `SELECT items_json FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC LIMIT $2 OFFSET $3;`,
@@ -1847,14 +1846,15 @@ async function loadDatasetEntriesFromPostgres(datasetId: string, symbolsFilter?:
       if (seenSymbols.size >= targetSymbolsCount) break;
     }
 
-    serverOptimizerState.statusText = `در حال بارگذاری کندل‌ها از دیتابیس (${seenSymbols.size}/${targetSymbolsCount} نماد)...`;
+    const statusMsg = `در حال بارگذاری کندل‌ها از دیتابیس (${seenSymbols.size}/${targetSymbolsCount === 10000 ? 'تمام' : targetSymbolsCount} نماد)...`;
+    serverOptimizerState.statusText = statusMsg;
+    serverBacktestState.progress.currentSymbol = statusMsg;
     // Cooperative yielding so status API requests get served immediately
     await new Promise((resolve) => setImmediate(resolve));
   }
 
   const entries = Array.from(seenSymbols.values());
   if (entries.length > 0) {
-    serverDatasetCandleCache.clear();
     serverDatasetCandleCache.set(datasetId, entries);
   }
   return entries;
@@ -1865,6 +1865,7 @@ async function runServerBacktestCycle(params: {
   timeframe: string;
   startTime?: number | null;
   endTime?: number | null;
+  datasetId?: string | null;
   symbols: string[];
   workersCount?: number;
   strategyId: string;
@@ -1872,7 +1873,7 @@ async function runServerBacktestCycle(params: {
   forceRedownload?: boolean;
 }) {
   const { exchange, timeframe, startTime, endTime, symbols, workersCount, strategyId, strategyConfig, forceRedownload } = params;
-  const datasetId = getRangeDatasetId(exchange, timeframe, startTime, endTime);
+  let datasetId = params.datasetId || getRangeDatasetId(exchange, timeframe, startTime, endTime);
 
   serverBacktestState.isScanning = true;
   serverBacktestState.lastStartedAt = Date.now();
@@ -1901,13 +1902,13 @@ async function runServerBacktestCycle(params: {
   const maxBlueLegPercent = Number(cfg.optMaxBlueLegPercent ?? cfg.maxBlueLegPercent) || 50;
   const maxBreakoutAtrMultiplier = Number(cfg.optMaxBreakoutAtr ?? cfg.maxBreakoutAtrMultiplier) || 3.0;
   const maxRiskReward = Number(cfg.optMaxRiskReward ?? cfg.maxRiskReward) || 3.0;
-  const maxCandlesToEnter = Number(cfg.maxCandlesToEnter) || 35;
+  const maxCandlesToEnter = Number(cfg.maxCandlesToEnter) || 100;
   const entryCommission = Number(cfg.entryCommissionPercent) || 0.06;
   const exitCommission = Number(cfg.exitCommissionPercent) || 0.06;
   const timeStopEnabled = cfg.timeStopEnabled !== false && cfg.optTimeStopEnabled !== false;
   const timeStopCandles = Number(cfg.optTimeStopCandles ?? cfg.timeStopCandles) || 80;
 
-  console.log(`[Server Backtest] 🚀 Starting cycle: Strategy=${strategyId}, ATR=${atrPeriod}, Mult=${atrMultiplier}, minCandles=${minCandles}, minLong=${minCandlesForLongLeg}, longMult=${longLegAtrMultiplier}, blue%=${maxBlueLegPercent}, breakoutMult=${maxBreakoutAtrMultiplier}, RR=${maxRiskReward}, timeStop=${timeStopCandles}, capital=${capital}, risk=${riskPercent}%`);
+  console.log(`[Server Backtest] 🚀 Starting cycle: Dataset=${datasetId}, Strategy=${strategyId}, ATR=${atrPeriod}, Mult=${atrMultiplier}, minCandles=${minCandles}, minLong=${minCandlesForLongLeg}, longMult=${longLegAtrMultiplier}, blue%=${maxBlueLegPercent}, breakoutMult=${maxBreakoutAtrMultiplier}, RR=${maxRiskReward}, timeStop=${timeStopCandles}, capital=${capital}, risk=${riskPercent}%`);
 
   const processSymbolStrategy = (pair: { symbol: string; baseAsset: string; quoteAsset: string }, candles: CandleData[]) => {
     if (!candles || candles.length < 50) return null;
@@ -1998,52 +1999,37 @@ async function runServerBacktestCycle(params: {
   try {
     let entries: ServerCandleEntry[] = [];
 
-    // 1. Check if dataset already exists in PostgreSQL
+    // 1. Check if dataset already exists in RAM cache or PostgreSQL
     if (!forceRedownload) {
       serverBacktestState.stage = 'downloading';
       serverBacktestState.progress.currentSymbol = 'بررسی داده‌های ذخیره‌شده در دیتابیس PostgreSQL...';
 
-      const dsRes = await pool.query(`SELECT * FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
-      if (dsRes.rows.length > 0) {
-        const chunksRes = await pool.query(
-          `SELECT items_json FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC;`,
-          [datasetId]
-        );
-        if (chunksRes.rows.length > 0) {
-          const symbolsFilterSet = symbols && symbols.length > 0
-            ? new Set(symbols.map((s: string) => s.toUpperCase().replace('_', '')))
-            : null;
-          const seenSymbols = new Map<string, ServerCandleEntry>();
+      // Check RAM cache first for instantaneous recalculation
+      if (serverDatasetCandleCache.has(datasetId)) {
+        const cached = serverDatasetCandleCache.get(datasetId);
+        if (cached && cached.length > 0) {
+          entries = cached;
+          console.log(`[Server Backtest] ⚡ Instant cache hit in RAM! Loaded ${entries.length} symbols for ${datasetId}.`);
+        }
+      }
 
-          for (const chunkRow of chunksRes.rows) {
-            try {
-              const items = JSON.parse(chunkRow.items_json);
-              for (const item of items) {
-                const cleanSym = (item.symbol || '').toUpperCase().replace('_', '');
-                if (symbolsFilterSet && !symbolsFilterSet.has(cleanSym)) continue;
-                if (seenSymbols.has(cleanSym)) continue;
-
-                const candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
-                  time: t[0],
-                  open: t[1],
-                  high: t[2],
-                  low: t[3],
-                  close: t[4],
-                  volume: t[5],
-                }));
-                seenSymbols.set(cleanSym, {
-                  pair: {
-                    symbol: item.symbol,
-                    baseAsset: item.baseAsset,
-                    quoteAsset: item.quoteAsset,
-                  },
-                  candles,
-                  timeframe: item.timeframe || timeframe,
-                });
-              }
-            } catch {}
+      if (entries.length === 0) {
+        let dsRes = await pool.query(`SELECT * FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
+        if (dsRes.rows.length === 0) {
+          const matchDs = await pool.query(
+            `SELECT * FROM candle_datasets WHERE exchange = $1 AND timeframe = $2 AND total_candles > 0 ORDER BY updated_at DESC LIMIT 1;`,
+            [exchange, timeframe]
+          );
+          if (matchDs.rows.length > 0) {
+            dsRes = matchDs;
+            datasetId = matchDs.rows[0].id;
+            serverBacktestState.datasetId = datasetId;
           }
-          entries = Array.from(seenSymbols.values());
+        }
+
+        if (dsRes.rows.length > 0) {
+          const isFullScan = !symbols || symbols.length === 0 || symbols.length >= (dsRes.rows[0].symbol_count || 100);
+          entries = await loadDatasetEntriesFromPostgres(datasetId, isFullScan ? undefined : symbols);
         }
       }
     }
@@ -2407,10 +2393,19 @@ app.get('/api/backtest/range-status', async (req, res) => {
       } catch {}
     }
 
+    let parsedStrategyConfig = null;
+    if (row.strategy_config_json) {
+      try {
+        parsedStrategyConfig = JSON.parse(row.strategy_config_json);
+      } catch {}
+    }
+
     return res.json({
       success: true,
       exists: true,
       datasetId,
+      strategyId: row.strategy_id || 'strategy_1_e_breakout',
+      strategyConfig: parsedStrategyConfig,
       dataset: {
         id: row.id,
         name: row.name,
@@ -2436,7 +2431,7 @@ app.get('/api/backtest/range-status', async (req, res) => {
 // 6.5.2 Start or Resume Autonomous Server-Side Backtest
 app.post('/api/backtest/start', async (req, res) => {
   try {
-    const { exchange, timeframe, startTime, endTime, symbols, workersCount, strategyId, strategyConfig, forceRedownload } = req.body || {};
+    const { exchange, timeframe, startTime, endTime, datasetId, symbols, workersCount, strategyId, strategyConfig, forceRedownload } = req.body || {};
 
     const isStale = serverBacktestState.isScanning && (Date.now() - (serverBacktestState.lastStartedAt || 0) > 180000);
     if (serverBacktestState.isScanning && !forceRedownload && !isStale) {
@@ -2459,6 +2454,7 @@ app.post('/api/backtest/start', async (req, res) => {
       timeframe: timeframe || '5m',
       startTime: startTime ? Number(startTime) : null,
       endTime: endTime ? Number(endTime) : null,
+      datasetId: datasetId || null,
       symbols: Array.isArray(symbols) ? symbols : [],
       workersCount: Number(workersCount) || 16,
       strategyId: strategyId || 'strategy_1_e_breakout',
@@ -2471,7 +2467,7 @@ app.post('/api/backtest/start', async (req, res) => {
     res.json({
       success: true,
       message: 'فرآیند اسکن و دانلود بک‌تست به طور مستقل روی سرور و پایگاه‌داده آغاز شد.',
-      datasetId: getRangeDatasetId(exchange || 'xt', timeframe || '5m', startTime, endTime),
+      datasetId: datasetId || getRangeDatasetId(exchange || 'xt', timeframe || '5m', startTime, endTime),
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -3253,14 +3249,32 @@ app.post('/api/optimizer/start', async (req, res) => {
     }
 
     const cfg = strategyConfig || {};
+    let effectiveStrategyId = strategyId;
+    if (targetDatasetId) {
+      try {
+        const dsMeta = await pool.query(`SELECT strategy_id, strategy_config_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [targetDatasetId]);
+        if (dsMeta.rows.length > 0) {
+          if (!req.body?.strategyId && dsMeta.rows[0].strategy_id) {
+            effectiveStrategyId = dsMeta.rows[0].strategy_id;
+          }
+          if (dsMeta.rows[0].strategy_config_json) {
+            const parsed = JSON.parse(dsMeta.rows[0].strategy_config_json);
+            if (!cfg.riskMode && parsed.riskMode) cfg.riskMode = parsed.riskMode;
+            if (!cfg.riskAmountFixed && parsed.riskAmountFixed) cfg.riskAmountFixed = parsed.riskAmountFixed;
+            if (!cfg.maxCandlesToEnter && parsed.maxCandlesToEnter) cfg.maxCandlesToEnter = parsed.maxCandlesToEnter;
+          }
+        }
+      } catch {}
+    }
+
     const capital = Number(cfg.capital) || 10000;
     const riskMode = cfg.riskMode || 'percent';
-    const riskAmountFixed = Number(cfg.riskAmountFixed) > 0 ? Number(cfg.riskAmountFixed) : 10;
+    const riskAmountFixed = Number(cfg.riskAmountFixed) > 0 ? Number(cfg.riskAmountFixed) : (riskMode === 'fixed' ? 100 : 10);
     const riskPercent = Number(cfg.riskPercent) || 1.0;
     const entryCommission = Number(cfg.entryCommissionPercent) || 0.06;
     const exitCommission = Number(cfg.exitCommissionPercent) || 0.06;
     const commissionPercent = parseFloat((entryCommission + exitCommission).toFixed(4));
-    const maxCandlesToEnter = Number(cfg.maxCandlesToEnter) || 35;
+    const maxCandlesToEnter = Number(cfg.maxCandlesToEnter) || 100;
     const noConcurrentPositions = Boolean(cfg.noConcurrentPositions !== false);
     const timeStopEnabled = cfg.timeStopEnabled !== false;
 
@@ -3371,7 +3385,7 @@ app.post('/api/optimizer/start', async (req, res) => {
     serverOptimizerState.autoAdaptiveEnabled = autoAdaptiveEnabled !== false;
     serverOptimizerState.exchange = exchange;
     serverOptimizerState.timeframe = timeframe;
-    serverOptimizerState.strategyId = strategyId;
+    serverOptimizerState.strategyId = effectiveStrategyId;
     serverOptimizerState.lastStartedAt = Date.now();
     serverOptimizerState.isOptimizing = true;
     serverOptimizerState.shouldStop = false;
@@ -3409,7 +3423,7 @@ app.post('/api/optimizer/start', async (req, res) => {
         await runServerOptimizerLoop(
           targetDatasetId,
           entries,
-          strategyId,
+          effectiveStrategyId,
           baseConfig,
           targetConstraints,
           initialRanges,
@@ -3526,15 +3540,33 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
     }
 
     const cfg = strategyConfig || {};
+    let effectiveStrategyId = strategyId;
+    if (datasetId) {
+      try {
+        const dsMeta = await pool.query(`SELECT strategy_id, strategy_config_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
+        if (dsMeta.rows.length > 0) {
+          if (!req.body?.strategyId && dsMeta.rows[0].strategy_id) {
+            effectiveStrategyId = dsMeta.rows[0].strategy_id;
+          }
+          if (dsMeta.rows[0].strategy_config_json) {
+            const parsed = JSON.parse(dsMeta.rows[0].strategy_config_json);
+            if (!cfg.riskMode && parsed.riskMode) cfg.riskMode = parsed.riskMode;
+            if (!cfg.riskAmountFixed && parsed.riskAmountFixed) cfg.riskAmountFixed = parsed.riskAmountFixed;
+            if (!cfg.maxCandlesToEnter && parsed.maxCandlesToEnter) cfg.maxCandlesToEnter = parsed.maxCandlesToEnter;
+          }
+        }
+      } catch {}
+    }
+
     const baseConfig = {
       capital: Number(cfg.capital) || 10000,
       riskMode: cfg.riskMode || 'percent',
-      riskAmountFixed: Number(cfg.riskAmountFixed) > 0 ? Number(cfg.riskAmountFixed) : 10,
+      riskAmountFixed: Number(cfg.riskAmountFixed) > 0 ? Number(cfg.riskAmountFixed) : (cfg.riskMode === 'fixed' ? 100 : 10),
       riskPercent: Number(cfg.riskPercent) || 1.0,
       entryCommissionPercent: Number(cfg.entryCommissionPercent) || 0.06,
       exitCommissionPercent: Number(cfg.exitCommissionPercent) || 0.06,
       commissionPercent: Number(cfg.commissionPercent) || 0.12,
-      maxCandlesToEnter: Number(cfg.maxCandlesToEnter) || 35,
+      maxCandlesToEnter: Number(cfg.maxCandlesToEnter) || 100,
       noConcurrentPositions: Boolean(cfg.noConcurrentPositions !== false),
       timeStopEnabled: cfg.timeStopEnabled !== false,
     };
@@ -3545,7 +3577,7 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
       targetMinTrades: Number(constraints.targetMinTrades) || 100,
     };
 
-    const evalRes = await evaluateCombinationOnServer(candidate, entries, strategyId, baseConfig, targetConstraints);
+    const evalRes = await evaluateCombinationOnServer(candidate, entries, effectiveStrategyId, baseConfig, targetConstraints);
     if (!evalRes) {
       return res.status(500).json({ success: false, error: 'ارزیابی انجام نشد.' });
     }
