@@ -55,6 +55,7 @@ import {
   fetchXtBalance,
   fetchXtPositions,
   fetchXtOrderHistory,
+  fetchXtPositionHistory,
   createXtOrder,
   closeXtPosition,
   closeAllXtPositions,
@@ -548,7 +549,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     } catch {}
   }, [tradeHistory]);
 
-  // Sync Balance & Positions from XT API
+  // Sync Balance & Positions from XT API + Real Closed Positions History
   const handleRefreshBalance = useCallback(async (isManual: boolean = false) => {
     if (isManual) setIsRefreshingBalance(true);
     try {
@@ -556,6 +557,20 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       setBalance(data);
       const pos = await fetchXtPositions();
       setPositions(pos);
+
+      // Auto-sync real closed trade history directly from XT exchange engine
+      try {
+        const history = await fetchXtPositionHistory();
+        if (history && history.length > 0) {
+          setTradeHistory((prev) => {
+            const exchangeIds = new Set(history.map((h) => h.id));
+            const localOnly = prev.filter((p) => !exchangeIds.has(p.id) && !history.some((h) => h.symbol === p.symbol && Math.abs((h.price || 0) - (p.price || 0)) < 0.0001));
+            return [...history, ...localOnly];
+          });
+        }
+      } catch (histErr) {
+        console.warn('Failed to sync XT position history:', histErr);
+      }
     } catch (err) {
       console.error(err);
     } finally {

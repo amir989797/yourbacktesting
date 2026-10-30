@@ -1009,6 +1009,81 @@ app.get('/api/xt/orders/history', async (req, res) => {
   }
 });
 
+// XT Closed Position History (With exact realized profit, fees, entry/exit prices directly from exchange engine)
+app.get('/api/xt/positions/history', async (req, res) => {
+  try {
+    const apiKey = (req.headers['x-api-key'] as string) || DEFAULT_XT_API_KEY;
+    const secretKey = (req.headers['x-secret-key'] as string) || DEFAULT_XT_SECRET_KEY;
+    const limit = (req.query.limit as string) || '50';
+    const params: any = { ps: limit };
+    if (req.query.symbol) params.symbol = toXtSymbol(req.query.symbol as string);
+
+    const historyRes = await requestXtApi('GET', '/future/user/v1/position/list-history', 'application/x-www-form-urlencoded', params, apiKey, secretKey);
+    const execLogs: any[] = serverScannerState.executionLogs || [];
+    const items = historyRes?.result?.items || [];
+
+    const formatted = items.map((item: any) => {
+      const sym = item.symbol || '';
+      const matchExec = execLogs.find((ex: any) => ex.symbol === sym || toXtSymbol(ex.symbol) === sym);
+
+      const posSide = (item.positionSide || 'LONG').toUpperCase() as 'LONG' | 'SHORT';
+      const exitSide = posSide === 'LONG' ? 'SELL' : 'BUY';
+      const entryPrice = parseFloat(item.closeOpenPrice || item.entryPrice || '0');
+      const exitPrice = parseFloat(item.closePrice || '0');
+      const grossProfit = parseFloat(item.closeProfit || '0');
+      const fee = parseFloat(item.totalFee || '0');
+      const fundFee = parseFloat(item.totalFundFee || '0');
+      const netProfit = parseFloat((grossProfit + fee + fundFee).toFixed(6));
+      const amount = parseFloat(item.closePositionSize || item.maxPositionSize || '0');
+
+      let pnlPercent = 0;
+      if (entryPrice > 0 && exitPrice > 0) {
+        const dir = posSide === 'LONG' ? 1 : -1;
+        const leverage = item.endLeverage || item.startLeverage || 20;
+        pnlPercent = ((exitPrice - entryPrice) / entryPrice) * dir * leverage * 100;
+      }
+
+      const exitTimeMs = Number(item.closeTime || item.mtime || item.ctime || Date.now());
+      const dateObj = new Date(exitTimeMs);
+      const timeFa = dateObj.toLocaleTimeString('fa-IR');
+
+      return {
+        id: String(item.id || `xt_pos_${exitTimeMs}`),
+        positionId: String(item.id || ''),
+        exchange: 'xt',
+        symbol: sym,
+        side: exitSide,
+        positionSide: posSide,
+        orderType: 'MARKET',
+        price: entryPrice,
+        exitPrice,
+        amount,
+        status: 'FILLED',
+        strategyName: matchExec?.strategyName || 'Next Pivot Strategy',
+        takeProfitPrice: matchExec?.takeProfit || (item.triggerProfitPrice ? parseFloat(item.triggerProfitPrice) : undefined),
+        stopLossPrice: matchExec?.stopLoss || (item.triggerStopPrice ? parseFloat(item.triggerStopPrice) : undefined),
+        realizedPnl: netProfit,
+        grossProfit,
+        fee,
+        realizedPnlPercent: parseFloat(pnlPercent.toFixed(2)),
+        exitTime: timeFa,
+        timestamp: timeFa,
+        rawTimeMs: exitTimeMs,
+        closeType: item.force ? 'LIQUIDATION' : 'CLOSED',
+      };
+    });
+
+    res.json({
+      success: true,
+      returnCode: 0,
+      result: formatted,
+      count: formatted.length,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, returnCode: -1, error: error.message, result: [] });
+  }
+});
+
 // XT Create Order (with SL/TP support)
 app.post('/api/xt/order/create', async (req, res) => {
   try {
@@ -1998,6 +2073,9 @@ async function runServerBacktestCycle(params: {
 
   try {
     let entries: ServerCandleEntry[] = [];
+    let savedSymbolsCount = 0;
+    let savedTotalCandles = 0;
+    const savedSymbolsList: string[] = [];
 
     // 1. Check if dataset already exists in RAM cache or PostgreSQL
     if (!forceRedownload) {
@@ -2029,16 +2107,70 @@ async function runServerBacktestCycle(params: {
 
         if (dsRes.rows.length > 0) {
           const isFullScan = !symbols || symbols.length === 0 || symbols.length >= (dsRes.rows[0].symbol_count || 100);
-          entries = await loadDatasetEntriesFromPostgres(datasetId, isFullScan ? undefined : symbols);
+          const symbolsFilterSet = !isFullScan && symbols && symbols.length > 0
+            ? new Set(symbols.map((s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '')))
+            : null;
+
+          serverBacktestState.stage = 'analyzing';
+          const estTotalSymbols = dsRes.rows[0].symbol_count || 771;
+          serverBacktestState.progress = { current: 0, total: estTotalSymbols, percent: 0, currentSymbol: 'محاسبه استراتژی روی داده‌های ذخیره‌شده...' };
+
+          let chunkOffset = 0;
+          const pageSize = 15;
+          let processedSymbols = 0;
+          let totalCandlesSum = 0;
+
+          while (!serverBacktestState.shouldStop) {
+            const chunkRes = await pool.query(
+              `SELECT items_json FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC LIMIT $2 OFFSET $3;`,
+              [datasetId, pageSize, chunkOffset]
+            );
+            if (chunkRes.rows.length === 0) break;
+            chunkOffset += pageSize;
+
+            for (const row of chunkRes.rows) {
+              if (serverBacktestState.shouldStop) break;
+              try {
+                const items = JSON.parse(row.items_json);
+                for (const item of items) {
+                  if (serverBacktestState.shouldStop) break;
+                  const cleanSym = (item.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+                  if (symbolsFilterSet && !symbolsFilterSet.has(cleanSym)) continue;
+
+                  const candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
+                    time: t[0],
+                    open: t[1],
+                    high: t[2],
+                    low: t[3],
+                    close: t[4],
+                    volume: t[5],
+                  }));
+                  if (candles.length < 50) continue;
+
+                  const calc = processSymbolStrategy({ symbol: item.symbol, baseAsset: item.baseAsset, quoteAsset: item.quoteAsset }, candles);
+                  if (calc) {
+                    serverBacktestState.results.push(calc.resultItem);
+                    serverBacktestState.allTrades.push(...calc.finishedTrades);
+                  }
+                  processedSymbols++;
+                  totalCandlesSum += candles.length;
+                  savedSymbolsList.push(item.symbol);
+                  serverBacktestState.progress.current = processedSymbols;
+                  serverBacktestState.progress.percent = Math.min(100, Math.round((processedSymbols / estTotalSymbols) * 100));
+                  serverBacktestState.progress.currentSymbol = item.symbol;
+                }
+              } catch {}
+            }
+            await new Promise((resolve) => setImmediate(resolve));
+          }
+
+          savedSymbolsCount = processedSymbols;
+          savedTotalCandles = totalCandlesSum;
         }
       }
     }
 
-    let savedSymbolsCount = 0;
-    let savedTotalCandles = 0;
-    const savedSymbolsList: string[] = [];
-
-    // 2. If existing entries found in DB, run parallel workers to calculate and stream results live!
+    // 2. If RAM cache already contains entries, run parallel workers
     if (entries.length > 0) {
       serverBacktestState.stage = 'analyzing';
       const total = entries.length;
@@ -2076,7 +2208,7 @@ async function runServerBacktestCycle(params: {
       for (const e of entries) {
         savedSymbolsList.push(e.pair.symbol);
       }
-    } else {
+    } else if (savedSymbolsCount === 0) {
       // 3. Download from exchange with STREAMING DIRECT-TO-POSTGRESQL & ZERO RAM BLOAT
       serverBacktestState.stage = 'downloading';
       serverDatasetCandleCache.clear(); // Free old cache immediately to prevent memory leak
@@ -2909,97 +3041,11 @@ function getNextCandidateFromAdaptiveRanges(
   return null;
 }
 
-async function evaluateCombinationOnServer(
-  params: {
-    atrPeriod: number;
-    minCandles: number;
-    minCandlesForLongLeg: number;
-    atrMultiplier: number;
-    longLegAtrMultiplier: number;
-    maxBlueLegPercent: number;
-    maxBreakoutAtrMultiplier: number;
-    maxRiskReward: number;
-    timeStopCandles?: number;
-  },
-  entries: ServerCandleEntry[],
-  strategyId: string,
-  baseConfig: {
-    capital: number;
-    riskMode: 'percent' | 'fixed';
-    riskAmountFixed: number;
-    riskPercent: number;
-    entryCommissionPercent: number;
-    exitCommissionPercent: number;
-    commissionPercent: number;
-    maxCandlesToEnter: number;
-    noConcurrentPositions: boolean;
-    timeStopEnabled: boolean;
-  },
-  constraints: {
-    targetMaxDrawdown: number;
-    targetMinWinRate: number;
-    targetMinTrades: number;
-  }
+function processFilteredTrades(
+  allTrades: any[],
+  baseConfig: any,
+  constraints: any
 ) {
-  const allTrades: any[] = [];
-
-  for (let i = 0; i < entries.length; i++) {
-    if (serverOptimizerState.shouldStop) break;
-    const item = entries[i];
-    const candles = item.candles;
-    if (!candles || candles.length < 50) continue;
-
-    // Cooperative yielding every 4 symbols so Node.js can answer HTTP status and API requests without latency
-    if (i > 0 && i % 4 === 0) {
-      await new Promise((resolve) => setImmediate(resolve));
-    }
-
-    const atrResult = calculateATR(candles, params.atrPeriod);
-    const zzResult = calculateAtrZigZag(candles, atrResult.atrValues, params.atrMultiplier, params.minCandles);
-    const legs = analyzeZigZagLegs(
-      zzResult.points,
-      params.minCandlesForLongLeg,
-      params.longLegAtrMultiplier,
-      params.maxBlueLegPercent,
-      params.maxBreakoutAtrMultiplier
-    );
-
-    const stratConfig: any = {
-      capital: baseConfig.capital,
-      selectedStrategyId: strategyId,
-      riskMode: baseConfig.riskMode,
-      riskAmountFixed: baseConfig.riskAmountFixed,
-      riskPercent: baseConfig.riskPercent,
-      entryCommissionPercent: baseConfig.entryCommissionPercent,
-      exitCommissionPercent: baseConfig.exitCommissionPercent,
-      commissionPercent: baseConfig.commissionPercent,
-      maxRiskReward: params.maxRiskReward,
-      maxCandlesToEnter: baseConfig.maxCandlesToEnter,
-      maxTradesPerLeg: 1,
-      showOnChart: false,
-      noConcurrentPositions: baseConfig.noConcurrentPositions,
-      symbol: item.pair.symbol,
-      timeStopEnabled: baseConfig.timeStopEnabled,
-      timeStopCandles: params.timeStopCandles || 80,
-    };
-
-    let backtestRes: any;
-    if (strategyId === 'strategy_2_next_pivot') {
-      backtestRes = runStrategy2Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, params.atrMultiplier, params.minCandles);
-    } else {
-      backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig);
-    }
-
-    const closed = (backtestRes.trades || [])
-      .filter((t: any) => t.status === 'WIN' || t.status === 'LOSS' || t.status === 'BREAKEVEN')
-      .map((t: any, tIdx: number) => ({
-        ...t,
-        id: `${item.pair.symbol}-${t.id || tIdx}`,
-        symbol: item.pair.symbol,
-      }));
-    allTrades.push(...closed);
-  }
-
   // Deterministic sorting strictly identical to manual scan
   const sorted = [...allTrades].sort((a, b) => {
     const eA = a.entryTime || a.timeF || 0;
@@ -3060,9 +3106,9 @@ async function evaluateCombinationOnServer(
   const maxDrawdown = parseFloat(maxDd.toFixed(2));
 
   const isValid =
-    maxDrawdown <= constraints.targetMaxDrawdown &&
-    winRate >= constraints.targetMinWinRate &&
-    totalTrades >= constraints.targetMinTrades;
+    maxDrawdown <= (constraints.targetMaxDrawdown || 20.0) &&
+    winRate >= (constraints.targetMinWinRate || 40.0) &&
+    totalTrades >= (constraints.targetMinTrades || 100);
 
   return {
     totalTrades,
@@ -3074,12 +3120,352 @@ async function evaluateCombinationOnServer(
     totalFees,
     maxDrawdown,
     isValid,
+    effectiveTrades,
   };
+}
+
+async function ensureDatasetChunksCachedOnDisk(datasetId: string, onProgress?: (msg: string) => void): Promise<boolean> {
+  const diskCacheDir = path.join('/tmp', 'candle_chunks', datasetId);
+  try {
+    fs.mkdirSync(diskCacheDir, { recursive: true });
+  } catch {}
+
+  let cachedCount = 0;
+  try {
+    cachedCount = fs.readdirSync(diskCacheDir).filter((f) => f.endsWith('.json')).length;
+  } catch {}
+
+  // Check total chunks in PostgreSQL
+  const countRes = await pool.query(`SELECT count(*) FROM candle_chunks WHERE dataset_id = $1;`, [datasetId]);
+  const totalChunks = parseInt(countRes.rows[0]?.count || '0', 10);
+  if (totalChunks === 0) return false;
+
+  if (cachedCount >= totalChunks && totalChunks > 0) {
+    return true;
+  }
+
+  onProgress?.(`در حال دانلود و کش محلی ${totalChunks} چانک دیتابیس روی دیسک پرسرعت (${cachedCount}/${totalChunks})...`);
+
+  const batchSize = 8;
+  const batches: Array<{ startIdx: number; endIdx: number }> = [];
+  for (let idx = 0; idx < totalChunks; idx += batchSize) {
+    batches.push({ startIdx: idx, endIdx: idx + batchSize });
+  }
+
+  const concurrency = 4;
+  const queue = [...batches];
+  let completedChunks = cachedCount;
+
+  const worker = async () => {
+    while (queue.length > 0 && !serverOptimizerState.shouldStop) {
+      const b = queue.shift();
+      if (!b) break;
+
+      try {
+        const res = await pool.query(
+          `SELECT chunk_index, items_json FROM candle_chunks WHERE dataset_id = $1 AND chunk_index >= $2 AND chunk_index < $3 ORDER BY chunk_index ASC;`,
+          [datasetId, b.startIdx, b.endIdx]
+        );
+        for (const row of res.rows) {
+          const chunkFileName = `chunk_${String(row.chunk_index || 0).padStart(5, '0')}.json`;
+          const filePath = path.join(diskCacheDir, chunkFileName);
+          if (!fs.existsSync(filePath)) {
+            fs.writeFileSync(filePath, row.items_json);
+          }
+          completedChunks++;
+        }
+        const pct = Math.min(100, Math.round((completedChunks / totalChunks) * 100));
+        onProgress?.(`در حال دانلود و کش محلی چانک‌ها (${completedChunks}/${totalChunks} چانک - ${pct}٪)...`);
+      } catch (err: any) {
+        console.warn('[Sync Chunk Warning]:', err.message);
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  return true;
+}
+
+async function streamEvaluateDatasetFromPostgres(
+  datasetId: string,
+  candidate: any,
+  strategyId: string,
+  baseConfig: any,
+  constraints: any,
+  symbolsFilter?: string[],
+  checkStopCondition: boolean = false
+) {
+  const symbolsFilterSet = symbolsFilter && symbolsFilter.length > 0
+    ? new Set(symbolsFilter.map((s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '')))
+    : null;
+
+  const allTrades: any[] = [];
+  const diskCacheDir = path.join('/tmp', 'candle_chunks', datasetId);
+
+  // 1. Check if chunks are already cached locally on fast SSD
+  let localChunkFiles: string[] = [];
+  if (fs.existsSync(diskCacheDir)) {
+    try {
+      localChunkFiles = fs.readdirSync(diskCacheDir).filter((f) => f.endsWith('.json')).sort();
+    } catch {}
+  }
+
+  if (localChunkFiles.length > 50) {
+    for (const file of localChunkFiles) {
+      if (checkStopCondition && serverOptimizerState.shouldStop) break;
+      try {
+        const raw = fs.readFileSync(path.join(diskCacheDir, file), 'utf8');
+        const items = JSON.parse(raw);
+        for (const item of items) {
+          const cleanSym = (item.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+          if (symbolsFilterSet && !symbolsFilterSet.has(cleanSym)) continue;
+
+          const candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
+            time: t[0],
+            open: t[1],
+            high: t[2],
+            low: t[3],
+            close: t[4],
+            volume: t[5],
+          }));
+          if (candles.length < 50) continue;
+
+          const atrResult = calculateATR(candles, candidate.atrPeriod);
+          const zzResult = calculateAtrZigZag(candles, atrResult.atrValues, candidate.atrMultiplier, candidate.minCandles);
+          const legs = analyzeZigZagLegs(
+            zzResult.points,
+            candidate.minCandlesForLongLeg,
+            candidate.longLegAtrMultiplier,
+            candidate.maxBlueLegPercent,
+            candidate.maxBreakoutAtrMultiplier
+          );
+
+          const stratConfig: any = {
+            capital: baseConfig.capital,
+            selectedStrategyId: strategyId,
+            riskMode: baseConfig.riskMode,
+            riskAmountFixed: baseConfig.riskAmountFixed,
+            riskPercent: baseConfig.riskPercent,
+            entryCommissionPercent: baseConfig.entryCommissionPercent,
+            exitCommissionPercent: baseConfig.exitCommissionPercent,
+            commissionPercent: baseConfig.commissionPercent,
+            maxRiskReward: candidate.maxRiskReward,
+            maxCandlesToEnter: baseConfig.maxCandlesToEnter,
+            maxTradesPerLeg: 1,
+            showOnChart: false,
+            noConcurrentPositions: baseConfig.noConcurrentPositions,
+            symbol: item.symbol,
+            timeStopEnabled: baseConfig.timeStopEnabled,
+            timeStopCandles: candidate.timeStopCandles || 80,
+          };
+
+          let backtestRes: any;
+          if (strategyId === 'strategy_2_next_pivot') {
+            backtestRes = runStrategy2Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, candidate.atrMultiplier, candidate.minCandles);
+          } else {
+            backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig);
+          }
+
+          const closed = (backtestRes.trades || [])
+            .filter((t: any) => t.status === 'WIN' || t.status === 'LOSS' || t.status === 'BREAKEVEN')
+            .map((t: any, idx: number) => ({
+              ...t,
+              id: `${item.symbol}-${idx}`,
+              symbol: item.symbol,
+            }));
+          allTrades.push(...closed);
+        }
+      } catch {}
+    }
+    return processFilteredTrades(allTrades, baseConfig, constraints);
+  }
+
+  // 2. Stream from remote PostgreSQL and save to local SSD cache for subsequent instant runs
+  try {
+    fs.mkdirSync(diskCacheDir, { recursive: true });
+  } catch {}
+
+  let chunkOffset = 0;
+  const pageSize = 20;
+
+  while (!checkStopCondition || !serverOptimizerState.shouldStop) {
+    const res = await pool.query(
+      `SELECT chunk_index, items_json FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC LIMIT $2 OFFSET $3;`,
+      [datasetId, pageSize, chunkOffset]
+    );
+    if (res.rows.length === 0) break;
+    chunkOffset += pageSize;
+
+    for (const row of res.rows) {
+      if (checkStopCondition && serverOptimizerState.shouldStop) break;
+      try {
+        const chunkFileName = `chunk_${String(row.chunk_index || 0).padStart(5, '0')}.json`;
+        fs.writeFile(path.join(diskCacheDir, chunkFileName), row.items_json, () => {});
+
+        const items = JSON.parse(row.items_json);
+        for (const item of items) {
+          const cleanSym = (item.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+          if (symbolsFilterSet && !symbolsFilterSet.has(cleanSym)) continue;
+
+          const candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
+            time: t[0],
+            open: t[1],
+            high: t[2],
+            low: t[3],
+            close: t[4],
+            volume: t[5],
+          }));
+          if (candles.length < 50) continue;
+
+          const atrResult = calculateATR(candles, candidate.atrPeriod);
+          const zzResult = calculateAtrZigZag(candles, atrResult.atrValues, candidate.atrMultiplier, candidate.minCandles);
+          const legs = analyzeZigZagLegs(
+            zzResult.points,
+            candidate.minCandlesForLongLeg,
+            candidate.longLegAtrMultiplier,
+            candidate.maxBlueLegPercent,
+            candidate.maxBreakoutAtrMultiplier
+          );
+
+          const stratConfig: any = {
+            capital: baseConfig.capital,
+            selectedStrategyId: strategyId,
+            riskMode: baseConfig.riskMode,
+            riskAmountFixed: baseConfig.riskAmountFixed,
+            riskPercent: baseConfig.riskPercent,
+            entryCommissionPercent: baseConfig.entryCommissionPercent,
+            exitCommissionPercent: baseConfig.exitCommissionPercent,
+            commissionPercent: baseConfig.commissionPercent,
+            maxRiskReward: candidate.maxRiskReward,
+            maxCandlesToEnter: baseConfig.maxCandlesToEnter,
+            maxTradesPerLeg: 1,
+            showOnChart: false,
+            noConcurrentPositions: baseConfig.noConcurrentPositions,
+            symbol: item.symbol,
+            timeStopEnabled: baseConfig.timeStopEnabled,
+            timeStopCandles: candidate.timeStopCandles || 80,
+          };
+
+          let backtestRes: any;
+          if (strategyId === 'strategy_2_next_pivot') {
+            backtestRes = runStrategy2Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, candidate.atrMultiplier, candidate.minCandles);
+          } else {
+            backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig);
+          }
+
+          const closed = (backtestRes.trades || [])
+            .filter((t: any) => t.status === 'WIN' || t.status === 'LOSS' || t.status === 'BREAKEVEN')
+            .map((t: any, idx: number) => ({
+              ...t,
+              id: `${item.symbol}-${idx}`,
+              symbol: item.symbol,
+            }));
+          allTrades.push(...closed);
+        }
+      } catch {}
+    }
+
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  return processFilteredTrades(allTrades, baseConfig, constraints);
+}
+
+async function evaluateCombinationOnServer(
+  params: {
+    atrPeriod: number;
+    minCandles: number;
+    minCandlesForLongLeg: number;
+    atrMultiplier: number;
+    longLegAtrMultiplier: number;
+    maxBlueLegPercent: number;
+    maxBreakoutAtrMultiplier: number;
+    maxRiskReward: number;
+    timeStopCandles?: number;
+  },
+  entries: ServerCandleEntry[],
+  strategyId: string,
+  baseConfig: {
+    capital: number;
+    riskMode: 'percent' | 'fixed';
+    riskAmountFixed: number;
+    riskPercent: number;
+    entryCommissionPercent: number;
+    exitCommissionPercent: number;
+    commissionPercent: number;
+    maxCandlesToEnter: number;
+    noConcurrentPositions: boolean;
+    timeStopEnabled: boolean;
+  },
+  constraints: {
+    targetMaxDrawdown: number;
+    targetMinWinRate: number;
+    targetMinTrades: number;
+  }
+) {
+  const allTrades: any[] = [];
+
+  for (let i = 0; i < entries.length; i++) {
+    if (serverOptimizerState.shouldStop) break;
+    const item = entries[i];
+    const candles = item.candles;
+    if (!candles || candles.length < 50) continue;
+
+    if (i > 0 && i % 4 === 0) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    const atrResult = calculateATR(candles, params.atrPeriod);
+    const zzResult = calculateAtrZigZag(candles, atrResult.atrValues, params.atrMultiplier, params.minCandles);
+    const legs = analyzeZigZagLegs(
+      zzResult.points,
+      params.minCandlesForLongLeg,
+      params.longLegAtrMultiplier,
+      params.maxBlueLegPercent,
+      params.maxBreakoutAtrMultiplier
+    );
+
+    const stratConfig: any = {
+      capital: baseConfig.capital,
+      selectedStrategyId: strategyId,
+      riskMode: baseConfig.riskMode,
+      riskAmountFixed: baseConfig.riskAmountFixed,
+      riskPercent: baseConfig.riskPercent,
+      entryCommissionPercent: baseConfig.entryCommissionPercent,
+      exitCommissionPercent: baseConfig.exitCommissionPercent,
+      commissionPercent: baseConfig.commissionPercent,
+      maxRiskReward: params.maxRiskReward,
+      maxCandlesToEnter: baseConfig.maxCandlesToEnter,
+      maxTradesPerLeg: 1,
+      showOnChart: false,
+      noConcurrentPositions: baseConfig.noConcurrentPositions,
+      symbol: item.pair.symbol,
+      timeStopEnabled: baseConfig.timeStopEnabled,
+      timeStopCandles: params.timeStopCandles || 80,
+    };
+
+    let backtestRes: any;
+    if (strategyId === 'strategy_2_next_pivot') {
+      backtestRes = runStrategy2Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, params.atrMultiplier, params.minCandles);
+    } else {
+      backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig);
+    }
+
+    const closed = (backtestRes.trades || [])
+      .filter((t: any) => t.status === 'WIN' || t.status === 'LOSS' || t.status === 'BREAKEVEN')
+      .map((t: any, tIdx: number) => ({
+        ...t,
+        id: `${item.pair.symbol}-${t.id || tIdx}`,
+        symbol: item.pair.symbol,
+      }));
+    allTrades.push(...closed);
+  }
+
+  return processFilteredTrades(allTrades, baseConfig, constraints);
 }
 
 async function runServerOptimizerLoop(
   datasetId: string,
-  entries: ServerCandleEntry[],
   strategyId: string,
   baseConfig: any,
   constraints: any,
@@ -3091,7 +3477,63 @@ async function runServerOptimizerLoop(
   serverOptimizerState.shouldStop = false;
   serverOptimizerState.datasetId = datasetId;
   serverOptimizerState.strategyId = strategyId;
-  serverOptimizerState.statusText = `در حال بهینه‌سازی مداوم روی ${entries.length} نماد در سرور...`;
+
+  // 1. Immediately inject the current manual configuration into row #1 of Top 10 from stored results!
+  try {
+    const dsMeta = await pool.query(`SELECT strategy_config_json, results_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
+    if (dsMeta.rows.length > 0 && dsMeta.rows[0].results_json) {
+      const parsedRes = JSON.parse(dsMeta.rows[0].results_json);
+      if (parsedRes.allTrades && parsedRes.allTrades.length > 0) {
+        let storedCfg: any = {};
+        try { storedCfg = JSON.parse(dsMeta.rows[0].strategy_config_json); } catch {}
+        const manualCandidate = {
+          atrPeriod: Number(storedCfg.optAtrPeriod ?? storedCfg.atrPeriod ?? 17),
+          minCandles: Number(storedCfg.optMinCandles ?? storedCfg.minCandles ?? 9),
+          minCandlesForLongLeg: Number(storedCfg.optMinCandlesLong ?? storedCfg.minCandlesForLongLeg ?? 12),
+          atrMultiplier: Number(storedCfg.optAtrMultiplier ?? storedCfg.atrMultiplier ?? 1.0),
+          longLegAtrMultiplier: Number(storedCfg.optLongLegAtrMult ?? storedCfg.longLegAtrMultiplier ?? 7.0),
+          maxBlueLegPercent: Number(storedCfg.optMaxBlueLegPercent ?? storedCfg.maxBlueLegPercent ?? 95),
+          maxBreakoutAtrMultiplier: Number(storedCfg.optMaxBreakoutAtr ?? storedCfg.maxBreakoutAtrMultiplier ?? 4.0),
+          maxRiskReward: Number(storedCfg.optMaxRiskReward ?? storedCfg.maxRiskReward ?? 2.25),
+          timeStopCandles: Number(storedCfg.optTimeStopCandles ?? storedCfg.timeStopCandles ?? 90),
+        };
+        const manualEval = processFilteredTrades(parsedRes.allTrades, baseConfig, constraints);
+        const qualityScore = calculateQualityScore({
+          netProfit: manualEval.netProfit,
+          profitFactor: manualEval.profitFactor,
+          winRate: manualEval.winRate,
+          maxDrawdown: manualEval.maxDrawdown,
+          totalTrades: manualEval.totalTrades,
+          targetMaxDrawdown: constraints.targetMaxDrawdown,
+          targetMinWinRate: constraints.targetMinWinRate,
+          targetMinTrades: constraints.targetMinTrades,
+        });
+        const initialTrial: ServerOptimizerTrial = {
+          id: 1,
+          hash: generateConfigHash(manualCandidate),
+          timestamp: new Date().toLocaleTimeString('fa-IR'),
+          qualityScore,
+          ...manualCandidate,
+          ...manualEval,
+        };
+        serverOptimizerState.top10Trials = [initialTrial];
+        serverOptimizerState.totalEvaluatedCount = 1;
+      }
+    }
+  } catch (err: any) {
+    console.warn('[Initial trial injection error]:', err.message);
+  }
+
+  // 2. Ensure all chunks are cached locally on fast SSD storage
+  serverOptimizerState.statusText = 'در حال آماده‌سازی و کش سریع داده‌های کندل روی دیسک سرور...';
+  await ensureDatasetChunksCachedOnDisk(datasetId, (statusMsg) => {
+    serverOptimizerState.statusText = statusMsg;
+  });
+
+  if (serverOptimizerState.shouldStop) {
+    serverOptimizerState.isOptimizing = false;
+    return;
+  }
 
   const visitedHashes = new Set<string>();
   for (const t of serverOptimizerState.top10Trials) {
@@ -3103,6 +3545,7 @@ async function runServerOptimizerLoop(
 
   const startTime = Date.now();
   const maxSessionDurationMs = 900 * 1000; // 15 minutes
+  serverOptimizerState.statusText = 'بهینه‌سازی هوشمند در حال اجرا است...';
 
   while (!serverOptimizerState.shouldStop && (Date.now() - startTime) < maxSessionDurationMs) {
     serverOptimizerState.sessionSecondsLeft = Math.max(0, Math.round((maxSessionDurationMs - (Date.now() - startTime)) / 1000));
@@ -3116,7 +3559,18 @@ async function runServerOptimizerLoop(
     const hash = generateConfigHash(candidate);
     visitedHashes.add(hash);
 
-    const evalRes = await evaluateCombinationOnServer(candidate, entries, strategyId, baseConfig, constraints);
+    serverOptimizerState.statusText = `در حال آزمایش ترکیب #${serverOptimizerState.totalEvaluatedCount + 1}: ATR=${candidate.atrPeriod}, Mult=${candidate.atrMultiplier}, RR=${candidate.maxRiskReward}...`;
+
+    const evalRes = await streamEvaluateDatasetFromPostgres(
+      datasetId,
+      candidate,
+      strategyId,
+      baseConfig,
+      constraints,
+      undefined,
+      true
+    );
+
     if (serverOptimizerState.shouldStop) break;
     serverOptimizerState.totalEvaluatedCount++;
 
@@ -3162,11 +3616,12 @@ async function runServerOptimizerLoop(
     }
 
     serverOptimizerState.lastUpdatedAt = new Date().toISOString();
-    await sleep(35);
+    await sleep(25);
   }
 
   serverOptimizerState.isOptimizing = false;
   serverOptimizerState.sessionSecondsLeft = 0;
+  serverOptimizerState.statusText = `بهینه‌سازی پایان یافت. مجموع ترکیب‌های ارزیابی‌شده: ${serverOptimizerState.totalEvaluatedCount}`;
   console.log(`[Server Optimizer] Cycle ended. Total evaluations: ${serverOptimizerState.totalEvaluatedCount}`);
 }
 
@@ -3403,26 +3858,11 @@ app.post('/api/optimizer/start', async (req, res) => {
       datasetId: targetDatasetId,
     });
 
-    // 3. Load candle dataset and run optimizer loop asynchronously in background
+    // 3. Run optimizer loop asynchronously in background (pure streaming with SSD chunk cache)
     (async () => {
       try {
-        let entries = serverDatasetCandleCache.get(targetDatasetId);
-        if (!entries || entries.length === 0) {
-          entries = await loadDatasetEntriesFromPostgres(targetDatasetId, symbols);
-        }
-
-        if (!entries || entries.length === 0) {
-          serverOptimizerState.isOptimizing = false;
-          serverOptimizerState.errorMsg = 'هیچ داده کندلی در دیتابیس برای این بازه یافت نشد.';
-          serverOptimizerState.statusText = 'خطا: کندلی یافت نشد.';
-          return;
-        }
-
-        serverOptimizerState.statusText = `در حال بهینه‌سازی مداوم روی ${entries.length} نماد در سرور...`;
-
         await runServerOptimizerLoop(
           targetDatasetId,
-          entries,
           effectiveStrategyId,
           baseConfig,
           targetConstraints,
@@ -3492,71 +3932,62 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
     const explicitDatasetId = req.body?.datasetId;
     let datasetId = explicitDatasetId || getRangeDatasetId(exchange, timeframe, startTime, endTime);
 
-    // If datasetId does not exist directly, try resolving from active manual scan or matching exchange/timeframe
-    let entries = serverDatasetCandleCache.get(datasetId);
-    if (!entries || entries.length === 0) {
-      if (serverBacktestState.datasetId && serverDatasetCandleCache.has(serverBacktestState.datasetId)) {
-        datasetId = serverBacktestState.datasetId;
-        entries = serverDatasetCandleCache.get(datasetId);
-      }
-    }
-    if (!entries || entries.length === 0) {
-      entries = await loadDatasetEntriesFromPostgres(datasetId, symbols);
-    }
-    if (!entries || entries.length === 0) {
-      if (serverBacktestState.datasetId && serverBacktestState.datasetId !== datasetId) {
-        entries = await loadDatasetEntriesFromPostgres(serverBacktestState.datasetId, symbols);
-        if (entries && entries.length > 0) {
-          datasetId = serverBacktestState.datasetId;
+    // 1. Resolve datasetId directly from PostgreSQL metadata (< 2ms) without memory bloat
+    let resolvedDatasetId = datasetId;
+    let dsExists = false;
+    const checkDs = await pool.query(`SELECT id, strategy_id, strategy_config_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
+    if (checkDs.rows.length > 0) {
+      dsExists = true;
+    } else {
+      if (serverBacktestState.datasetId) {
+        const backtestDs = await pool.query(`SELECT id, strategy_id, strategy_config_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [serverBacktestState.datasetId]);
+        if (backtestDs.rows.length > 0) {
+          resolvedDatasetId = serverBacktestState.datasetId;
+          dsExists = true;
         }
       }
-    }
-    if (!entries || entries.length === 0) {
-      const matchDs = await pool.query(
-        `SELECT id FROM candle_datasets WHERE exchange = $1 AND timeframe = $2 AND total_candles > 0 ORDER BY updated_at DESC LIMIT 1;`,
-        [exchange, timeframe]
-      );
-      if (matchDs.rows.length > 0) {
-        entries = await loadDatasetEntriesFromPostgres(matchDs.rows[0].id, symbols);
-        if (entries && entries.length > 0) {
-          datasetId = matchDs.rows[0].id;
+      if (!dsExists) {
+        const matchDs = await pool.query(
+          `SELECT id, strategy_id, strategy_config_json FROM candle_datasets WHERE exchange = $1 AND timeframe = $2 AND total_candles > 0 ORDER BY updated_at DESC LIMIT 1;`,
+          [exchange, timeframe]
+        );
+        if (matchDs.rows.length > 0) {
+          resolvedDatasetId = matchDs.rows[0].id;
+          dsExists = true;
         }
       }
-    }
-    if (!entries || entries.length === 0) {
-      const latestDs = await pool.query(
-        `SELECT id FROM candle_datasets WHERE status = 'COMPLETED' OR symbol_count > 0 ORDER BY updated_at DESC LIMIT 1;`
-      );
-      if (latestDs.rows.length > 0) {
-        entries = await loadDatasetEntriesFromPostgres(latestDs.rows[0].id, symbols);
-        if (entries && entries.length > 0) {
-          datasetId = latestDs.rows[0].id;
+      if (!dsExists) {
+        const latestDs = await pool.query(
+          `SELECT id, strategy_id, strategy_config_json FROM candle_datasets WHERE (status = 'COMPLETED' OR symbol_count > 0) AND total_candles > 0 ORDER BY updated_at DESC LIMIT 1;`
+        );
+        if (latestDs.rows.length > 0) {
+          resolvedDatasetId = latestDs.rows[0].id;
+          dsExists = true;
         }
       }
     }
 
-    if (!entries || entries.length === 0) {
+    if (!dsExists) {
       return res.status(400).json({ success: false, error: 'داده کندلی در دیتابیس یافت نشد.' });
     }
 
+    datasetId = resolvedDatasetId;
     const cfg = strategyConfig || {};
     let effectiveStrategyId = strategyId;
-    if (datasetId) {
-      try {
-        const dsMeta = await pool.query(`SELECT strategy_id, strategy_config_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
-        if (dsMeta.rows.length > 0) {
-          if (!req.body?.strategyId && dsMeta.rows[0].strategy_id) {
-            effectiveStrategyId = dsMeta.rows[0].strategy_id;
-          }
-          if (dsMeta.rows[0].strategy_config_json) {
-            const parsed = JSON.parse(dsMeta.rows[0].strategy_config_json);
-            if (!cfg.riskMode && parsed.riskMode) cfg.riskMode = parsed.riskMode;
-            if (!cfg.riskAmountFixed && parsed.riskAmountFixed) cfg.riskAmountFixed = parsed.riskAmountFixed;
-            if (!cfg.maxCandlesToEnter && parsed.maxCandlesToEnter) cfg.maxCandlesToEnter = parsed.maxCandlesToEnter;
-          }
+    try {
+      const dsMeta = await pool.query(`SELECT strategy_id, strategy_config_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
+      if (dsMeta.rows.length > 0) {
+        if (!req.body?.strategyId && dsMeta.rows[0].strategy_id) {
+          effectiveStrategyId = dsMeta.rows[0].strategy_id;
         }
-      } catch {}
-    }
+        if (dsMeta.rows[0].strategy_config_json) {
+          const parsed = JSON.parse(dsMeta.rows[0].strategy_config_json);
+          if (!cfg.riskMode && parsed.riskMode) cfg.riskMode = parsed.riskMode;
+          if (!cfg.riskAmountFixed && parsed.riskAmountFixed) cfg.riskAmountFixed = parsed.riskAmountFixed;
+          if (!cfg.maxCandlesToEnter && parsed.maxCandlesToEnter) cfg.maxCandlesToEnter = parsed.maxCandlesToEnter;
+        }
+      }
+    } catch {}
 
     const baseConfig = {
       capital: Number(cfg.capital) || 10000,
@@ -3577,7 +4008,58 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
       targetMinTrades: Number(constraints.targetMinTrades) || 100,
     };
 
-    const evalRes = await evaluateCombinationOnServer(candidate, entries, effectiveStrategyId, baseConfig, targetConstraints);
+    // 2. Instant Exact Match with Manual Scan results if parameters match:
+    let evalRes: any = null;
+    try {
+      const dsMeta = await pool.query(`SELECT strategy_id, strategy_config_json, results_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
+      if (dsMeta.rows.length > 0) {
+        const row = dsMeta.rows[0];
+        let storedCfg: any = null;
+        if (row.strategy_config_json) {
+          try { storedCfg = JSON.parse(row.strategy_config_json); } catch {}
+        }
+
+        if (storedCfg && row.results_json) {
+          const isAtrMatch = Number(candidate.atrPeriod) === Number(storedCfg.optAtrPeriod ?? storedCfg.atrPeriod);
+          const isAtrMultMatch = Math.abs(Number(candidate.atrMultiplier) - Number(storedCfg.optAtrMultiplier ?? storedCfg.atrMultiplier)) < 0.001;
+          const isMinCandlesMatch = Number(candidate.minCandles) === Number(storedCfg.optMinCandles ?? storedCfg.minCandles);
+          const isMinLongMatch = Number(candidate.minCandlesForLongLeg) === Number(storedCfg.optMinCandlesLong ?? storedCfg.minCandlesForLongLeg);
+          const isLongMultMatch = Math.abs(Number(candidate.longLegAtrMultiplier) - Number(storedCfg.optLongLegAtrMult ?? storedCfg.longLegAtrMultiplier)) < 0.001;
+          const isBlueMatch = Math.abs(Number(candidate.maxBlueLegPercent) - Number(storedCfg.optMaxBlueLegPercent ?? storedCfg.maxBlueLegPercent)) < 0.001;
+          const isBreakoutMatch = Math.abs(Number(candidate.maxBreakoutAtrMultiplier) - Number(storedCfg.optMaxBreakoutAtr ?? storedCfg.maxBreakoutAtrMultiplier)) < 0.001;
+          const isRrMatch = Math.abs(Number(candidate.maxRiskReward) - Number(storedCfg.optMaxRiskReward ?? storedCfg.maxRiskReward)) < 0.001;
+          const isTimeStopMatch = Number(candidate.timeStopCandles || 80) === Number(storedCfg.optTimeStopCandles ?? storedCfg.timeStopCandles ?? 80);
+
+          if (isAtrMatch && isAtrMultMatch && isMinCandlesMatch && isMinLongMatch && isLongMultMatch && isBlueMatch && isBreakoutMatch && isRrMatch && isTimeStopMatch) {
+            const parsedRes = JSON.parse(row.results_json);
+            if (parsedRes.allTrades && parsedRes.allTrades.length > 0) {
+              evalRes = processFilteredTrades(parsedRes.allTrades, baseConfig, targetConstraints);
+              console.log(`[Optimizer] ⚡ Instant exact match with stored manual scan results! Trades=${evalRes.totalTrades}, NetProfit=${evalRes.netProfit}`);
+            }
+          }
+        }
+      }
+    } catch (e: any) {
+      console.warn('[Optimizer exact match check]:', e.message);
+    }
+
+    if (!evalRes) {
+      const cachedEntries = serverDatasetCandleCache.get(datasetId);
+      if (cachedEntries && cachedEntries.length > 0 && cachedEntries.length <= 100) {
+        evalRes = await evaluateCombinationOnServer(candidate, cachedEntries, effectiveStrategyId, baseConfig, targetConstraints);
+      } else {
+        evalRes = await streamEvaluateDatasetFromPostgres(
+          datasetId,
+          candidate,
+          effectiveStrategyId,
+          baseConfig,
+          targetConstraints,
+          symbols,
+          false
+        );
+      }
+    }
+
     if (!evalRes) {
       return res.status(500).json({ success: false, error: 'ارزیابی انجام نشد.' });
     }
@@ -4133,15 +4615,29 @@ async function runServerScannerCycle() {
             });
           } catch {}
 
-          const orderPayload = {
+          // XT Trigger price strict validation:
+          // For LONG: stopLoss < curPrice and takeProfit > curPrice
+          // For SHORT: stopLoss > curPrice and takeProfit < curPrice
+          let validTriggerProfitPrice: number | undefined = chosen.takeProfit;
+          let validTriggerStopPrice: number | undefined = chosen.stopLoss;
+
+          if (chosen.posSide === 'LONG') {
+            if (validTriggerStopPrice && validTriggerStopPrice >= chosen.curPrice) validTriggerStopPrice = undefined;
+            if (validTriggerProfitPrice && validTriggerProfitPrice <= chosen.curPrice) validTriggerProfitPrice = undefined;
+          } else {
+            if (validTriggerStopPrice && validTriggerStopPrice <= chosen.curPrice) validTriggerStopPrice = undefined;
+            if (validTriggerProfitPrice && validTriggerProfitPrice >= chosen.curPrice) validTriggerProfitPrice = undefined;
+          }
+
+          const orderPayload: any = {
             symbol: xtSymbol,
             orderSide: chosen.side,
             orderType: 'MARKET',
             positionSide: chosen.posSide,
             origQty: orderQty,
-            triggerProfitPrice: chosen.takeProfit,
-            triggerStopPrice: chosen.stopLoss,
           };
+          if (validTriggerProfitPrice) orderPayload.triggerProfitPrice = validTriggerProfitPrice;
+          if (validTriggerStopPrice) orderPayload.triggerStopPrice = validTriggerStopPrice;
 
           const execRecord: any = {
             id: `exec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -4161,7 +4657,19 @@ async function runServerScannerCycle() {
           };
 
           try {
-            const orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', orderPayload);
+            let orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', orderPayload);
+            
+            // Auto-fallback: if XT rejected due to trigger price constraints (e.g. price moved during transmit), retry pure MARKET order
+            if (orderRes && orderRes.returnCode !== 0 && (orderPayload.triggerProfitPrice || orderPayload.triggerStopPrice)) {
+              const errMsg = (orderRes.msgInfo || orderRes.msg || '').toLowerCase();
+              if (errMsg.includes('triger') || errMsg.includes('trigger') || errMsg.includes('stop') || errMsg.includes('price')) {
+                addServerScannerLog('warning', `⚠️ صرافی XT قیمت تریگر استاپ/تارگت را به دلیل نوسان آنی قیمت رد کرد (${errMsg}). در حال ارسال مجدد سفارش به عنوان مارکت ساده...`, chosen.symbol);
+                delete orderPayload.triggerProfitPrice;
+                delete orderPayload.triggerStopPrice;
+                orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', orderPayload);
+              }
+            }
+
             execRecord.response = orderRes;
 
             if (orderRes && orderRes.returnCode === 0) {

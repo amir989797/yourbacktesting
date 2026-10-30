@@ -225,6 +225,24 @@ export async function fetchXtOrderHistory(symbol?: string, limit: number = 30): 
 }
 
 /**
+ * Fetch Closed Position History with exact realized PnL & fees from XT Futures API
+ */
+export async function fetchXtPositionHistory(symbol?: string, limit: number = 50): Promise<LiveTradeOrder[]> {
+  try {
+    let query = `?limit=${limit}`;
+    if (symbol) query += `&symbol=${encodeURIComponent(toXtSymbol(symbol))}`;
+    const res = await fetch(`/api/xt/positions/history${query}`);
+    const data = await res.json();
+    if (data?.result && Array.isArray(data.result)) {
+      return data.result;
+    }
+  } catch (err) {
+    console.warn('Failed to fetch XT position history', err);
+  }
+  return [];
+}
+
+/**
  * Create Live Order on XT Futures
  */
 export async function createXtOrder(params: XtOrderParams): Promise<{ success: boolean; orderId?: string; error?: string }> {
