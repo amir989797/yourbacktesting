@@ -766,6 +766,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     const fetchOptimizerStatus = async () => {
       try {
         const res = await fetch('/api/optimizer/status', { signal: AbortSignal.timeout(8000) });
+        if (!res.ok) return;
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) return;
         const data = await res.json();
         if (isSubscribed && data && data.success && data.state) {
           const s = data.state;
@@ -926,6 +929,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     const pollStatus = async () => {
       try {
         const res = await fetch('/api/backtest/status');
+        if (!res.ok) return;
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) return;
         const data = await res.json();
         if (data && data.success && data.state) {
           const st = data.state;

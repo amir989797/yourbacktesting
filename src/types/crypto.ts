@@ -37,6 +37,10 @@ export interface CryptoPair {
   category?: 'Popular' | 'Layer 1' | 'DeFi' | 'Meme' | 'AI & Tech' | 'Futures' | string;
   marketCap?: number;
   volume24h?: number;
+  isOpenApi?: boolean;
+  tradeSwitch?: boolean;
+  openSwitch?: boolean;
+  isApiSupported?: boolean;
 }
 
 export type Timeframe = '1m' | '5m' | '15m' | '30m' | '1h' | '4h' | '1d' | '1w';

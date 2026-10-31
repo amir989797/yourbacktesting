@@ -66,6 +66,8 @@ export const AllowedPairsModal: React.FC<AllowedPairsModalProps> = ({
   const [deletingListId, setDeletingListId] = useState<string | null>(null);
   const [pairsSearchQuery, setPairsSearchQuery] = useState<string>('');
   
+  const [filterOnlyOpenApi, setFilterOnlyOpenApi] = useState<boolean>(true);
+
   // نام پیش‌فرض برای ذخیره لیست
   const [listName, setListName] = useState<string>(() => `لیست ${exchange.toUpperCase()} من`);
   const [dbSavedTime, setDbSavedTime] = useState<string | null>(null);
@@ -125,12 +127,18 @@ export const AllowedPairsModal: React.FC<AllowedPairsModalProps> = ({
   };
 
   const filteredPairs = useMemo(() => {
-    const list = allAvailablePairs.length > 0
+    let list = allAvailablePairs.length > 0
       ? allAvailablePairs
       : COMPREHENSIVE_FALLBACK_PAIRS.map((p) => ({
           ...p,
           marketCap: getEstimatedMarketCap(p.baseAsset, p.volume24h),
         }));
+
+    // فیلتر ارزهای بدون OpenAPI (۴۰۶ نماد XT با isOpenApi: false یا tradeSwitch: false)
+    if (activeExchange === 'xt' && filterOnlyOpenApi) {
+      list = list.filter((p) => p.isApiSupported !== false && p.isOpenApi !== false && p.tradeSwitch !== false);
+    }
+
     if (!pairsSearchQuery.trim()) return list;
     const q = pairsSearchQuery.trim().toLowerCase();
     return list.filter((p) =>
@@ -138,18 +146,68 @@ export const AllowedPairsModal: React.FC<AllowedPairsModalProps> = ({
       (p.baseAsset && p.baseAsset.toLowerCase().includes(q)) ||
       (p.name && p.name.toLowerCase().includes(q))
     );
-  }, [allAvailablePairs, pairsSearchQuery]);
+  }, [allAvailablePairs, pairsSearchQuery, activeExchange, filterOnlyOpenApi]);
+
+  const apiSupportedCount = useMemo(() => {
+    return allAvailablePairs.filter((p) => p.isApiSupported !== false && p.isOpenApi !== false && p.tradeSwitch !== false).length;
+  }, [allAvailablePairs]);
+
+  const unsupportedCount = useMemo(() => {
+    return allAvailablePairs.filter((p) => p.isApiSupported === false || p.isOpenApi === false || p.tradeSwitch === false).length;
+  }, [allAvailablePairs]);
+
+  const selectedUnsupportedCount = useMemo(() => {
+    const unsupportedSet = new Set(
+      allAvailablePairs
+        .filter((p) => p.isApiSupported === false || p.isOpenApi === false || p.tradeSwitch === false)
+        .map((p) => p.symbol)
+    );
+    let count = 0;
+    for (const s of tempSelectedSymbols) {
+      if (unsupportedSet.has(s)) count++;
+    }
+    return count;
+  }, [allAvailablePairs, tempSelectedSymbols]);
+
+  const handleRemoveUnsupportedSymbols = () => {
+    const unsupportedSet = new Set(
+      allAvailablePairs
+        .filter((p) => p.isApiSupported === false || p.isOpenApi === false || p.tradeSwitch === false)
+        .map((p) => p.symbol)
+    );
+    setTempSelectedSymbols((prev) => {
+      const next = new Set<string>();
+      for (const s of prev) {
+        if (!unsupportedSet.has(s)) next.add(s);
+      }
+      return next;
+    });
+    showToast(`🧹 تمامی ارزهای بدون پشتیبانی API با موفقیت از انتخاب‌ها حذف شدند.`);
+  };
 
   const handleToggleSelectAllPairs = () => {
-    if (tempSelectedSymbols.size === allAvailablePairs.length) {
-      setTempSelectedSymbols(new Set());
+    const eligibleSymbols = filteredPairs.map((p) => p.symbol);
+    const allEligibleSelected = eligibleSymbols.every((s) => tempSelectedSymbols.has(s));
+    if (allEligibleSelected) {
+      setTempSelectedSymbols((prev) => {
+        const next = new Set(prev);
+        eligibleSymbols.forEach((s) => next.delete(s));
+        return next;
+      });
     } else {
-      setTempSelectedSymbols(new Set(allAvailablePairs.map((p) => p.symbol)));
+      setTempSelectedSymbols((prev) => {
+        const next = new Set(prev);
+        eligibleSymbols.forEach((s) => next.add(s));
+        return next;
+      });
     }
   };
 
   const handleSelectTopPairs = (count: number) => {
-    const top = allAvailablePairs.slice(0, count).map((p) => p.symbol);
+    const list = activeExchange === 'xt' && filterOnlyOpenApi
+      ? allAvailablePairs.filter((p) => p.isApiSupported !== false && p.isOpenApi !== false && p.tradeSwitch !== false)
+      : allAvailablePairs;
+    const top = list.slice(0, count).map((p) => p.symbol);
     setTempSelectedSymbols(new Set(top));
     showToast(`🎯 ${count} ارز برتر بر اساس مارکت‌کپ انتخاب شدند.`);
   };
@@ -441,20 +499,40 @@ export const AllowedPairsModal: React.FC<AllowedPairsModalProps> = ({
               </div>
 
               <div className="flex items-center gap-1.5 flex-wrap">
+                {/* دکمه فیلتر هوشمند مجازهای OpenAPI (حذف ۴۰۶ ارز بدون API) */}
+                {activeExchange === 'xt' && (
+                  <button
+                    type="button"
+                    onClick={() => setFilterOnlyOpenApi((prev) => !prev)}
+                    className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold border transition-all cursor-pointer flex items-center gap-1.5 ${
+                      filterOnlyOpenApi
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-xs'
+                        : 'bg-[#182232] text-gray-400 border-[#2a384d] hover:text-white'
+                    }`}
+                    title="فیلتر ارزهایی که توسط صرافی XT برای معاملات خودکار OpenAPI مجاز نیستند"
+                  >
+                    <Filter className="w-3.5 h-3.5" />
+                    <span>فقط مجازهای OpenAPI</span>
+                    <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono ${filterOnlyOpenApi ? 'bg-emerald-950 text-emerald-300' : 'bg-gray-800 text-gray-400'}`}>
+                      {filterOnlyOpenApi ? `${apiSupportedCount || allAvailablePairs.length} ارز` : `همه (${unsupportedCount} بدون API)`}
+                    </span>
+                  </button>
+                )}
+
                 <button
                   type="button"
                   onClick={handleToggleSelectAllPairs}
                   className="px-2.5 py-1.5 rounded-xl bg-[#1c2538] hover:bg-[#25324c] text-white text-[11px] font-bold border border-[#2f3f59] transition-colors cursor-pointer flex items-center gap-1"
                 >
-                  {tempSelectedSymbols.size === allAvailablePairs.length ? (
+                  {filteredPairs.length > 0 && filteredPairs.every((p) => tempSelectedSymbols.has(p.symbol)) ? (
                     <>
                       <Square className="w-3.5 h-3.5 text-rose-400" />
-                      <span>لغو همه</span>
+                      <span>لغو این لیست</span>
                     </>
                   ) : (
                     <>
                       <CheckSquare className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>انتخاب همه</span>
+                      <span>انتخاب همه ({filteredPairs.length})</span>
                     </>
                   )}
                 </button>
@@ -483,6 +561,19 @@ export const AllowedPairsModal: React.FC<AllowedPairsModalProps> = ({
                   ۵۰ ارز برتر
                 </button>
 
+                {/* دکمه پاکسازی نمادهای بدون API در صورت وجود در انتخاب‌ها */}
+                {selectedUnsupportedCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleRemoveUnsupportedSymbols}
+                    className="px-2 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 text-[11px] font-bold border border-rose-500/40 transition-colors cursor-pointer flex items-center gap-1"
+                    title="حذف نمادهایی که در صرافی XT فاقد قابلیت OpenAPI هستند"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                    <span>حذف {selectedUnsupportedCount} ارز بدون API</span>
+                  </button>
+                )}
+
                 {/* دکمه باز کردن لیست‌های ذخیره‌شده (تا ۱۰ لیست) */}
                 <button
                   type="button"
@@ -497,6 +588,25 @@ export const AllowedPairsModal: React.FC<AllowedPairsModalProps> = ({
               </div>
             </div>
 
+            {/* هشدار در صورت انتخاب ارزهای فاقد پشتیبانی OpenAPI */}
+            {selectedUnsupportedCount > 0 && (
+              <div className="bg-rose-950/40 border border-rose-500/40 rounded-2xl px-3 py-2 flex items-center justify-between text-xs text-rose-300 shrink-0">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>
+                    توجه: <strong>{selectedUnsupportedCount}</strong> ارز انتخاب‌شده توسط صرافی {activeExchange.toUpperCase()} برای سفارش‌گذاری خودکار API مجاز نیستند (OpenAPI Disabled) و در صورت ارسال سیگنال خطا خواهند داد.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleRemoveUnsupportedSymbols}
+                  className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-[11px] cursor-pointer whitespace-nowrap"
+                >
+                  حذف خودکار این ارزها
+                </button>
+              </div>
+            )}
+
             {/* List / Table of Coins with Market Cap */}
             <div className="flex-1 overflow-y-auto pr-1 space-y-1 max-h-[46vh] border border-[#1b2434] rounded-2xl p-2 bg-[#090d14]">
               {isLoadingAllPairs ? (
@@ -506,21 +616,25 @@ export const AllowedPairsModal: React.FC<AllowedPairsModalProps> = ({
                 </div>
               ) : filteredPairs.length === 0 ? (
                 <div className="py-12 text-center text-xs text-gray-400">
-                  هیچ جفت‌ارزی با این عبارت جستجو یافت نشد.
+                  {filterOnlyOpenApi
+                    ? 'هیچ ارز دارای OpenAPI با این عبارت جستجو یافت نشد.'
+                    : 'هیچ جفت‌ارزی با این عبارت جستجو یافت نشد.'}
                 </div>
               ) : (
                 <div className="space-y-1">
                   <div className="grid grid-cols-12 px-3 py-1.5 text-[10px] font-bold text-gray-400 border-b border-[#1c2637]">
                     <div className="col-span-1 text-center">انتخاب</div>
                     <div className="col-span-4">ارز و جفت‌معاملاتی</div>
-                    <div className="col-span-4 text-left font-mono">مارکت‌کپ (Market Cap)</div>
-                    <div className="col-span-3 text-left">بیشترین اهرم مجاز</div>
+                    <div className="col-span-3 text-left font-mono">مارکت‌کپ (Market Cap)</div>
+                    <div className="col-span-2 text-left">بیشترین اهرم</div>
+                    <div className="col-span-2 text-center">وضعیت OpenAPI</div>
                   </div>
 
                   {filteredPairs.map((pair, idx) => {
                     const isChecked = tempSelectedSymbols.has(pair.symbol);
                     const maxLev = getMaxLeverageForSymbol(pair.symbol);
                     const marketCap = (pair as any).marketCap || getEstimatedMarketCap(pair.baseAsset, pair.volume24h);
+                    const isApiAllowed = pair.isApiSupported !== false && pair.isOpenApi !== false && pair.tradeSwitch !== false;
 
                     return (
                       <div
@@ -539,6 +653,8 @@ export const AllowedPairsModal: React.FC<AllowedPairsModalProps> = ({
                         className={`grid grid-cols-12 items-center px-3 py-2 rounded-xl text-xs cursor-pointer transition-all border ${
                           isChecked
                             ? 'bg-amber-500/10 border-amber-500/40 text-white shadow-sm'
+                            : !isApiAllowed
+                            ? 'bg-rose-950/20 border-rose-900/30 text-gray-300 hover:border-rose-700/50'
                             : 'bg-[#0f141f] border-transparent hover:border-[#253347] text-gray-300'
                         }`}
                       >
@@ -565,11 +681,11 @@ export const AllowedPairsModal: React.FC<AllowedPairsModalProps> = ({
                           </div>
                         </div>
 
-                        <div className="col-span-4 text-left font-mono font-bold text-emerald-400 text-xs">
+                        <div className="col-span-3 text-left font-mono font-bold text-emerald-400 text-xs">
                           {formatMarketCap(marketCap)}
                         </div>
 
-                        <div className="col-span-3 text-left">
+                        <div className="col-span-2 text-left">
                           <span className={`px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold border ${
                             maxLev >= 75
                               ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
@@ -579,6 +695,18 @@ export const AllowedPairsModal: React.FC<AllowedPairsModalProps> = ({
                           }`}>
                             اهرم {maxLev}x
                           </span>
+                        </div>
+
+                        <div className="col-span-2 text-center">
+                          {isApiAllowed ? (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-950/60 text-emerald-400 border border-emerald-500/30">
+                              مجاز در API
+                            </span>
+                          ) : (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-950/80 text-rose-400 border border-rose-500/40" title="معاملات OpenAPI توسط صرافی برای این جفت‌ارز بسته است">
+                              ⛔ بدون API
+                            </span>
+                          )}
                         </div>
                       </div>
                     );

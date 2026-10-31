@@ -38,12 +38,30 @@ export function fromXtSymbol(symbol: string): string {
 }
 
 /**
+ * Helper to safely fetch and parse JSON without crashing on 502 Bad Gateway / HTML error pages
+ */
+async function safeFetchJson<T = any>(url: string, options?: RequestInit): Promise<T | null> {
+  try {
+    const res = await fetch(url, options);
+    if (!res.ok) {
+      return null;
+    }
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      return null;
+    }
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fetch Account Balances from XT Futures API
  */
 export async function fetchXtBalance(): Promise<ExchangeAccountBalance> {
   try {
-    const res = await fetch('/api/xt/balance');
-    const data = await res.json();
+    const data = await safeFetchJson<any>('/api/xt/balance');
 
     if (data?.result && Array.isArray(data.result) && data.result.length > 0) {
       const usdt = data.result.find((c: any) => c.coin?.toLowerCase() === 'usdt') || data.result[0];
@@ -86,8 +104,7 @@ export async function fetchXtBalance(): Promise<ExchangeAccountBalance> {
 export async function fetchXtPositions(symbol?: string): Promise<LivePosition[]> {
   try {
     const query = symbol ? `?symbol=${encodeURIComponent(toXtSymbol(symbol))}` : '';
-    const res = await fetch(`/api/xt/positions${query}`);
-    const data = await res.json();
+    const data = await safeFetchJson<any>(`/api/xt/positions${query}`);
 
     if (data?.result && Array.isArray(data.result)) {
       return data.result.map((item: any) => {
@@ -148,12 +165,14 @@ export async function closeXtPosition(params: {
   profitId?: string;
 }): Promise<{ success: boolean; error?: string; message?: string }> {
   try {
-    const res = await fetch('/api/xt/position/close', {
+    const data = await safeFetchJson<any>('/api/xt/position/close', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
     });
-    const data = await res.json();
+    if (!data) {
+      return { success: false, error: 'پاسخی از سرور دریافت نشد (خطای موقت سرور یا ارتباط)' };
+    }
     if (data?.returnCode === 0 || data?.success) {
       return { success: true, message: data?.message || 'پوزیشن با موفقیت بسته شد' };
     }
@@ -168,11 +187,13 @@ export async function closeXtPosition(params: {
  */
 export async function closeAllXtPositions(): Promise<{ success: boolean; error?: string; message?: string }> {
   try {
-    const res = await fetch('/api/xt/position/close-all', {
+    const data = await safeFetchJson<any>('/api/xt/position/close-all', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     });
-    const data = await res.json();
+    if (!data) {
+      return { success: false, error: 'پاسخی از سرور دریافت نشد' };
+    }
     if (data?.returnCode === 0 || data?.success) {
       return { success: true, message: data?.message || 'تمام پوزیشن‌ها با موفقیت در صرافی بسته شدند' };
     }
@@ -189,8 +210,7 @@ export async function fetchXtOrderHistory(symbol?: string, limit: number = 30): 
   try {
     let query = `?limit=${limit}`;
     if (symbol) query += `&symbol=${encodeURIComponent(toXtSymbol(symbol))}`;
-    const res = await fetch(`/api/xt/orders/history${query}`);
-    const data = await res.json();
+    const data = await safeFetchJson<any>(`/api/xt/orders/history${query}`);
 
     const items = data?.result?.items || data?.result || [];
     if (Array.isArray(items)) {
@@ -231,8 +251,7 @@ export async function fetchXtPositionHistory(symbol?: string, limit: number = 50
   try {
     let query = `?limit=${limit}`;
     if (symbol) query += `&symbol=${encodeURIComponent(toXtSymbol(symbol))}`;
-    const res = await fetch(`/api/xt/positions/history${query}`);
-    const data = await res.json();
+    const data = await safeFetchJson<any>(`/api/xt/positions/history${query}`);
     if (data?.result && Array.isArray(data.result)) {
       return data.result;
     }
@@ -247,13 +266,16 @@ export async function fetchXtPositionHistory(symbol?: string, limit: number = 50
  */
 export async function createXtOrder(params: XtOrderParams): Promise<{ success: boolean; orderId?: string; error?: string }> {
   try {
-    const res = await fetch('/api/xt/order/create', {
+    const data = await safeFetchJson<any>('/api/xt/order/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
     });
 
-    const data = await res.json();
+    if (!data) {
+      return { success: false, error: 'خطای ارتباط با سرور یا قطعی موقت دروازه API' };
+    }
+
     if (data?.returnCode === 0) {
       return { success: true, orderId: data?.result?.orderId || String(data?.result) };
     }
@@ -272,12 +294,11 @@ export async function createXtOrder(params: XtOrderParams): Promise<{ success: b
  */
 export async function cancelXtOrder(orderId: string): Promise<boolean> {
   try {
-    const res = await fetch('/api/xt/order/cancel', {
+    const data = await safeFetchJson<any>('/api/xt/order/cancel', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ orderId }),
     });
-    const data = await res.json();
     return data?.returnCode === 0;
   } catch {
     return false;

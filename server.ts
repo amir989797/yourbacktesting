@@ -48,6 +48,10 @@ interface CryptoPair {
   name?: string;
   category?: string;
   volume24h?: number;
+  isOpenApi?: boolean;
+  tradeSwitch?: boolean;
+  openSwitch?: boolean;
+  isApiSupported?: boolean;
 }
 
 interface ServerCandleEntry {
@@ -684,18 +688,75 @@ async function fetchXtServerKlines(
   return sorted;
 }
 
-// XT Public Tickers & Pairs fetcher
+// XT Symbols Metadata & OpenAPI Restrictions Cache (30 min TTL)
+let xtSymbolsInfoCache: Map<string, { isOpenApi: boolean; tradeSwitch: boolean; openSwitch: boolean; isApiSupported: boolean }> = new Map();
+let xtSymbolsInfoCacheExpiry = 0;
+const unsupportedOpenApiXtSymbols = new Set<string>();
+
+async function getXtSymbolsOpenApiMap(): Promise<Map<string, { isOpenApi: boolean; tradeSwitch: boolean; openSwitch: boolean; isApiSupported: boolean }>> {
+  if (xtSymbolsInfoCache.size > 0 && Date.now() < xtSymbolsInfoCacheExpiry) {
+    return xtSymbolsInfoCache;
+  }
+  try {
+    const url = `https://${XT_FAPI_HOST}/future/market/v1/public/symbol/list`;
+    const res = await fetch(url);
+    if (!res.ok) return xtSymbolsInfoCache;
+    const data = await res.json();
+    const symbols = data?.result?.symbols || data?.result || [];
+    if (Array.isArray(symbols) && symbols.length > 0) {
+      const map = new Map<string, { isOpenApi: boolean; tradeSwitch: boolean; openSwitch: boolean; isApiSupported: boolean }>();
+      unsupportedOpenApiXtSymbols.clear();
+
+      for (const s of symbols) {
+        const sym = (s.symbol || s.pair || '').toLowerCase();
+        if (!sym) continue;
+        const isOpenApi = s.isOpenApi !== false;
+        const tradeSwitch = s.tradeSwitch !== false;
+        const openSwitch = s.openSwitch !== false;
+        const stateActive = s.state === 0 || s.state === undefined;
+        const isApiSupported = isOpenApi && tradeSwitch && openSwitch && stateActive;
+
+        map.set(sym, {
+          isOpenApi,
+          tradeSwitch,
+          openSwitch,
+          isApiSupported,
+        });
+
+        if (!isApiSupported) {
+          unsupportedOpenApiXtSymbols.add(sym);
+        }
+      }
+      xtSymbolsInfoCache = map;
+      xtSymbolsInfoCacheExpiry = Date.now() + 30 * 60 * 1000;
+      console.log(`[XT Symbols Metadata] Loaded ${map.size} symbols. OpenAPI-supported: ${map.size - unsupportedOpenApiXtSymbols.size}, Unsupported/Restricted: ${unsupportedOpenApiXtSymbols.size}`);
+      return map;
+    }
+  } catch (err: any) {
+    console.warn('[XT Symbols Metadata Warning]:', err.message);
+  }
+  return xtSymbolsInfoCache;
+}
+
+// XT Public Tickers & Pairs fetcher (enriched with OpenAPI support status)
 async function fetchXtServerPairs(): Promise<CryptoPair[]> {
+  const openApiMap = await getXtSymbolsOpenApiMap();
   const url = `https://${XT_FAPI_HOST}/future/market/v1/public/q/tickers`;
   const response = await fetch(url);
   const data = await response.json();
 
   if (data?.result && Array.isArray(data.result)) {
     return data.result.map((item: any) => {
-      const sym = item.s || '';
+      const sym = (item.s || '').toLowerCase();
       const parts = sym.split('_');
       const baseAsset = (parts[0] || '').toUpperCase();
       const quoteAsset = (parts[1] || 'USDT').toUpperCase();
+      const meta = openApiMap.get(sym);
+      const isOpenApi = meta ? meta.isOpenApi : true;
+      const tradeSwitch = meta ? meta.tradeSwitch : true;
+      const openSwitch = meta ? meta.openSwitch : true;
+      const isApiSupported = meta ? meta.isApiSupported : true;
+
       return {
         symbol: sym,
         baseAsset,
@@ -703,6 +764,10 @@ async function fetchXtServerPairs(): Promise<CryptoPair[]> {
         name: `${baseAsset}/${quoteAsset}`,
         category: 'Futures',
         volume24h: parseFloat(item.v || '0'),
+        isOpenApi,
+        tradeSwitch,
+        openSwitch,
+        isApiSupported,
       };
     }).sort((a: CryptoPair, b: CryptoPair) => (b.volume24h || 0) - (a.volume24h || 0));
   }
@@ -1159,7 +1224,16 @@ app.get('/api/market/pairs', async (req, res) => {
     const exchange = (req.query.exchange as string) || 'binance';
     if (exchange === 'xt') {
       const pairs = await fetchXtServerPairs();
-      return res.json({ success: true, exchange: 'xt', pairs, count: pairs.length });
+      const apiSupportedCount = pairs.filter((p) => p.isApiSupported !== false).length;
+      const unsupportedOpenApiCount = pairs.filter((p) => p.isApiSupported === false).length;
+      return res.json({
+        success: true,
+        exchange: 'xt',
+        pairs,
+        count: pairs.length,
+        apiSupportedCount,
+        unsupportedOpenApiCount,
+      });
     }
 
     const universe = (req.query.universe as any) || (req.query.isFutures === 'false' ? 'spot' : 'all_market');
@@ -2218,11 +2292,14 @@ async function runServerBacktestCycle(params: {
       if (targetSymbols.length === 0) {
         if (exchange === 'xt') {
           const xtPairs = await fetchXtServerPairs();
-          targetSymbols = xtPairs.slice(0, 1000).map((p) => p.symbol);
+          targetSymbols = xtPairs.filter((p) => p.isApiSupported !== false).slice(0, 1000).map((p) => p.symbol);
         } else {
           const sPairs = await fetchServerPairs('futures', 1000);
           targetSymbols = sPairs.map((p) => p.symbol);
         }
+      } else if (exchange === 'xt') {
+        await getXtSymbolsOpenApiMap();
+        targetSymbols = targetSymbols.filter((sym) => !unsupportedOpenApiXtSymbols.has(toXtSymbol(sym)));
       }
 
       const total = targetSymbols.length;
@@ -4463,9 +4540,22 @@ async function runServerScannerCycle() {
     ? cfg.symbols
     : ['btc_usdt', 'eth_usdt', 'sol_usdt', 'xrp_usdt', 'doge_usdt'];
 
+  let activeTargetSymbols = targetSymbols;
+  if (cfg.exchange === 'xt') {
+    await getXtSymbolsOpenApiMap();
+    activeTargetSymbols = targetSymbols.filter((s) => !unsupportedOpenApiXtSymbols.has(toXtSymbol(s)));
+    const excludedCount = targetSymbols.length - activeTargetSymbols.length;
+    if (excludedCount > 0) {
+      addServerScannerLog(
+        'info',
+        `🛡️ فیلتر OpenAPI فعال: تعداد ${excludedCount} نماد بدون پشتیبانی معاملات خودکار API از لیست اسکن حذف شدند (${activeTargetSymbols.length} نماد معتبر تحت اسکن قرار گرفتند).`
+      );
+    }
+  }
+
   addServerScannerLog(
     'info',
-    `🔍 شروع اسکن پس‌زمینه سرور روی ${targetSymbols.length} ارز در تایم‌فریم ${cfg.timeframe} (${cfg.exchange.toUpperCase()})...`
+    `🔍 شروع اسکن پس‌زمینه سرور روی ${activeTargetSymbols.length} ارز در تایم‌فریم ${cfg.timeframe} (${cfg.exchange.toUpperCase()})...`
   );
 
   const candidateSignals: ServerActiveSignal[] = [];
@@ -4504,7 +4594,7 @@ async function runServerScannerCycle() {
       addServerScannerLog('warning', `⚠️ حالت تک‌پوزیشن فعال است: ${openPositionsCount} پوزیشن باز در صرافی موجود است.`);
     }
 
-    for (const sym of targetSymbols) {
+    for (const sym of activeTargetSymbols) {
       try {
         let candles: CandleData[] = [];
         if (cfg.exchange === 'xt') {
@@ -4558,7 +4648,7 @@ async function runServerScannerCycle() {
 
     addServerScannerLog(
       'info',
-      `⏱️ یک دور اسکن کامل ${targetSymbols.length} ارز در سرور به پایان رسید. زمان سپری‌شده: ${durationFormatted} (${(durationMs / 1000).toFixed(2)} ثانیه).`
+      `⏱️ یک دور اسکن کامل ${activeTargetSymbols.length} ارز در سرور به پایان رسید. زمان سپری‌شده: ${durationFormatted} (${(durationMs / 1000).toFixed(2)} ثانیه).`
     );
 
     if (candidateSignals.length === 0) {
@@ -4578,21 +4668,33 @@ async function runServerScannerCycle() {
         `🎯 دور اسکن شماره ${runRoundNum} در مدت زمان ${durationFormatted} به پایان رسید و ${candidateSignals.length} سیگنال توسط سرور شناسایی شد: [${descList}]. سیگنال بهینه: ${candidateSignals[0].symbol.toUpperCase()}`
       );
 
-      const chosen = candidateSignals[0];
+      // Iterate through candidates in case chosen pair has API restrictions or insufficient margin
+      for (let candIdx = 0; candIdx < candidateSignals.length; candIdx++) {
+        const chosen = candidateSignals[candIdx];
+        const xtSymbol = toXtSymbol(chosen.symbol);
 
-      if (cfg.noConcurrentPositions && openPositionsCount > 0) {
-        addServerScannerLog(
-          'warning',
-          `⚠️ سیگنال ورود برای ${chosen.symbol.toUpperCase()} کشف شد اما به دلیل فعال بودن تک‌پوزیشن و داشتن ${openPositionsCount} پوزیشن باز، معامله جدید ارسال نشد.`,
-          chosen.symbol
-        );
-      } else if (availableBalance < chosen.requiredMargin) {
-        addServerScannerLog(
-          'warning',
-          `⚠️ موجودی آزاد ناکافی! مارجین مورد نیاز برای ${chosen.symbol.toUpperCase()}: ${chosen.requiredMargin}$ | موجودی آزاد حساب: ${availableBalance.toFixed(2)}$`,
-          chosen.symbol
-        );
-      } else {
+        if (cfg.exchange === 'xt' && unsupportedOpenApiXtSymbols.has(xtSymbol)) {
+          continue;
+        }
+
+        if (cfg.noConcurrentPositions && openPositionsCount > 0) {
+          addServerScannerLog(
+            'warning',
+            `⚠️ سیگنال ورود برای ${chosen.symbol.toUpperCase()} کشف شد اما به دلیل فعال بودن تک‌پوزیشن و داشتن ${openPositionsCount} پوزیشن باز، معامله جدید ارسال نشد.`,
+            chosen.symbol
+          );
+          break;
+        }
+
+        if (availableBalance < chosen.requiredMargin) {
+          addServerScannerLog(
+            'warning',
+            `⚠️ موجودی آزاد ناکافی! مارجین مورد نیاز برای ${chosen.symbol.toUpperCase()}: ${chosen.requiredMargin}$ | موجودی آزاد حساب: ${availableBalance.toFixed(2)}$`,
+            chosen.symbol
+          );
+          continue; // Try next candidate with potentially lower margin requirement
+        }
+
         addServerScannerLog(
           'trade',
           `⚡ سیگنال برگزیده ${chosen.posSide} برای ${chosen.symbol.toUpperCase()} با بیشترین اهرم (${chosen.maxLeverage}x) و حداقل مارجین (${chosen.requiredMargin} USDT) تأیید شد. حجم مجاز صرافی: ${chosen.contractQty} (ارزش: ${chosen.notionalUsdt}$) | زیان استاپ با کسر اعشار: ${chosen.riskUsdt}$ از سقف ${chosen.targetRiskUsdt}$ | ورود: ${chosen.curPrice} | استاپ: ${chosen.stopLoss} | تارگت: ${chosen.takeProfit}`,
@@ -4600,7 +4702,6 @@ async function runServerScannerCycle() {
         );
 
         if (cfg.isLiveExecution && cfg.exchange === 'xt') {
-          const xtSymbol = toXtSymbol(chosen.symbol);
           addServerScannerLog('info', `🚀 در حال ارسال سفارش زنده فیوچرز به XT.COM برای ${xtSymbol.toUpperCase()}...`, chosen.symbol);
           
           const xtSizing = calculateXtContractQuantity(chosen.contractQty, chosen.curPrice, xtSymbol, 10);
@@ -4616,8 +4717,6 @@ async function runServerScannerCycle() {
           } catch {}
 
           // XT Trigger price strict validation:
-          // For LONG: stopLoss < curPrice and takeProfit > curPrice
-          // For SHORT: stopLoss > curPrice and takeProfit < curPrice
           let validTriggerProfitPrice: number | undefined = chosen.takeProfit;
           let validTriggerStopPrice: number | undefined = chosen.stopLoss;
 
@@ -4659,7 +4758,7 @@ async function runServerScannerCycle() {
           try {
             let orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', orderPayload);
             
-            // Auto-fallback: if XT rejected due to trigger price constraints (e.g. price moved during transmit), retry pure MARKET order
+            // Auto-fallback: if XT rejected due to trigger price constraints, retry pure MARKET order
             if (orderRes && orderRes.returnCode !== 0 && (orderPayload.triggerProfitPrice || orderPayload.triggerStopPrice)) {
               const errMsg = (orderRes.msgInfo || orderRes.msg || '').toLowerCase();
               if (errMsg.includes('triger') || errMsg.includes('trigger') || errMsg.includes('stop') || errMsg.includes('price')) {
@@ -4672,6 +4771,20 @@ async function runServerScannerCycle() {
 
             execRecord.response = orderRes;
 
+            const errMsg = (orderRes?.msgInfo || orderRes?.msg || orderRes?.error?.msg || '').toLowerCase();
+            const isOpenApiError = errMsg.includes('openapi') || errMsg.includes('not support') || errMsg.includes('trading pair') || orderRes?.returnCode === 10005 || orderRes?.returnCode === 10004;
+
+            if (orderRes && orderRes.returnCode !== 0 && isOpenApiError) {
+              unsupportedOpenApiXtSymbols.add(xtSymbol);
+              addServerScannerLog(
+                'warning',
+                `⚠️ جفت‌ارز ${chosen.symbol.toUpperCase()} در صرافی XT برای معاملات خودکار API فعال نیست (The trading pair currently does not support placing orders through the OpenAPI). انتقال به لیست سیاه و سوئیچ به سیگنال بعدی...`,
+                chosen.symbol
+              );
+              serverScannerState.executionLogs = [execRecord, ...serverScannerState.executionLogs].slice(0, 100);
+              continue; // Immediately try next candidate signal!
+            }
+
             if (orderRes && orderRes.returnCode === 0) {
               const orderId = orderRes.result?.orderId || 'ثبت شد';
               execRecord.status = 'SUCCESS';
@@ -4681,6 +4794,8 @@ async function runServerScannerCycle() {
                 `✅ سفارش زنده فیوچرز با موفقیت در صرافی XT ثبت شد (Order ID: ${orderId}) | حجم: ${orderQty} قرارداد (${xtSizing.effectiveCoinQty} واحد، ارزش: $${xtSizing.nominalUsdt}) | استاپ: ${chosen.stopLoss} | تارگت: ${chosen.takeProfit}`,
                 chosen.symbol
               );
+              serverScannerState.executionLogs = [execRecord, ...serverScannerState.executionLogs].slice(0, 100);
+              break; // Order placed successfully!
             } else {
               execRecord.status = 'FAILED';
               const errDetail = orderRes?.error?.code
@@ -4688,18 +4803,20 @@ async function runServerScannerCycle() {
                 : (orderRes?.msgInfo || orderRes?.msg || JSON.stringify(orderRes));
               execRecord.error = errDetail;
               addServerScannerLog('error', `❌ خطای صرافی XT در ثبت سفارش (${xtSymbol}): ${errDetail}`, chosen.symbol);
+              serverScannerState.executionLogs = [execRecord, ...serverScannerState.executionLogs].slice(0, 100);
             }
           } catch (orderErr: any) {
             execRecord.status = 'FAILED';
             execRecord.error = orderErr.message;
             addServerScannerLog('error', `❌ استثنای شبکه در ارسال سفارش به صرافی XT: ${orderErr.message}`, chosen.symbol);
+            serverScannerState.executionLogs = [execRecord, ...serverScannerState.executionLogs].slice(0, 100);
           }
-
-          serverScannerState.executionLogs = [execRecord, ...serverScannerState.executionLogs].slice(0, 100);
         } else if (cfg.isLiveExecution && cfg.exchange === 'binance') {
           addServerScannerLog('info', `🚀 سفارش بایننس لایو برای ${chosen.symbol} محاسبه شد (حجم: ${chosen.contractQty}، ارزش: $${chosen.notionalUsdt}).`, chosen.symbol);
+          break;
         } else {
           addServerScannerLog('info', `📝 معامله در حالت شبیه‌ساز (Paper Trading) محاسبه شد. برای ارسال سفارش واقعی به صرافی، گزینه «معامله زنده (Auto-Trade)» را فعال کنید.`, chosen.symbol);
+          break;
         }
       }
     }
