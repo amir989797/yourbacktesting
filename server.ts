@@ -1110,6 +1110,7 @@ app.get('/api/xt/positions/history', async (req, res) => {
         pnlPercent = ((exitPrice - entryPrice) / entryPrice) * dir * leverage * 100;
       }
 
+      const entryTimeMs = Number(item.ctime || item.openTime || item.closeTime || Date.now());
       const exitTimeMs = Number(item.closeTime || item.mtime || item.ctime || Date.now());
       const dateObj = new Date(exitTimeMs);
       const timeFa = dateObj.toLocaleTimeString('fa-IR');
@@ -1135,7 +1136,10 @@ app.get('/api/xt/positions/history', async (req, res) => {
         realizedPnlPercent: parseFloat(pnlPercent.toFixed(2)),
         exitTime: timeFa,
         timestamp: timeFa,
-        rawTimeMs: exitTimeMs,
+        rawTimeMs: entryTimeMs,
+        entryTimeMs,
+        timestampMs: entryTimeMs,
+        time: entryTimeMs,
         closeType: item.force ? 'LIQUIDATION' : 'CLOSED',
       };
     });
@@ -2138,8 +2142,29 @@ async function findBestMatchingDataset(params: {
   const exactGenMatch = candidates.find((c) => c.id === exactGenId);
   if (exactGenMatch) return exactGenMatch;
 
-  // Priority 2: Candidates whose duration matches requested duration closely (within 5 days),
-  // e.g. user asked for 90 days, dataset has 90 days! (or user asked for 30 days, dataset has 30 days)
+  // Priority 2: Candidates that encompass the requested range (e.g. DB has 90 days, user asked for 30 days!)
+  // If a dataset in DB already covers [startTime, endTime], it is 100% complete for the requested range.
+  const encompassingMatches = candidates.filter((c) => {
+    const cStart = Number(c.start_time) || 0;
+    const cEnd = Number(c.end_time) || 0;
+    if (cStart <= 0 || cEnd <= cStart) return false;
+    return (cStart <= startTime + 2 * ONE_DAY) && (cEnd >= endTime - 5 * ONE_DAY);
+  });
+  if (encompassingMatches.length > 0) {
+    encompassingMatches.sort((a, b) => {
+      // Prefer freshest dataset (end_time closest to endTime) and largest candle count
+      const freshA = Math.abs(Number(a.end_time || 0) - endTime);
+      const freshB = Math.abs(Number(b.end_time || 0) - endTime);
+      if (Math.abs(freshA - freshB) > 3 * ONE_DAY) {
+        return freshA - freshB;
+      }
+      return Number(b.total_candles || 0) - Number(a.total_candles || 0);
+    });
+    return encompassingMatches[0];
+  }
+
+  // Priority 3: Candidates whose duration matches requested duration closely (within 5 days),
+  // Prioritizing the freshest dataset (latest end_time)
   const durationMatches = candidates.filter((c) => {
     const cStart = Number(c.start_time) || 0;
     const cEnd = Number(c.end_time) || 0;
@@ -2149,6 +2174,11 @@ async function findBestMatchingDataset(params: {
   });
   if (durationMatches.length > 0) {
     durationMatches.sort((a, b) => {
+      const freshA = Math.abs(Number(a.end_time || 0) - endTime);
+      const freshB = Math.abs(Number(b.end_time || 0) - endTime);
+      if (Math.abs(freshA - freshB) > 3 * ONE_DAY) {
+        return freshA - freshB;
+      }
       const durA = Math.abs((Number(a.end_time) - Number(a.start_time)) - reqDuration);
       const durB = Math.abs((Number(b.end_time) - Number(b.start_time)) - reqDuration);
       if (Math.abs(durA - durB) > ONE_DAY) {
@@ -2157,18 +2187,6 @@ async function findBestMatchingDataset(params: {
       return Number(b.total_candles || 0) - Number(a.total_candles || 0);
     });
     return durationMatches[0];
-  }
-
-  // Priority 3: Candidates that encompass the requested range (e.g. DB has 90 days, user asked for 30 days!)
-  const encompassingMatches = candidates.filter((c) => {
-    const cStart = Number(c.start_time) || 0;
-    const cEnd = Number(c.end_time) || 0;
-    if (cStart <= 0 || cEnd <= cStart) return false;
-    return (cStart <= startTime + 2 * ONE_DAY) && (cEnd >= endTime - 3 * ONE_DAY);
-  });
-  if (encompassingMatches.length > 0) {
-    encompassingMatches.sort((a, b) => Number(b.total_candles || 0) - Number(a.total_candles || 0));
-    return encompassingMatches[0];
   }
 
   // Priority 4: Closest duration overall
@@ -2463,8 +2481,8 @@ async function runServerBacktestCycle(params: {
             : null;
 
           serverBacktestState.stage = 'analyzing';
-          const estTotalSymbols = dsRes.rows[0].symbol_count || 771;
-          serverBacktestState.progress = { current: 0, total: estTotalSymbols, percent: 0, currentSymbol: 'محاسبه استراتژی روی داده‌های ذخیره‌شده...' };
+          const estTotalSymbols = symbolsFilterSet ? symbols.length : (dsRes.rows[0].symbol_count || 771);
+          serverBacktestState.progress = { current: 0, total: estTotalSymbols, percent: 0, currentSymbol: 'محاسبه استراتژی روی نمادهای انتخابی...' };
 
           let chunkOffset = 0;
           const pageSize = 15;
@@ -2488,7 +2506,7 @@ async function runServerBacktestCycle(params: {
                   const cleanSym = (item.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
                   if (symbolsFilterSet && !symbolsFilterSet.has(cleanSym)) continue;
 
-                  const candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
+                  let candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
                     time: t[0],
                     open: t[1],
                     high: t[2],
@@ -2496,6 +2514,12 @@ async function runServerBacktestCycle(params: {
                     close: t[4],
                     volume: t[5],
                   }));
+                  if (startTime && startTime > 0) {
+                    candles = candles.filter((c) => c.time >= startTime);
+                  }
+                  if (endTime && endTime > 0) {
+                    candles = candles.filter((c) => c.time <= endTime);
+                  }
                   if (candles.length < 50) continue;
 
                   const calc = processSymbolStrategy({ symbol: item.symbol, baseAsset: item.baseAsset, quoteAsset: item.quoteAsset }, candles);
@@ -2524,11 +2548,20 @@ async function runServerBacktestCycle(params: {
     // 2. If RAM cache already contains entries, run parallel workers
     if (entries.length > 0) {
       serverBacktestState.stage = 'analyzing';
-      const total = entries.length;
-      serverBacktestState.progress = { current: 0, total, percent: 0, currentSymbol: 'محاسبه استراتژی روی داده‌های دیتابیس...' };
+      const isFullScan = !symbols || symbols.length === 0;
+      const symbolsFilterSet = !isFullScan && symbols && symbols.length > 0
+        ? new Set(symbols.map((s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '')))
+        : null;
 
-      const queue = [...entries];
-      const concurrency = Math.min(Math.max(1, Number(workersCount) || 16), entries.length);
+      const activeEntries = symbolsFilterSet
+        ? entries.filter((e) => symbolsFilterSet.has((e.pair.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '')))
+        : entries;
+
+      const total = activeEntries.length;
+      serverBacktestState.progress = { current: 0, total, percent: 0, currentSymbol: 'محاسبه استراتژی روی نمادهای انتخابی...' };
+
+      const queue = [...activeEntries];
+      const concurrency = Math.min(Math.max(1, Number(workersCount) || 16), activeEntries.length || 1);
       let completed = 0;
 
       const worker = async () => {
@@ -2537,26 +2570,35 @@ async function runServerBacktestCycle(params: {
           if (!entry) break;
 
           try {
-            const calculated = processSymbolStrategy(entry.pair, entry.candles);
-            if (calculated) {
-              serverBacktestState.results.push(calculated.resultItem);
-              serverBacktestState.allTrades.push(...calculated.finishedTrades);
+            let activeCandles = entry.candles || [];
+            if (startTime && startTime > 0) {
+              activeCandles = activeCandles.filter((c) => c.time >= startTime);
+            }
+            if (endTime && endTime > 0) {
+              activeCandles = activeCandles.filter((c) => c.time <= endTime);
+            }
+            if (activeCandles.length >= 50) {
+              const calculated = processSymbolStrategy(entry.pair, activeCandles);
+              if (calculated) {
+                serverBacktestState.results.push(calculated.resultItem);
+                serverBacktestState.allTrades.push(...calculated.finishedTrades);
+              }
             }
           } catch (err: any) {
             console.warn(`[Backtest Calc Error] ${entry.pair.symbol}:`, err.message);
           } finally {
             completed++;
             serverBacktestState.progress.current = completed;
-            serverBacktestState.progress.percent = Math.round((completed / total) * 100);
+            serverBacktestState.progress.percent = total > 0 ? Math.round((completed / total) * 100) : 100;
             serverBacktestState.progress.currentSymbol = entry.pair.symbol;
           }
         }
       };
 
       await Promise.all(Array.from({ length: concurrency }, () => worker()));
-      savedSymbolsCount = entries.length;
-      savedTotalCandles = entries.reduce((acc, e) => acc + (e.candles ? e.candles.length : 0), 0);
-      for (const e of entries) {
+      savedSymbolsCount = activeEntries.length;
+      savedTotalCandles = activeEntries.reduce((acc, e) => acc + (e.candles ? e.candles.length : 0), 0);
+      for (const e of activeEntries) {
         savedSymbolsList.push(e.pair.symbol);
       }
     } else if (savedSymbolsCount === 0) {

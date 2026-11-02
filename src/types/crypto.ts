@@ -196,5 +196,8 @@ export interface ActiveChartOrder {
   status?: string;
   time?: string | number;
   timestamp?: string | number;
+  tradeTimeMs?: number;
+  entryTime?: string | number;
+  rawTimeMs?: number;
 }
 

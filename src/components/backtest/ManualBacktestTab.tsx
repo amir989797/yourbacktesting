@@ -727,7 +727,7 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
 
               <div className="flex flex-wrap items-center justify-between gap-3 pt-0.5">
                 <div className="flex flex-wrap items-center gap-2">
-                {/* بج و کارت هوشمند وضعیت پوشش دیتابیس PostgreSQL */}
+                {/* نوار وضعیت هوشمند تطابق بازه زمانی و نمادها */}
                 {rangeStatus?.exists ? (() => {
                   const cov = rangeStatus?.coverage;
                   const missingCount = cov?.missingSymbolsCount || 0;
@@ -735,112 +735,56 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                   const availableCount = cov?.availableSymbolsCount || rangeStatus.dataset?.symbolCount || cachedCount || 0;
                   const reqCount = cov?.requestedSymbolsCount || selectedAllowedSymbols.length || 0;
                   const coveragePct = cov?.symbolCoveragePct !== undefined ? cov.symbolCoveragePct : (reqCount > 0 ? Math.round((availableCount / reqCount) * 100) : 100);
-                  const missingEarlierDays = cov?.missingEarlierDays || 0;
 
                   return (
-                    <div className="flex flex-col gap-2 p-3 bg-gradient-to-r from-[#0d1622] via-[#0f1a29] to-[#0c141f] border border-emerald-500/40 rounded-xl shadow-lg w-full">
-                      {/* ردیف اول: مشخصات دیتابیس و دکمه گزینه‌ها */}
-                      <div className="flex items-center justify-between flex-wrap gap-2 pb-2 border-b border-[#1f2d40]">
-                        <div className="flex items-center gap-2 shrink-0">
-                          <div className="w-7 h-7 rounded-lg bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
-                            <Database className="w-3.5 h-3.5" />
-                          </div>
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="text-emerald-300 font-extrabold text-xs">دیتابیس PostgreSQL:</span>
-                            <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-mono font-bold">
-                              صرافی {selectedExchange.toUpperCase()}
-                            </span>
-                            <span className="text-[11px] text-gray-300 font-mono">
-                              {rangeStatus.dataset?.symbolCount || cachedCount} نماد ({rangeStatus.dataset?.totalCandles?.toLocaleString() || 0} کندل)
-                              {rangeStatus.dataset?.dataSizeFormatted && ` - ${rangeStatus.dataset.dataSizeFormatted}`}
-                            </span>
-                          </div>
-                        </div>
+                    <div className="flex items-center justify-between flex-wrap gap-2 px-3 py-2 bg-[#0c131d] border border-[#1f2d40] rounded-xl text-xs w-full">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-gray-400 text-[11px]">وضعیت تطابق ({selectedExchange.toUpperCase()} - {timeRangeLabel || `${cov?.reqDays || 90} روز`}):</span>
+                        {cov?.isTimeFullyCovered ? (
+                          <span className="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold font-mono flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                            پوشش ۱۰۰٪ زمان ({cov?.dbDays || 90} روز در دیتابیس)
+                          </span>
+                        ) : cov?.missingEarlierDays > 0 ? (
+                          <span className="px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[10px] font-bold font-mono flex items-center gap-1">
+                            <AlertTriangle className="w-3 h-3 text-amber-400" />
+                            {cov.missingEarlierDays} روز کسری تاریخچه
+                          </span>
+                        ) : cov?.missingNewerDays > 0 ? (
+                          <span className="px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[10px] font-bold font-mono flex items-center gap-1">
+                            <AlertTriangle className="w-3 h-3 text-amber-400" />
+                            {cov.missingNewerDays} روز نیاز به کندل جدیدتر
+                          </span>
+                        ) : null}
 
-                        {onOpenRescanChoiceModal && (
-                          <button
-                            type="button"
-                            onClick={onOpenRescanChoiceModal}
-                            className="px-2.5 py-1 rounded-lg bg-[#172233] hover:bg-[#202f47] text-gray-200 hover:text-white border border-[#2d3e58] text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
-                            title="مشاهده جزئیات تحلیل هوشمند دیتابیس و گزینه‌های دانلود"
-                          >
-                            <Sliders className="w-3.5 h-3.5 text-amber-400" />
-                            <span>تحلیل هوشمند و گزینه‌های دانلود</span>
-                          </button>
+                        <span className="px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 text-[10px] font-bold font-mono">
+                          پوشش نمادها: {availableCount} از {reqCount} ({coveragePct}٪)
+                        </span>
+
+                        {missingCount > 0 && (
+                          <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold font-mono">
+                            ⚠️ {missingCount} ارز کسری
+                          </span>
+                        )}
+
+                        {surplusCount > 0 && (
+                          <span className="px-2 py-0.5 rounded bg-blue-500/15 text-blue-300 border border-blue-500/30 text-[10px] font-bold font-mono" title="نمادهای مازاد دیتابیس در اسکن لحاظ نمی‌شوند">
+                            🛡️ {surplusCount} مازاد مستثنی
+                          </span>
                         )}
                       </div>
 
-                      {/* ردیف دوم: تطابق هوشمند بازه زمانی و پوشش نمادها */}
-                      <div className="flex flex-wrap items-center justify-between gap-2.5 text-xs">
-                        {/* ۱. تطابق بازه زمانی */}
-                        <div className="flex items-center gap-2 flex-wrap bg-[#121a28] px-2.5 py-1.5 rounded-lg border border-[#233348]">
-                          <div className="flex items-center gap-1 text-amber-300 font-bold text-[11px]">
-                            <Calendar className="w-3.5 h-3.5 text-amber-400" />
-                            <span>بازه انتخابی:</span>
-                            <span className="font-mono text-white">{timeRangeLabel || `${cov?.reqDays || 90} روز`}</span>
-                            {(cov?.reqStartDateFormatted || cov?.reqEndDateFormatted) && (
-                              <span className="text-[10px] text-gray-400 font-mono">
-                                ({cov.reqStartDateFormatted} تا {cov.reqEndDateFormatted})
-                              </span>
-                            )}
-                          </div>
-
-                          <span className="text-gray-500">|</span>
-
-                          <div className="flex items-center gap-1 text-cyan-300 text-[11px]">
-                            <span className="text-gray-400">موجودی دیتابیس:</span>
-                            <span className="font-mono font-bold text-cyan-200">{cov?.dbDays || 90} روز</span>
-                            {(cov?.dbStartDateFormatted || cov?.dbEndDateFormatted) && (
-                              <span className="text-[10px] text-gray-400 font-mono">
-                                ({cov.dbStartDateFormatted} تا {cov.dbEndDateFormatted})
-                              </span>
-                            )}
-                          </div>
-
-                          {cov?.isTimeFullyCovered ? (
-                            <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold flex items-center gap-1 font-mono">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                              پوشش کامل زمان (۱۰۰٪)
-                            </span>
-                          ) : cov?.missingEarlierDays > 0 ? (
-                            <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold flex items-center gap-1 font-mono">
-                              <AlertTriangle className="w-3 h-3 text-amber-400" />
-                              ⚠️ {cov.missingEarlierDays} روز کسری تاریخچه
-                            </span>
-                          ) : cov?.missingNewerDays > 0 ? (
-                            <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold flex items-center gap-1 font-mono">
-                              <AlertTriangle className="w-3 h-3 text-amber-400" />
-                              ⚠️ {cov.missingNewerDays} روز نیاز به کندل جدیدتر
-                            </span>
-                          ) : null}
-                        </div>
-
-                        {/* ۲. پوشش هوشمند نمادها */}
-                        <div className="flex items-center gap-2 flex-wrap bg-[#121a28] px-2.5 py-1.5 rounded-lg border border-[#233348]">
-                          <span className="text-gray-300 font-bold text-[11px]">پوشش نمادها:</span>
-                          <span className="font-mono font-bold text-emerald-400">
-                            {availableCount} از {reqCount} نماد ({coveragePct}٪)
-                          </span>
-                          <div className="w-12 bg-[#1a2536] h-1.5 rounded-full overflow-hidden mr-1 hidden sm:block">
-                            <div
-                              className={`h-full ${coveragePct >= 95 ? 'bg-emerald-400' : 'bg-amber-400'}`}
-                              style={{ width: `${Math.min(100, Math.max(5, coveragePct))}%` }}
-                            />
-                          </div>
-
-                          {missingCount > 0 && (
-                            <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[10px] font-bold font-mono">
-                              ⚠️ {missingCount} نماد کسری
-                            </span>
-                          )}
-
-                          {surplusCount > 0 && (
-                            <span className="px-2 py-0.5 rounded-md bg-blue-500/15 text-blue-300 border border-blue-500/30 text-[10px] font-bold font-mono" title="نمادهای مازاد دیتابیس در اسکن لحاظ نمی‌شوند">
-                              🛡️ {surplusCount} مازاد مستثنی
-                            </span>
-                          )}
-                        </div>
-                      </div>
+                      {onOpenRescanChoiceModal && (
+                        <button
+                          type="button"
+                          onClick={onOpenRescanChoiceModal}
+                          className="px-2.5 py-1 rounded-lg bg-[#162130] hover:bg-[#1f2e44] text-amber-300 border border-amber-500/30 text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1.5"
+                          title="مشاهده جزئیات تحلیل هوشمند دیتابیس و گزینه‌های دانلود"
+                        >
+                          <Sliders className="w-3 h-3 text-amber-400" />
+                          <span>تحلیل هوشمند و گزینه‌های اسکن</span>
+                        </button>
+                      )}
                     </div>
                   );
                 })() : isCheckingRange ? (
@@ -871,6 +815,25 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                         {`شروع اسکن بکتست (${selectedAllowedSymbols.length} ارز مجاز انتخابی)`}
                       </span>
                     </button>
+
+                    {/* بج دیتابیس PostgreSQL دقیقاً مطابق با اسکرین‌شات کاربر (با کلیک، مودال تحلیل هوشمند و انتخاب شیوه اسکن باز می‌شود) */}
+                    {(rangeStatus?.exists || cachedCount > 0) && (
+                      <button
+                        type="button"
+                        onClick={onOpenRescanChoiceModal}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#0a1816]/95 hover:bg-[#0f2824] border border-emerald-500/60 hover:border-emerald-400 text-emerald-300 transition-all cursor-pointer shadow-sm text-xs font-mono font-medium hover:scale-[1.02] active:scale-[0.98]"
+                        title="مشاهده تحلیل هوشمند و انتخاب شیوه اسکن با دیتابیس PostgreSQL"
+                      >
+                        <Database className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                        <span className="font-sans font-bold text-emerald-300">دیتابیس PostgreSQL :</span>
+                        <span className="font-bold text-white font-mono">
+                          {rangeStatus?.dataset?.symbolCount || cachedCount} نماد
+                        </span>
+                        <span className="text-emerald-300 font-mono">
+                          ({(rangeStatus?.dataset?.totalCandles || 0).toLocaleString()} کندل{rangeStatus?.dataset?.dataSizeFormatted ? ` ${rangeStatus.dataset.dataSizeFormatted}` : ''})
+                        </span>
+                      </button>
+                    )}
 
                     {/* دکمه دانلود تکمیلی کسری‌ها در صورتی که کسری وجود داشته باشد */}
                     {rangeStatus?.exists && (rangeStatus.coverage?.missingSymbolsCount > 0 || (rangeStatus.coverage?.missingEarlierDays && rangeStatus.coverage.missingEarlierDays > 0)) && (

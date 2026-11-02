@@ -281,22 +281,31 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     return DEFAULT_POPULAR_WATCHLIST;
   });
 
-  // بارگذاری ارزهای مجاز ذخیره‌شده از دیتابیس Firestore کاربر
+  // بارگذاری ارزهای مجاز ذخیره‌شده از دیتابیس برای صرافی انتخابی
   useEffect(() => {
-    loadAllowedPairsFromFirestore(currentUser || 'amir')
+    loadAllowedPairsFromFirestore(currentUser || 'amir', selectedExchange)
       .then((loaded) => {
         if (loaded && loaded.length > 0) {
           setSelectedAllowedSymbols(loaded);
+          checkCurrentRangeStatusRef.current?.({
+            exchange: selectedExchange,
+            symbols: loaded,
+          });
         }
       })
       .catch(() => {});
-  }, [currentUser]);
+  }, [currentUser, selectedExchange]);
 
   const handleSaveAllowedSymbols = (symbols: string[]) => {
     setSelectedAllowedSymbols(symbols);
     try {
       localStorage.setItem('backtest_selected_allowed_symbols', JSON.stringify(symbols));
+      localStorage.setItem(`backtest_selected_allowed_symbols_${selectedExchange}`, JSON.stringify(symbols));
     } catch {}
+    checkCurrentRangeStatusRef.current?.({
+      exchange: selectedExchange,
+      symbols,
+    });
   };
 
   // مودال بازه زمانی و تقویم بکتست

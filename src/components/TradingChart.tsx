@@ -166,6 +166,8 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     yEntry: number;
     ySL: number | null;
     yTP: number | null;
+    xTradeTime?: number | null;
+    tradeTimeFormatted?: string | null;
     entryPrice: number;
     stopLoss: number | null;
     takeProfit: number | null;
@@ -741,6 +743,60 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     };
   }, [candles, atrValues, atrMap, latestAtr]);
 
+  const calculateLiveOrderTradeCoord = (
+    order: ActiveChartOrder,
+    currentCandles: CandleData[]
+  ): { xTradeTime: number | null; tradeTimeFormatted: string | null } => {
+    let xTradeTime: number | null = null;
+    let tradeTimeFormatted: string | null = null;
+
+    const rawTime =
+      order.tradeTimeMs ||
+      order.entryTime ||
+      order.rawTimeMs ||
+      order.time ||
+      order.timestamp;
+
+    if (rawTime) {
+      let timeMs = 0;
+      if (typeof rawTime === 'number') {
+        timeMs = rawTime > 1e11 ? rawTime : rawTime * 1000;
+      } else if (typeof rawTime === 'string') {
+        const parsed = Date.parse(rawTime);
+        if (!isNaN(parsed) && parsed > 0) {
+          timeMs = parsed;
+        }
+      }
+
+      if (timeMs > 0 && currentCandles && currentCandles.length > 0) {
+        const targetSec = Math.floor(timeMs / 1000);
+        let closestTime = currentCandles[0].time;
+        let minDiff = Math.abs(currentCandles[0].time - targetSec);
+        for (let i = 1; i < currentCandles.length; i++) {
+          const diff = Math.abs(currentCandles[i].time - targetSec);
+          if (diff < minDiff) {
+            minDiff = diff;
+            closestTime = currentCandles[i].time;
+          }
+        }
+        const timeScale = chartRef.current?.timeScale();
+        if (timeScale) {
+          xTradeTime = timeScale.timeToCoordinate(closestTime as UTCTimestamp);
+        }
+        try {
+          const d = new Date(timeMs);
+          tradeTimeFormatted = `${d.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} (${d.toLocaleDateString('fa-IR')})`;
+        } catch {
+          tradeTimeFormatted = new Date(timeMs).toLocaleTimeString();
+        }
+      } else if (typeof rawTime === 'string') {
+        tradeTimeFormatted = rawTime;
+      }
+    }
+
+    return { xTradeTime, tradeTimeFormatted };
+  };
+
   // Keep Measurements and Rectangles pinned during pan/zoom
   useEffect(() => {
     if (!chartRef.current || !candleSeriesRef.current) return;
@@ -882,10 +938,13 @@ export const TradingChart: React.FC<TradingChartProps> = ({
           const yTP = visibleLiveOrder.takeProfitPrice ? series.priceToCoordinate(visibleLiveOrder.takeProfitPrice) : null;
           const slDist = visibleLiveOrder.stopLossPrice ? Math.abs(visibleLiveOrder.price - visibleLiveOrder.stopLossPrice) : 0;
           const tpDist = visibleLiveOrder.takeProfitPrice ? Math.abs(visibleLiveOrder.price - visibleLiveOrder.takeProfitPrice) : 0;
+          const { xTradeTime, tradeTimeFormatted } = calculateLiveOrderTradeCoord(visibleLiveOrder, candles);
           setRenderedLiveOrder({
             yEntry,
             ySL,
             yTP,
+            xTradeTime,
+            tradeTimeFormatted,
             entryPrice: visibleLiveOrder.price,
             stopLoss: visibleLiveOrder.stopLossPrice || null,
             takeProfit: visibleLiveOrder.takeProfitPrice || null,
@@ -972,10 +1031,13 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         const yTP = visibleLiveOrder.takeProfitPrice ? series.priceToCoordinate(visibleLiveOrder.takeProfitPrice) : null;
         const slDist = visibleLiveOrder.stopLossPrice ? Math.abs(visibleLiveOrder.price - visibleLiveOrder.stopLossPrice) : 0;
         const tpDist = visibleLiveOrder.takeProfitPrice ? Math.abs(visibleLiveOrder.price - visibleLiveOrder.takeProfitPrice) : 0;
+        const { xTradeTime, tradeTimeFormatted } = calculateLiveOrderTradeCoord(visibleLiveOrder, candles);
         setRenderedLiveOrder({
           yEntry,
           ySL,
           yTP,
+          xTradeTime,
+          tradeTimeFormatted,
           entryPrice: visibleLiveOrder.price,
           stopLoss: visibleLiveOrder.stopLossPrice || null,
           takeProfit: visibleLiveOrder.takeProfitPrice || null,
@@ -2219,6 +2281,80 @@ export const TradingChart: React.FC<TradingChartProps> = ({
                       ورود: ${formatPrice(renderedLiveOrder.entryPrice)}
                     </text>
                   </g>
+
+                  {/* Vertical Line indicating Trade Execution Time */}
+                  {renderedLiveOrder.xTradeTime !== null && renderedLiveOrder.xTradeTime !== undefined && (
+                    <g className="live-trade-time-vertical-line">
+                      {/* Full-height vertical dashed line */}
+                      <line
+                        x1={renderedLiveOrder.xTradeTime}
+                        y1={0}
+                        x2={renderedLiveOrder.xTradeTime}
+                        y2="100%"
+                        stroke="#f59e0b"
+                        strokeWidth="2"
+                        strokeDasharray="6 4"
+                        strokeOpacity="0.9"
+                      />
+                      {/* Subtle glowing halo */}
+                      <line
+                        x1={renderedLiveOrder.xTradeTime}
+                        y1={0}
+                        x2={renderedLiveOrder.xTradeTime}
+                        y2="100%"
+                        stroke="#f59e0b"
+                        strokeWidth="6"
+                        strokeOpacity="0.15"
+                      />
+
+                      {/* Intersection dot at Entry Price */}
+                      <circle
+                        cx={renderedLiveOrder.xTradeTime}
+                        cy={renderedLiveOrder.yEntry}
+                        r="5.5"
+                        fill="#f59e0b"
+                        stroke="#ffffff"
+                        strokeWidth="2"
+                      />
+
+                      {/* Top Time Badge */}
+                      <g transform={`translate(${Math.max(10, Math.min(renderedLiveOrder.xTradeTime - 65, (chartContainerRef.current?.clientWidth ?? 800) - 145))}, 10)`}>
+                        <rect
+                          x={0}
+                          y={0}
+                          width={130}
+                          height={30}
+                          rx={6}
+                          fill="#181308"
+                          stroke="#f59e0b"
+                          strokeWidth="1.2"
+                          fillOpacity="0.95"
+                        />
+                        <text
+                          x={65}
+                          y={12}
+                          textAnchor="middle"
+                          fill="#f59e0b"
+                          fontSize="9"
+                          fontWeight="bold"
+                          fontFamily="sans-serif"
+                        >
+                          ⏱️ زمان ثبت معامله
+                        </text>
+                        <text
+                          x={65}
+                          y={24}
+                          textAnchor="middle"
+                          fill="#fef08a"
+                          fontSize="8.5"
+                          fontWeight="bold"
+                          fontFamily="monospace"
+                        >
+                          {renderedLiveOrder.tradeTimeFormatted || 'ثبت سفارش'}
+                        </text>
+                      </g>
+                    </g>
+                  )}
                 </g>
               )}
             </svg>

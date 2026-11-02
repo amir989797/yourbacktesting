@@ -530,6 +530,14 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     showToast(`📊 انتقال به چارت تحلیلی نماد ${fromXtSymbol(clean)}`);
     addLog('info', `📊 انتقال به تب چارت برای بررسی ${fromXtSymbol(clean)}`, clean);
     if (orderData && onSelectLiveOrder) {
+      const tradeTimestampMs = orderData.entryTimeMs ||
+                               orderData.rawTimeMs ||
+                               orderData.timestampMs ||
+                               orderData.ctime ||
+                               orderData.timeMs ||
+                               (typeof orderData.time === 'number' ? orderData.time : undefined) ||
+                               (typeof orderData.timestamp === 'number' ? orderData.timestamp : undefined);
+
       onSelectLiveOrder({
         ...orderData,
         symbol: clean,
@@ -538,6 +546,11 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         takeProfitPrice: orderData.takeProfitPrice || orderData.takeProfit || 0,
         side: orderData.side || orderData.positionSide || 'BUY',
         positionSide: orderData.positionSide || orderData.side || 'LONG',
+        tradeTimeMs: tradeTimestampMs,
+        entryTime: tradeTimestampMs || orderData.entryTime || orderData.time || orderData.timestamp,
+        time: tradeTimestampMs || orderData.time || orderData.timestamp,
+        timestamp: orderData.timestamp || orderData.time,
+        rawTimeMs: tradeTimestampMs,
       });
     } else {
       onSelectPair?.(pair);
