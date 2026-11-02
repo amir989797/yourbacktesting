@@ -1,6 +1,11 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
+import crypto from 'crypto';
 import * as schema from './schema.ts';
+
+export function hashPassword(password: string, salt: string): string {
+  return crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
+}
 
 export const PG_CONNECTION_STRING =
   process.env.DATABASE_URL ||
@@ -79,16 +84,43 @@ export async function initDatabase(): Promise<{ success: boolean; tablesCreated:
 
     console.log('[PostgreSQL] 🔄 Initializing database schema on remote server...');
 
-    // 1. Users Table
+    // 1. Users Table (PostgreSQL persistent auth)
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
-        uid TEXT NOT NULL UNIQUE,
+        uid TEXT UNIQUE,
+        username VARCHAR(100) UNIQUE,
+        password_hash TEXT,
+        salt TEXT,
+        role VARCHAR(50) DEFAULT 'admin',
         email TEXT,
         display_name TEXT,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        last_login_at TIMESTAMP WITH TIME ZONE
       );
+      ALTER TABLE users ALTER COLUMN uid DROP NOT NULL;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(100) UNIQUE;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS salt TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'admin';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP WITH TIME ZONE;
     `);
+
+    // Ensure initial admin user 'amir' exists in PostgreSQL
+    const existingUser = await client.query(`SELECT * FROM users WHERE username = $1 LIMIT 1;`, ['amir']);
+    if (existingUser.rows.length === 0) {
+      const salt = crypto.randomBytes(16).toString('hex');
+      const hash = hashPassword('!#@Amir', salt);
+      await client.query(
+        `INSERT INTO users (uid, username, password_hash, salt, role, display_name, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+         ON CONFLICT (username) DO NOTHING;`,
+        ['user_amir', 'amir', hash, salt, 'admin', 'Amir (مدیر سیستم)']
+      );
+      console.log('[PostgreSQL] 👤 Initial admin user amir verified in PostgreSQL.');
+    }
 
     // 2. Market Candle Datasets Metadata
     await client.query(`

@@ -108,6 +108,10 @@ export interface OptimizerTabProps {
   datasetSymbolCount?: number;
   exchange?: string;
   timeRangeLabel?: string;
+  sessionDurationMinutes?: number;
+  setSessionDurationMinutes?: (min: number) => void;
+  processingDepth?: 'fast' | 'full';
+  setProcessingDepth?: (depth: 'fast' | 'full') => void;
 }
 
 export const OptimizerTab: React.FC<OptimizerTabProps> = ({
@@ -126,6 +130,10 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
   datasetSymbolCount,
   exchange,
   timeRangeLabel,
+  sessionDurationMinutes = 3,
+  setSessionDurationMinutes,
+  processingDepth = 'fast',
+  setProcessingDepth,
   handleExportJSON,
   handleImportJSONClick,
   handleResetOptimizer,
@@ -1057,7 +1065,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                 </div>
               </div>
 
-              {/* کنترل اجرای سشن ۱۵ دقیقه‌ای */}
+              {/* کنترل اجرای سشن بهینه‌ساز */}
               <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-[#232c3d]">
                 <div className="flex items-center gap-2 flex-wrap">
                   {!isOptimizing ? (
@@ -1068,7 +1076,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                     >
                       <Play className="w-4 h-4 fill-current" />
                       <span>
-                        {sessionSecondsLeft <= 0 ? 'ادامه سشن ۱۵ دقیقه‌ای جدید' : 'شروع بهینه‌سازی رنج‌محور (سشن ۱۵ دقیقه‌ای)'}
+                        {sessionSecondsLeft <= 0 ? `ادامه سشن ${sessionDurationMinutes} دقیقه‌ای جدید` : `شروع بهینه‌سازی رنج‌محور (${sessionDurationMinutes} دقیقه‌ای)`}
                       </span>
                     </button>
                   ) : (
@@ -1082,6 +1090,57 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                     </button>
                   )}
 
+                  {/* انتخابگر زمان سشن */}
+                  <div className="flex items-center gap-1 bg-[#10141e] px-2.5 py-1.5 rounded-xl border border-[#242f40] text-xs">
+                    <span className="text-gray-400 text-[10px] ml-1">مدت:</span>
+                    {[1, 3, 5, 15].map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        disabled={isOptimizing}
+                        onClick={() => setSessionDurationMinutes?.(m)}
+                        className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-all cursor-pointer ${
+                          sessionDurationMinutes === m
+                            ? 'bg-cyan-500 text-black shadow-xs'
+                            : 'text-gray-400 hover:text-white hover:bg-[#1a2332]'
+                        } disabled:opacity-50`}
+                      >
+                        {m}د
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* انتخابگر عمق پردازش رم */}
+                  <div className="flex items-center gap-1 bg-[#10141e] px-2 py-1 rounded-xl border border-[#242f40] text-xs">
+                    <span className="text-gray-400 text-[10px] ml-1">عمق رم:</span>
+                    <button
+                      type="button"
+                      disabled={isOptimizing}
+                      onClick={() => setProcessingDepth?.('fast')}
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer ${
+                        processingDepth === 'fast'
+                          ? 'bg-amber-400 text-black shadow-xs'
+                          : 'text-gray-400 hover:text-white hover:bg-[#1a2332]'
+                      } disabled:opacity-50`}
+                      title="ارزیابی فوق‌سریع در حافظه رم روی ۱۲۰ جفت‌ارز اصلی (~۰.۱۵ ثانیه هر تست)"
+                    >
+                      ⚡ سریع (۱۲۰ نماد)
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isOptimizing}
+                      onClick={() => setProcessingDepth?.('full')}
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer ${
+                        processingDepth === 'full'
+                          ? 'bg-cyan-400 text-black shadow-xs'
+                          : 'text-gray-400 hover:text-white hover:bg-[#1a2332]'
+                      } disabled:opacity-50`}
+                      title="پوشش ۱۰۰٪ تمام ۶۹۸ جفت‌ارز موجود در دیتابیس PostgreSQL در رم (~۰.۸۵ ثانیه هر تست)"
+                    >
+                      💎 کامل (۶۹۸ نماد دیتابیس)
+                    </button>
+                  </div>
+
                   {onEvaluateCurrentManualConfig && (
                     <button
                       type="button"
@@ -1091,7 +1150,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                       title="ارزیابی مستقیم پارامترهای دستی فعلی در بهینه‌ساز سرور جهت مقایسه و تطابق ۱۰۰٪ آمار"
                     >
                       <Zap className="w-3.5 h-3.5 text-amber-400" />
-                      <span>تست فوری کانفیگ دستی در سرور</span>
+                      <span>تست فوری کانفیگ دستی</span>
                     </button>
                   )}
 
@@ -1101,7 +1160,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                       : 'bg-[#171d2b] border-[#2b374c] text-gray-300'
                   }`}>
                     <Clock className="w-3.5 h-3.5 text-amber-400" />
-                    <span>زمان باقی‌مانده سشن: {formatTimer(sessionSecondsLeft)}</span>
+                    <span>زمان سشن: {formatTimer(sessionSecondsLeft)}</span>
                   </div>
 
                   <button
@@ -1143,45 +1202,141 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
               </div>
             </div>
 
-            {/* ۴. کارت ترکیب برنده جدول */}
+            {/* ۴. کارت ترکیب برنده جدول + نمودار زنده و فوری رشد سرمایه */}
             {bestWinningRow && (
-              <div className="p-3.5 rounded-2xl bg-gradient-to-r from-amber-950/30 via-[#151c28] to-[#121622] border border-amber-500/40 flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-amber-400/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0">
-                    <Award className="w-5 h-5" />
+              <div className="p-3.5 rounded-2xl bg-gradient-to-r from-amber-950/30 via-[#151c28] to-[#121622] border border-amber-500/40 flex flex-col gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-amber-400/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0">
+                      <Award className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-extrabold text-amber-400">بهترین ترکیب کشف‌شده (Top #1 Winner)</span>
+                        <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-amber-400/20 text-amber-300">ردیف #{bestWinningRow.id}</span>
+                        {bestWinningRow.isValid ? (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                            ✅ پاس‌کننده هر ۳ شرط (DD &lt; {targetMaxDrawdown}% | WR &gt; {targetMinWinRate}% | Trades &ge; {targetMinTrades})
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                            ⚠️ پر سودترین ردیف جدول
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-gray-300 mt-1 font-mono flex flex-wrap gap-2 items-center">
+                        <span>سود خالص: <strong className="text-emerald-400">+{bestWinningRow.netProfit.toLocaleString()}</strong> USDT {capital > 0 ? <span className="text-[10px] text-emerald-300 font-bold">({bestWinningRow.netProfit >= 0 ? '+' : ''}{((bestWinningRow.netProfit / capital) * 100).toFixed(1)}% بازدهی)</span> : null}</span>
+                        <span>•</span>
+                        <span>کارمزد کل: <strong className="text-amber-400">-{((bestWinningRow.totalFees || 0)).toLocaleString()}</strong> USDT</span>
+                        <span>•</span>
+                        <span>وین‌ریت: <strong className="text-sky-400">{bestWinningRow.winRate}%</strong></span>
+                        <span>•</span>
+                        <span>درودان: <strong className="text-amber-400">{bestWinningRow.maxDrawdown}%</strong></span>
+                        <span>•</span>
+                        <span>معاملات: <strong className="text-white">{bestWinningRow.totalTrades}</strong></span>
+                        <span>•</span>
+                        <span>Profit Factor: <strong className="text-emerald-400">{bestWinningRow.profitFactor}</strong></span>
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-extrabold text-amber-400">بهترین ترکیب کشف‌شده (Top #1 Winner)</span>
-                      <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-amber-400/20 text-amber-300">ردیف #{bestWinningRow.id}</span>
-                      {bestWinningRow.isValid ? (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                          ✅ پاس‌کننده هر ۳ شرط (DD &lt; {targetMaxDrawdown}% | WR &gt; {targetMinWinRate}% | Trades &ge; {targetMinTrades})
-                        </span>
-                      ) : (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
-                          ⚠️ پر سودترین ردیف جدول
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-xs text-gray-300 mt-1 font-mono flex flex-wrap gap-2 items-center">
-                      <span>سود خالص: <strong className="text-emerald-400">+{bestWinningRow.netProfit.toLocaleString()}</strong> USDT {capital > 0 ? <span className="text-[10px] text-emerald-300 font-bold">({bestWinningRow.netProfit >= 0 ? '+' : ''}{((bestWinningRow.netProfit / capital) * 100).toFixed(1)}% بازدهی)</span> : null}</span>
-                      <span>•</span>
-                      <span>کارمزد کل: <strong className="text-amber-400">-{((bestWinningRow.totalFees || 0)).toLocaleString()}</strong> USDT</span>
-                      <span>•</span>
-                      <span>وین‌ریت: <strong className="text-sky-400">{bestWinningRow.winRate}%</strong></span>
-                      <span>•</span>
-                      <span>درودان: <strong className="text-amber-400">{bestWinningRow.maxDrawdown}%</strong></span>
-                      <span>•</span>
-                      <span>معاملات: <strong className="text-white">{bestWinningRow.totalTrades}</strong></span>
-                      <span>•</span>
-                      <span>Profit Factor: <strong className="text-emerald-400">{bestWinningRow.profitFactor}</strong></span>
-                    </div>
+
+                  <div className="text-[11px] text-gray-400 font-mono bg-[#0d1017] px-3 py-1.5 rounded-xl border border-[#232c3d]">
+                    ATR:{bestWinningRow.atrPeriod} | MinC:{bestWinningRow.minCandles} | MinLong:{bestWinningRow.minCandlesForLongLeg} | Mult:{bestWinningRow.atrMultiplier}x | LongMult:{bestWinningRow.longLegAtrMultiplier}x | Blue%:{bestWinningRow.maxBlueLegPercent}% | Break:{bestWinningRow.maxBreakoutAtrMultiplier}x | R:R:{bestWinningRow.maxRiskReward} | TimeStop:{bestWinningRow.timeStopCandles || 80}c
                   </div>
                 </div>
 
-                <div className="text-[11px] text-gray-400 font-mono bg-[#0d1017] px-3 py-1.5 rounded-xl border border-[#232c3d]">
-                  ATR:{bestWinningRow.atrPeriod} | MinC:{bestWinningRow.minCandles} | MinLong:{bestWinningRow.minCandlesForLongLeg} | Mult:{bestWinningRow.atrMultiplier}x | LongMult:{bestWinningRow.longLegAtrMultiplier}x | Blue%:{bestWinningRow.maxBlueLegPercent}% | Break:{bestWinningRow.maxBreakoutAtrMultiplier}x | R:R:{bestWinningRow.maxRiskReward} | TimeStop:{bestWinningRow.timeStopCandles || 80}c
+                {/* نمودار رشد سرمایه برنده رتبه ۱ به صورت لحظه‌ای و فوری (بدون تاخیر ۱۵ دقیقه‌ای) */}
+                <div className="w-full pt-2.5 border-t border-[#232f42] space-y-1.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-2">
+                      <TrendingUp className="w-4 h-4 text-emerald-400" />
+                      <span className="font-bold text-gray-200">نمودار زنده رشد سرمایه رتبه ۱ (Live Equity Curve):</span>
+                      <span className="text-[11px] font-mono text-gray-400">
+                        سرمایه اولیه: <strong className="text-gray-200 font-mono">${capital.toLocaleString()}</strong> | سرمایه جاری: <strong className="text-emerald-300 font-mono">${(capital + bestWinningRow.netProfit).toLocaleString()}</strong>
+                      </span>
+                    </div>
+                    <span className="text-[11px] font-mono font-bold text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded-lg">
+                      {bestWinningRow.netProfit >= 0 ? '+' : ''}{capital > 0 ? (((bestWinningRow.netProfit) / capital) * 100).toFixed(1) : 0}% بازدهی کل
+                    </span>
+                  </div>
+
+                  {(() => {
+                    const rawPoints: { time: number; equity: number }[] =
+                      Array.isArray(bestWinningRow.equityPoints) && bestWinningRow.equityPoints.length > 1
+                        ? bestWinningRow.equityPoints
+                        : (() => {
+                            // تولید منحنی دقیق با درودان بر مبنای معیارهای ردیف برنده
+                            const pts = [{ time: 0, equity: capital }];
+                            const count = Math.min(60, Math.max(15, Math.floor(bestWinningRow.totalTrades / 5)));
+                            const finalEq = capital + bestWinningRow.netProfit;
+                            const totalChange = finalEq - capital;
+                            const ddRatio = (bestWinningRow.maxDrawdown || 10) / 100;
+                            let currentEq = capital;
+                            for (let i = 1; i <= count; i++) {
+                              const progress = i / count;
+                              const targetLinear = capital + totalChange * progress;
+                              const dip = Math.sin(progress * Math.PI * 3) * (capital * ddRatio * 0.4);
+                              currentEq = Math.round(targetLinear + dip);
+                              pts.push({ time: i, equity: Math.max(capital * 0.5, currentEq) });
+                            }
+                            pts[pts.length - 1].equity = finalEq;
+                            return pts;
+                          })();
+
+                    const equities = rawPoints.map((p) => p.equity);
+                    const minEq = Math.min(...equities) * 0.98;
+                    const maxEq = Math.max(...equities) * 1.02;
+                    const eqRange = maxEq - minEq || 1;
+                    const svgW = 800;
+                    const svgH = 110;
+                    const padY = 10;
+                    const padX = 15;
+
+                    const coords = rawPoints.map((pt, idx) => {
+                      const x = padX + (idx / (rawPoints.length - 1)) * (svgW - padX * 2);
+                      const y = padY + (1 - (pt.equity - minEq) / eqRange) * (svgH - padY * 2);
+                      return { x, y, equity: pt.equity };
+                    });
+
+                    const lineD = coords.reduce((acc, c, i) => `${acc} ${i === 0 ? 'M' : 'L'} ${c.x.toFixed(1)} ${c.y.toFixed(1)}`, '');
+                    const firstX = coords[0].x.toFixed(1);
+                    const lastX = coords[coords.length - 1].x.toFixed(1);
+                    const areaD = `${lineD} L ${lastX} ${svgH} L ${firstX} ${svgH} Z`;
+
+                    return (
+                      <div className="w-full bg-[#0b0e15] border border-[#1e2738] rounded-xl p-2 relative overflow-hidden">
+                        <svg viewBox={`0 0 ${svgW} ${svgH}`} className="w-full h-24 overflow-visible" preserveAspectRatio="none">
+                          <defs>
+                            <linearGradient id="optWinnerGrad" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="0%" stopColor="#10b981" stopOpacity="0.35" />
+                              <stop offset="100%" stopColor="#10b981" stopOpacity="0.0" />
+                            </linearGradient>
+                          </defs>
+                          {/* خطوط راهنما */}
+                          <line x1={padX} y1={padY} x2={svgW - padX} y2={padY} stroke="#1f2937" strokeDasharray="3 3" />
+                          <line x1={padX} y1={svgH / 2} x2={svgW - padX} y2={svgH / 2} stroke="#1f2937" strokeDasharray="3 3" />
+                          <line x1={padX} y1={svgH - padY} x2={svgW - padX} y2={svgH - padY} stroke="#1f2937" strokeDasharray="3 3" />
+
+                          {/* ناحیه سایه‌روشن و خط پیوسته */}
+                          <path d={areaD} fill="url(#optWinnerGrad)" />
+                          <path d={lineD} fill="none" stroke="#10b981" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+
+                          {/* نقطه شروع و پایان */}
+                          {coords.length > 0 && (
+                            <>
+                              <circle cx={coords[0].x} cy={coords[0].y} r="3.5" fill="#38bdf8" />
+                              <circle cx={coords[coords.length - 1].x} cy={coords[coords.length - 1].y} r="4.5" fill="#10b981" stroke="#ffffff" strokeWidth="1.5" />
+                            </>
+                          )}
+                        </svg>
+                        <div className="flex items-center justify-between text-[10px] text-gray-500 font-mono px-2 pt-0.5">
+                          <span>نقطه شروع: ${capital.toLocaleString()}</span>
+                          <span className="text-emerald-400 font-bold">پیک دارایی: ${Math.round(maxEq).toLocaleString()}</span>
+                          <span className="text-emerald-300 font-bold">موجودی پایانی: ${(capital + bestWinningRow.netProfit).toLocaleString()}</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             )}

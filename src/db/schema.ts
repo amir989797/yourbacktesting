@@ -3,10 +3,16 @@ import { boolean, doublePrecision, index, integer, pgTable, serial, text, timest
 // 1. Users table
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
-  uid: text('uid').notNull().unique(), // Auth UID
+  uid: text('uid').unique(), // Auth UID (optional)
+  username: text('username').unique(), // Username for login
+  passwordHash: text('password_hash'),
+  salt: text('salt'),
+  role: text('role').default('admin'),
   email: text('email'),
   displayName: text('display_name'),
   createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+  lastLoginAt: timestamp('last_login_at'),
 });
 
 // 2. Market Candle Datasets Metadata

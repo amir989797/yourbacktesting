@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Sparkles,
   Sliders,
@@ -30,6 +30,15 @@ import {
   Coins,
   Filter,
   Calendar,
+  Search,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  ExternalLink,
+  CheckCircle2,
+  Layers,
+  HardDrive,
+  BarChart2,
 } from 'lucide-react';
 import { Timeframe, ZigZagSettings } from '../../types/crypto';
 import { BacktestResultItem, GLOBAL_CANDLE_CACHE } from './types';
@@ -90,7 +99,7 @@ export interface ManualBacktestTabProps {
   zigzagSettings?: ZigZagSettings;
   scanWorkersCount: number;
   setScanWorkersCount: (val: number) => void;
-  handleStartScan: (useCachedOnly?: boolean) => void;
+  handleStartScan: (useCachedOnly?: boolean, overrideConfig?: any, scanMode?: any) => void;
   handleRerunOnCachedData: () => void;
   handleClearCandleCache: () => void;
   handleStopScan: () => void;
@@ -139,6 +148,10 @@ export interface ManualBacktestTabProps {
   isChartDragging: boolean;
   rangeStatus?: any;
   isCheckingRange?: boolean;
+  onSelectPairAndClose?: (pair: any) => void;
+  selectedExchange?: 'xt' | 'binance';
+  onOpenRescanChoiceModal?: () => void;
+  handleStartIncrementalScan?: () => void;
 }
 
 export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
@@ -148,6 +161,9 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
   rangeStatus,
   isCheckingRange,
   selectedAllowedSymbols = [],
+  selectedExchange = 'xt',
+  onOpenRescanChoiceModal,
+  handleStartIncrementalScan,
   onOpenAllowedPairsModal,
   onOpenTimeRangeModal,
   timeRangeLabel,
@@ -246,6 +262,7 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
   hoveredEquityPoint,
   setHoveredEquityPoint,
   isChartDragging,
+  onSelectPairAndClose,
 }) => {
   return (
           <div className="flex-1 flex flex-col overflow-y-auto p-4 space-y-3.5">
@@ -369,8 +386,14 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                           min={0.1}
                           max={50}
                           step={0.1}
-                          value={riskPercent}
-                          onChange={(e) => setRiskPercent(parseFloat(e.target.value) || 1)}
+                          value={riskPercent === 0 || riskPercent ? riskPercent : ''}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setRiskPercent(v === '' ? ('' as any) : Number(v));
+                          }}
+                          onBlur={() => {
+                            if (!riskPercent || isNaN(riskPercent)) setRiskPercent(1.0);
+                          }}
                           disabled={isScanning}
                           className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-rose-400 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
                           title="درصد ریسک در هر معامله"
@@ -386,8 +409,14 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                           min={0.5}
                           max={100000}
                           step={1}
-                          value={riskAmountFixed}
-                          onChange={(e) => setRiskAmountFixed(parseFloat(e.target.value) || 10)}
+                          value={riskAmountFixed === 0 || riskAmountFixed ? riskAmountFixed : ''}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setRiskAmountFixed(v === '' ? ('' as any) : Number(v));
+                          }}
+                          onBlur={() => {
+                            if (!riskAmountFixed || isNaN(riskAmountFixed)) setRiskAmountFixed(10);
+                          }}
                           disabled={isScanning}
                           className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-amber-300 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
                           title="مبلغ ریسک ثابت هر معامله (USDT)"
@@ -405,8 +434,14 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       min={0}
                       max={1}
                       step={0.01}
-                      value={entryCommissionPercent}
-                      onChange={(e) => setEntryCommissionPercent(parseFloat(e.target.value) || 0)}
+                      value={entryCommissionPercent === 0 || entryCommissionPercent ? entryCommissionPercent : ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setEntryCommissionPercent(v === '' ? ('' as any) : Number(v));
+                      }}
+                      onBlur={() => {
+                        if (isNaN(entryCommissionPercent) || entryCommissionPercent === null || (entryCommissionPercent as any) === '') setEntryCommissionPercent(0.06);
+                      }}
                       disabled={isScanning}
                       className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-amber-400 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
                       title="کارمزد ورود به هر پوزیشن (پیش‌فرض ۰.۰۶٪)"
@@ -419,8 +454,14 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       min={0}
                       max={1}
                       step={0.01}
-                      value={exitCommissionPercent}
-                      onChange={(e) => setExitCommissionPercent(parseFloat(e.target.value) || 0)}
+                      value={exitCommissionPercent === 0 || exitCommissionPercent ? exitCommissionPercent : ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setExitCommissionPercent(v === '' ? ('' as any) : Number(v));
+                      }}
+                      onBlur={() => {
+                        if (isNaN(exitCommissionPercent) || exitCommissionPercent === null || (exitCommissionPercent as any) === '') setExitCommissionPercent(0.06);
+                      }}
                       disabled={isScanning}
                       className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-amber-400 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
                       title="کارمزد خروج از هر پوزیشن (پیش‌فرض ۰.۰۶٪)"
@@ -433,8 +474,14 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       min={1}
                       max={20}
                       step={0.5}
-                      value={optMaxRiskReward}
-                      onChange={(e) => setOptMaxRiskReward(parseFloat(e.target.value) || 2)}
+                      value={optMaxRiskReward === 0 || optMaxRiskReward ? optMaxRiskReward : ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setOptMaxRiskReward(v === '' ? ('' as any) : Number(v));
+                      }}
+                      onBlur={() => {
+                        if (!optMaxRiskReward || isNaN(optMaxRiskReward)) setOptMaxRiskReward(2);
+                      }}
                       disabled={isScanning}
                       className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-emerald-400 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
                     />
@@ -458,8 +505,14 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       min={5}
                       max={500}
                       step={5}
-                      value={optTimeStopCandles}
-                      onChange={(e) => setOptTimeStopCandles(parseInt(e.target.value, 10) || 80)}
+                      value={optTimeStopCandles === 0 || optTimeStopCandles ? optTimeStopCandles : ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setOptTimeStopCandles(v === '' ? ('' as any) : parseInt(v, 10));
+                      }}
+                      onBlur={() => {
+                        if (!optTimeStopCandles || isNaN(optTimeStopCandles)) setOptTimeStopCandles(80);
+                      }}
                       disabled={isScanning || !optTimeStopEnabled}
                       className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-cyan-300 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
                       title="حداکثر تعداد کندل ماندن در معامله (خروج زمانی چه در سود چه در ضرر)"
@@ -529,11 +582,18 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                     <label className="text-[9px] text-gray-400 block mb-0.5">دوره ATR:</label>
                     <input
                       type="number"
-                      value={optAtrPeriod}
+                      value={optAtrPeriod === 0 || optAtrPeriod ? optAtrPeriod : ''}
                       onChange={(e) => {
-                        const val = parseInt(e.target.value, 10) || 55;
-                        setOptAtrPeriod(val);
-                        onUpdateZigZagSettings?.({ ...zigzagSettings, atrPeriod: val });
+                        const v = e.target.value;
+                        const num = v === '' ? ('' as any) : parseInt(v, 10);
+                        setOptAtrPeriod(num);
+                        if (typeof num === 'number' && !isNaN(num)) onUpdateZigZagSettings?.({ ...zigzagSettings, atrPeriod: num });
+                      }}
+                      onBlur={() => {
+                        if (!optAtrPeriod || isNaN(optAtrPeriod)) {
+                          setOptAtrPeriod(55);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, atrPeriod: 55 });
+                        }
                       }}
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
                     />
@@ -542,11 +602,18 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                     <label className="text-[9px] text-gray-400 block mb-0.5">حداقل کندل:</label>
                     <input
                       type="number"
-                      value={optMinCandles}
+                      value={optMinCandles === 0 || optMinCandles ? optMinCandles : ''}
                       onChange={(e) => {
-                        const val = parseInt(e.target.value, 10) || 3;
-                        setOptMinCandles(val);
-                        onUpdateZigZagSettings?.({ ...zigzagSettings, minCandles: val });
+                        const v = e.target.value;
+                        const num = v === '' ? ('' as any) : parseInt(v, 10);
+                        setOptMinCandles(num);
+                        if (typeof num === 'number' && !isNaN(num)) onUpdateZigZagSettings?.({ ...zigzagSettings, minCandles: num });
+                      }}
+                      onBlur={() => {
+                        if (!optMinCandles || isNaN(optMinCandles)) {
+                          setOptMinCandles(3);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, minCandles: 3 });
+                        }
                       }}
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
                     />
@@ -555,11 +622,18 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                     <label className="text-[9px] text-gray-400 block mb-0.5">کندل لگ بلند:</label>
                     <input
                       type="number"
-                      value={optMinCandlesLong}
+                      value={optMinCandlesLong === 0 || optMinCandlesLong ? optMinCandlesLong : ''}
                       onChange={(e) => {
-                        const val = parseInt(e.target.value, 10) || 20;
-                        setOptMinCandlesLong(val);
-                        onUpdateZigZagSettings?.({ ...zigzagSettings, minCandlesForLongLeg: val });
+                        const v = e.target.value;
+                        const num = v === '' ? ('' as any) : parseInt(v, 10);
+                        setOptMinCandlesLong(num);
+                        if (typeof num === 'number' && !isNaN(num)) onUpdateZigZagSettings?.({ ...zigzagSettings, minCandlesForLongLeg: num });
+                      }}
+                      onBlur={() => {
+                        if (!optMinCandlesLong || isNaN(optMinCandlesLong)) {
+                          setOptMinCandlesLong(20);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, minCandlesForLongLeg: 20 });
+                        }
                       }}
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
                     />
@@ -569,11 +643,18 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                     <input
                       type="number"
                       step={0.1}
-                      value={optAtrMultiplier}
+                      value={optAtrMultiplier === 0 || optAtrMultiplier ? optAtrMultiplier : ''}
                       onChange={(e) => {
-                        const val = parseFloat(e.target.value) || 3.0;
-                        setOptAtrMultiplier(val);
-                        onUpdateZigZagSettings?.({ ...zigzagSettings, atrMultiplier: val });
+                        const v = e.target.value;
+                        const num = v === '' ? ('' as any) : parseFloat(v);
+                        setOptAtrMultiplier(num);
+                        if (typeof num === 'number' && !isNaN(num)) onUpdateZigZagSettings?.({ ...zigzagSettings, atrMultiplier: num });
+                      }}
+                      onBlur={() => {
+                        if (!optAtrMultiplier || isNaN(optAtrMultiplier)) {
+                          setOptAtrMultiplier(3.0);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, atrMultiplier: 3.0 });
+                        }
                       }}
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
                     />
@@ -583,11 +664,18 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                     <input
                       type="number"
                       step={0.5}
-                      value={optLongLegAtrMult}
+                      value={optLongLegAtrMult === 0 || optLongLegAtrMult ? optLongLegAtrMult : ''}
                       onChange={(e) => {
-                        const val = parseFloat(e.target.value) || 10.0;
-                        setOptLongLegAtrMult(val);
-                        onUpdateZigZagSettings?.({ ...zigzagSettings, longLegAtrMultiplier: val });
+                        const v = e.target.value;
+                        const num = v === '' ? ('' as any) : parseFloat(v);
+                        setOptLongLegAtrMult(num);
+                        if (typeof num === 'number' && !isNaN(num)) onUpdateZigZagSettings?.({ ...zigzagSettings, longLegAtrMultiplier: num });
+                      }}
+                      onBlur={() => {
+                        if (!optLongLegAtrMult || isNaN(optLongLegAtrMult)) {
+                          setOptLongLegAtrMult(10.0);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, longLegAtrMultiplier: 10.0 });
+                        }
                       }}
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
                     />
@@ -597,11 +685,18 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                     <input
                       type="number"
                       step={5}
-                      value={optMaxBlueLegPercent}
+                      value={optMaxBlueLegPercent === 0 || optMaxBlueLegPercent ? optMaxBlueLegPercent : ''}
                       onChange={(e) => {
-                        const val = parseFloat(e.target.value) || 60;
-                        setOptMaxBlueLegPercent(val);
-                        onUpdateZigZagSettings?.({ ...zigzagSettings, maxBlueLegPercent: val });
+                        const v = e.target.value;
+                        const num = v === '' ? ('' as any) : parseFloat(v);
+                        setOptMaxBlueLegPercent(num);
+                        if (typeof num === 'number' && !isNaN(num)) onUpdateZigZagSettings?.({ ...zigzagSettings, maxBlueLegPercent: num });
+                      }}
+                      onBlur={() => {
+                        if (!optMaxBlueLegPercent || isNaN(optMaxBlueLegPercent)) {
+                          setOptMaxBlueLegPercent(60);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, maxBlueLegPercent: 60 });
+                        }
                       }}
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
                     />
@@ -611,11 +706,18 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                     <input
                       type="number"
                       step={0.5}
-                      value={optMaxBreakoutAtr}
+                      value={optMaxBreakoutAtr === 0 || optMaxBreakoutAtr ? optMaxBreakoutAtr : ''}
                       onChange={(e) => {
-                        const val = parseFloat(e.target.value) || 5.0;
-                        setOptMaxBreakoutAtr(val);
-                        onUpdateZigZagSettings?.({ ...zigzagSettings, maxBreakoutAtrMultiplier: val });
+                        const v = e.target.value;
+                        const num = v === '' ? ('' as any) : parseFloat(v);
+                        setOptMaxBreakoutAtr(num);
+                        if (typeof num === 'number' && !isNaN(num)) onUpdateZigZagSettings?.({ ...zigzagSettings, maxBreakoutAtrMultiplier: num });
+                      }}
+                      onBlur={() => {
+                        if (!optMaxBreakoutAtr || isNaN(optMaxBreakoutAtr)) {
+                          setOptMaxBreakoutAtr(5.0);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, maxBreakoutAtrMultiplier: 5.0 });
+                        }
                       }}
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
                     />
@@ -625,59 +727,187 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
 
               <div className="flex flex-wrap items-center justify-between gap-3 pt-0.5">
                 <div className="flex flex-wrap items-center gap-2">
-                  {/* بج وضعیت ذخیره در PostgreSQL */}
-                  {rangeStatus?.exists ? (
-                    <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-950/40 border border-emerald-500/40 rounded-xl text-xs shadow-inner">
-                      <Database className="w-3.5 h-3.5 text-emerald-400" />
-                      <span className="text-emerald-300 font-bold">دیتابیس PostgreSQL:</span>
-                      <span className="text-white font-mono font-bold">
-                        {rangeStatus.dataset?.symbolCount || cachedCount} نماد ({rangeStatus.dataset?.totalCandles?.toLocaleString() || 0} کندل)
-                      </span>
-                      {rangeStatus.dataset?.dataSizeFormatted && (
-                        <span className="text-emerald-400 font-mono text-[11px]">({rangeStatus.dataset.dataSizeFormatted})</span>
-                      )}
-                    </div>
-                  ) : isCheckingRange ? (
-                    <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-[#121824] border border-[#233044] rounded-xl text-xs">
-                      <Loader2 className="w-3.5 h-3.5 text-cyan-400 animate-spin" />
-                      <span className="text-gray-400 text-[11px]">بررسی دیتابیس...</span>
-                    </div>
-                  ) : null}
+                {/* بج و کارت هوشمند وضعیت پوشش دیتابیس PostgreSQL */}
+                {rangeStatus?.exists ? (() => {
+                  const cov = rangeStatus?.coverage;
+                  const missingCount = cov?.missingSymbolsCount || 0;
+                  const surplusCount = cov?.surplusSymbolsCount || 0;
+                  const availableCount = cov?.availableSymbolsCount || rangeStatus.dataset?.symbolCount || cachedCount || 0;
+                  const reqCount = cov?.requestedSymbolsCount || selectedAllowedSymbols.length || 0;
+                  const coveragePct = cov?.symbolCoveragePct !== undefined ? cov.symbolCoveragePct : (reqCount > 0 ? Math.round((availableCount / reqCount) * 100) : 100);
+                  const missingEarlierDays = cov?.missingEarlierDays || 0;
 
-                  {!isScanning ? (
-                    <div className="flex flex-wrap items-center gap-2">
+                  return (
+                    <div className="flex flex-col gap-2 p-3 bg-gradient-to-r from-[#0d1622] via-[#0f1a29] to-[#0c141f] border border-emerald-500/40 rounded-xl shadow-lg w-full">
+                      {/* ردیف اول: مشخصات دیتابیس و دکمه گزینه‌ها */}
+                      <div className="flex items-center justify-between flex-wrap gap-2 pb-2 border-b border-[#1f2d40]">
+                        <div className="flex items-center gap-2 shrink-0">
+                          <div className="w-7 h-7 rounded-lg bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+                            <Database className="w-3.5 h-3.5" />
+                          </div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-emerald-300 font-extrabold text-xs">دیتابیس PostgreSQL:</span>
+                            <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-mono font-bold">
+                              صرافی {selectedExchange.toUpperCase()}
+                            </span>
+                            <span className="text-[11px] text-gray-300 font-mono">
+                              {rangeStatus.dataset?.symbolCount || cachedCount} نماد ({rangeStatus.dataset?.totalCandles?.toLocaleString() || 0} کندل)
+                              {rangeStatus.dataset?.dataSizeFormatted && ` - ${rangeStatus.dataset.dataSizeFormatted}`}
+                            </span>
+                          </div>
+                        </div>
+
+                        {onOpenRescanChoiceModal && (
+                          <button
+                            type="button"
+                            onClick={onOpenRescanChoiceModal}
+                            className="px-2.5 py-1 rounded-lg bg-[#172233] hover:bg-[#202f47] text-gray-200 hover:text-white border border-[#2d3e58] text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
+                            title="مشاهده جزئیات تحلیل هوشمند دیتابیس و گزینه‌های دانلود"
+                          >
+                            <Sliders className="w-3.5 h-3.5 text-amber-400" />
+                            <span>تحلیل هوشمند و گزینه‌های دانلود</span>
+                          </button>
+                        )}
+                      </div>
+
+                      {/* ردیف دوم: تطابق هوشمند بازه زمانی و پوشش نمادها */}
+                      <div className="flex flex-wrap items-center justify-between gap-2.5 text-xs">
+                        {/* ۱. تطابق بازه زمانی */}
+                        <div className="flex items-center gap-2 flex-wrap bg-[#121a28] px-2.5 py-1.5 rounded-lg border border-[#233348]">
+                          <div className="flex items-center gap-1 text-amber-300 font-bold text-[11px]">
+                            <Calendar className="w-3.5 h-3.5 text-amber-400" />
+                            <span>بازه انتخابی:</span>
+                            <span className="font-mono text-white">{timeRangeLabel || `${cov?.reqDays || 90} روز`}</span>
+                            {(cov?.reqStartDateFormatted || cov?.reqEndDateFormatted) && (
+                              <span className="text-[10px] text-gray-400 font-mono">
+                                ({cov.reqStartDateFormatted} تا {cov.reqEndDateFormatted})
+                              </span>
+                            )}
+                          </div>
+
+                          <span className="text-gray-500">|</span>
+
+                          <div className="flex items-center gap-1 text-cyan-300 text-[11px]">
+                            <span className="text-gray-400">موجودی دیتابیس:</span>
+                            <span className="font-mono font-bold text-cyan-200">{cov?.dbDays || 90} روز</span>
+                            {(cov?.dbStartDateFormatted || cov?.dbEndDateFormatted) && (
+                              <span className="text-[10px] text-gray-400 font-mono">
+                                ({cov.dbStartDateFormatted} تا {cov.dbEndDateFormatted})
+                              </span>
+                            )}
+                          </div>
+
+                          {cov?.isTimeFullyCovered ? (
+                            <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold flex items-center gap-1 font-mono">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                              پوشش کامل زمان (۱۰۰٪)
+                            </span>
+                          ) : cov?.missingEarlierDays > 0 ? (
+                            <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold flex items-center gap-1 font-mono">
+                              <AlertTriangle className="w-3 h-3 text-amber-400" />
+                              ⚠️ {cov.missingEarlierDays} روز کسری تاریخچه
+                            </span>
+                          ) : cov?.missingNewerDays > 0 ? (
+                            <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold flex items-center gap-1 font-mono">
+                              <AlertTriangle className="w-3 h-3 text-amber-400" />
+                              ⚠️ {cov.missingNewerDays} روز نیاز به کندل جدیدتر
+                            </span>
+                          ) : null}
+                        </div>
+
+                        {/* ۲. پوشش هوشمند نمادها */}
+                        <div className="flex items-center gap-2 flex-wrap bg-[#121a28] px-2.5 py-1.5 rounded-lg border border-[#233348]">
+                          <span className="text-gray-300 font-bold text-[11px]">پوشش نمادها:</span>
+                          <span className="font-mono font-bold text-emerald-400">
+                            {availableCount} از {reqCount} نماد ({coveragePct}٪)
+                          </span>
+                          <div className="w-12 bg-[#1a2536] h-1.5 rounded-full overflow-hidden mr-1 hidden sm:block">
+                            <div
+                              className={`h-full ${coveragePct >= 95 ? 'bg-emerald-400' : 'bg-amber-400'}`}
+                              style={{ width: `${Math.min(100, Math.max(5, coveragePct))}%` }}
+                            />
+                          </div>
+
+                          {missingCount > 0 && (
+                            <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[10px] font-bold font-mono">
+                              ⚠️ {missingCount} نماد کسری
+                            </span>
+                          )}
+
+                          {surplusCount > 0 && (
+                            <span className="px-2 py-0.5 rounded-md bg-blue-500/15 text-blue-300 border border-blue-500/30 text-[10px] font-bold font-mono" title="نمادهای مازاد دیتابیس در اسکن لحاظ نمی‌شوند">
+                              🛡️ {surplusCount} مازاد مستثنی
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })() : isCheckingRange ? (
+                  <div className="flex items-center gap-2 px-3 py-2 bg-[#121824] border border-[#233044] rounded-xl text-xs w-full">
+                    <Loader2 className="w-4 h-4 text-cyan-400 animate-spin" />
+                    <span className="text-gray-300 text-xs font-medium">در حال تطابق هوشمند بازه زمانی و نمادها با دیتابیس PostgreSQL...</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between gap-2 p-2.5 bg-[#0f141f] border border-[#232d3f] rounded-xl text-xs text-gray-300 w-full">
+                    <div className="flex items-center gap-2">
+                      <Database className="w-4 h-4 text-gray-400 shrink-0" />
+                      <span>
+                        هنوز دیتایی برای صرافی <strong className="text-amber-300">{selectedExchange.toUpperCase()}</strong> در تایم‌فریم <strong className="text-cyan-300">{timeframe}</strong> در دیتابیس موجود نیست. با اولین اسکن، کندل‌ها به صورت خودکار در PostgreSQL ذخیره خواهند شد.
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {!isScanning ? (
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleStartScan(rangeStatus?.exists ? undefined : false)}
+                      className="px-5 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-extrabold text-xs flex items-center gap-2 shadow-lg shadow-amber-500/25 transition-all cursor-pointer"
+                    >
+                      <Play className="w-4 h-4 fill-current" />
+                      <span>
+                        {`شروع اسکن بکتست (${selectedAllowedSymbols.length} ارز مجاز انتخابی)`}
+                      </span>
+                    </button>
+
+                    {/* دکمه دانلود تکمیلی کسری‌ها در صورتی که کسری وجود داشته باشد */}
+                    {rangeStatus?.exists && (rangeStatus.coverage?.missingSymbolsCount > 0 || (rangeStatus.coverage?.missingEarlierDays && rangeStatus.coverage.missingEarlierDays > 0)) && (
                       <button
                         type="button"
-                        onClick={() => handleStartScan(rangeStatus?.exists ? undefined : false)}
-                        className="px-5 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-extrabold text-xs flex items-center gap-2 shadow-lg shadow-amber-500/25 transition-all cursor-pointer"
+                        onClick={handleStartIncrementalScan || (() => handleStartScan(false, undefined))}
+                        className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-400 hover:to-emerald-500 text-black font-extrabold text-xs flex items-center gap-1.5 shadow-md shadow-emerald-500/20 transition-all cursor-pointer"
+                        title="فقط نمادها یا روزهای کسری از صرافی دانلود و به دیتابیس اضافه می‌شوند"
                       >
-                        <Play className="w-4 h-4 fill-current" />
+                        <RefreshCw className="w-3.5 h-3.5" />
                         <span>
-                          {`شروع اسکن بکتست (${selectedAllowedSymbols.length} ارز مجاز انتخابی)`}
+                          🔄 دانلود تکمیلی ({rangeStatus.coverage.missingSymbolsCount} ارز کسری)
                         </span>
                       </button>
+                    )}
 
-                      {(cachedCount > 0 || rangeStatus?.exists) && (
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={handleRerunOnCachedData}
-                            className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500/20 to-teal-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-md"
-                            title="اجرای مجدد بک‌تست با استفاده از داده‌های ذخیره‌شده در PostgreSQL"
-                          >
-                            <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />
-                            <span>⚡ اجرای سریع با داده‌های دیتابیس ({rangeStatus?.dataset?.symbolCount || cachedCount} ارز)</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleClearCandleCache}
-                            className="p-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-bold flex items-center gap-1 cursor-pointer transition-all"
-                            title="پاک کردن داده‌های بازه زمانی فعلی از دیتابیس PostgreSQL"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      )}
+                    {(cachedCount > 0 || rangeStatus?.exists) && (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={handleRerunOnCachedData}
+                          className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500/20 to-teal-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-md"
+                          title="اجرای مجدد بک‌تست بدون هیچ دانلودی با استفاده از داده‌های موجود در PostgreSQL"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>⚡ اجرای سریع با داده‌های دیتابیس ({rangeStatus?.coverage?.availableSymbolsCount || rangeStatus?.dataset?.symbolCount || cachedCount} ارز)</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleClearCandleCache}
+                          className="p-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-bold flex items-center gap-1 cursor-pointer transition-all"
+                          title="پاک کردن داده‌های بازه زمانی فعلی از دیتابیس PostgreSQL"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
 
                       {/* انتخابگر تعداد ورکر همزمان برای افزایش سرعت اسکن ۶۵۰ ارز */}
                       <div className="flex items-center gap-1.5 px-3 py-1.5 bg-[#0d121c] border border-[#2b374c] rounded-xl text-xs shadow-inner">

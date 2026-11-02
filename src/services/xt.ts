@@ -56,6 +56,18 @@ async function safeFetchJson<T = any>(url: string, options?: RequestInit): Promi
   }
 }
 
+function safeFormatTime(d: Date | number = new Date()): string {
+  try {
+    return new Date(d).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  } catch {
+    try {
+      return new Date(d).toLocaleTimeString();
+    } catch {
+      return new Date(d).toISOString().slice(11, 19);
+    }
+  }
+}
+
 /**
  * Fetch Account Balances from XT Futures API
  */
@@ -79,7 +91,7 @@ export async function fetchXtBalance(): Promise<ExchangeAccountBalance> {
         frozenBalance: frozen + isolated + crossed,
         unrealizedPnl: 0,
         totalEquity: wallet,
-        updatedAt: new Date().toLocaleTimeString('fa-IR'),
+        updatedAt: safeFormatTime(),
       };
     }
   } catch (err) {
@@ -94,7 +106,7 @@ export async function fetchXtBalance(): Promise<ExchangeAccountBalance> {
     frozenBalance: 0,
     unrealizedPnl: 0,
     totalEquity: 35.0,
-    updatedAt: new Date().toLocaleTimeString('fa-IR'),
+    updatedAt: safeFormatTime(),
   };
 }
 
@@ -233,7 +245,7 @@ export async function fetchXtOrderHistory(symbol?: string, limit: number = 30): 
           takeProfitPrice: item.triggerProfitPrice ? parseFloat(item.triggerProfitPrice) : undefined,
           stopLossPrice: item.triggerStopPrice ? parseFloat(item.triggerStopPrice) : undefined,
           realizedPnl: item.closeProfit ? parseFloat(item.closeProfit) : undefined,
-          timestamp: item.createdTime ? new Date(item.createdTime).toLocaleTimeString('fa-IR') : new Date().toLocaleTimeString('fa-IR'),
+          timestamp: safeFormatTime(item.createdTime || Date.now()),
         };
       });
     }

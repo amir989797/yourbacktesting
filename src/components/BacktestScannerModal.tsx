@@ -33,6 +33,7 @@ import {
   CloudUpload,
   CloudDownload,
   Loader2,
+  Coins,
 } from 'lucide-react';
 import { CryptoPair, CandleData, Timeframe, ZigZagSettings, ExchangeType } from '../types/crypto';
 import { StrategyConfig, StrategyTrade } from '../types/strategy';
@@ -160,6 +161,11 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   useEffect(() => {
     if (exchange) {
       setSelectedExchange(exchange);
+      setActiveSessionDatasetId(null);
+      checkCurrentRangeStatusRef.current?.({
+        exchange,
+        datasetId: null,
+      });
     }
   }, [exchange]);
 
@@ -324,6 +330,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     return 2880;
   });
 
+  const checkCurrentRangeStatusRef = useRef<((overrides?: any) => Promise<void>) | null>(null);
+
   const handleApplyTimeRange = (params: {
     startDate: string;
     endDate: string;
@@ -332,6 +340,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     estimatedCandles: number;
     label: string;
   }) => {
+    setActiveSessionDatasetId(null);
     setTimeRangeStartMs(params.startTimeMs);
     setTimeRangeEndMs(params.endTimeMs);
     setTimeRangeLabel(params.label);
@@ -344,6 +353,13 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       localStorage.setItem('backtest_time_range_label', params.label);
       localStorage.setItem('backtest_estimated_candles', String(params.estimatedCandles));
     } catch {}
+
+    // Immediately trigger smart range verification against PostgreSQL
+    checkCurrentRangeStatusRef.current?.({
+      startTime: params.startTimeMs,
+      endTime: params.endTimeMs,
+      datasetId: null,
+    });
   };
 
   useEffect(() => {
@@ -386,6 +402,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       updatedAt: string;
       hasResults: boolean;
     };
+    coverage?: any;
     results?: BacktestResultItem[] | null;
     allTrades?: StrategyTrade[] | null;
   }
@@ -529,35 +546,47 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   });
   const [lockTimeStopCandles, setLockTimeStopCandles] = useState<boolean>(false);
 
-  // همگام‌سازی با تنظیمات زیگ‌زاگ وارده توسط کاربر در چارت
+  // همگام‌سازی اولیه یا به‌روزرسانی خارجی تنظیمات زیگ‌زاگ وارده توسط کاربر در چارت
+  const prevZigzagSettingsRef = useRef<ZigZagSettings | undefined>(zigzagSettings);
   useEffect(() => {
     if (!zigzagSettings) return;
-    if (zigzagSettings.atrPeriod && zigzagSettings.atrPeriod !== optAtrPeriod) setOptAtrPeriod(zigzagSettings.atrPeriod);
-    if (zigzagSettings.minCandles && zigzagSettings.minCandles !== optMinCandles) setOptMinCandles(zigzagSettings.minCandles);
-    if (zigzagSettings.minCandlesForLongLeg && zigzagSettings.minCandlesForLongLeg !== optMinCandlesLong) setOptMinCandlesLong(zigzagSettings.minCandlesForLongLeg);
-    if (zigzagSettings.atrMultiplier && zigzagSettings.atrMultiplier !== optAtrMultiplier) setOptAtrMultiplier(zigzagSettings.atrMultiplier);
-    if (zigzagSettings.longLegAtrMultiplier && zigzagSettings.longLegAtrMultiplier !== optLongLegAtrMult) setOptLongLegAtrMult(zigzagSettings.longLegAtrMultiplier);
-    if (zigzagSettings.maxBlueLegPercent !== undefined && zigzagSettings.maxBlueLegPercent !== optMaxBlueLegPercent) setOptMaxBlueLegPercent(zigzagSettings.maxBlueLegPercent);
-    if (zigzagSettings.maxBreakoutAtrMultiplier !== undefined && zigzagSettings.maxBreakoutAtrMultiplier !== optMaxBreakoutAtr) setOptMaxBreakoutAtr(zigzagSettings.maxBreakoutAtrMultiplier);
-  }, [
-    zigzagSettings?.atrPeriod,
-    zigzagSettings?.minCandles,
-    zigzagSettings?.minCandlesForLongLeg,
-    zigzagSettings?.atrMultiplier,
-    zigzagSettings?.longLegAtrMultiplier,
-    zigzagSettings?.maxBlueLegPercent,
-    zigzagSettings?.maxBreakoutAtrMultiplier,
-  ]);
+    const prev = prevZigzagSettingsRef.current;
+    if (prev !== zigzagSettings) {
+      if (zigzagSettings.atrPeriod && zigzagSettings.atrPeriod !== prev?.atrPeriod) setOptAtrPeriod(zigzagSettings.atrPeriod);
+      if (zigzagSettings.minCandles && zigzagSettings.minCandles !== prev?.minCandles) setOptMinCandles(zigzagSettings.minCandles);
+      if (zigzagSettings.minCandlesForLongLeg && zigzagSettings.minCandlesForLongLeg !== prev?.minCandlesForLongLeg) setOptMinCandlesLong(zigzagSettings.minCandlesForLongLeg);
+      if (zigzagSettings.atrMultiplier && zigzagSettings.atrMultiplier !== prev?.atrMultiplier) setOptAtrMultiplier(zigzagSettings.atrMultiplier);
+      if (zigzagSettings.longLegAtrMultiplier && zigzagSettings.longLegAtrMultiplier !== prev?.longLegAtrMultiplier) setOptLongLegAtrMult(zigzagSettings.longLegAtrMultiplier);
+      if (zigzagSettings.maxBlueLegPercent !== undefined && zigzagSettings.maxBlueLegPercent !== prev?.maxBlueLegPercent) setOptMaxBlueLegPercent(zigzagSettings.maxBlueLegPercent);
+      if (zigzagSettings.maxBreakoutAtrMultiplier !== undefined && zigzagSettings.maxBreakoutAtrMultiplier !== prev?.maxBreakoutAtrMultiplier) setOptMaxBreakoutAtr(zigzagSettings.maxBreakoutAtrMultiplier);
+      prevZigzagSettingsRef.current = zigzagSettings;
+    }
+  }, [zigzagSettings]);
 
   // شروط اولیه ارزیابی مدل
   const [targetMaxDrawdown, setTargetMaxDrawdown] = useState<number>(20.0);
   const [targetMinWinRate, setTargetMinWinRate] = useState<number>(40.0);
   const [targetMinTrades, setTargetMinTrades] = useState<number>(100);
 
-  // وضعیت و تایمر ۱۵ دقیقه‌ای بهینه‌ساز
   const [isOptimizing, setIsOptimizing] = useState<boolean>(false);
-  const [sessionSecondsLeft, setSessionSecondsLeft] = useState<number>(900); // 15 دقیقه = 900 ثانیه
-  const sessionSecondsRef = useRef<number>(900);
+  const [optimizerDurationMinutes, setOptimizerDurationMinutes] = useState<number>(() => {
+    try {
+      const s = localStorage.getItem('opt_session_duration_min');
+      return s ? parseInt(s, 10) : 3;
+    } catch {
+      return 3;
+    }
+  });
+  const [optimizerProcessingDepth, setOptimizerProcessingDepth] = useState<'fast' | 'full'>(() => {
+    try {
+      const s = localStorage.getItem('opt_processing_depth');
+      return s === 'fast' || s === 'full' ? s : 'fast';
+    } catch {
+      return 'fast';
+    }
+  });
+  const [sessionSecondsLeft, setSessionSecondsLeft] = useState<number>(() => optimizerDurationMinutes * 60);
+  const sessionSecondsRef = useRef<number>(optimizerDurationMinutes * 60);
   const stopOptimizerRef = useRef<boolean>(false);
 
   // ریجستری هش‌های تست‌شده برای جلوگیری قطعی از هرگونه تست تکراری
@@ -800,14 +829,36 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     };
   }, [isOpen, activeTab, isOptimizing]);
 
-  // بررسی وجود داده‌ها در پایگاه داده PostgreSQL برای بازه زمانی انتخابی
-  const checkCurrentRangeStatus = useCallback(async () => {
+  // بررسی هوشمند داده‌ها و میزان پوشش نمادها و تاریخچه در دیتابیس PostgreSQL
+  const checkCurrentRangeStatus = useCallback(async (overrides?: {
+    startTime?: number;
+    endTime?: number;
+    exchange?: ExchangeType;
+    timeframe?: Timeframe;
+    datasetId?: string | null;
+    symbols?: string[];
+  }) => {
     setIsCheckingRange(true);
     try {
-      const explicitParam = activeSessionDatasetId ? `&datasetId=${encodeURIComponent(activeSessionDatasetId)}` : '';
-      const res = await fetch(
-        `/api/backtest/range-status?exchange=${encodeURIComponent(selectedExchange)}&timeframe=${encodeURIComponent(timeframe)}&startTime=${timeRangeStartMs}&endTime=${timeRangeEndMs}${explicitParam}`
-      );
+      const targetStart = overrides?.startTime !== undefined ? overrides.startTime : timeRangeStartMs;
+      const targetEnd = overrides?.endTime !== undefined ? overrides.endTime : timeRangeEndMs;
+      const targetExchange = overrides?.exchange !== undefined ? overrides.exchange : selectedExchange;
+      const targetTf = overrides?.timeframe !== undefined ? overrides.timeframe : timeframe;
+      const targetSymbols = overrides?.symbols !== undefined ? overrides.symbols : selectedAllowedSymbols;
+      const explicitId = overrides?.datasetId !== undefined ? (overrides.datasetId || undefined) : undefined;
+
+      const res = await fetch('/api/backtest/range-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          exchange: targetExchange,
+          timeframe: targetTf,
+          startTime: targetStart,
+          endTime: targetEnd,
+          datasetId: explicitId,
+          symbols: targetSymbols,
+        }),
+      });
       const data = await res.json();
       if (data && data.success) {
         setRangeStatus(data);
@@ -816,43 +867,16 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           if (matchedId) {
             setActiveSessionDatasetId(matchedId);
           }
-          if (data.dataset.startTime && Number(data.dataset.startTime) > 0) {
-            setTimeRangeStartMs(Number(data.dataset.startTime));
-          }
-          if (data.dataset.endTime && Number(data.dataset.endTime) > 0) {
-            setTimeRangeEndMs(Number(data.dataset.endTime));
-          }
-          setCachedCount(data.dataset.symbolCount || 0);
-          if (Array.isArray(data.results) && data.results.length > 0) {
+          setCachedCount(data.coverage?.availableSymbolsCount || data.dataset.symbolCount || 0);
+          if (Array.isArray(data.results) && data.results.length > 0 && results.length === 0) {
             setResults(data.results);
             if (Array.isArray(data.allTrades)) {
               setAllCollectedTrades(data.allTrades);
             }
           }
-          if (data.strategyId) {
+          if (data.strategyId && results.length === 0) {
             setSelectedStrategyId(data.strategyId);
           }
-          if (data.strategyConfig) {
-            const sc = data.strategyConfig;
-            if (sc.atrPeriod) setOptAtrPeriod(sc.atrPeriod);
-            if (sc.atrMultiplier) setOptAtrMultiplier(sc.atrMultiplier);
-            if (sc.minCandles) setOptMinCandles(sc.minCandles);
-            if (sc.minCandlesForLongLeg) setOptMinCandlesLong(sc.minCandlesForLongLeg);
-            if (sc.longLegAtrMultiplier) setOptLongLegAtrMult(sc.longLegAtrMultiplier);
-            if (sc.maxBlueLegPercent) setOptMaxBlueLegPercent(sc.maxBlueLegPercent);
-            if (sc.maxBreakoutAtrMultiplier) setOptMaxBreakoutAtr(sc.maxBreakoutAtrMultiplier);
-            if (sc.maxRiskReward) setOptMaxRiskReward(sc.maxRiskReward);
-            if (sc.timeStopCandles) setOptTimeStopCandles(sc.timeStopCandles);
-            if (sc.maxCandlesToEnter) setMaxCandlesToEnter(sc.maxCandlesToEnter);
-            if (typeof sc.noConcurrentPositions === 'boolean') {
-              setNoConcurrentPositions(sc.noConcurrentPositions);
-            }
-            if (sc.capital) setCapital(sc.capital);
-            if (sc.riskMode) setRiskMode(sc.riskMode);
-            if (sc.riskAmountFixed) setRiskAmountFixed(sc.riskAmountFixed);
-            if (sc.riskPercent) setRiskPercent(sc.riskPercent);
-          }
-          // نتایج و معاملات قبلی مستقیماً از داده‌های سرور استفاده می‌شوند
         } else {
           setCachedCount(0);
         }
@@ -862,7 +886,20 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     } finally {
       setIsCheckingRange(false);
     }
-  }, [selectedExchange, timeframe, timeRangeStartMs, timeRangeEndMs, activeSessionDatasetId, getCachedUniqueCount]);
+  }, [selectedExchange, timeframe, timeRangeStartMs, timeRangeEndMs, selectedAllowedSymbols]);
+
+  useEffect(() => {
+    checkCurrentRangeStatusRef.current = checkCurrentRangeStatus;
+  }, [checkCurrentRangeStatus]);
+
+  const handleSelectTimeframe = useCallback((newTf: Timeframe) => {
+    setTimeframe(newTf);
+    setActiveSessionDatasetId(null);
+    checkCurrentRangeStatus({
+      timeframe: newTf,
+      datasetId: null,
+    });
+  }, [checkCurrentRangeStatus]);
 
   const [isSyncingCandles, setIsSyncingCandles] = useState<boolean>(false);
 
@@ -922,18 +959,21 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
   const hasSyncedDatasetIdRef = useRef<string | null>(null);
   const wasScanningRef = useRef<boolean>(false);
+  const initialPollDoneRef = useRef<boolean>(false);
 
   // پایش بی‌وقفه و همگام وضعیت اسکن در پس‌زمینه سرور (حفظ وضعیت در صورت ریلود یا بستن تب)
   useEffect(() => {
     let interval: any;
+    let isMounted = true;
+
     const pollStatus = async () => {
       try {
-        const res = await fetch('/api/backtest/status');
-        if (!res.ok) return;
+        const res = await fetch('/api/backtest/status?includeTrades=false');
+        if (!res.ok || !isMounted) return;
         const contentType = res.headers.get('content-type') || '';
         if (!contentType.includes('application/json')) return;
         const data = await res.json();
-        if (data && data.success && data.state) {
+        if (data && data.success && data.state && isMounted) {
           const st = data.state;
           if (st.isScanning) {
             setIsScanning(true);
@@ -946,19 +986,24 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               });
             }
             if (Array.isArray(st.results) && st.results.length > 0) {
-              setResults([...st.results]);
+              setResults(st.results);
             }
-            if (Array.isArray(st.allTrades) && st.allTrades.length > 0) {
-              setAllCollectedTrades([...st.allTrades]);
-            }
-          } else if (st.stage === 'completed' || (!st.isScanning && wasScanningRef.current)) {
+          } else if (wasScanningRef.current) {
+            // تنها یک بار در لحظه پایان اسکن اجرا شود
+            wasScanningRef.current = false;
             setIsScanning(false);
-            if (Array.isArray(st.results)) {
-              setResults([...st.results]);
+            if (Array.isArray(st.results) && st.results.length > 0) {
+              setResults(st.results);
             }
-            if (Array.isArray(st.allTrades)) {
-              setAllCollectedTrades([...st.allTrades]);
-            }
+            // دریافت یکباره تمام معاملات در پایان اسکن
+            try {
+              const fullTradesRes = await fetch('/api/backtest/status?includeTrades=true');
+              const fullTradesData = await fullTradesRes.json();
+              if (fullTradesData?.state?.allTrades && isMounted) {
+                setAllCollectedTrades(fullTradesData.state.allTrades);
+              }
+            } catch {}
+
             if (st.progress) {
               setProgress({
                 current: st.progress.total || st.progress.current || 0,
@@ -968,72 +1013,75 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             }
             if (st.datasetId) {
               setActiveSessionDatasetId(st.datasetId);
-              if (hasSyncedDatasetIdRef.current !== st.datasetId) {
-                hasSyncedDatasetIdRef.current = st.datasetId;
-              }
-              if (st.startTime && Number(st.startTime) > 0) {
-                setTimeRangeStartMs(Number(st.startTime));
-              }
-              if (st.endTime && Number(st.endTime) > 0) {
-                setTimeRangeEndMs(Number(st.endTime));
-              }
+              hasSyncedDatasetIdRef.current = st.datasetId;
             }
-            if (wasScanningRef.current) {
-              wasScanningRef.current = false;
-              if (st.stage === 'completed') {
-                showToast('✅ اسکن جفت‌ارزها با موفقیت پایان یافت.');
-              }
-              checkCurrentRangeStatus();
+            if (st.stage === 'completed') {
+              showToast('✅ اسکن جفت‌ارزها با موفقیت پایان یافت.');
             }
-          } else if (st.stage === 'error') {
+          } else if (!initialPollDoneRef.current) {
+            // بارگذاری اولیه یکباره در زمان باز شدن صفحه در صورتی که دیتای سرور موجود است
+            initialPollDoneRef.current = true;
             setIsScanning(false);
-            if (st.errorMsg) {
-              setErrorMsg(st.errorMsg);
+            if (Array.isArray(st.results) && st.results.length > 0 && results.length === 0) {
+              setResults(st.results);
             }
-            if (wasScanningRef.current) {
-              wasScanningRef.current = false;
-              showToast(`❌ خطا در اجرای اسکن: ${st.errorMsg || 'خطای ناشناخته'}`);
+            if (st.datasetId) {
+              setActiveSessionDatasetId(st.datasetId);
+              hasSyncedDatasetIdRef.current = st.datasetId;
             }
           } else {
-            setIsScanning(false);
-            wasScanningRef.current = false;
+            // در حالت بیکار (Idle) وضعیت در حال اسکن غیرفعال نگه داشته می‌شود بدون ری‌رندر مداوم کامپوننت‌ها
+            if (isScanning) {
+              setIsScanning(false);
+            }
           }
         }
       } catch {}
     };
 
     pollStatus();
-    interval = setInterval(pollStatus, 1000);
+    interval = setInterval(pollStatus, 2500);
 
     return () => {
+      isMounted = false;
       if (interval) clearInterval(interval);
     };
-  }, [checkCurrentRangeStatus]);
+  }, []);
 
   // =========================================================
   // اسکن مستقل و پایدار بک‌تست در پس‌زمینه سرور (ذخیره مستقیم در PostgreSQL)
   // =========================================================
-  const handleStartScan = async (forceRedownload?: boolean, overrideConfig?: Partial<StrategyConfig>) => {
-    // اگر داده‌های این بازه در دیتابیس وجود دارد و هنوز انتخابی انجام نشده، مودال تایید را نشان بده
-    if (forceRedownload === undefined && rangeStatus?.exists) {
+  const handleStartScan = async (
+    forceRedownload?: boolean,
+    overrideConfig?: Partial<StrategyConfig>,
+    scanMode?: 'cached' | 'incremental' | 'full'
+  ) => {
+    // اگر کاربر دکمه اسکن را بدون تعیین نوع زده و دیتابیس موجود است، مودال انتخاب باز می‌شود
+    if (forceRedownload === undefined && scanMode === undefined && rangeStatus?.exists) {
       setIsRescanPromptOpen(true);
       return;
     }
 
+    const effectiveScanMode = scanMode || (forceRedownload ? 'full' : 'cached');
     setIsRescanPromptOpen(false);
     setIsScanning(true);
     abortControllerRef.current = false;
     setErrorMsg(null);
     setResults([]);
     setAllCollectedTrades([]);
-    const targetSymbols = universeOption === 'all_market' || forceRedownload === false
-      ? []
-      : selectedAllowedSymbols;
+    const targetSymbols = (selectedAllowedSymbols && selectedAllowedSymbols.length > 0)
+      ? selectedAllowedSymbols
+      : (universeOption === 'all_market' ? [] : selectedAllowedSymbols);
 
+    const missingCount = rangeStatus?.coverage?.missingSymbolsCount || 0;
     setProgress({
       current: 0,
       total: targetSymbols.length > 0 ? targetSymbols.length : (rangeStatus?.dataset?.symbolCount || 771),
-      currentSymbol: `در حال ارسال درخواست به سرور با ${scanWorkersCount} ورکر موازی...`,
+      currentSymbol: effectiveScanMode === 'incremental'
+        ? `در حال آماده‌سازی دانلود تکمیلی ${missingCount > 0 ? missingCount : ''} نماد کسری...`
+        : (effectiveScanMode === 'full'
+          ? `در حال ارسال درخواست دانلود کامل به سرور با ${scanWorkersCount} ورکر موازی...`
+          : 'در حال اجرای بک‌تست سریع با نمادهای موجود در PostgreSQL...'),
     });
 
     try {
@@ -1049,7 +1097,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           symbols: targetSymbols,
           workersCount: scanWorkersCount,
           strategyId: selectedStrategyId,
-          forceRedownload: Boolean(forceRedownload),
+          forceRedownload: effectiveScanMode === 'full',
+          incrementalSync: effectiveScanMode === 'incremental',
+          scanMode: effectiveScanMode,
           strategyConfig: {
             capital: overrideConfig?.capital ?? capital,
             riskMode: overrideConfig?.riskMode ?? riskMode,
@@ -1086,9 +1136,11 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       const data = await res.json();
       if (data && data.success) {
         showToast(
-          forceRedownload
-            ? `🚀 دانلود مجدد و اسکن با ${scanWorkersCount} ورکر موازی در سرور آغاز شد.`
-            : `⚡ بک‌تست موازی با استفاده از داده‌های ذخیره‌شده در PostgreSQL آغاز شد.`
+          effectiveScanMode === 'incremental'
+            ? `🔄 دانلود تکمیلی نمادهای کسری با ${scanWorkersCount} ورکر در سرور آغاز شد.`
+            : (effectiveScanMode === 'full'
+              ? `🚀 دانلود مجدد کامل و جایگزینی دیتابیس با ${scanWorkersCount} ورکر آغاز شد.`
+              : `⚡ بک‌تست موازی با استفاده از داده‌های موجود در PostgreSQL آغاز شد.`)
         );
       } else {
         setErrorMsg(data?.error || 'خطا در آغاز اسکن سرور.');
@@ -1102,7 +1154,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
   // اجرای سریع بک‌تست با استفاده از داده‌های موجود در دیتابیس
   const handleRerunOnCachedData = () => {
-    handleStartScan(false);
+    handleStartScan(false, undefined, 'cached');
+  };
+
+  // دانلود تکمیلی فقط برای نمادها یا روزهای کسری
+  const handleStartIncrementalScan = () => {
+    handleStartScan(false, undefined, 'incremental');
   };
 
   const handleStopScan = async () => {
@@ -2862,15 +2919,20 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   // حلقه پیوسته بهینه‌سازی در بک‌اند سرور با اتصال مستقیم به پایگاه‌داده PostgreSQL
   const handleStartAutoOptimization = async () => {
     setIsOptimizing(true);
-    showToast('🚀 در حال راه‌اندازی فرآیند بهینه‌سازی در بک‌اند سرور با اتصال مستقیم به PostgreSQL...');
+    const durationSec = Math.max(60, (optimizerDurationMinutes || 3) * 60);
+    setSessionSecondsLeft(durationSec);
+    sessionSecondsRef.current = durationSec;
+    showToast(`🚀 در حال راه‌اندازی فرآیند بهینه‌سازی (${optimizerDurationMinutes} دقیقه‌ای - حالت ${optimizerProcessingDepth === 'fast' ? 'سریع ۱۲۰ ارز' : 'کامل ۶۹۸ ارز'}) با پایگاه‌داده PostgreSQL...`);
     try {
       const payload = {
         exchange: selectedExchange,
         timeframe: timeframe,
         startTime: timeRangeStartMs,
         endTime: timeRangeEndMs,
-        symbols: universeOption === 'all_market' ? [] : selectedAllowedSymbols,
+        symbols: (selectedAllowedSymbols && selectedAllowedSymbols.length > 0) ? selectedAllowedSymbols : (universeOption === 'all_market' ? [] : selectedAllowedSymbols),
         strategyId: selectedStrategyId,
+        sessionDurationMinutes: optimizerDurationMinutes || 3,
+        processingDepth: optimizerProcessingDepth || 'fast',
         strategyConfig: {
           capital,
           riskMode,
@@ -3373,7 +3435,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             universeOption={universeOption}
             setUniverseOption={setUniverseOption}
             timeframe={timeframe}
-            setTimeframe={setTimeframe}
+            setTimeframe={handleSelectTimeframe}
             candleHistoryLimit={candleHistoryLimit}
             setCandleHistoryLimit={setCandleHistoryLimit}
             riskMode={riskMode}
@@ -3466,6 +3528,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             hoveredEquityPoint={hoveredEquityPoint}
             setHoveredEquityPoint={setHoveredEquityPoint}
             isChartDragging={isChartDragging}
+            onSelectPairAndClose={onSelectPairAndClose}
+            selectedExchange={selectedExchange}
+            onOpenRescanChoiceModal={() => setIsRescanPromptOpen(true)}
+            handleStartIncrementalScan={handleStartIncrementalScan}
           />
         )}
 
@@ -3559,6 +3625,18 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             datasetSymbolCount={rangeStatus?.dataset?.symbolCount || cachedCount}
             exchange={selectedExchange}
             timeRangeLabel={timeRangeLabel}
+            sessionDurationMinutes={optimizerDurationMinutes}
+            setSessionDurationMinutes={(m: number) => {
+              setOptimizerDurationMinutes(m);
+              setSessionSecondsLeft(m * 60);
+              sessionSecondsRef.current = m * 60;
+              try { localStorage.setItem('opt_session_duration_min', String(m)); } catch {}
+            }}
+            processingDepth={optimizerProcessingDepth}
+            setProcessingDepth={(d: 'fast' | 'full') => {
+              setOptimizerProcessingDepth(d);
+              try { localStorage.setItem('opt_processing_depth', d); } catch {}
+            }}
           />
         )}
 
@@ -3694,66 +3772,224 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         />
 
         {/* ========================================================= */}
-        {/* MODAL: RESCAN CHOICE (USE POSTGRESQL DATA OR REDOWNLOAD) */}
+        {/* MODAL: INTELLIGENT RESCAN CHOICE (SMART SYNC / FAST / FULL) */}
         {/* ========================================================= */}
-        {isRescanPromptOpen && (
-          <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-            <div className="bg-[#101622] border border-[#233147] rounded-2xl p-6 max-w-lg w-full shadow-2xl text-right animate-in fade-in zoom-in-95 duration-150">
-              <div className="flex items-center gap-3 mb-4 text-amber-400">
-                <Database className="w-6 h-6 shrink-0" />
-                <h3 className="text-base font-extrabold text-white">
-                  داده‌های این بازه در دیتابیس PostgreSQL موجود است
-                </h3>
-              </div>
+        {isRescanPromptOpen && (() => {
+          const cov = rangeStatus?.coverage;
+          const missingCount = cov?.missingSymbolsCount || 0;
+          const surplusCount = cov?.surplusSymbolsCount || 0;
+          const availableCount = cov?.availableSymbolsCount || rangeStatus?.dataset?.symbolCount || cachedCount || 0;
+          const reqCount = cov?.requestedSymbolsCount || selectedAllowedSymbols.length || 0;
+          const coveragePct = cov?.symbolCoveragePct !== undefined ? cov.symbolCoveragePct : (reqCount > 0 ? Math.round((availableCount / reqCount) * 100) : 100);
+          const missingEarlierDays = cov?.missingEarlierDays || 0;
+          const missingNewerDays = cov?.missingNewerDays || 0;
+          const isExchangeMatch = cov?.isExchangeMatch !== false;
 
-              <div className="bg-[#172030] p-4 rounded-xl border border-[#2b3a52] text-xs text-gray-300 space-y-2 mb-5">
-                <div className="flex items-center justify-between">
-                  <span className="text-gray-400">بازه زمانی:</span>
-                  <span className="text-amber-300 font-bold font-mono">{timeRangeLabel}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-gray-400">تایم‌فریم و صرافی:</span>
-                  <span className="text-cyan-300 font-bold font-mono">{timeframe} | {selectedExchange.toUpperCase()}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-gray-400">داده‌های ذخیره‌شده:</span>
-                  <span className="text-emerald-400 font-bold font-mono">
-                    {rangeStatus?.dataset?.symbolCount || cachedCount} نماد ({rangeStatus?.dataset?.totalCandles?.toLocaleString() || 0} کندل - {rangeStatus?.dataset?.dataSizeFormatted || ''})
+          return (
+            <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/85 backdrop-blur-sm p-4">
+              <div className="bg-[#101622] border border-[#233147] rounded-2xl p-6 max-w-xl w-full shadow-2xl text-right animate-in fade-in zoom-in-95 duration-150">
+                <div className="flex items-center justify-between mb-4 pb-3 border-b border-[#233147]">
+                  <div className="flex items-center gap-3 text-amber-400">
+                    <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                      <Database className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-extrabold text-white">
+                        تحلیل هوشمند تطابق داده‌های دیتابیس PostgreSQL
+                      </h3>
+                      <p className="text-[11px] text-gray-400">
+                        بررسی وضعیت پوشش نمادها، صرافی و بازه زمانی انتخابی
+                      </p>
+                    </div>
+                  </div>
+                  <span className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold border ${
+                    selectedExchange === 'xt'
+                      ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                      : 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'
+                  }`}>
+                    {selectedExchange.toUpperCase()}
                   </span>
                 </div>
-                <p className="pt-2 text-gray-300 text-[11px] leading-relaxed border-t border-[#2b3a52]">
-                  آیا می‌خواهید از داده‌های ذخیره‌شده در PostgreSQL برای اجرای سریع و بدون دانلود استفاده کنید یا داده‌ها دوباره از صرافی دانلود و در این بازه جایگزین شوند؟
-                </p>
-              </div>
 
-              <div className="flex flex-col gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => handleStartScan(false)}
-                  className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-black font-extrabold text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 cursor-pointer transition-all"
-                >
-                  <RefreshCw className="w-4 h-4" />
-                  <span>⚡ استفاده از داده‌های ذخیره‌شده PostgreSQL (سریع و بدون دانلود مجدد)</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleStartScan(true)}
-                  className="w-full py-2.5 px-4 rounded-xl bg-[#1e293b] hover:bg-[#2b3952] text-cyan-300 border border-cyan-500/30 text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-all"
-                >
-                  <Download className="w-4 h-4 text-cyan-400" />
-                  <span>🔄 دانلود مجدد کامل از صرافی و جایگزینی در دیتابیس</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsRescanPromptOpen(false)}
-                  className="w-full py-2 px-4 rounded-xl bg-transparent hover:bg-gray-800 text-gray-400 text-xs font-bold cursor-pointer transition-all"
-                >
-                  انصراف
-                </button>
+                <div className="bg-[#151c29] p-4 rounded-xl border border-[#2b3a52] text-xs text-gray-300 space-y-3 mb-5">
+                  {/* ردیف صرافی و بازه */}
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="bg-[#0e131d] p-2.5 rounded-lg border border-[#202b3d]">
+                      <span className="text-gray-400 text-[11px] block mb-1">صرافی و تایم‌فریم:</span>
+                      <span className="text-cyan-300 font-bold font-mono">
+                        {selectedExchange.toUpperCase()} | {timeframe}
+                      </span>
+                      {!isExchangeMatch && (
+                        <span className="text-rose-400 text-[10px] block mt-0.5 font-bold">
+                          ⚠️ داده فعلی دیتابیس متعلق به صرافی دیگری است
+                        </span>
+                      )}
+                    </div>
+                    <div className="bg-[#0e131d] p-2.5 rounded-lg border border-[#202b3d]">
+                      <span className="text-gray-400 text-[11px] block mb-1">بازه زمانی تست:</span>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-amber-300 font-bold font-mono">
+                          {timeRangeLabel || `${cov?.reqDays || 90} روزه`}
+                        </span>
+                        {(cov?.reqStartDateFormatted || cov?.reqEndDateFormatted) && (
+                          <span className="text-[10px] text-gray-400 font-mono">
+                            ({cov.reqStartDateFormatted} تا {cov.reqEndDateFormatted})
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-1 pt-1 border-t border-[#1a2332] text-[10px] font-mono">
+                        <span className="text-gray-400">موجودی دیتابیس: </span>
+                        <span className="text-cyan-300 font-bold">{cov?.dbDays || 90} روز</span>
+                        {(cov?.dbStartDateFormatted || cov?.dbEndDateFormatted) && (
+                          <span className="text-gray-400 mr-1">({cov.dbStartDateFormatted} تا {cov.dbEndDateFormatted})</span>
+                        )}
+                      </div>
+                      {missingEarlierDays > 0 ? (
+                        <span className="text-amber-400 text-[10px] block mt-1 font-bold">
+                          ⚠️ دیتابیس {cov?.dbDays} روز دارد ({missingEarlierDays} روز کسری تاریخچه)
+                        </span>
+                      ) : (
+                        <span className="text-emerald-400 text-[10px] block mt-1 font-bold">
+                          ✓ تاریخچه دیتابیس کامل است (پوشش ۱۰۰٪ زمان)
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* نوار پوشش نمادها */}
+                  <div className="bg-[#0e131d] p-3 rounded-lg border border-[#202b3d] space-y-2">
+                    <div className="flex items-center justify-between text-xs font-bold">
+                      <span className="text-gray-300 flex items-center gap-1.5">
+                        <Coins className="w-3.5 h-3.5 text-amber-400" />
+                        <span>میزان پوشش نمادهای انتخابی:</span>
+                      </span>
+                      <span className="font-mono text-emerald-400 font-bold">
+                        {availableCount} از {reqCount} نماد ({coveragePct}٪)
+                      </span>
+                    </div>
+
+                    <div className="w-full bg-[#1b2434] h-2 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-300 ${
+                          coveragePct >= 95 ? 'bg-emerald-400' : coveragePct >= 70 ? 'bg-amber-400' : 'bg-cyan-400'
+                        }`}
+                        style={{ width: `${Math.min(100, Math.max(5, coveragePct))}%` }}
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap pt-1 text-[11px]">
+                      <span className="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-bold font-mono">
+                        ✓ {availableCount} نماد آماده اسکن
+                      </span>
+
+                      {missingCount > 0 && (
+                        <span className="px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 font-bold font-mono">
+                          ⚠️ {missingCount} نماد کسری در دیتابیس
+                        </span>
+                      )}
+
+                      {surplusCount > 0 && (
+                        <span className="px-2 py-0.5 rounded bg-blue-500/15 text-blue-300 border border-blue-500/30 font-bold font-mono">
+                          🛡️ {surplusCount} نماد مازاد (صرف‌نظر در اسکن بدون حذف)
+                        </span>
+                      )}
+                    </div>
+
+                    {/* پیش‌نمایش تگ‌های نمادهای کسری */}
+                    {missingCount > 0 && Array.isArray(cov?.missingSymbols) && cov.missingSymbols.length > 0 && (
+                      <div className="pt-1.5 border-t border-[#232e42]">
+                        <span className="text-[10px] text-gray-400 block mb-1">
+                          نمادهای کسری که دانلود خواهند شد ({missingCount} مورد):
+                        </span>
+                        <div className="flex items-center gap-1 flex-wrap max-h-16 overflow-y-auto">
+                          {cov.missingSymbols.slice(0, 15).map((s: string, idx: number) => (
+                            <span key={idx} className="px-1.5 py-0.5 bg-amber-950/60 text-amber-200 border border-amber-500/30 rounded text-[10px] font-mono">
+                              {s}
+                            </span>
+                          ))}
+                          {cov.missingSymbols.length > 15 && (
+                            <span className="text-[10px] text-gray-400">
+                              + {cov.missingSymbols.length - 15} نماد دیگر...
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <p className="text-gray-300 text-[11px] leading-relaxed pt-1">
+                    چگونه مایلید بک‌تست روی داده‌ها اجرا شود؟
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-2.5">
+                  {/* گزینه ۱: دانلود تکمیلی هوشمند */}
+                  <button
+                    type="button"
+                    onClick={() => handleStartScan(false, undefined, 'incremental')}
+                    className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-400 hover:to-emerald-500 text-black font-extrabold text-xs flex items-center justify-between shadow-lg shadow-emerald-500/20 cursor-pointer transition-all group"
+                  >
+                    <div className="flex items-center gap-2 text-right">
+                      <RefreshCw className="w-4 h-4 shrink-0 group-hover:rotate-180 transition-transform duration-500" />
+                      <div>
+                        <div className="font-extrabold">🔄 دانلود تکمیلی هوشمند (فقط کسری‌ها) [پیشنهادی]</div>
+                        <div className="text-[10px] text-black/80 font-normal">
+                          {missingCount > 0
+                            ? `فقط ${missingCount} نماد کسری را از صرافی اضافه کرده و بقیه را از دیتابیس می‌خواند.`
+                            : 'همگام‌سازی سریع و تکمیل رکوردهای جدید.'}
+                        </div>
+                      </div>
+                    </div>
+                    <span className="px-2 py-0.5 rounded bg-black/20 text-black font-mono text-[10px] font-bold">
+                      بهینه‌ترین سرعت
+                    </span>
+                  </button>
+
+                  {/* گزینه ۲: اسکن سریع فقط با موجودی دیتابیس */}
+                  <button
+                    type="button"
+                    onClick={() => handleStartScan(false, undefined, 'cached')}
+                    className="w-full py-2.5 px-4 rounded-xl bg-[#172233] hover:bg-[#1e2c42] text-emerald-300 border border-emerald-500/40 font-bold text-xs flex items-center justify-between cursor-pointer transition-all"
+                  >
+                    <div className="flex items-center gap-2 text-right">
+                      <Play className="w-4 h-4 text-emerald-400 shrink-0 fill-current" />
+                      <div>
+                        <div>⚡ اسکن سریع با نمادهای موجود در دیتابیس ({availableCount} نماد)</div>
+                        <div className="text-[10px] text-gray-400 font-normal">
+                          بدون هیچ‌گونه دانلود مجدد؛ نمادهای اضافی دیتابیس نیز به صورت خودکار لحاظ نمی‌شوند.
+                        </div>
+                      </div>
+                    </div>
+                    <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 font-mono text-[10px]">
+                      فوری (۱ ثانیه)
+                    </span>
+                  </button>
+
+                  {/* گزینه ۳: دانلود کامل مجدد از نو */}
+                  <button
+                    type="button"
+                    onClick={() => handleStartScan(true, undefined, 'full')}
+                    className="w-full py-2 px-4 rounded-xl bg-[#141b27] hover:bg-[#1c2738] text-gray-300 hover:text-white border border-[#2b3952] text-xs font-medium flex items-center justify-between cursor-pointer transition-all"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Download className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                      <span>🚀 دانلود مجدد کامل از صفر (جایگزینی تمام ۶۹۸ نماد در دیتابیس)</span>
+                    </div>
+                    <span className="text-[10px] text-gray-400 font-mono">دانلود تازه</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsRescanPromptOpen(false)}
+                    className="w-full py-1.5 px-4 rounded-xl bg-transparent hover:bg-gray-800 text-gray-400 text-xs font-bold cursor-pointer transition-all text-center mt-1"
+                  >
+                    انصراف
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* ========================================================= */}
         {/* MODAL: DELETE ONLY CURRENT TIME RANGE FROM POSTGRESQL */}

@@ -58,6 +58,7 @@ export interface OptimizationTrial {
   profitFactor: number;
   isValid: boolean; // آیا هر ۳ شرط درودان، وین‌ریت و تعداد معامله برقرار است؟
   qualityScore?: number; // نمره کیفیت چندمعیاره هوشمند
+  equityPoints?: { time: number; equity: number; pnl?: number; symbol?: string }[];
 }
 
 export interface ParameterRange {

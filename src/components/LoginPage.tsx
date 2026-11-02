@@ -20,7 +20,6 @@ import {
   CheckCircle2,
   ChevronDown,
 } from 'lucide-react';
-import { recordUserLoginInFirestore } from '../services/firebase';
 
 interface LoginPageProps {
   onLoginSuccess: (user: string) => void;
@@ -49,38 +48,24 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
       return;
     }
 
-    const expectedSecret = (import.meta as any).env?.VITE_ADMINPASS || '!#@Amir';
-    let isAuthorized = trimmedUser === 'amir' && (password === '!#@Amir' || password === expectedSecret);
-
     setIsSubmitting(true);
     try {
-      if (!isAuthorized) {
-        // Query server authentication endpoint to check AI Studio secrets
-        const resp = await fetch('/api/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: trimmedUser, password }),
-        }).catch(() => null);
+      // Authenticate directly against the server PostgreSQL database
+      const resp = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: trimmedUser, password }),
+      });
 
-        if (resp && resp.ok) {
-          const data = await resp.json().catch(() => null);
-          if (data && data.success) {
-            isAuthorized = true;
-          }
-        }
-      }
+      const data = await resp.json().catch(() => null);
 
-      if (isAuthorized) {
-        try {
-          // Record login event in Firebase Firestore
-          await recordUserLoginInFirestore('amir');
-        } catch (err) {
-          console.warn('Firebase login audit note:', err);
-        }
-        onLoginSuccess('amir');
+      if (resp.ok && data && data.success) {
+        onLoginSuccess(data.user || trimmedUser);
       } else {
-        setErrorMsg('نام کاربری یا رمز عبور اشتباه است.');
+        setErrorMsg(data?.error || 'نام کاربری یا رمز عبور اشتباه است.');
       }
+    } catch {
+      setErrorMsg('خطا در برقراری ارتباط با سرور و پایگاه داده.');
     } finally {
       setIsSubmitting(false);
     }
@@ -123,7 +108,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
           <div className="flex items-center gap-3">
             <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#141b27] border border-[#232e42] text-xs text-gray-300">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span>دیتابیس ابری Firebase متصل</span>
+              <span>دیتابیس سرور PostgreSQL متصل</span>
             </div>
 
             <button
