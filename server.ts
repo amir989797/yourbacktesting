@@ -2250,8 +2250,9 @@ async function runServerBacktestCycle(params: {
   const exitCommission = Number(cfg.exitCommissionPercent) || 0.06;
   const timeStopEnabled = cfg.timeStopEnabled !== false && cfg.optTimeStopEnabled !== false;
   const timeStopCandles = Number(cfg.optTimeStopCandles ?? cfg.timeStopCandles) || 80;
+  const maxPositionToRiskRatio = Number(cfg.optMaxPositionToRiskRatio ?? cfg.maxPositionToRiskRatio) || 300;
 
-  console.log(`[Server Backtest] 🚀 Starting cycle: Dataset=${datasetId}, Mode=${incrementalSync ? 'INCREMENTAL_SYNC' : (forceRedownload ? 'FORCE_REDOWNLOAD' : 'SMART_DB')}, Strategy=${strategyId}, ATR=${atrPeriod}, Mult=${atrMultiplier}, minCandles=${minCandles}, minLong=${minCandlesForLongLeg}, longMult=${longLegAtrMultiplier}, blue%=${maxBlueLegPercent}, breakoutMult=${maxBreakoutAtrMultiplier}, RR=${maxRiskReward}, timeStop=${timeStopCandles}, capital=${capital}, risk=${riskPercent}%`);
+  console.log(`[Server Backtest] 🚀 Starting cycle: Dataset=${datasetId}, Mode=${incrementalSync ? 'INCREMENTAL_SYNC' : (forceRedownload ? 'FORCE_REDOWNLOAD' : 'SMART_DB')}, Strategy=${strategyId}, ATR=${atrPeriod}, Mult=${atrMultiplier}, minCandles=${minCandles}, minLong=${minCandlesForLongLeg}, longMult=${longLegAtrMultiplier}, blue%=${maxBlueLegPercent}, breakoutMult=${maxBreakoutAtrMultiplier}, RR=${maxRiskReward}, timeStop=${timeStopCandles}, maxPosRatio=${maxPositionToRiskRatio}, capital=${capital}, risk=${riskPercent}%`);
 
   const processSymbolStrategy = (pair: { symbol: string; baseAsset: string; quoteAsset: string }, candles: CandleData[]) => {
     if (!candles || candles.length < 50) return null;
@@ -2277,6 +2278,8 @@ async function runServerBacktestCycle(params: {
       symbol: pair.symbol,
       timeStopEnabled,
       timeStopCandles,
+      maxPositionToRiskRatio,
+      optMaxPositionToRiskRatio: maxPositionToRiskRatio,
     };
 
     let backtestRes: any;
@@ -3372,6 +3375,7 @@ interface ServerOptimizerTrial {
   maxBreakoutAtrMultiplier: number;
   maxRiskReward: number;
   timeStopCandles: number;
+  maxPositionToRiskRatio?: number;
   totalTrades: number;
   winTrades: number;
   lossTrades: number;
@@ -3412,8 +3416,9 @@ function generateConfigHash(p: {
   maxBreakoutAtrMultiplier: number;
   maxRiskReward: number;
   timeStopCandles?: number;
+  maxPositionToRiskRatio?: number;
 }): string {
-  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxRiskReward}_${p.timeStopCandles || 80}`;
+  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxRiskReward}_${p.timeStopCandles || 80}_${p.maxPositionToRiskRatio ?? 300}`;
 }
 
 function calculateQualityScore(trial: {
@@ -3471,6 +3476,7 @@ function refineAdaptiveRangesSmart(
     'maxBreakoutAtrMultiplier',
     'maxRiskReward',
     'timeStopCandles',
+    'maxPositionToRiskRatio',
   ];
 
   const lockKeyMap: Record<string, { lockProp: string; valProp: string }> = {
@@ -3483,6 +3489,7 @@ function refineAdaptiveRangesSmart(
     maxBreakoutAtrMultiplier: { lockProp: 'lockMaxBreakoutAtr', valProp: 'optMaxBreakoutAtr' },
     maxRiskReward: { lockProp: 'lockMaxRiskReward', valProp: 'optMaxRiskReward' },
     timeStopCandles: { lockProp: 'lockTimeStopCandles', valProp: 'optTimeStopCandles' },
+    maxPositionToRiskRatio: { lockProp: 'lockMaxPositionToRiskRatio', valProp: 'optMaxPositionToRiskRatio' },
   };
 
   for (const key of keys) {
@@ -3608,6 +3615,7 @@ function getDefaultRangesForTimeframe(timeframe: string): any {
       maxBreakoutAtrMultiplier: makeRange(2.0, 5.5, 1.0, 8.0, 3.5, 0.5),
       maxRiskReward: makeRange(1.5, 4.5, 1.0, 10.0, 2.5, 0.25),
       timeStopCandles: makeRange(20, 120, 5, 200, 80, 5),
+      maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
     };
   }
 
@@ -3622,6 +3630,7 @@ function getDefaultRangesForTimeframe(timeframe: string): any {
       maxBreakoutAtrMultiplier: makeRange(1.5, 5.0, 1.0, 7.0, 3.0, 0.5),
       maxRiskReward: makeRange(1.5, 7.0, 1.0, 12.0, 3.5, 0.5),
       timeStopCandles: makeRange(20, 120, 5, 200, 60, 5),
+      maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
     };
   }
 
@@ -3635,6 +3644,7 @@ function getDefaultRangesForTimeframe(timeframe: string): any {
     maxBreakoutAtrMultiplier: makeRange(1.8, 5.5, 1.0, 7.5, 3.5, 0.5),
     maxRiskReward: makeRange(1.5, 6.0, 1.0, 10.0, 3.0, 0.5),
     timeStopCandles: makeRange(20, 120, 5, 200, 80, 5),
+    maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
   };
 }
 
@@ -3704,6 +3714,7 @@ function getNextCandidateFromAdaptiveRanges(
       maxBreakoutAtrMultiplier: sampleParam(ranges.maxBreakoutAtrMultiplier, l.lockMaxBreakoutAtr, l.optMaxBreakoutAtr ?? 3.5),
       maxRiskReward: sampleParam(ranges.maxRiskReward, l.lockMaxRiskReward, l.optMaxRiskReward ?? 2.5),
       timeStopCandles: sampleParam(ranges.timeStopCandles, l.lockTimeStopCandles, l.optTimeStopCandles ?? 80),
+      maxPositionToRiskRatio: sampleParam(ranges.maxPositionToRiskRatio, l.lockMaxPositionToRiskRatio, l.optMaxPositionToRiskRatio ?? 300),
     };
 
     const hash = generateConfigHash(candidate);
@@ -3951,6 +3962,7 @@ async function streamEvaluateDatasetFromPostgres(
             symbol: item.symbol,
             timeStopEnabled: baseConfig.timeStopEnabled,
             timeStopCandles: candidate.timeStopCandles || 80,
+            maxPositionToRiskRatio: candidate.maxPositionToRiskRatio || 300,
           };
 
           let backtestRes: any;
@@ -4038,6 +4050,7 @@ async function streamEvaluateDatasetFromPostgres(
             symbol: item.symbol,
             timeStopEnabled: baseConfig.timeStopEnabled,
             timeStopCandles: candidate.timeStopCandles || 80,
+            maxPositionToRiskRatio: candidate.maxPositionToRiskRatio || 300,
           };
 
           let backtestRes: any;
@@ -4076,6 +4089,7 @@ async function evaluateCombinationOnServer(
     maxBreakoutAtrMultiplier: number;
     maxRiskReward: number;
     timeStopCandles?: number;
+    maxPositionToRiskRatio?: number;
   },
   entries: ServerCandleEntry[],
   strategyId: string,
@@ -4136,6 +4150,7 @@ async function evaluateCombinationOnServer(
       symbol: item.pair.symbol,
       timeStopEnabled: baseConfig.timeStopEnabled,
       timeStopCandles: params.timeStopCandles || 80,
+      maxPositionToRiskRatio: params.maxPositionToRiskRatio || 300,
     };
 
     let backtestRes: any;
@@ -4192,6 +4207,7 @@ async function runServerOptimizerLoop(
           maxBreakoutAtrMultiplier: Number(storedCfg.optMaxBreakoutAtr ?? storedCfg.maxBreakoutAtrMultiplier ?? 4.0),
           maxRiskReward: Number(storedCfg.optMaxRiskReward ?? storedCfg.maxRiskReward ?? 2.25),
           timeStopCandles: Number(storedCfg.optTimeStopCandles ?? storedCfg.timeStopCandles ?? 90),
+          maxPositionToRiskRatio: Number(storedCfg.optMaxPositionToRiskRatio ?? storedCfg.maxPositionToRiskRatio ?? 300),
         };
         const manualEval = processFilteredTrades(parsedRes.allTrades, baseConfig, constraints);
         const qualityScore = calculateQualityScore({
@@ -4529,6 +4545,7 @@ app.post('/api/optimizer/start', async (req, res) => {
       lockMaxBreakoutAtr: Boolean(locks?.lockMaxBreakoutAtr),
       lockMaxRiskReward: Boolean(locks?.lockMaxRiskReward),
       lockTimeStopCandles: Boolean(locks?.lockTimeStopCandles),
+      lockMaxPositionToRiskRatio: Boolean(locks?.lockMaxPositionToRiskRatio),
       optAtrPeriod: Number(locks?.optAtrPeriod ?? cfg?.atrPeriod ?? cfg?.optAtrPeriod ?? 45),
       optMinCandles: Number(locks?.optMinCandles ?? cfg?.minCandles ?? cfg?.optMinCandles ?? 3),
       optMinCandlesLong: Number(locks?.optMinCandlesLong ?? cfg?.minCandlesForLongLeg ?? cfg?.optMinCandlesLong ?? 14),
@@ -4538,6 +4555,7 @@ app.post('/api/optimizer/start', async (req, res) => {
       optMaxBreakoutAtr: Number(locks?.optMaxBreakoutAtr ?? cfg?.maxBreakoutAtrMultiplier ?? cfg?.optMaxBreakoutAtr ?? 3.5),
       optMaxRiskReward: Number(locks?.optMaxRiskReward ?? cfg?.maxRiskReward ?? cfg?.optMaxRiskReward ?? 2.5),
       optTimeStopCandles: Number(locks?.optTimeStopCandles ?? cfg?.timeStopCandles ?? cfg?.optTimeStopCandles ?? 80),
+      optMaxPositionToRiskRatio: Number(locks?.optMaxPositionToRiskRatio ?? cfg?.maxPositionToRiskRatio ?? cfg?.optMaxPositionToRiskRatio ?? 300),
     };
 
     const initialRanges = ranges || serverOptimizerState.adaptiveRanges || getDefaultRangesForTimeframe(timeframe);
@@ -4553,6 +4571,7 @@ app.post('/api/optimizer/start', async (req, res) => {
       'maxBreakoutAtrMultiplier',
       'maxRiskReward',
       'timeStopCandles',
+      'maxPositionToRiskRatio',
     ];
     for (const key of paramKeys) {
       if (initialRanges[key]) {
@@ -4584,6 +4603,7 @@ app.post('/api/optimizer/start', async (req, res) => {
       maxBreakoutAtrMultiplier: { lockProp: 'lockMaxBreakoutAtr', valProp: 'optMaxBreakoutAtr' },
       maxRiskReward: { lockProp: 'lockMaxRiskReward', valProp: 'optMaxRiskReward' },
       timeStopCandles: { lockProp: 'lockTimeStopCandles', valProp: 'optTimeStopCandles' },
+      maxPositionToRiskRatio: { lockProp: 'lockMaxPositionToRiskRatio', valProp: 'optMaxPositionToRiskRatio' },
     };
 
     for (const [k, m] of Object.entries(lockKeyMap)) {

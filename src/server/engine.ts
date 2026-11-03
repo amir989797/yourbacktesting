@@ -42,6 +42,7 @@ export interface ServerStrategyConfig {
   riskPercent?: number;
   maxCandlesToEnter?: number;
   noConcurrentPositions?: boolean;
+  maxPositionToRiskRatio?: number;
 }
 
 export interface CandidateSignal {
@@ -58,6 +59,7 @@ export interface CandidateSignal {
   requiredMargin: number;
   notionalUsdt: number;
   riskUsdt: number;
+  positionToRiskRatio?: number;
   targetRiskUsdt?: number;
   strategyName: string;
   discoveredAt: string;
@@ -140,6 +142,7 @@ export function evaluateSymbolForLiveSignal(params: {
     selectedStrategyId: config.strategyId || 'strategy_2_next_pivot',
     maxCandlesToEnter: config.maxCandlesToEnter || 35,
     noConcurrentPositions: Boolean(config.noConcurrentPositions),
+    maxPositionToRiskRatio: config.maxPositionToRiskRatio ?? 300,
     symbol,
   };
 
@@ -201,6 +204,15 @@ export function evaluateSymbolForLiveSignal(params: {
   const requiredMargin = parseFloat((notionalUsdt / maxLev).toFixed(2));
   const actualRiskUsdt = sizing.actualLossAtSL;
 
+  const maxPosRatio = config.maxPositionToRiskRatio !== undefined ? config.maxPositionToRiskRatio : 300;
+  const posToRiskRatio = (actualRiskUsdt > 0)
+    ? parseFloat((notionalUsdt / actualRiskUsdt).toFixed(2))
+    : 0;
+
+  if (maxPosRatio > 0 && posToRiskRatio > maxPosRatio) {
+    return null;
+  }
+
   return {
     symbol,
     posSide,
@@ -215,6 +227,7 @@ export function evaluateSymbolForLiveSignal(params: {
     requiredMargin,
     notionalUsdt: parseFloat(notionalUsdt.toFixed(2)),
     riskUsdt: parseFloat(actualRiskUsdt.toFixed(2)),
+    positionToRiskRatio: posToRiskRatio,
     targetRiskUsdt: parseFloat(riskBudgetUsdt.toFixed(2)),
     strategyName: config.strategyId === 'strategy_2_next_pivot' ? 'استراتژی ۲ (Next-Pivot)' : 'استراتژی ۱ (E-Breakout)',
     discoveredAt: new Date().toISOString(),

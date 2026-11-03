@@ -47,6 +47,7 @@ export interface OptimizationTrial {
   maxBreakoutAtrMultiplier: number;
   maxRiskReward: number;
   timeStopCandles?: number;
+  maxPositionToRiskRatio?: number; // حداکثر نسبت ارزش پوزیشن به ریسک (پیش‌فرض 300)
   // خروجی‌های شبیه‌سازی
   totalTrades: number;
   winTrades: number;
@@ -88,6 +89,7 @@ export interface AdaptiveRanges {
   maxBreakoutAtrMultiplier: ParameterRange;
   maxRiskReward: ParameterRange;
   timeStopCandles: ParameterRange;
+  maxPositionToRiskRatio: ParameterRange;
 }
 
 export type SortDirection = 'asc' | 'desc';
@@ -157,6 +159,7 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
       maxBreakoutAtrMultiplier: makeRange(2.0, 5.5, 1.0, 8.0, 3.5, 0.5),
       maxRiskReward: makeRange(1.5, 4.5, 1.0, 10.0, 2.5, 0.25),
       timeStopCandles: makeRange(20, 120, 5, 200, 80, 5),
+      maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
     };
   }
 
@@ -171,6 +174,7 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
       maxBreakoutAtrMultiplier: makeRange(1.5, 5.0, 1.0, 7.0, 3.0, 0.5),
       maxRiskReward: makeRange(1.5, 7.0, 1.0, 12.0, 3.5, 0.5),
       timeStopCandles: makeRange(20, 120, 5, 200, 60, 5),
+      maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
     };
   }
 
@@ -185,6 +189,7 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
     maxBreakoutAtrMultiplier: makeRange(1.8, 5.5, 1.0, 7.5, 3.5, 0.5),
     maxRiskReward: makeRange(1.5, 6.0, 1.0, 10.0, 3.0, 0.5),
     timeStopCandles: makeRange(20, 120, 5, 200, 80, 5),
+    maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
   };
 }
 
@@ -244,11 +249,12 @@ export function refineAdaptiveRangesSmart(
     'maxBreakoutAtrMultiplier',
     'maxRiskReward',
     'timeStopCandles',
+    'maxPositionToRiskRatio',
   ];
 
   for (const key of keys) {
     const r = { ...nextRanges[key] };
-    if (r.isManualOverride) continue;
+    if (!r || r.isManualOverride) continue;
 
     const values = samplePool.map((t) => Number(t[key]) || 0);
     let weightedSum = 0;
@@ -278,7 +284,7 @@ export function refineAdaptiveRangesSmart(
     }
 
     const bestTrial = samplePool[0];
-    r.bestVal = Number(bestTrial[key]);
+    r.bestVal = Number(bestTrial[key]) || r.bestVal;
     r.min = parseFloat(newMin.toFixed(2));
     r.max = parseFloat(newMax.toFixed(2));
 
@@ -302,6 +308,7 @@ export function generateConfigHash(p: {
   maxBreakoutAtrMultiplier: number;
   maxRiskReward: number;
   timeStopCandles?: number;
+  maxPositionToRiskRatio?: number;
 }): string {
-  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxRiskReward}_${p.timeStopCandles || 80}`;
+  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxRiskReward}_${p.timeStopCandles || 80}_${p.maxPositionToRiskRatio ?? 300}`;
 }

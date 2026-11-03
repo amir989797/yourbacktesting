@@ -56,6 +56,9 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
   );
   const [maxCandlesInput, setMaxCandlesInput] = useState<string>(String(config.maxCandlesToEnter));
   const [maxRRInput, setMaxRRInput] = useState<string>(String(config.maxRiskReward || 2));
+  const [maxPositionToRiskRatioInput, setMaxPositionToRiskRatioInput] = useState<string>(
+    String(config.maxPositionToRiskRatio ?? 300)
+  );
   const [timeStopCandlesInput, setTimeStopCandlesInput] = useState<string>(
     String(config.timeStopCandles ?? 80)
   );
@@ -64,6 +67,14 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
   );
 
   if (!isOpen) return null;
+
+  const handleMaxPositionToRiskRatioChange = (val: string) => {
+    setMaxPositionToRiskRatioInput(val);
+    const num = parseFloat(val);
+    if (!isNaN(num) && num > 0) {
+      onUpdateConfig({ ...config, maxPositionToRiskRatio: num });
+    }
+  };
 
   const handleTimeStopChange = (val: string) => {
     setTimeStopCandlesInput(val);
@@ -300,6 +311,25 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                   onChange={(e) => handleMaxRRChange(e.target.value)}
                   className="w-full py-1 text-xs font-mono font-bold text-center text-emerald-400 bg-[#161c28] border border-[#2b364a] rounded focus:outline-none focus:border-emerald-400"
                   placeholder="2"
+                />
+              </div>
+
+              {/* Max Position Value to Risk Ratio */}
+              <div className="bg-[#0e121a] p-2 rounded-lg border border-[#252f42]">
+                <div className="text-[10px] text-purple-300 font-semibold mb-1 flex items-center justify-between">
+                  <span title="حداکثر نسبت ارزش پوزیشن دلاری به ریسک">نسبت حجم/ریسک</span>
+                  <span className="text-purple-400 font-mono font-bold">×</span>
+                </div>
+                <input
+                  type="number"
+                  min={10}
+                  max={5000}
+                  step={50}
+                  value={maxPositionToRiskRatioInput}
+                  onChange={(e) => handleMaxPositionToRiskRatioChange(e.target.value)}
+                  className="w-full py-1 text-xs font-mono font-bold text-center text-purple-400 bg-[#161c28] border border-[#2b364a] rounded focus:outline-none focus:border-purple-400"
+                  placeholder="300"
+                  title="حداکثر نسبت ارزش پوزیشن به ریسک (پیش‌فرض ۳۰۰ - مثلاً پوزیشن $10,000 به ریسک $100 = نسبت 100)"
                 />
               </div>
 

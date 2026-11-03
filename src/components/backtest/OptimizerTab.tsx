@@ -57,6 +57,8 @@ export interface OptimizerTabProps {
   setLockMaxBreakoutAtr: (val: boolean) => void;
   lockMaxRiskReward: boolean;
   setLockMaxRiskReward: (val: boolean) => void;
+  lockMaxPositionToRiskRatio?: boolean;
+  setLockMaxPositionToRiskRatio?: (val: boolean) => void;
   handleUpdateParamRange: (key: keyof AdaptiveRanges, field: 'min' | 'max', val: number) => void;
   targetMaxDrawdown: number;
   setTargetMaxDrawdown: (val: number) => void;
@@ -96,6 +98,8 @@ export interface OptimizerTabProps {
   setOptMaxBreakoutAtr: (val: number) => void;
   optMaxRiskReward: number;
   setOptMaxRiskReward: (val: number) => void;
+  optMaxPositionToRiskRatio?: number;
+  setOptMaxPositionToRiskRatio?: (val: number) => void;
   lockTimeStopCandles?: boolean;
   setLockTimeStopCandles?: (val: boolean) => void;
   optTimeStopCandles?: number;
@@ -162,6 +166,8 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
   setLockMaxBreakoutAtr,
   lockMaxRiskReward,
   setLockMaxRiskReward,
+  lockMaxPositionToRiskRatio = false,
+  setLockMaxPositionToRiskRatio,
   handleUpdateParamRange,
   targetMaxDrawdown,
   setTargetMaxDrawdown,
@@ -201,6 +207,8 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
   setOptMaxBreakoutAtr,
   optMaxRiskReward,
   setOptMaxRiskReward,
+  optMaxPositionToRiskRatio = 300,
+  setOptMaxPositionToRiskRatio,
   lockTimeStopCandles = false,
   setLockTimeStopCandles,
   optTimeStopCandles = 80,
@@ -705,6 +713,46 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                     <span className="text-cyan-400 font-mono font-bold">گام: {adaptiveRanges.timeStopCandles?.step ?? 5} کندل</span>
                   </div>
                 </div>
+
+                {/* ۱۰. حداکثر نسبت حجم به ریسک - رنج با گام ۵۰ تا ۵۰ تا */}
+                <div className="bg-[#0e121a] p-2.5 rounded-xl border border-purple-500/40 space-y-1.5 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-purple-300">۱۰. نسبت حجم به ریسک</span>
+                    <span className="text-[10px] font-mono text-purple-400 bg-purple-950/60 px-1.5 py-0.5 rounded">
+                      همگرایی {adaptiveRanges.maxPositionToRiskRatio?.convergence ?? 50}%
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-1 text-[10px] text-gray-400">
+                    <div className="flex items-center gap-1">
+                      <span>حداقل:</span>
+                      <input
+                        type="number"
+                        step={adaptiveRanges.maxPositionToRiskRatio?.step ?? 50}
+                        min={10}
+                        value={adaptiveRanges.maxPositionToRiskRatio?.min ?? 50}
+                        disabled={isOptimizing || lockMaxPositionToRiskRatio}
+                        onChange={(e) => handleUpdateParamRange('maxPositionToRiskRatio', 'min', parseFloat(e.target.value) || 0)}
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-purple-300 font-mono text-xs text-center focus:outline-none focus:border-purple-400"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span>حداکثر:</span>
+                      <input
+                        type="number"
+                        step={adaptiveRanges.maxPositionToRiskRatio?.step ?? 50}
+                        min={10}
+                        value={adaptiveRanges.maxPositionToRiskRatio?.max ?? 600}
+                        disabled={isOptimizing || lockMaxPositionToRiskRatio}
+                        onChange={(e) => handleUpdateParamRange('maxPositionToRiskRatio', 'max', parseFloat(e.target.value) || 0)}
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-purple-300 font-mono text-xs text-center focus:outline-none focus:border-purple-400"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5 border-t border-[#1a2230]">
+                    <span>بهترین مقدار: <strong className="text-amber-300 font-mono">{adaptiveRanges.maxPositionToRiskRatio?.bestVal ?? 300}×</strong></span>
+                    <span className="text-purple-400 font-mono font-bold">گام: {adaptiveRanges.maxPositionToRiskRatio?.step ?? 50}</span>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1067,6 +1115,31 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                     title="تعداد کندل ماندن در معامله قبل از خروج اجباری (با گام ۵ تا ۵ تا)"
                   />
                 </div>
+
+                {/* ۱۰. قفل/تنظیم دستی نسبت حجم به ریسک */}
+                <div className={`p-2 rounded-xl border transition-all ${lockMaxPositionToRiskRatio ? 'bg-purple-950/30 border-purple-400/80 shadow-sm shadow-purple-500/10' : 'bg-[#171e2b] border-purple-500/30'}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] font-semibold text-purple-300">۱۰. نسبت حجم/ریسک</label>
+                    <label className="flex items-center gap-1 text-[10px] text-purple-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={lockMaxPositionToRiskRatio}
+                        onChange={(e) => setLockMaxPositionToRiskRatio?.(e.target.checked)}
+                        className="rounded bg-[#0d1017] border-gray-600 text-purple-500 focus:ring-0 cursor-pointer"
+                      />
+                      <span className={lockMaxPositionToRiskRatio ? 'font-bold text-purple-300' : ''}>{lockMaxPositionToRiskRatio ? '🔒 قفل' : 'آزاد'}</span>
+                    </label>
+                  </div>
+                  <input
+                    type="number"
+                    step={50}
+                    value={optMaxPositionToRiskRatio}
+                    disabled={isOptimizing}
+                    onChange={(e) => setOptMaxPositionToRiskRatio?.(parseFloat(e.target.value) || 0)}
+                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockMaxPositionToRiskRatio ? 'border-purple-400/80 text-purple-300 font-bold' : 'border-[#2e3a4e] text-purple-400'} disabled:bg-[#1b202c] disabled:text-gray-500`}
+                    title="سقف نسبت ارزش پوزیشن به ریسک (با گام ۵۰ تا ۵۰ تا - پیش‌فرض ۳۰۰)"
+                  />
+                </div>
               </div>
 
               {/* کنترل اجرای سشن بهینه‌ساز */}
@@ -1268,7 +1341,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   </div>
 
                   <div className="text-[11px] text-gray-400 font-mono bg-[#0d1017] px-3 py-1.5 rounded-xl border border-[#232c3d]">
-                    ATR:{bestWinningRow.atrPeriod} | MinC:{bestWinningRow.minCandles} | MinLong:{bestWinningRow.minCandlesForLongLeg} | Mult:{bestWinningRow.atrMultiplier}x | LongMult:{bestWinningRow.longLegAtrMultiplier}x | Blue%:{bestWinningRow.maxBlueLegPercent}% | Break:{bestWinningRow.maxBreakoutAtrMultiplier}x | R:R:{bestWinningRow.maxRiskReward} | TimeStop:{bestWinningRow.timeStopCandles || 80}c
+                    ATR:{bestWinningRow.atrPeriod} | MinC:{bestWinningRow.minCandles} | MinLong:{bestWinningRow.minCandlesForLongLeg} | Mult:{bestWinningRow.atrMultiplier}x | LongMult:{bestWinningRow.longLegAtrMultiplier}x | Blue%:{bestWinningRow.maxBlueLegPercent}% | Break:{bestWinningRow.maxBreakoutAtrMultiplier}x | R:R:{bestWinningRow.maxRiskReward} | Pos/Risk:{bestWinningRow.maxPositionToRiskRatio ?? 300}x | TimeStop:{bestWinningRow.timeStopCandles || 80}c
                   </div>
                 </div>
 

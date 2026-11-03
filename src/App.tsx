@@ -144,6 +144,12 @@ export default function App() {
 
   const handleUpdateZigZagSettings = (newSettings: ZigZagSettings) => {
     setZigzagSettings({ ...newSettings });
+    if (newSettings.maxPositionToRiskRatio) {
+      setStrategyConfig((prev) => ({
+        ...prev,
+        maxPositionToRiskRatio: newSettings.maxPositionToRiskRatio,
+      }));
+    }
     try {
       localStorage.setItem('strategy_zigzag_settings', JSON.stringify(newSettings));
     } catch {}

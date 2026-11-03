@@ -188,6 +188,20 @@ export function runStrategy1Backtest(
           const riskAmount = riskBudget;
           const realizedRisk = sizing.actualLossAtSL;
 
+          // حداکثر نسبت ارزش پوزیشن به ریسک (پیش‌فرض ۳۰۰)
+          // مثلاً پوزیشن ۱۰۰۰۰ دلار و ریسک ۱۰۰ دلار -> نسبت ۱۰۰ <= ۳۰۰ است و معامله انجام می‌شود
+          const effectiveMaxRatio = config.maxPositionToRiskRatio !== undefined
+            ? config.maxPositionToRiskRatio
+            : (config.optMaxPositionToRiskRatio !== undefined ? config.optMaxPositionToRiskRatio : 300);
+          const posToRiskRatio = (riskAmount > 0)
+            ? parseFloat((positionValue / riskAmount).toFixed(2))
+            : 0;
+
+          if (effectiveMaxRatio > 0 && posToRiskRatio > effectiveMaxRatio) {
+            scanStartIdx = scanMaxWindow + 1;
+            break;
+          }
+
           for (let k = entryCandleIdx; k < candles.length; k++) {
             const ck = candles[k];
 
@@ -333,6 +347,7 @@ export function runStrategy1Backtest(
             qtyPrecision: sizing.qtyPrecision,
             positionSize,
             positionValue: parseFloat(positionValue.toFixed(2)),
+            positionToRiskRatio: posToRiskRatio,
             riskReward: parseFloat(riskReward.toFixed(2)),
             timeF,
             candleIdxF,
@@ -528,6 +543,18 @@ export function runStrategy2Backtest(
               const riskAmount = riskBudget;
               const realizedRisk = sizing.actualLossAtSL;
 
+              // حداکثر نسبت ارزش پوزیشن به ریسک (پیش‌فرض ۳۰۰)
+              const effectiveMaxRatio = config.maxPositionToRiskRatio !== undefined
+                ? config.maxPositionToRiskRatio
+                : (config.optMaxPositionToRiskRatio !== undefined ? config.optMaxPositionToRiskRatio : 300);
+              const posToRiskRatio = (riskAmount > 0)
+                ? parseFloat((positionValue / riskAmount).toFixed(2))
+                : 0;
+
+              if (effectiveMaxRatio > 0 && posToRiskRatio > effectiveMaxRatio) {
+                break;
+              }
+
               let status: TradeStatus = 'ACTIVE';
               let exitTime: number | undefined;
               let exitCandleIdx: number | undefined;
@@ -631,6 +658,7 @@ export function runStrategy2Backtest(
                 qtyPrecision: sizing.qtyPrecision,
                 positionSize,
                 positionValue: parseFloat(positionValue.toFixed(2)),
+                positionToRiskRatio: posToRiskRatio,
                 riskReward: parseFloat(riskReward.toFixed(2)),
                 timeF,
                 candleIdxF,
@@ -726,6 +754,18 @@ export function runStrategy2Backtest(
               const entryFee = sizing.entryFee;
               const riskAmount = riskBudget;
               const realizedRisk = sizing.actualLossAtSL;
+
+              // حداکثر نسبت ارزش پوزیشن به ریسک (پیش‌فرض ۳۰۰)
+              const effectiveMaxRatio = config.maxPositionToRiskRatio !== undefined
+                ? config.maxPositionToRiskRatio
+                : (config.optMaxPositionToRiskRatio !== undefined ? config.optMaxPositionToRiskRatio : 300);
+              const posToRiskRatio = (riskAmount > 0)
+                ? parseFloat((positionValue / riskAmount).toFixed(2))
+                : 0;
+
+              if (effectiveMaxRatio > 0 && posToRiskRatio > effectiveMaxRatio) {
+                break;
+              }
 
               let status: TradeStatus = 'ACTIVE';
               let exitTime: number | undefined;
@@ -830,6 +870,7 @@ export function runStrategy2Backtest(
                 qtyPrecision: sizing.qtyPrecision,
                 positionSize,
                 positionValue: parseFloat(positionValue.toFixed(2)),
+                positionToRiskRatio: posToRiskRatio,
                 riskReward: parseFloat(riskReward.toFixed(2)),
                 timeF,
                 candleIdxF,

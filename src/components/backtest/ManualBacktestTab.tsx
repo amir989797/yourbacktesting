@@ -92,6 +92,8 @@ export interface ManualBacktestTabProps {
   setOptMaxBreakoutAtr: (val: number) => void;
   optMaxRiskReward: number;
   setOptMaxRiskReward: (val: number) => void;
+  optMaxPositionToRiskRatio?: number;
+  setOptMaxPositionToRiskRatio?: (val: number) => void;
   optTimeStopEnabled: boolean;
   setOptTimeStopEnabled: (val: boolean) => void;
   optTimeStopCandles: number;
@@ -209,6 +211,8 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
   setOptMaxBreakoutAtr,
   optMaxRiskReward,
   setOptMaxRiskReward,
+  optMaxPositionToRiskRatio = 300,
+  setOptMaxPositionToRiskRatio,
   optTimeStopEnabled,
   setOptTimeStopEnabled,
   optTimeStopCandles,
@@ -527,6 +531,26 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       }}
                       disabled={isScanning}
                       className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-emerald-400 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-purple-300 block mb-1" title="حداکثر نسبت ارزش پوزیشن به ریسک">نسبت حجم/ریسک:</label>
+                    <input
+                      type="number"
+                      min={10}
+                      max={5000}
+                      step={50}
+                      value={optMaxPositionToRiskRatio === 0 || optMaxPositionToRiskRatio ? optMaxPositionToRiskRatio : ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (setOptMaxPositionToRiskRatio) setOptMaxPositionToRiskRatio(v === '' ? ('' as any) : Number(v));
+                      }}
+                      onBlur={() => {
+                        if ((!optMaxPositionToRiskRatio || isNaN(optMaxPositionToRiskRatio)) && setOptMaxPositionToRiskRatio) setOptMaxPositionToRiskRatio(300);
+                      }}
+                      disabled={isScanning}
+                      className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-purple-400 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
+                      title="حداکثر نسبت ارزش پوزیشن به ریسک (پیش‌فرض ۳۰۰)"
                     />
                   </div>
                   <div>

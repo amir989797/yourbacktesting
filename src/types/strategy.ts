@@ -36,6 +36,8 @@ export interface StrategyParams {
   optMaxRiskReward?: number;
   optTimeStopEnabled?: boolean;
   optTimeStopCandles?: number;
+  maxPositionToRiskRatio?: number; // حداکثر نسبت ارزش پوزیشن به ریسک (پیش‌فرض 300)
+  optMaxPositionToRiskRatio?: number;
 }
 
 export type StrategyConfig = StrategyParams;
@@ -56,6 +58,7 @@ export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
   exitCommissionPercent: 0.06, // 0.06% خروج
   timeStopEnabled: true,
   timeStopCandles: 80,
+  maxPositionToRiskRatio: 300,
 };
 
 export type TradeStatus = 'PENDING' | 'ACTIVE' | 'WIN' | 'LOSS' | 'BREAKEVEN' | 'EXPIRED' | 'OPEN';
@@ -135,6 +138,7 @@ export interface StrategyTrade {
   positionSize: number;
   quantity?: number;
   positionValue: number;
+  positionToRiskRatio?: number; // نسبت ارزش پوزیشن دلاری به ریسک (positionValue / riskAmount)
   riskReward: number;
   // Timestamps & Candle Indexes
   timeF: number; // Formation time of point F

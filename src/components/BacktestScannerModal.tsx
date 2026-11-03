@@ -581,6 +581,15 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   });
   const [lockTimeStopCandles, setLockTimeStopCandles] = useState<boolean>(false);
 
+  const [optMaxPositionToRiskRatio, setOptMaxPositionToRiskRatio] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('backtest_opt_max_pos_to_risk');
+      if (saved !== null) return parseFloat(saved) || 300;
+    } catch {}
+    return zigzagSettings?.maxPositionToRiskRatio || 300;
+  });
+  const [lockMaxPositionToRiskRatio, setLockMaxPositionToRiskRatio] = useState<boolean>(false);
+
   // همگام‌سازی اولیه یا به‌روزرسانی خارجی تنظیمات زیگ‌زاگ وارده توسط کاربر در چارت
   const prevZigzagSettingsRef = useRef<ZigZagSettings | undefined>(zigzagSettings);
   useEffect(() => {
@@ -1174,6 +1183,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             optTimeStopEnabled: overrideConfig?.timeStopEnabled ?? optTimeStopEnabled,
             timeStopCandles: overrideConfig?.timeStopCandles ?? optTimeStopCandles,
             optTimeStopCandles: overrideConfig?.timeStopCandles ?? optTimeStopCandles,
+            maxPositionToRiskRatio: overrideConfig?.maxPositionToRiskRatio ?? optMaxPositionToRiskRatio,
+            optMaxPositionToRiskRatio: overrideConfig?.maxPositionToRiskRatio ?? optMaxPositionToRiskRatio,
           },
         }),
       });
@@ -1601,6 +1612,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         optMaxBlueLegPercent,
         optMaxBreakoutAtr,
         optMaxRiskReward,
+        optTimeStopCandles,
+        optMaxPositionToRiskRatio,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -1654,6 +1667,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     if (config.optMaxBlueLegPercent !== undefined) setOptMaxBlueLegPercent(config.optMaxBlueLegPercent);
     if (config.optMaxBreakoutAtr !== undefined) setOptMaxBreakoutAtr(config.optMaxBreakoutAtr);
     if (config.optMaxRiskReward) setOptMaxRiskReward(config.optMaxRiskReward);
+    if (config.optTimeStopCandles) setOptTimeStopCandles(config.optTimeStopCandles);
+    if (config.optMaxPositionToRiskRatio) setOptMaxPositionToRiskRatio(config.optMaxPositionToRiskRatio);
 
     onUpdateZigZagSettings?.({
       atrPeriod: config.optAtrPeriod,
@@ -1663,6 +1678,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       longLegAtrMultiplier: config.optLongLegAtrMult,
       maxBlueLegPercent: config.optMaxBlueLegPercent,
       maxBreakoutAtrMultiplier: config.optMaxBreakoutAtr,
+      maxRiskReward: config.optMaxRiskReward,
+      maxPositionToRiskRatio: config.optMaxPositionToRiskRatio,
     });
 
     setIsLoadConfigModalOpen(false);
@@ -2805,6 +2822,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       maxBlueLegPercent: optMaxBlueLegPercent,
       maxBreakoutAtrMultiplier: optMaxBreakoutAtr,
       maxRiskReward: optMaxRiskReward,
+      maxPositionToRiskRatio: optMaxPositionToRiskRatio,
       timeStopCandles: optTimeStopCandles,
     };
     try {
@@ -2832,6 +2850,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             noConcurrentPositions,
             maxRiskReward: optMaxRiskReward,
             optMaxRiskReward,
+            maxPositionToRiskRatio: optMaxPositionToRiskRatio,
+            optMaxPositionToRiskRatio,
             maxCandlesToEnter,
             timeStopCandles: optTimeStopCandles,
           },
@@ -2934,6 +2954,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         maxBlueLegPercent: sampleParam(ranges.maxBlueLegPercent, lockMaxBlueLegPercent, optMaxBlueLegPercent),
         maxBreakoutAtrMultiplier: sampleParam(ranges.maxBreakoutAtrMultiplier, lockMaxBreakoutAtr, optMaxBreakoutAtr),
         maxRiskReward: sampleParam(ranges.maxRiskReward, lockMaxRiskReward, optMaxRiskReward),
+        maxPositionToRiskRatio: sampleParam(ranges.maxPositionToRiskRatio, lockMaxPositionToRiskRatio, optMaxPositionToRiskRatio),
         timeStopCandles: sampleParam(ranges.timeStopCandles, lockTimeStopCandles, optTimeStopCandles),
       };
 
@@ -3006,6 +3027,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           maxBreakoutAtrMultiplier: optMaxBreakoutAtr,
           maxRiskReward: optMaxRiskReward,
           optMaxRiskReward,
+          maxPositionToRiskRatio: optMaxPositionToRiskRatio,
+          optMaxPositionToRiskRatio,
           timeStopCandles: optTimeStopCandles,
         },
         constraints: {
@@ -3023,6 +3046,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           lockMaxBlueLegPercent,
           lockMaxBreakoutAtr,
           lockMaxRiskReward,
+          lockMaxPositionToRiskRatio,
           lockTimeStopCandles,
           optAtrPeriod: Number(optAtrPeriod),
           optMinCandles: Number(optMinCandles),
@@ -3032,12 +3056,11 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           optMaxBlueLegPercent: Number(optMaxBlueLegPercent),
           optMaxBreakoutAtr: Number(optMaxBreakoutAtr),
           optMaxRiskReward: Number(optMaxRiskReward),
+          optMaxPositionToRiskRatio: Number(optMaxPositionToRiskRatio),
           optTimeStopCandles: Number(optTimeStopCandles),
         },
         datasetId: activeSessionDatasetId || rangeStatus?.datasetId || `range_${(selectedExchange || 'xt').toLowerCase()}_${timeframe}_${timeRangeStartMs || 0}_${timeRangeEndMs || 0}`,
         autoAdaptiveEnabled,
-        processingDepth: 'fast',
-        sessionDurationMinutes: 15,
       };
 
       const res = await fetch('/api/optimizer/start', {
@@ -3122,6 +3145,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     setOptMaxBlueLegPercent(trial.maxBlueLegPercent);
     setOptMaxBreakoutAtr(trial.maxBreakoutAtrMultiplier);
     setOptMaxRiskReward(trial.maxRiskReward);
+    if (trial.maxPositionToRiskRatio) {
+      setOptMaxPositionToRiskRatio(trial.maxPositionToRiskRatio);
+    }
     if (trial.timeStopCandles) {
       setOptTimeStopCandles(trial.timeStopCandles);
     }
@@ -3134,6 +3160,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         longLegAtrMultiplier: trial.longLegAtrMultiplier,
         maxBlueLegPercent: trial.maxBlueLegPercent,
         maxBreakoutAtrMultiplier: trial.maxBreakoutAtrMultiplier,
+        maxPositionToRiskRatio: trial.maxPositionToRiskRatio || 300,
       });
     }
     if (andNotify) {
@@ -3528,6 +3555,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setOptMaxBreakoutAtr={setOptMaxBreakoutAtr}
             optMaxRiskReward={optMaxRiskReward}
             setOptMaxRiskReward={setOptMaxRiskReward}
+            optMaxPositionToRiskRatio={optMaxPositionToRiskRatio}
+            setOptMaxPositionToRiskRatio={setOptMaxPositionToRiskRatio}
             optTimeStopEnabled={optTimeStopEnabled}
             setOptTimeStopEnabled={setOptTimeStopEnabled}
             optTimeStopCandles={optTimeStopCandles}
@@ -3631,6 +3660,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setLockMaxBreakoutAtr={setLockMaxBreakoutAtr}
             lockMaxRiskReward={lockMaxRiskReward}
             setLockMaxRiskReward={setLockMaxRiskReward}
+            lockMaxPositionToRiskRatio={lockMaxPositionToRiskRatio}
+            setLockMaxPositionToRiskRatio={setLockMaxPositionToRiskRatio}
             handleUpdateParamRange={handleUpdateParamRange}
             targetMaxDrawdown={targetMaxDrawdown}
             setTargetMaxDrawdown={setTargetMaxDrawdown}
@@ -3670,6 +3701,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setOptMaxBreakoutAtr={setOptMaxBreakoutAtr}
             optMaxRiskReward={optMaxRiskReward}
             setOptMaxRiskReward={setOptMaxRiskReward}
+            optMaxPositionToRiskRatio={optMaxPositionToRiskRatio}
+            setOptMaxPositionToRiskRatio={setOptMaxPositionToRiskRatio}
             lockTimeStopCandles={lockTimeStopCandles}
             setLockTimeStopCandles={setLockTimeStopCandles}
             optTimeStopCandles={optTimeStopCandles}

@@ -516,6 +516,14 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     }
   });
 
+  const [maxPositionToRiskRatio, setMaxPositionToRiskRatio] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('livetrade_max_pos_to_risk_ratio');
+      if (saved !== null) return parseFloat(saved) || 300;
+    } catch {}
+    return 300;
+  });
+
   // کلیک روی ردیف پوزیشن یا تاریخچه برای نمایش چارت جفت‌ارز و ستاپ معامله در تب اصلی چارت (مشابه تریدینگ‌ویو)
   const handleNavigateToChart = (rawSymbol: string, orderData?: any) => {
     const clean = exchange === 'xt' ? toXtSymbol(rawSymbol) : rawSymbol.replace('_', '').toUpperCase();
@@ -889,6 +897,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
             if (typeof config.maxBlueLegPercent === 'number') setMaxBlueLegPercent(config.maxBlueLegPercent);
             if (typeof config.maxBreakoutAtrMultiplier === 'number') setMaxBreakoutAtrMultiplier(config.maxBreakoutAtrMultiplier);
             if (typeof config.maxCandlesToEnter === 'number') setMaxCandlesToEnter(config.maxCandlesToEnter);
+            if (typeof config.maxPositionToRiskRatio === 'number') setMaxPositionToRiskRatio(config.maxPositionToRiskRatio);
           }
         }
 
@@ -1029,6 +1038,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         maxCandlesToEnter,
         entryCommissionPercent,
         exitCommissionPercent,
+        maxPositionToRiskRatio,
       });
     }, 800);
     return () => clearTimeout(timer);
@@ -1053,6 +1063,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     maxCandlesToEnter,
     entryCommissionPercent,
     exitCommissionPercent,
+    maxPositionToRiskRatio,
     syncConfigToServer,
   ]);
 
@@ -1110,6 +1121,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           capital: balance.availableBalance > 0 ? balance.availableBalance : 1000,
           noConcurrentPositions,
           isLiveExecution,
+          maxPositionToRiskRatio,
           userId: currentUser || 'amir',
         };
 
@@ -1868,6 +1880,26 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                   <Flame className="w-3 h-3 text-amber-400" />
                   <span>بیشترین اهرم (Max)</span>
                 </div>
+              </div>
+
+              <div className="bg-[#141924] p-2.5 rounded-xl border border-purple-500/40">
+                <span className="text-[10px] text-purple-300 block font-bold" title="حداکثر نسبت ارزش پوزیشن به ریسک">۱۲. نسبت حجم/ریسک:</span>
+                <input
+                  type="number"
+                  min={10}
+                  max={5000}
+                  step={50}
+                  value={maxPositionToRiskRatio}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value) || 300;
+                    setMaxPositionToRiskRatio(val);
+                    try {
+                      localStorage.setItem('livetrade_max_pos_to_risk_ratio', String(val));
+                    } catch {}
+                  }}
+                  className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-purple-400 font-mono text-center font-bold text-xs"
+                  title="حداکثر نسبت ارزش پوزیشن به ریسک (پیش‌فرض ۳۰۰ - مثلاً پوزیشن $10,000 با ریسک $100 = نسبت 100 <= 300)"
+                />
               </div>
 
               <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42] flex flex-col justify-between">

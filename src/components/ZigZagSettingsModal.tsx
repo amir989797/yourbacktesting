@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { X, Sliders, RotateCcw, Check, Sparkles } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Sliders, RotateCcw, Check, ShieldCheck, Zap, HelpCircle, Activity, Scale } from 'lucide-react';
 import { ZigZagSettings } from '../types/crypto';
 
 interface ZigZagSettingsModalProps {
@@ -17,6 +17,7 @@ export const DEFAULT_ZIGZAG_SETTINGS: ZigZagSettings = {
   longLegAtrMultiplier: 10,
   maxBlueLegPercent: 60,
   maxBreakoutAtrMultiplier: 5,
+  maxPositionToRiskRatio: 300,
 };
 
 export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
@@ -25,6 +26,14 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
   settings,
   onSave,
 }) => {
+  const [activeTab, setActiveTab] = useState<'risk' | 'zigzag'>('risk');
+
+  // Strategy & Risk Sizing
+  const [maxPositionToRiskRatio, setMaxPositionToRiskRatio] = useState<number | string>(
+    settings.maxPositionToRiskRatio ?? 300
+  );
+
+  // ZigZag Parameters
   const [atrPeriod, setAtrPeriod] = useState<number | string>(settings.atrPeriod);
   const [minCandles, setMinCandles] = useState<number | string>(settings.minCandles);
   const [minCandlesForLongLeg, setMinCandlesForLongLeg] = useState<number | string>(
@@ -41,9 +50,10 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
     settings.maxBreakoutAtrMultiplier ?? 5
   );
 
-  // Sync state if settings prop changes
-  React.useEffect(() => {
+  // Sync state when opened or settings change
+  useEffect(() => {
     if (isOpen) {
+      setMaxPositionToRiskRatio(settings.maxPositionToRiskRatio ?? 300);
       setAtrPeriod(settings.atrPeriod);
       setMinCandles(settings.minCandles);
       setMinCandlesForLongLeg(settings.minCandlesForLongLeg);
@@ -57,6 +67,7 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
   if (!isOpen) return null;
 
   const handleReset = () => {
+    setMaxPositionToRiskRatio(DEFAULT_ZIGZAG_SETTINGS.maxPositionToRiskRatio ?? 300);
     setAtrPeriod(DEFAULT_ZIGZAG_SETTINGS.atrPeriod);
     setMinCandles(DEFAULT_ZIGZAG_SETTINGS.minCandles);
     setMinCandlesForLongLeg(DEFAULT_ZIGZAG_SETTINGS.minCandlesForLongLeg);
@@ -68,6 +79,7 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
+    const finalMaxRatio = Math.max(10, parseFloat(String(maxPositionToRiskRatio)) || 300);
     const finalAtrPeriod = Math.max(1, parseInt(String(atrPeriod), 10) || 55);
     const finalMinCandles = Math.max(1, parseInt(String(minCandles), 10) || 1);
     const finalMinCandlesLong = Math.max(1, parseInt(String(minCandlesForLongLeg), 10) || 20);
@@ -84,26 +96,34 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
       longLegAtrMultiplier: finalLongAtrMult,
       maxBlueLegPercent: finalMaxBlue,
       maxBreakoutAtrMultiplier: finalMaxBreakout,
+      maxPositionToRiskRatio: finalMaxRatio,
     });
     onClose();
   };
 
+  const curRatioNum = Number(maxPositionToRiskRatio) || 300;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
       <div
-        className="w-full max-w-md bg-[#161b24] border border-[#2e3748] rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+        className="w-full max-w-2xl bg-[#141822] border border-[#2b3547] rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh]"
         onClick={(e) => e.stopPropagation()}
         dir="rtl"
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[#252e3d] bg-[#121620]">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
-              <Sliders className="w-4 h-4" />
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#232c3d] bg-[#0f131c]">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
+              <Sliders className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-white">تنظیمات اندیکاتور زیگ‌زاگ و ATR</h3>
-              <p className="text-[11px] text-gray-400">پیکربندی دوره‌های زمانی و پارامترهای لگ‌ها</p>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-bold text-white">پیکربندی استراتژی و اندیکاتورها</h3>
+                <span className="text-[10px] bg-amber-500/15 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full font-semibold">
+                  تنظیمات پیشرفته
+                </span>
+              </div>
+              <p className="text-[11px] text-gray-400">مدیریت حجم به ریسک، پارامترهای ATR و موج‌های زیگ‌زاگ</p>
             </div>
           </div>
           <button
@@ -114,268 +134,332 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
           </button>
         </div>
 
-        {/* Form Body */}
-        <form onSubmit={handleSave} className="p-5 space-y-4">
-          {/* 1. Period ATR */}
-          <div className="p-3 rounded-xl bg-[#1a212d] border border-[#283244] hover:border-amber-500/40 transition-colors">
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-amber-400" />
-                Period ATR (دوره زمانی ATR)
-              </label>
-              <span className="text-[11px] font-mono text-amber-400 font-bold">
-                {atrPeriod} کندل
-              </span>
-            </div>
-            <p className="text-[11px] text-gray-400 mb-2.5 leading-relaxed">
-              دوره زمانی برای محاسبه اندیکاتور ATR در نوار بالا و محاسبات پوینت‌های زیگ‌زاگ.
-            </p>
-            <div className="flex items-center gap-3">
-              <input
-                type="range"
-                min={1}
-                max={200}
-                value={Number(atrPeriod) || 55}
-                onChange={(e) => setAtrPeriod(Number(e.target.value))}
-                className="flex-1 accent-amber-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
-              />
-              <input
-                type="number"
-                min={1}
-                max={500}
-                step={1}
-                value={atrPeriod}
-                onChange={(e) => setAtrPeriod(e.target.value)}
-                className="w-18 px-2.5 py-1 text-xs font-mono font-bold text-center text-amber-400 bg-[#10141c] border border-[#323d50] rounded-lg focus:outline-none focus:border-amber-400"
-              />
-            </div>
-          </div>
+        {/* Tab Buttons */}
+        <div className="flex border-b border-[#232c3d] bg-[#121622] px-4 pt-2 gap-2">
+          <button
+            type="button"
+            onClick={() => setActiveTab('risk')}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-t-xl text-xs font-bold transition-all cursor-pointer border-t-2 ${
+              activeTab === 'risk'
+                ? 'bg-[#181f2c] text-amber-400 border-amber-400'
+                : 'text-gray-400 hover:text-gray-200 border-transparent'
+            }`}
+          >
+            <ShieldCheck className="w-4 h-4" />
+            <span>مدیریت سرمایه و ریسک (Risk & Position)</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('zigzag')}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-t-xl text-xs font-bold transition-all cursor-pointer border-t-2 ${
+              activeTab === 'zigzag'
+                ? 'bg-[#181f2c] text-sky-400 border-sky-400'
+                : 'text-gray-400 hover:text-gray-200 border-transparent'
+            }`}
+          >
+            <Activity className="w-4 h-4" />
+            <span>پارامترهای زیگ‌زاگ و ATR</span>
+          </button>
+        </div>
 
-          {/* 2. Min Candle */}
-          <div className="p-3 rounded-xl bg-[#1a212d] border border-[#283244] hover:border-sky-500/40 transition-colors">
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-sky-400" />
-                Min Candle (حداقل فاصله کندل)
-              </label>
-              <span className="text-[11px] font-mono text-sky-400 font-bold">
-                {minCandles} کندل
-              </span>
-            </div>
-            <p className="text-[11px] text-gray-400 mb-2.5 leading-relaxed">
-              حداقل تعداد کندل بین هر دو نقطه عطف زیگ‌زاگ (برای فیلتر کردن نوسانات مقطعی).
-            </p>
-            <div className="flex items-center gap-3">
-              <input
-                type="range"
-                min={1}
-                max={30}
-                step={1}
-                value={Number(minCandles) || 1}
-                onChange={(e) => setMinCandles(Number(e.target.value))}
-                className="flex-1 accent-sky-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
-              />
-              <input
-                type="number"
-                min={1}
-                max={100}
-                step={1}
-                value={minCandles}
-                onChange={(e) => setMinCandles(e.target.value)}
-                className="w-18 px-2.5 py-1 text-xs font-mono font-bold text-center text-sky-400 bg-[#10141c] border border-[#323d50] rounded-lg focus:outline-none focus:border-sky-400"
-              />
-            </div>
-          </div>
+        {/* Form Body with Smooth Scroll */}
+        <form onSubmit={handleSave} className="p-5 overflow-y-auto space-y-4 flex-1">
+          {activeTab === 'risk' && (
+            <div className="space-y-4 animate-in fade-in duration-150">
+              {/* Highlighted Parameter Card: Max Position-to-Risk Ratio */}
+              <div className="p-4 rounded-xl bg-gradient-to-br from-[#172132] to-[#131a26] border border-amber-500/40 shadow-lg shadow-amber-500/5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg bg-amber-400/20 border border-amber-400/40 flex items-center justify-center text-amber-300">
+                      <Scale className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-white flex items-center gap-1.5">
+                        حداکثر نسبت ارزش پوزیشن به ریسک (Max Position / Risk)
+                      </label>
+                      <p className="text-[11px] text-gray-300">کنترل لوریج ضمنی و جلوگیری از اورلوریج در استاپ‌های بسیار نزدیک</p>
+                    </div>
+                  </div>
+                  <span className="text-xs font-mono font-extrabold text-amber-400 bg-amber-400/10 px-2.5 py-1 rounded-lg border border-amber-400/30">
+                    سقف مجاز: {maxPositionToRiskRatio}×
+                  </span>
+                </div>
 
-          {/* 3. Min Candle for Long Leg */}
-          <div className="p-3 rounded-xl bg-[#1a212d] border border-[#283244] hover:border-emerald-500/40 transition-colors">
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                Min Candle for Long Leg (حداقل کندل لگ بلند)
-              </label>
-              <span className="text-[11px] font-mono text-emerald-400 font-bold">
-                {minCandlesForLongLeg} کندل
-              </span>
-            </div>
-            <p className="text-[11px] text-gray-400 mb-2.5 leading-relaxed">
-              حداقل تعداد کندل لازم برای شناسایی لگ‌های غول‌پیکر سبز (صعودی) یا قرمز (نزولی).
-            </p>
-            <div className="flex items-center gap-3">
-              <input
-                type="range"
-                min={1}
-                max={100}
-                step={1}
-                value={Number(minCandlesForLongLeg) || 20}
-                onChange={(e) => setMinCandlesForLongLeg(Number(e.target.value))}
-                className="flex-1 accent-emerald-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
-              />
-              <input
-                type="number"
-                min={1}
-                max={500}
-                step={1}
-                value={minCandlesForLongLeg}
-                onChange={(e) => setMinCandlesForLongLeg(e.target.value)}
-                className="w-18 px-2.5 py-1 text-xs font-mono font-bold text-center text-emerald-400 bg-[#10141c] border border-[#323d50] rounded-lg focus:outline-none focus:border-emerald-400"
-              />
-            </div>
-          </div>
+                <div className="flex items-center gap-3 pt-1">
+                  <input
+                    type="range"
+                    min={50}
+                    max={1000}
+                    step={50}
+                    value={Number(maxPositionToRiskRatio) || 300}
+                    onChange={(e) => setMaxPositionToRiskRatio(Number(e.target.value))}
+                    className="flex-1 accent-amber-400 cursor-pointer h-2 bg-[#252f40] rounded-lg"
+                  />
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="number"
+                      min={10}
+                      max={2000}
+                      step={50}
+                      value={maxPositionToRiskRatio}
+                      onChange={(e) => setMaxPositionToRiskRatio(e.target.value)}
+                      className="w-24 px-3 py-1.5 text-xs font-mono font-bold text-center text-amber-300 bg-[#0f131c] border border-amber-500/50 rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-400"
+                    />
+                    <span className="text-xs text-gray-400 font-mono">برابر</span>
+                  </div>
+                </div>
 
-          {/* 4. ATR Multiplier (ضریب زیگ‌زاگ عادی) */}
-          <div className="p-3 rounded-xl bg-[#1a212d] border border-[#283244] hover:border-purple-500/40 transition-colors">
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-purple-400" />
-                ضریب نوسان زیگ‌زاگ عادی (ATR Multiplier)
-              </label>
-              <span className="text-[11px] font-mono text-purple-400 font-bold">
-                {atrMultiplier}× ATR
-              </span>
+                {/* Visual calculation example card */}
+                <div className="p-3 rounded-lg bg-[#0d1118]/80 border border-[#232c3d] text-[11px] space-y-1.5">
+                  <div className="flex items-center gap-1.5 text-amber-300 font-semibold">
+                    <HelpCircle className="w-3.5 h-3.5" />
+                    <span>نحوه محاسبه و کاربرد:</span>
+                  </div>
+                  <p className="text-gray-300 leading-relaxed">
+                    نسبت ارزش کل پوزیشن (Position Value) به بودجه ریسک (Risk Amount) معامله است:
+                  </p>
+                  <div className="p-2 rounded bg-[#161c28] border border-[#2b3548] font-mono text-center text-[11px] text-gray-200">
+                    <span className="text-sky-300 font-bold">ارزش پوزیشن: $10,000</span>
+                    {' ÷ '}
+                    <span className="text-rose-400 font-bold">ریسک: $100</span>
+                    {' = '}
+                    <span className="text-emerald-400 font-bold">نسبت ۱۰۰</span>
+                    {' '}
+                    <span className={100 <= curRatioNum ? 'text-emerald-400' : 'text-rose-400'}>
+                      {100 <= curRatioNum ? `(≤ ${curRatioNum} ✅ معامله تایید و انجام می‌شود)` : `(> ${curRatioNum} ❌ معامله رد می‌شود)`}
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-gray-400">
+                    اگر استاپ‌لاس کندل به قیمت ورود فوق‌العاده نزدیک باشد، فرمول سایزینگ حجم بسیار عظیمی تولید می‌کند. این سقف ایمنی مانع از ورود به این پوزیشن‌های پرریسک می‌شود.
+                  </p>
+                </div>
+              </div>
             </div>
-            <p className="text-[11px] text-gray-400 mb-2.5 leading-relaxed">
-              حداقل تغییرات قیمت بر مبنای مضربی از ATR جهت تایید چرخش زیگ‌زاگ (می‌توانید مقادیر کمتر از ۳ مانند ۰.۵، ۱، ۱.۵ یا ۲ را وارد کنید).
-            </p>
-            <div className="flex items-center gap-3">
-              <input
-                type="range"
-                min={0.1}
-                max={10}
-                step={0.1}
-                value={Number(atrMultiplier) || 0.1}
-                onChange={(e) => setAtrMultiplier(Number(e.target.value))}
-                className="flex-1 accent-purple-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
-              />
-              <input
-                type="number"
-                min={0.1}
-                max={50}
-                step="any"
-                value={atrMultiplier}
-                onChange={(e) => setAtrMultiplier(e.target.value)}
-                className="w-18 px-2.5 py-1 text-xs font-mono font-bold text-center text-purple-400 bg-[#10141c] border border-[#323d50] rounded-lg focus:outline-none focus:border-purple-400"
-              />
-            </div>
-          </div>
+          )}
 
-          {/* 5. Long Leg ATR Multiplier (ضریب نوسان لگ‌های بزرگ) */}
-          <div className="p-3 rounded-xl bg-[#1a212d] border border-[#283244] hover:border-rose-500/40 transition-colors">
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-rose-400" />
-                ضریب ATR نوسان لگ‌های بزرگ (Giant Leg Multiplier)
-              </label>
-              <span className="text-[11px] font-mono text-rose-400 font-bold">
-                {longLegAtrMultiplier}× ATR ({Math.round((Number(longLegAtrMultiplier) || 10) * 100)}%)
-              </span>
-            </div>
-            <p className="text-[11px] text-gray-400 mb-2.5 leading-relaxed">
-              حداقل اندازه حرکت بر مبنای مضربی از ATR برای شناسایی لگ‌های غول‌پیکر سبز (صعودی) یا قرمز (نزولی).
-            </p>
-            <div className="flex items-center gap-3">
-              <input
-                type="range"
-                min={0.5}
-                max={30}
-                step={0.5}
-                value={Number(longLegAtrMultiplier) || 10}
-                onChange={(e) => setLongLegAtrMultiplier(Number(e.target.value))}
-                className="flex-1 accent-rose-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
-              />
-              <input
-                type="number"
-                min={0.1}
-                max={100}
-                step="any"
-                value={longLegAtrMultiplier}
-                onChange={(e) => setLongLegAtrMultiplier(e.target.value)}
-                className="w-18 px-2.5 py-1 text-xs font-mono font-bold text-center text-rose-400 bg-[#10141c] border border-[#323d50] rounded-lg focus:outline-none focus:border-rose-400"
-              />
-            </div>
-          </div>
+          {activeTab === 'zigzag' && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 animate-in fade-in duration-150">
+              {/* 1. Period ATR */}
+              <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-amber-500/40 transition-colors">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-amber-400" />
+                    Period ATR (دوره زمانی)
+                  </label>
+                  <span className="text-[11px] font-mono text-amber-400 font-bold">{atrPeriod} کندل</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={1}
+                    max={200}
+                    value={Number(atrPeriod) || 55}
+                    onChange={(e) => setAtrPeriod(Number(e.target.value))}
+                    className="flex-1 accent-amber-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
+                  />
+                  <input
+                    type="number"
+                    min={1}
+                    max={500}
+                    value={atrPeriod}
+                    onChange={(e) => setAtrPeriod(e.target.value)}
+                    className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-amber-400 bg-[#10141c] border border-[#323d50] rounded-lg"
+                  />
+                </div>
+              </div>
 
-          {/* 6. Blue Leg Max % Ratio (محدودیت ۶۰ درصدی لگ‌های آبی) */}
-          <div className="p-3 rounded-xl bg-[#1a212d] border border-[#283244] hover:border-cyan-500/40 transition-colors">
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-cyan-400" />
-                سقف اندازه لگ‌های آبی (نسبت به قرمز/سبز)
-              </label>
-              <span className="text-[11px] font-mono text-cyan-400 font-bold">
-                {maxBlueLegPercent}%
-              </span>
-            </div>
-            <p className="text-[11px] text-gray-400 mb-2.5 leading-relaxed">
-              محدودیت درصدی برای لگ‌های آبی (C تا D و E تا F): اندازه پوینت لگ آبی باید کمتر از این درصد از لگ قرمز/سبز باشد (پیش‌فرض ۶۰٪).
-            </p>
-            <div className="flex items-center gap-3">
-              <input
-                type="range"
-                min={10}
-                max={100}
-                step={5}
-                value={Number(maxBlueLegPercent) || 60}
-                onChange={(e) => setMaxBlueLegPercent(Number(e.target.value))}
-                className="flex-1 accent-cyan-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
-              />
-              <input
-                type="number"
-                min={1}
-                max={200}
-                step={1}
-                value={maxBlueLegPercent}
-                onChange={(e) => setMaxBlueLegPercent(e.target.value)}
-                className="w-18 px-2.5 py-1 text-xs font-mono font-bold text-center text-cyan-400 bg-[#10141c] border border-[#323d50] rounded-lg focus:outline-none focus:border-cyan-400"
-              />
-            </div>
-          </div>
+              {/* 2. Min Candle */}
+              <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-sky-500/40 transition-colors">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-sky-400" />
+                    Min Candle (حداقل فاصله کندل)
+                  </label>
+                  <span className="text-[11px] font-mono text-sky-400 font-bold">{minCandles} کندل</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={1}
+                    max={30}
+                    value={Number(minCandles) || 1}
+                    onChange={(e) => setMinCandles(Number(e.target.value))}
+                    className="flex-1 accent-sky-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
+                  />
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={minCandles}
+                    onChange={(e) => setMinCandles(e.target.value)}
+                    className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-sky-400 bg-[#10141c] border border-[#323d50] rounded-lg"
+                  />
+                </div>
+              </div>
 
-          {/* 7. Max Breakout Penetration ATR (سقف نفوذ شکست انتهای لگ) */}
-          <div className="p-3 rounded-xl bg-[#1a212d] border border-[#283244] hover:border-indigo-500/40 transition-colors">
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-indigo-400" />
-                سقف نفوذ شکست انتهای لگ (برابر ATR)
-              </label>
-              <span className="text-[11px] font-mono text-indigo-400 font-bold">
-                {maxBreakoutAtrMultiplier}× ATR
-              </span>
-            </div>
-            <p className="text-[11px] text-gray-400 mb-2.5 leading-relaxed">
-              فاصله مجاز عبور قیمت از نقطه شکست انتهای لگ نباید بیشتر از این مضرب از ATR باشد (پیش‌فرض ۵ برابر ATR).
-            </p>
-            <div className="flex items-center gap-3">
-              <input
-                type="range"
-                min={1}
-                max={20}
-                step={0.5}
-                value={Number(maxBreakoutAtrMultiplier) || 5}
-                onChange={(e) => setMaxBreakoutAtrMultiplier(Number(e.target.value))}
-                className="flex-1 accent-indigo-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
-              />
-              <input
-                type="number"
-                min={0.5}
-                max={50}
-                step="any"
-                value={maxBreakoutAtrMultiplier}
-                onChange={(e) => setMaxBreakoutAtrMultiplier(e.target.value)}
-                className="w-18 px-2.5 py-1 text-xs font-mono font-bold text-center text-indigo-400 bg-[#10141c] border border-[#323d50] rounded-lg focus:outline-none focus:border-indigo-400"
-              />
-            </div>
-          </div>
+              {/* 3. Min Candle for Long Leg */}
+              <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-emerald-500/40 transition-colors">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                    کندل لگ بلند (Long Leg)
+                  </label>
+                  <span className="text-[11px] font-mono text-emerald-400 font-bold">{minCandlesForLongLeg} کندل</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={1}
+                    max={100}
+                    value={Number(minCandlesForLongLeg) || 20}
+                    onChange={(e) => setMinCandlesForLongLeg(Number(e.target.value))}
+                    className="flex-1 accent-emerald-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
+                  />
+                  <input
+                    type="number"
+                    min={1}
+                    max={500}
+                    value={minCandlesForLongLeg}
+                    onChange={(e) => setMinCandlesForLongLeg(e.target.value)}
+                    className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-emerald-400 bg-[#10141c] border border-[#323d50] rounded-lg"
+                  />
+                </div>
+              </div>
 
-          {/* Actions */}
-          <div className="flex items-center justify-between pt-3 border-t border-[#252e3d]">
+              {/* 4. ATR Multiplier */}
+              <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-purple-500/40 transition-colors">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-purple-400" />
+                    ضریب نوسان عادی (ATR Mult)
+                  </label>
+                  <span className="text-[11px] font-mono text-purple-400 font-bold">{atrMultiplier}× ATR</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={10}
+                    step={0.1}
+                    value={Number(atrMultiplier) || 0.1}
+                    onChange={(e) => setAtrMultiplier(Number(e.target.value))}
+                    className="flex-1 accent-purple-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
+                  />
+                  <input
+                    type="number"
+                    min={0.1}
+                    max={50}
+                    step="any"
+                    value={atrMultiplier}
+                    onChange={(e) => setAtrMultiplier(e.target.value)}
+                    className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-purple-400 bg-[#10141c] border border-[#323d50] rounded-lg"
+                  />
+                </div>
+              </div>
+
+              {/* 5. Long Leg ATR Multiplier */}
+              <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-rose-500/40 transition-colors">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-rose-400" />
+                    ضریب لگ بزرگ (Giant Leg)
+                  </label>
+                  <span className="text-[11px] font-mono text-rose-400 font-bold">{longLegAtrMultiplier}× ATR</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={0.5}
+                    max={30}
+                    step={0.5}
+                    value={Number(longLegAtrMultiplier) || 10}
+                    onChange={(e) => setLongLegAtrMultiplier(Number(e.target.value))}
+                    className="flex-1 accent-rose-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
+                  />
+                  <input
+                    type="number"
+                    min={0.1}
+                    max={100}
+                    step="any"
+                    value={longLegAtrMultiplier}
+                    onChange={(e) => setLongLegAtrMultiplier(e.target.value)}
+                    className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-rose-400 bg-[#10141c] border border-[#323d50] rounded-lg"
+                  />
+                </div>
+              </div>
+
+              {/* 6. Blue Leg Max % Ratio */}
+              <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-cyan-500/40 transition-colors">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-cyan-400" />
+                    سقف اندازه لگ آبی (Blue Leg %)
+                  </label>
+                  <span className="text-[11px] font-mono text-cyan-400 font-bold">{maxBlueLegPercent}%</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={10}
+                    max={100}
+                    step={5}
+                    value={Number(maxBlueLegPercent) || 60}
+                    onChange={(e) => setMaxBlueLegPercent(Number(e.target.value))}
+                    className="flex-1 accent-cyan-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
+                  />
+                  <input
+                    type="number"
+                    min={1}
+                    max={200}
+                    value={maxBlueLegPercent}
+                    onChange={(e) => setMaxBlueLegPercent(e.target.value)}
+                    className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-cyan-400 bg-[#10141c] border border-[#323d50] rounded-lg"
+                  />
+                </div>
+              </div>
+
+              {/* 7. Max Breakout Penetration ATR */}
+              <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-indigo-500/40 transition-colors sm:col-span-2">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-indigo-400" />
+                    سقف نفوذ شکست انتهای لگ (Breakout ATR)
+                  </label>
+                  <span className="text-[11px] font-mono text-indigo-400 font-bold">{maxBreakoutAtrMultiplier}× ATR</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={1}
+                    max={20}
+                    step={0.5}
+                    value={Number(maxBreakoutAtrMultiplier) || 5}
+                    onChange={(e) => setMaxBreakoutAtrMultiplier(Number(e.target.value))}
+                    className="flex-1 accent-indigo-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
+                  />
+                  <input
+                    type="number"
+                    min={0.5}
+                    max={50}
+                    step="any"
+                    value={maxBreakoutAtrMultiplier}
+                    onChange={(e) => setMaxBreakoutAtrMultiplier(e.target.value)}
+                    className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-indigo-400 bg-[#10141c] border border-[#323d50] rounded-lg"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Footer Actions */}
+          <div className="flex items-center justify-between pt-3 border-t border-[#232c3d]">
             <button
               type="button"
               onClick={handleReset}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 hover:text-white hover:bg-[#252e3d] transition-colors cursor-pointer"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              <span>پیش‌فرض (55 / 3 / 20 / 3 / 10 / 60% / 5x)</span>
+              <span>بازنشانی به مقادیر پیش‌فرض</span>
             </button>
 
             <div className="flex items-center gap-2">
@@ -391,7 +475,7 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
                 className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold text-black bg-amber-400 hover:bg-amber-300 transition-colors shadow-md shadow-amber-500/20 cursor-pointer"
               >
                 <Check className="w-3.5 h-3.5" />
-                <span>ذخیره و اعمال</span>
+                <span>ذخیره و اعمال تنظیمات</span>
               </button>
             </div>
           </div>
