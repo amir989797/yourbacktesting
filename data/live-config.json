@@ -1,0 +1,55 @@
+{
+  "config": {
+    "timeframe": "5m",
+    "exchange": "xt",
+    "strategyId": "strategy_2_next_pivot",
+    "symbols": [
+      "btc_usdt",
+      "eth_usdt",
+      "sol_usdt",
+      "xrp_usdt",
+      "doge_usdt",
+      "sui_usdt",
+      "ada_usdt",
+      "near_usdt",
+      "avax_usdt",
+      "link_usdt",
+      "pepe_usdt",
+      "shib_usdt",
+      "dot_usdt",
+      "ltc_usdt",
+      "apt_usdt"
+    ],
+    "isFutures": true,
+    "intervalMs": 300000,
+    "atrPeriod": 14,
+    "atrMultiplier": 2,
+    "minCandles": 5,
+    "minCandlesForLongLeg": 5,
+    "longLegAtrMultiplier": 3,
+    "maxBlueLegPercent": 70,
+    "maxBreakoutAtrMultiplier": 3,
+    "riskRewardRatio": 2,
+    "riskMode": "percent",
+    "riskAmountFixed": 50,
+    "riskPercent": 1,
+    "capital": 1000,
+    "noConcurrentPositions": true,
+    "isLiveExecution": false,
+    "userId": "amir"
+  },
+  "isRunning": true,
+  "startedAt": "2026-11-03T11:32:52.064Z",
+  "lastRunAt": null,
+  "totalRunsCount": 0,
+  "logs": [
+    {
+      "id": "log_1793705572064_sn9z",
+      "time": "۱۱:۳۲:۵۲",
+      "type": "success",
+      "message": "🚀 اتوپایلوت مداوم سرور فعال شد [حالت: 📝 شبیه‌ساز (Paper Trading)]: دوره تکرار هر 5 دقیقه (15 ارز). اسکن اول فوراً آغاز شد."
+    }
+  ],
+  "executionLogs": [],
+  "updatedAt": "2026-11-03T11:32:52.081Z"
+}

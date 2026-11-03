@@ -322,8 +322,7 @@ export async function cancelXtOrder(orderId: string): Promise<boolean> {
  */
 export async function fetchXtPairs(): Promise<CryptoPair[]> {
   try {
-    const res = await fetch('/api/market/pairs?exchange=xt');
-    const data = await res.json();
+    const data = await safeFetchJson<any>('/api/market/pairs?exchange=xt');
     if (data?.success && Array.isArray(data.pairs) && data.pairs.length > 0) {
       return data.pairs;
     }
@@ -350,8 +349,7 @@ export async function fetchXtKlines(
 ): Promise<CandleData[]> {
   const xtSymbol = toXtSymbol(symbol);
   try {
-    const res = await fetch(`/api/market/klines?exchange=xt&symbol=${encodeURIComponent(xtSymbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${limit}`);
-    const data = await res.json();
+    const data = await safeFetchJson<any>(`/api/market/klines?exchange=xt&symbol=${encodeURIComponent(xtSymbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${limit}`);
     if (data?.success && Array.isArray(data.candles) && data.candles.length > 0) {
       return data.candles;
     }
@@ -361,8 +359,7 @@ export async function fetchXtKlines(
 
   // Server candle alias fallback if needed
   try {
-    const res = await fetch(`/api/market/candles?exchange=xt&symbol=${encodeURIComponent(xtSymbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${limit}`);
-    const data = await res.json();
+    const data = await safeFetchJson<any>(`/api/market/candles?exchange=xt&symbol=${encodeURIComponent(xtSymbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${limit}`);
     if (data?.candles && Array.isArray(data.candles)) {
       return data.candles;
     }
@@ -370,3 +367,4 @@ export async function fetchXtKlines(
 
   return [];
 }
+

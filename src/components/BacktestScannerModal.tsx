@@ -3036,6 +3036,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         },
         datasetId: activeSessionDatasetId || rangeStatus?.datasetId || `range_${(selectedExchange || 'xt').toLowerCase()}_${timeframe}_${timeRangeStartMs || 0}_${timeRangeEndMs || 0}`,
         autoAdaptiveEnabled,
+        processingDepth: 'fast',
+        sessionDurationMinutes: 15,
       };
 
       const res = await fetch('/api/optimizer/start', {

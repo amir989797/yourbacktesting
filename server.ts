@@ -3813,7 +3813,11 @@ function processFilteredTrades(
   };
 }
 
-async function ensureDatasetChunksCachedOnDisk(datasetId: string, onProgress?: (msg: string) => void): Promise<boolean> {
+async function ensureDatasetChunksCachedOnDisk(
+  datasetId: string,
+  onProgress?: (msg: string) => void,
+  maxChunksToLoad: number = 80
+): Promise<boolean> {
   const diskCacheDir = path.join('/tmp', 'candle_chunks', datasetId);
   try {
     fs.mkdirSync(diskCacheDir, { recursive: true });
@@ -3829,19 +3833,20 @@ async function ensureDatasetChunksCachedOnDisk(datasetId: string, onProgress?: (
   const totalChunks = parseInt(countRes.rows[0]?.count || '0', 10);
   if (totalChunks === 0) return false;
 
-  if (cachedCount >= totalChunks && totalChunks > 0) {
+  const targetLimit = Math.min(totalChunks, maxChunksToLoad);
+  if (cachedCount >= targetLimit && targetLimit > 0) {
     return true;
   }
 
-  onProgress?.(`در حال دانلود و کش محلی ${totalChunks} چانک دیتابیس روی دیسک پرسرعت (${cachedCount}/${totalChunks})...`);
+  onProgress?.(`در حال آماده‌سازی و بارگذاری ${targetLimit} نماد برتر دیتابیس (${cachedCount}/${targetLimit})...`);
 
-  const batchSize = 8;
+  const batchSize = 20;
   const batches: Array<{ startIdx: number; endIdx: number }> = [];
-  for (let idx = 0; idx < totalChunks; idx += batchSize) {
-    batches.push({ startIdx: idx, endIdx: idx + batchSize });
+  for (let idx = 0; idx < targetLimit; idx += batchSize) {
+    batches.push({ startIdx: idx, endIdx: Math.min(targetLimit, idx + batchSize) });
   }
 
-  const concurrency = 4;
+  const concurrency = 5;
   const queue = [...batches];
   let completedChunks = cachedCount;
 
@@ -3863,8 +3868,8 @@ async function ensureDatasetChunksCachedOnDisk(datasetId: string, onProgress?: (
           }
           completedChunks++;
         }
-        const pct = Math.min(100, Math.round((completedChunks / totalChunks) * 100));
-        onProgress?.(`در حال دانلود و کش محلی چانک‌ها (${completedChunks}/${totalChunks} چانک - ${pct}٪)...`);
+        const pct = Math.min(100, Math.round((completedChunks / targetLimit) * 100));
+        onProgress?.(`در حال بارگذاری سریع داده‌ها (${completedChunks}/${targetLimit} چانک - ${pct}٪)...`);
       } catch (err: any) {
         console.warn('[Sync Chunk Warning]:', err.message);
       }
@@ -4199,13 +4204,15 @@ async function runServerOptimizerLoop(
           targetMinWinRate: constraints.targetMinWinRate,
           targetMinTrades: constraints.targetMinTrades,
         });
+        const { effectiveTrades, ...cleanManualEval }: any = manualEval;
         const initialTrial: ServerOptimizerTrial = {
           id: 1,
           hash: generateConfigHash(manualCandidate),
           timestamp: new Date().toLocaleTimeString('fa-IR'),
           qualityScore,
           ...manualCandidate,
-          ...manualEval,
+          ...cleanManualEval,
+          equityPoints: (cleanManualEval.equityPoints || []).slice(0, 50),
         };
         serverOptimizerState.top10Trials = [initialTrial];
         serverOptimizerState.totalEvaluatedCount = 1;
@@ -4221,16 +4228,23 @@ async function runServerOptimizerLoop(
     entries = serverDatasetCandleCache.get(datasetId) || [];
   }
 
+  const maxPairsNeeded = processingDepth === 'fast' ? 50 : 80;
+
   if (entries.length === 0) {
     serverOptimizerState.statusText = 'در حال بارگذاری سریع داده‌های کندل در رم سرور...';
     await ensureDatasetChunksCachedOnDisk(datasetId, (statusMsg) => {
       serverOptimizerState.statusText = statusMsg;
-    });
+    }, maxPairsNeeded);
 
     const diskCacheDir = path.join('/tmp', 'candle_chunks', datasetId);
     if (fs.existsSync(diskCacheDir)) {
       const files = fs.readdirSync(diskCacheDir).filter((f) => f.endsWith('.json')).sort();
-      for (const f of files) {
+      const targetFiles = files.slice(0, maxPairsNeeded);
+      for (let i = 0; i < targetFiles.length; i++) {
+        if (i > 0 && i % 8 === 0) {
+          await new Promise((r) => setImmediate(r));
+        }
+        const f = targetFiles[i];
         try {
           const raw = fs.readFileSync(path.join(diskCacheDir, f), 'utf8');
           const items = JSON.parse(raw);
@@ -4334,13 +4348,15 @@ async function runServerOptimizerLoop(
         targetMinTrades: constraints.targetMinTrades,
       });
 
+      const { effectiveTrades, ...cleanEvalRes }: any = evalRes;
       const trial: ServerOptimizerTrial = {
         id: serverOptimizerState.totalEvaluatedCount,
         hash,
         timestamp: new Date().toLocaleTimeString('fa-IR'),
         qualityScore,
         ...candidate,
-        ...evalRes,
+        ...cleanEvalRes,
+        equityPoints: (cleanEvalRes.equityPoints || []).slice(0, 50),
       };
 
       // Deduplicate by hash and update top 10
@@ -5082,6 +5098,11 @@ const CONFIG_FILE_PATH = path.resolve(__dirname, 'data', 'live-config.json');
 interface PersistentLiveScannerData {
   config: ServerLiveScannerConfig;
   isRunning: boolean;
+  startedAt?: string | null;
+  lastRunAt?: string | null;
+  totalRunsCount?: number;
+  logs?: ServerScannerLog[];
+  executionLogs?: any[];
   updatedAt: string;
 }
 
@@ -5089,6 +5110,7 @@ let serverScannerTimer: NodeJS.Timeout | null = null;
 const serverScannerState = {
   isRunning: false,
   isScanning: false, // Concurrency lock to prevent overlapping executions
+  startedAt: null as string | null,
   config: {
     timeframe: '5m',
     exchange: 'xt' as 'xt' | 'binance',
@@ -5140,6 +5162,36 @@ function loadLiveConfigFromDisk(): PersistentLiveScannerData | null {
   return null;
 }
 
+async function syncLiveConfigToDatabase(data: PersistentLiveScannerData) {
+  try {
+    const client = (global as any)._postgresPool;
+    if (!client) return;
+    await client.query(
+      `INSERT INTO live_scanner_state (id, is_running, started_at, last_run_at, total_runs_count, config_json, logs_json, execution_logs_json, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         is_running = EXCLUDED.is_running,
+         started_at = EXCLUDED.started_at,
+         last_run_at = EXCLUDED.last_run_at,
+         total_runs_count = EXCLUDED.total_runs_count,
+         config_json = EXCLUDED.config_json,
+         logs_json = EXCLUDED.logs_json,
+         execution_logs_json = EXCLUDED.execution_logs_json,
+         updated_at = NOW();`,
+      [
+        'current',
+        data.isRunning,
+        data.startedAt ? new Date(data.startedAt) : null,
+        data.lastRunAt ? new Date(data.lastRunAt) : null,
+        data.totalRunsCount || 0,
+        JSON.stringify(data.config),
+        JSON.stringify(data.logs || []),
+        JSON.stringify(data.executionLogs || []),
+      ]
+    );
+  } catch {}
+}
+
 function saveLiveConfigToDisk() {
   try {
     const dataDir = path.dirname(CONFIG_FILE_PATH);
@@ -5149,9 +5201,15 @@ function saveLiveConfigToDisk() {
     const data: PersistentLiveScannerData = {
       config: serverScannerState.config,
       isRunning: serverScannerState.isRunning,
+      startedAt: serverScannerState.startedAt,
+      lastRunAt: serverScannerState.lastRunAt,
+      totalRunsCount: serverScannerState.totalRunsCount,
+      logs: serverScannerState.logs.slice(0, 100),
+      executionLogs: serverScannerState.executionLogs.slice(0, 50),
       updatedAt: new Date().toISOString(),
     };
     fs.writeFileSync(CONFIG_FILE_PATH, JSON.stringify(data, null, 2), 'utf-8');
+    syncLiveConfigToDatabase(data).catch(() => {});
   } catch (err: any) {
     console.error('[ServerLiveScanner] Failed to save live config to disk:', err.message);
   }
@@ -5165,7 +5223,37 @@ if (savedDiskData) {
     ...savedDiskData.config,
   };
   serverScannerState.isRunning = !!savedDiskData.isRunning;
-  console.log(`[ServerLiveScanner] ✅ Loaded persistent config from ${CONFIG_FILE_PATH} (Active: ${serverScannerState.isRunning})`);
+  serverScannerState.startedAt = savedDiskData.startedAt || null;
+  serverScannerState.lastRunAt = savedDiskData.lastRunAt || null;
+  serverScannerState.totalRunsCount = savedDiskData.totalRunsCount || 0;
+  if (Array.isArray(savedDiskData.logs) && savedDiskData.logs.length > 0) {
+    serverScannerState.logs = savedDiskData.logs;
+  }
+  if (Array.isArray(savedDiskData.executionLogs) && savedDiskData.executionLogs.length > 0) {
+    serverScannerState.executionLogs = savedDiskData.executionLogs;
+  }
+  console.log(`[ServerLiveScanner] ✅ Loaded persistent config from ${CONFIG_FILE_PATH} (Active: ${serverScannerState.isRunning}, Started: ${serverScannerState.startedAt || 'None'})`);
+
+  // If autopilot was running prior to server process reload, seamlessly resume background loop
+  if (serverScannerState.isRunning) {
+    if (!serverScannerState.startedAt) {
+      serverScannerState.startedAt = new Date().toISOString();
+    }
+    const interval = serverScannerState.config.intervalMs || getTimeframeMs(serverScannerState.config.timeframe || '5m');
+    serverScannerState.nextRunAt = new Date(Date.now() + interval).toISOString();
+
+    if (serverScannerTimer) {
+      clearInterval(serverScannerTimer);
+    }
+    serverScannerTimer = setInterval(() => {
+      runServerScannerCycle().catch((err) => {
+        addServerScannerLog('error', `خطا در اجرای اسکن دوره‌ای سرور: ${err.message}`);
+        serverScannerState.isScanning = false;
+      });
+    }, interval);
+
+    console.log(`[ServerLiveScanner] 🚀 Autopilot background loop automatically resumed on startup! (Interval: ${interval}ms)`);
+  }
 }
 
 function addServerScannerLog(
@@ -5182,6 +5270,8 @@ function addServerScannerLog(
   };
   serverScannerState.logs = [logItem, ...serverScannerState.logs].slice(0, 100);
   console.log(`[ServerLiveScanner] [${type.toUpperCase()}] ${message}`);
+  // Debounced/lightweight save on log
+  saveLiveConfigToDisk();
 }
 
 function getScannerPublicState() {
@@ -5189,9 +5279,15 @@ function getScannerPublicState() {
   if (serverScannerState.isRunning && serverScannerState.nextRunAt) {
     secondsUntilNextRun = Math.max(0, Math.round((new Date(serverScannerState.nextRunAt).getTime() - Date.now()) / 1000));
   }
+  let elapsedSeconds = 0;
+  if (serverScannerState.isRunning && serverScannerState.startedAt) {
+    elapsedSeconds = Math.max(0, Math.floor((Date.now() - new Date(serverScannerState.startedAt).getTime()) / 1000));
+  }
   return {
     isRunning: serverScannerState.isRunning,
     isScanning: serverScannerState.isScanning,
+    startedAt: serverScannerState.startedAt,
+    elapsedSeconds,
     config: serverScannerState.config,
     lastRunAt: serverScannerState.lastRunAt,
     nextRunAt: serverScannerState.nextRunAt,
@@ -5508,6 +5604,7 @@ async function runServerScannerCycle() {
       chosenSignal: candidateSignals[0] || null,
       status: 'SUCCESS',
     };
+    saveLiveConfigToDisk();
   } catch (error: any) {
     addServerScannerLog('error', `❌ خطای سراسری در چرخه اسکن سرور: ${error.message}`);
   } finally {
@@ -5573,9 +5670,10 @@ app.post('/api/live-scanner/start', async (req, res) => {
     }
 
     serverScannerState.isRunning = true;
+    serverScannerState.startedAt = serverScannerState.startedAt || new Date().toISOString();
     serverScannerState.nextRunAt = new Date(Date.now() + serverScannerState.config.intervalMs).toISOString();
 
-    // Persist running state to disk
+    // Persist running state to disk & DB
     saveLiveConfigToDisk();
 
     const tradeModeText = serverScannerState.config.isLiveExecution ? '⚡ معامله زنده صرافی (Real Orders)' : '📝 شبیه‌ساز (Paper Trading)';
@@ -5616,10 +5714,11 @@ app.post('/api/live-scanner/stop', (_req, res) => {
       serverScannerTimer = null;
     }
     serverScannerState.isRunning = false;
+    serverScannerState.startedAt = null;
     serverScannerState.nextRunAt = null;
     serverScannerState.isScanning = false;
 
-    // Persist stopped state to disk
+    // Persist stopped state to disk & DB
     saveLiveConfigToDisk();
 
     addServerScannerLog('warning', '⏸️ اتوپایلوت مداوم در پس‌زمینه سرور متوقف گردید.');

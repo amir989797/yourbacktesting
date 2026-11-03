@@ -75,11 +75,26 @@ export async function withDbRetry<T>(fn: () => Promise<T>, retries = 2, delayMs 
 export async function initDatabase(): Promise<{ success: boolean; tablesCreated: string[]; error?: string }> {
   const client = await pool.connect();
   try {
+    // Ensure live_scanner_state table always exists for persistent autopilot state
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS live_scanner_state (
+        id VARCHAR(50) PRIMARY KEY DEFAULT 'current',
+        is_running BOOLEAN DEFAULT FALSE,
+        started_at TIMESTAMP WITH TIME ZONE,
+        last_run_at TIMESTAMP WITH TIME ZONE,
+        total_runs_count INTEGER DEFAULT 0,
+        config_json TEXT,
+        logs_json TEXT,
+        execution_logs_json TEXT,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+    `);
+
     // Quick existence check to prevent redundant DDL execution on every startup
     const check = await client.query("SELECT to_regclass('public.candle_datasets') AS exists;");
     if (check.rows[0]?.exists) {
       console.log('[PostgreSQL] ✅ Remote database schema is already initialized. Skipping DDL migrations.');
-      return { success: true, tablesCreated: ['already_initialized'] };
+      return { success: true, tablesCreated: ['already_initialized', 'live_scanner_state'] };
     }
 
     console.log('[PostgreSQL] 🔄 Initializing database schema on remote server...');

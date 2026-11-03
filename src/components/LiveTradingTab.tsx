@@ -581,6 +581,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
 
   // 5. 5-Minute Auto-Scanner Loop State
   const [isAutoScanning, setIsAutoScanning] = useState<boolean>(false);
+  const [serverStartedAt, setServerStartedAt] = useState<string | null>(null);
+  const [elapsedActiveSeconds, setElapsedActiveSeconds] = useState<number>(0);
   const [scanSecondsLeft, setScanSecondsLeft] = useState<number>(300); // 5 minutes = 300s
   const [scanScope, setScanScope] = useState<'watchlist' | 'current' | 'all'>('watchlist');
   const [scanLogs, setScanLogs] = useState<ScanLogItem[]>([]);
@@ -836,9 +838,17 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       if (!contentType.includes('application/json')) return;
       const data = await res.json();
       if (data.success && data.state) {
-        const { isRunning, isScanning, secondsUntilNextRun, totalRunsCount, lastRunAt, activeSignals, logs, config, executionLogs } = data.state;
+        const { isRunning, isScanning, secondsUntilNextRun, totalRunsCount, lastRunAt, activeSignals, logs, config, executionLogs, startedAt, elapsedSeconds } = data.state;
         setIsAutoScanning(isRunning);
         setIsScanningNow(isScanning);
+        setServerStartedAt(startedAt || null);
+        if (typeof elapsedSeconds === 'number') {
+          setElapsedActiveSeconds(elapsedSeconds);
+        } else if (startedAt) {
+          setElapsedActiveSeconds(Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000)));
+        } else if (!isRunning) {
+          setElapsedActiveSeconds(0);
+        }
         if (typeof secondsUntilNextRun === 'number') {
           setScanSecondsLeft(secondsUntilNextRun);
         }
@@ -993,6 +1003,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       hasMountedSync.current = true;
       return;
     }
+    // Prevent overwriting server config before persistent server config is initially loaded
+    if (!hasInitializedConfigFromServer.current) {
+      return;
+    }
     const timer = setTimeout(() => {
       syncConfigToServer({
         strategyId: selectedStrategy,
@@ -1049,14 +1063,21 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     return () => clearInterval(poller);
   }, [fetchServerScannerStatus]);
 
-  // Smooth local countdown ticker between server polling intervals
+  // Smooth local countdown ticker and continuous elapsed session timer
   useEffect(() => {
     if (!isAutoScanning) return;
     const ticker = setInterval(() => {
       setScanSecondsLeft((prev) => (prev > 0 ? prev - 1 : 0));
+      setElapsedActiveSeconds((prev) => {
+        if (serverStartedAt) {
+          const diff = Math.floor((Date.now() - new Date(serverStartedAt).getTime()) / 1000);
+          return Math.max(0, diff);
+        }
+        return prev + 1;
+      });
     }, 1000);
     return () => clearInterval(ticker);
-  }, [isAutoScanning]);
+  }, [isAutoScanning, serverStartedAt]);
 
   // Toggle Continuous Background Scanner on Node.js Server
   const handleToggleAutoScan = async () => {
@@ -1101,6 +1122,9 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         if (res.ok) {
           const data = await res.json();
           setIsAutoScanning(true);
+          const started = data.state?.startedAt || new Date().toISOString();
+          setServerStartedAt(started);
+          setElapsedActiveSeconds(data.state?.elapsedSeconds || 0);
           setScanSecondsLeft(data.state?.secondsUntilNextRun || 300);
           setIsScanningNow(true);
           showToast('🚀 اتوپایلوت مداوم سرور فعال شد: اسکن و بررسی خودکار در پس‌زمینه سرور Node.js آغاز گردید.');
@@ -1116,6 +1140,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         if (res.ok) {
           setIsAutoScanning(false);
           setIsScanningNow(false);
+          setServerStartedAt(null);
+          setElapsedActiveSeconds(0);
           showToast('⏸️ اسکنر پس‌زمینه سرور متوقف گردید.');
           addLog('warning', '⏸️ اتوپایلوت سرور متوقف شد.');
         } else {
@@ -1251,6 +1277,13 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   const minutesLeft = Math.floor(scanSecondsLeft / 60);
   const secondsLeft = scanSecondsLeft % 60;
   const timeFormatted = `${String(minutesLeft).padStart(2, '0')}:${String(secondsLeft).padStart(2, '0')}`;
+
+  const formatElapsedDuration = (totalSec: number) => {
+    const hrs = Math.floor(totalSec / 3600);
+    const mins = Math.floor((totalSec % 3600) / 60);
+    const secs = totalSec % 60;
+    return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  };
 
   return (
     <div className="flex flex-col h-full bg-[#0a0d14] text-gray-200 overflow-y-auto">
@@ -1509,23 +1542,31 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
 
             <div className="flex items-center justify-between mt-1">
               <div>
-                <span className="text-2xl font-black font-mono text-emerald-300 tracking-wider">
-                  {timeFormatted}
-                </span>
-                <span className="text-[10px] text-gray-400 block -mt-0.5">
+                <div className="flex items-baseline gap-2">
+                  <span className={`text-2xl font-black font-mono tracking-wider ${isAutoScanning ? 'text-emerald-300' : 'text-gray-500'}`}>
+                    {isAutoScanning ? formatElapsedDuration(elapsedActiveSeconds) : '۰۰:۰۰:۰۰'}
+                  </span>
+                  {isAutoScanning && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 font-mono border border-emerald-500/25">
+                      زمان فعالیت
+                    </span>
+                  )}
+                </div>
+                <div className="text-[10px] text-gray-400 mt-0.5 flex flex-wrap items-center gap-1.5">
                   {isAutoScanning ? (
-                    <span>
-                      تا اسکن بعدی • دور: <strong className="text-cyan-300 font-mono">#{serverRunsCount}</strong>
+                    <>
+                      <span>اسکن بعدی در: <strong className="text-cyan-300 font-mono">{timeFormatted}</strong></span>
+                      <span>• دور: <strong className="text-amber-300 font-mono">#{serverRunsCount}</strong></span>
                       {serverLastDurationMs !== null && (
-                        <span className="text-gray-400 font-mono text-[10px] mr-1.5 inline-block">
+                        <span className="text-gray-400 font-mono text-[10px]">
                           (مدت: <strong className="text-emerald-300">{(serverLastDurationMs / 1000).toFixed(1)}s</strong>)
                         </span>
                       )}
-                    </span>
+                    </>
                   ) : (
-                    <span>آماده راه‌اندازی پس‌زمینه</span>
+                    <span>آماده راه‌اندازی پس‌زمینه ۲۴ ساعته سرور</span>
                   )}
-                </span>
+                </div>
               </div>
 
               <div className="flex items-center gap-1.5">
@@ -1578,7 +1619,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
             <div className="mt-2 text-[10px] text-gray-400 flex items-center justify-between border-t border-[#1a2333] pt-1.5">
               <span className="flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-cyan-400"></span>
-                <span>پایداری مداوم در سرور (حتی با بستن مرورگر)</span>
+                <span>پایداری مداوم در سرور (با بستن مرورگر زمان و لاگ‌ها حفظ می‌شوند)</span>
               </span>
               {serverLastRunAt && (
                 <span className="font-mono text-gray-500 text-[9px]">

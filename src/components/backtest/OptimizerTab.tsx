@@ -112,6 +112,8 @@ export interface OptimizerTabProps {
   setSessionDurationMinutes?: (min: number) => void;
   processingDepth?: 'fast' | 'full';
   setProcessingDepth?: (depth: 'fast' | 'full') => void;
+  optimizerStatusText?: string | null;
+  optimizerErrorMsg?: string | null;
 }
 
 export const OptimizerTab: React.FC<OptimizerTabProps> = ({
@@ -134,6 +136,8 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
   setSessionDurationMinutes,
   processingDepth = 'fast',
   setProcessingDepth,
+  optimizerStatusText,
+  optimizerErrorMsg,
   handleExportJSON,
   handleImportJSONClick,
   handleResetOptimizer,
@@ -1200,6 +1204,29 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   </div>
                 )}
               </div>
+
+              {/* نوار وضعیت پردازش زنده در سرور */}
+              {(isOptimizing || optimizerStatusText) && (
+                <div className="mt-3 flex items-center justify-between flex-wrap gap-2 px-3.5 py-2.5 rounded-xl bg-[#0d131f] border border-cyan-500/30 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2.5 h-2.5 rounded-full ${isOptimizing ? 'bg-cyan-400 animate-ping' : 'bg-emerald-400'}`}></span>
+                    <span className="text-cyan-300 font-bold">
+                      {optimizerStatusText || (isOptimizing ? 'در حال اجرای بهینه‌ساز در سرور...' : 'فرآیند بهینه‌سازی به پایان رسید.')}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3 text-[11px] font-mono text-gray-400">
+                    <span>ترکیب‌های ارزیابی‌شده: <strong className="text-cyan-300 font-bold">#{totalEvaluatedCount}</strong></span>
+                    <span>زمان سشن: <strong className="text-amber-300">{formatTimer(sessionSecondsLeft)}</strong></span>
+                  </div>
+                </div>
+              )}
+
+              {optimizerErrorMsg && (
+                <div className="mt-2.5 flex items-center gap-2 px-3.5 py-2 rounded-xl bg-rose-950/50 border border-rose-500/40 text-rose-300 text-xs">
+                  <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>{optimizerErrorMsg}</span>
+                </div>
+              )}
             </div>
 
             {/* ۴. کارت ترکیب برنده جدول + نمودار زنده و فوری رشد سرمایه */}
