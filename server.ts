@@ -2163,39 +2163,43 @@ async function findBestMatchingDataset(params: {
     return encompassingMatches[0];
   }
 
-  // Priority 3: Candidates whose duration matches requested duration closely (within 5 days),
-  // Prioritizing the freshest dataset (latest end_time)
-  const durationMatches = candidates.filter((c) => {
+  // Priority 3: Candidates that have significant actual time overlap with [startTime, endTime]
+  // CRITICAL FIX: If the user requests e.g. 30 days from 3 months ago, an October dataset has ZERO overlap.
+  // We MUST NOT return a dataset from a completely different date range just because its duration is 30 days!
+  const overlappingCandidates = candidates.filter((c) => {
     const cStart = Number(c.start_time) || 0;
     const cEnd = Number(c.end_time) || 0;
     if (cStart <= 0 || cEnd <= cStart) return false;
-    const cDur = cEnd - cStart;
-    return Math.abs(cDur - reqDuration) <= 5 * ONE_DAY;
+
+    // Overlap window
+    const overlapStart = Math.max(cStart, startTime);
+    const overlapEnd = Math.min(cEnd, endTime);
+    if (overlapEnd <= overlapStart) return false; // Zero overlap!
+
+    const overlapDuration = overlapEnd - overlapStart;
+    // Require at least 40% of the requested time range to overlap
+    return overlapDuration >= 0.40 * reqDuration;
   });
-  if (durationMatches.length > 0) {
-    durationMatches.sort((a, b) => {
-      const freshA = Math.abs(Number(a.end_time || 0) - endTime);
-      const freshB = Math.abs(Number(b.end_time || 0) - endTime);
-      if (Math.abs(freshA - freshB) > 3 * ONE_DAY) {
-        return freshA - freshB;
-      }
-      const durA = Math.abs((Number(a.end_time) - Number(a.start_time)) - reqDuration);
-      const durB = Math.abs((Number(b.end_time) - Number(b.start_time)) - reqDuration);
-      if (Math.abs(durA - durB) > ONE_DAY) {
-        return durA - durB;
+
+  if (overlappingCandidates.length > 0) {
+    overlappingCandidates.sort((a, b) => {
+      const aStart = Number(a.start_time) || 0;
+      const aEnd = Number(a.end_time) || 0;
+      const bStart = Number(b.start_time) || 0;
+      const bEnd = Number(b.end_time) || 0;
+      const overlapA = Math.max(0, Math.min(aEnd, endTime) - Math.max(aStart, startTime));
+      const overlapB = Math.max(0, Math.min(bEnd, endTime) - Math.max(bStart, startTime));
+      if (Math.abs(overlapB - overlapA) > ONE_DAY) {
+        return overlapB - overlapA; // Prefer highest actual overlap with requested range
       }
       return Number(b.total_candles || 0) - Number(a.total_candles || 0);
     });
-    return durationMatches[0];
+    return overlappingCandidates[0];
   }
 
-  // Priority 4: Closest duration overall
-  candidates.sort((a, b) => {
-    const durA = Math.abs((Number(a.end_time || 0) - Number(a.start_time || 0)) - reqDuration);
-    const durB = Math.abs((Number(b.end_time || 0) - Number(b.start_time || 0)) - reqDuration);
-    return durA - durB;
-  });
-  return candidates[0];
+  // If no dataset has at least 40% overlap with the requested dates, return NULL!
+  // This correctly reports that the requested date range does NOT exist in the database!
+  return null;
 }
 
 async function runServerBacktestCycle(params: {
@@ -3286,27 +3290,64 @@ app.post('/api/backtest/stop', (_req, res) => {
 // 6.5.5 Delete ONLY Specific Time Range Dataset from PostgreSQL
 app.delete('/api/backtest/range', async (req, res) => {
   try {
-    const exchange = (req.query.exchange || req.body?.exchange || 'xt').toString();
+    const exchange = (req.query.exchange || req.body?.exchange || 'xt').toString().toLowerCase();
     const timeframe = (req.query.timeframe || req.body?.timeframe || '5m').toString();
     const startTime = req.query.startTime ? Number(req.query.startTime) : (req.body?.startTime ? Number(req.body.startTime) : null);
     const endTime = req.query.endTime ? Number(req.query.endTime) : (req.body?.endTime ? Number(req.body.endTime) : null);
-    const datasetId = (req.query.datasetId || req.body?.datasetId || getRangeDatasetId(exchange, timeframe, startTime, endTime)).toString();
 
-    await pool.query(`DELETE FROM candle_chunks WHERE dataset_id = $1;`, [datasetId]);
-    await pool.query(`DELETE FROM candle_datasets WHERE id = $1;`, [datasetId]);
-
-    if (serverBacktestState.datasetId === datasetId) {
-      serverBacktestState.isScanning = false;
-      serverBacktestState.stage = 'idle';
-      serverBacktestState.results = [];
-      serverBacktestState.allTrades = [];
-      serverBacktestState.datasetId = null;
+    const idsToDelete = new Set<string>();
+    if (req.query.datasetId && req.query.datasetId.toString().trim()) {
+      idsToDelete.add(req.query.datasetId.toString().trim());
     }
+    if (req.body?.datasetId && req.body.datasetId.toString().trim()) {
+      idsToDelete.add(req.body.datasetId.toString().trim());
+    }
+
+    const genId = getRangeDatasetId(exchange, timeframe, startTime, endTime);
+    idsToDelete.add(genId);
+
+    // Also look up any matched dataset for this specific time range
+    const matched = await findBestMatchingDataset({
+      exchange,
+      timeframe,
+      startTime,
+      endTime,
+      explicitDatasetId: req.query.datasetId?.toString() || req.body?.datasetId?.toString() || null,
+    });
+    if (matched && matched.id) {
+      idsToDelete.add(matched.id);
+    }
+
+    let deletedCount = 0;
+    for (const dId of idsToDelete) {
+      const chunkDel = await pool.query(`DELETE FROM candle_chunks WHERE dataset_id = $1;`, [dId]);
+      const dsDel = await pool.query(`DELETE FROM candle_datasets WHERE id = $1;`, [dId]);
+      deletedCount += (dsDel.rowCount || 0);
+      serverDatasetCandleCache.delete(dId);
+
+      try {
+        const diskDir = path.join('/tmp', 'candle_chunks', dId);
+        if (fs.existsSync(diskDir)) {
+          fs.rmSync(diskDir, { recursive: true, force: true });
+        }
+      } catch {}
+    }
+
+    // Always clear active serverBacktestState if it matched any deleted id or was current
+    serverBacktestState.isScanning = false;
+    serverBacktestState.stage = 'idle';
+    serverBacktestState.results = [];
+    serverBacktestState.allTrades = [];
+    serverBacktestState.datasetId = null;
+    serverBacktestState.symbolCount = 0;
+    serverBacktestState.totalCandles = 0;
+    serverBacktestState.dataSizeFormatted = '0 B';
 
     res.json({
       success: true,
-      message: `داده‌های بازه زمانی ${datasetId} با موفقیت فقط از این بازه در PostgreSQL حذف شد.`,
-      datasetId,
+      message: `داده‌های بازه زمانی با موفقیت از دیتابیس PostgreSQL و حافظه کش حذف شدند.`,
+      deletedIds: Array.from(idsToDelete),
+      deletedCount,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -4323,7 +4364,8 @@ async function runServerOptimizerLoop(
     }
 
     serverOptimizerState.lastUpdatedAt = new Date().toISOString();
-    await new Promise((resolve) => setImmediate(resolve));
+    // Pacing: smooth streaming so trials update one by one in the UI table instead of dumping all at once
+    await sleep(35);
   }
 
   serverOptimizerState.isOptimizing = false;

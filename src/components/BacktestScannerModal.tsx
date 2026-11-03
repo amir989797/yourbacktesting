@@ -308,6 +308,32 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     });
   };
 
+  const handleQuickSelectSymbols = async (count: number | 'all') => {
+    try {
+      const res = await fetch(`/api/market/pairs?exchange=${selectedExchange}`);
+      const data = await res.json();
+      if (data && data.success && Array.isArray(data.pairs) && data.pairs.length > 0) {
+        let pairsList = data.pairs;
+        if (selectedExchange === 'xt') {
+          pairsList = pairsList.filter((p: any) => p.isApiSupported !== false && p.isOpenApi !== false && p.tradeSwitch !== false);
+        }
+        const syms = count === 'all'
+          ? pairsList.map((p: any) => p.symbol)
+          : pairsList.slice(0, count).map((p: any) => p.symbol);
+        handleSaveAllowedSymbols(syms);
+        showToast(count === 'all'
+          ? `🌐 تمام ${syms.length} نماد صرافی ${selectedExchange.toUpperCase()} برای اسکن انتخاب شدند.`
+          : `🎯 ${syms.length} ارز برتر مارکت صرافی ${selectedExchange.toUpperCase()} انتخاب شدند.`
+        );
+        return;
+      }
+    } catch {}
+
+    const syms = count === 'all' ? DEFAULT_POPULAR_WATCHLIST : DEFAULT_POPULAR_WATCHLIST.slice(0, count);
+    handleSaveAllowedSymbols(syms);
+    showToast(`🎯 ${syms.length} ارز انتخابی برای اسکن اعمال شد.`);
+  };
+
   // مودال بازه زمانی و تقویم بکتست
   const [isTimeRangeModalOpen, setIsTimeRangeModalOpen] = useState<boolean>(false);
   const [timeRangeStartMs, setTimeRangeStartMs] = useState<number>(() => {
@@ -810,16 +836,23 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         const data = await res.json();
         if (isSubscribed && data && data.success && data.state) {
           const s = data.state;
-          setIsOptimizing(Boolean(s.isOptimizing));
+          const serverIsOptimizing = Boolean(s.isOptimizing);
+          setIsOptimizing(serverIsOptimizing);
+
+          if (!serverIsOptimizing) {
+            // When optimization is finished or stopped on the server, terminate countdown immediately
+            setSessionSecondsLeft(0);
+            sessionSecondsRef.current = 0;
+          } else if (typeof s.sessionSecondsLeft === 'number') {
+            setSessionSecondsLeft(s.sessionSecondsLeft);
+            sessionSecondsRef.current = s.sessionSecondsLeft;
+          }
+
           if (Array.isArray(s.top10Trials)) {
             setTop10Trials(s.top10Trials);
           }
           if (typeof s.totalEvaluatedCount === 'number') {
             setTotalEvaluatedCount(s.totalEvaluatedCount);
-          }
-          if (typeof s.sessionSecondsLeft === 'number') {
-            setSessionSecondsLeft(s.sessionSecondsLeft);
-            sessionSecondsRef.current = s.sessionSecondsLeft;
           }
           // بسیار مهم: فقط در صورتی که بهینه‌ساز در سرور در حال اجرا باشد (s.isOptimizing)، رنج‌های تطبیق‌پذیر سرور دریافت می‌شوند
           // تا تغییرات دستی و تایپ کاربر در ورودی‌های رنج با مقادیر سرور بازنویسی و ریست نشوند!
@@ -831,7 +864,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     };
 
     fetchOptimizerStatus();
-    const interval = setInterval(fetchOptimizerStatus, isOptimizing ? 1000 : 3000);
+    const interval = setInterval(fetchOptimizerStatus, isOptimizing ? 700 : 2500);
     return () => {
       isSubscribed = false;
       clearInterval(interval);
@@ -888,6 +921,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           }
         } else {
           setCachedCount(0);
+          setActiveSessionDatasetId(null);
+          setResults([]);
+          setAllCollectedTrades([]);
         }
       }
     } catch (err) {
@@ -1202,8 +1238,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
   const handleConfirmDeleteCurrentRange = async () => {
     try {
+      const activeDatasetId = rangeStatus?.dataset?.id || activeSessionDatasetId || '';
       const res = await fetch(
-        `/api/backtest/range?exchange=${encodeURIComponent(selectedExchange)}&timeframe=${encodeURIComponent(timeframe)}&startTime=${timeRangeStartMs}&endTime=${timeRangeEndMs}`,
+        `/api/backtest/range?exchange=${encodeURIComponent(selectedExchange)}&timeframe=${encodeURIComponent(timeframe)}&startTime=${timeRangeStartMs}&endTime=${timeRangeEndMs}${activeDatasetId ? `&datasetId=${encodeURIComponent(activeDatasetId)}` : ''}`,
         { method: 'DELETE' }
       );
       const data = await res.json();
@@ -1212,9 +1249,17 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         setAllCollectedTrades([]);
         setScanMaxDrawdown(0);
         setCachedCount(0);
+        GLOBAL_CANDLE_CACHE.clear();
+        try {
+          localStorage.removeItem('backtest_scanned_results_v2');
+          localStorage.removeItem('backtest_scanned_trades_v2');
+        } catch {}
         setRangeStatus({ exists: false });
+        setActiveSessionDatasetId(null);
         setIsDeleteRangePromptOpen(false);
-        showToast('🗑️ داده‌های بازه زمانی فعلی با موفقیت از دیتابیس PostgreSQL حذف شدند. سایر بازه‌ها حفظ شدند.');
+        showToast('🗑️ داده‌های این بازه زمانی با موفقیت از دیتابیس PostgreSQL و حافظه حذف شدند.');
+        // Re-check database range status immediately to update the UI
+        checkCurrentRangeStatusRef.current?.({ datasetId: null });
       } else {
         showToast('❌ خطا در حذف داده‌های بازه از دیتابیس.');
       }
@@ -3438,6 +3483,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             isScanning={isScanning}
             selectedAllowedSymbols={selectedAllowedSymbols}
             onOpenAllowedPairsModal={() => setIsAllowedPairsModalOpen(true)}
+            onQuickSelectSymbols={handleQuickSelectSymbols}
             onOpenTimeRangeModal={() => setIsTimeRangeModalOpen(true)}
             timeRangeLabel={timeRangeLabel}
             estimatedCandles={estimatedCandles}

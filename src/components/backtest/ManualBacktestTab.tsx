@@ -49,6 +49,7 @@ export interface ManualBacktestTabProps {
   isScanning: boolean;
   selectedAllowedSymbols: string[];
   onOpenAllowedPairsModal: () => void;
+  onQuickSelectSymbols?: (count: number | 'all') => void;
   onOpenTimeRangeModal: () => void;
   timeRangeLabel?: string;
   estimatedCandles?: number;
@@ -165,6 +166,7 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
   onOpenRescanChoiceModal,
   handleStartIncrementalScan,
   onOpenAllowedPairsModal,
+  onQuickSelectSymbols,
   onOpenTimeRangeModal,
   timeRangeLabel,
   estimatedCandles,
@@ -283,7 +285,12 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                 </div>
 
                 <div className="bg-[#0e121a] p-2 rounded-xl border border-[#283244]">
-                  <label className="text-[10px] font-semibold text-gray-300 block mb-1">ارزهای مجاز اسکن بازار:</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] font-semibold text-gray-300">ارزهای مجاز اسکن بازار:</label>
+                    <span className="text-[9px] text-amber-300/80 font-mono">
+                      (تعداد کاملاً داینامیک)
+                    </span>
+                  </div>
                   <button
                     type="button"
                     onClick={onOpenAllowedPairsModal}
@@ -295,15 +302,51 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       <div className="w-6 h-6 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 group-hover:scale-105 transition-transform">
                         <Coins className="w-3.5 h-3.5" />
                       </div>
-                      <span className="text-amber-300 font-mono text-xs">
-                        {selectedAllowedSymbols.length} ارز فعال
+                      <span className="text-amber-300 font-mono text-xs font-extrabold">
+                        {selectedAllowedSymbols.length} ارز انتخابی فعال
                       </span>
                     </div>
                     <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1 group-hover:bg-amber-500/30">
                       <Filter className="w-3 h-3" />
-                      تنظیم و مارکت‌کپ
+                      انتخاب دلخواه
                     </span>
                   </button>
+
+                  {/* کلیدهای سریع انتخاب داینامیک تعداد ارز */}
+                  {onQuickSelectSymbols && (
+                    <div className="flex items-center gap-1 mt-1.5 pt-1.5 border-t border-[#1e2738] flex-wrap text-[10px]">
+                      <span className="text-gray-400 ml-0.5">سریع:</span>
+                      {[10, 30, 50].map((num) => (
+                        <button
+                          key={num}
+                          type="button"
+                          disabled={isScanning}
+                          onClick={() => onQuickSelectSymbols(num)}
+                          className={`px-2 py-0.5 rounded border font-mono font-bold transition-all cursor-pointer ${
+                            selectedAllowedSymbols.length === num
+                              ? 'bg-amber-400 text-black border-amber-400 shadow-xs'
+                              : 'bg-[#141b27] hover:bg-amber-500/20 text-gray-300 hover:text-amber-300 border-[#2d3a50]'
+                          } disabled:opacity-50`}
+                          title={`انتخاب فوری ${num} ارز برتر بر اساس مارکت‌کپ`}
+                        >
+                          {num} ارز
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        disabled={isScanning}
+                        onClick={() => onQuickSelectSymbols('all')}
+                        className={`px-2 py-0.5 rounded border font-mono font-bold transition-all cursor-pointer ${
+                          selectedAllowedSymbols.length > 50
+                            ? 'bg-cyan-500 text-black border-cyan-400 shadow-xs'
+                            : 'bg-[#141b27] hover:bg-cyan-500/20 text-gray-300 hover:text-cyan-300 border-[#2d3a50]'
+                        } disabled:opacity-50`}
+                        title="انتخاب تمام نمادهای فعال مارکت"
+                      >
+                        همه
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 <div className="bg-[#0e121a] p-2 rounded-xl border border-[#283244] grid grid-cols-2 gap-2">
