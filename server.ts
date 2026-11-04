@@ -10,6 +10,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import {
   evaluateSymbolForLiveSignal,
   calculateXtContractQuantity,
+  calculateXtRiskBudgetedOrder,
   CandidateSignal,
   calculateATR,
   calculateAtrZigZag,
@@ -691,22 +692,39 @@ async function fetchXtServerKlines(
 }
 
 // XT Symbols Metadata & OpenAPI Restrictions Cache (30 min TTL)
-let xtSymbolsInfoCache: Map<string, { isOpenApi: boolean; tradeSwitch: boolean; openSwitch: boolean; isApiSupported: boolean }> = new Map();
+export interface XtSymbolMeta {
+  symbol: string;
+  isOpenApi: boolean;
+  tradeSwitch: boolean;
+  openSwitch: boolean;
+  isApiSupported: boolean;
+  contractSize: number;
+  pricePrecision: number;
+  minStepPrice: number;
+  quantityPrecision: number;
+  minQty: number;
+  minNotional: number;
+  multiplierUp: number;
+  multiplierDown: number;
+  marketTakeBound: number;
+}
+
+let xtSymbolsMetaCache: Map<string, XtSymbolMeta> = new Map();
 let xtSymbolsInfoCacheExpiry = 0;
 const unsupportedOpenApiXtSymbols = new Set<string>();
 
-async function getXtSymbolsOpenApiMap(): Promise<Map<string, { isOpenApi: boolean; tradeSwitch: boolean; openSwitch: boolean; isApiSupported: boolean }>> {
-  if (xtSymbolsInfoCache.size > 0 && Date.now() < xtSymbolsInfoCacheExpiry) {
-    return xtSymbolsInfoCache;
+async function getXtSymbolsOpenApiMap(): Promise<Map<string, XtSymbolMeta>> {
+  if (xtSymbolsMetaCache.size > 0 && Date.now() < xtSymbolsInfoCacheExpiry) {
+    return xtSymbolsMetaCache;
   }
   try {
     const url = `https://${XT_FAPI_HOST}/future/market/v1/public/symbol/list`;
     const res = await fetch(url);
-    if (!res.ok) return xtSymbolsInfoCache;
+    if (!res.ok) return xtSymbolsMetaCache;
     const data = await res.json();
     const symbols = data?.result?.symbols || data?.result || [];
     if (Array.isArray(symbols) && symbols.length > 0) {
-      const map = new Map<string, { isOpenApi: boolean; tradeSwitch: boolean; openSwitch: boolean; isApiSupported: boolean }>();
+      const map = new Map<string, XtSymbolMeta>();
       unsupportedOpenApiXtSymbols.clear();
 
       for (const s of symbols) {
@@ -718,18 +736,38 @@ async function getXtSymbolsOpenApiMap(): Promise<Map<string, { isOpenApi: boolea
         const stateActive = s.state === 0 || s.state === undefined;
         const isApiSupported = isOpenApi && tradeSwitch && openSwitch && stateActive;
 
+        const contractSize = parseFloat(s.contractSize || '1') || 1;
+        const pricePrecision = parseInt(s.pricePrecision !== undefined ? s.pricePrecision : '3', 10);
+        const minStepPrice = parseFloat(s.minStepPrice || '0.001') || 0.001;
+        const quantityPrecision = parseInt(s.quantityPrecision !== undefined ? s.quantityPrecision : '0', 10);
+        const minQty = parseFloat(s.minQty || '1') || 1;
+        const minNotional = parseFloat(s.minNotional || '5') || 5;
+        const multiplierUp = parseFloat(s.multiplierUp || '0.1') || 0.1;
+        const multiplierDown = parseFloat(s.multiplierDown || '0.1') || 0.1;
+        const marketTakeBound = parseFloat(s.marketTakeBound || '0.08') || 0.08;
+
         map.set(sym, {
+          symbol: sym,
           isOpenApi,
           tradeSwitch,
           openSwitch,
           isApiSupported,
+          contractSize,
+          pricePrecision,
+          minStepPrice,
+          quantityPrecision,
+          minQty,
+          minNotional,
+          multiplierUp,
+          multiplierDown,
+          marketTakeBound,
         });
 
         if (!isApiSupported) {
           unsupportedOpenApiXtSymbols.add(sym);
         }
       }
-      xtSymbolsInfoCache = map;
+      xtSymbolsMetaCache = map;
       xtSymbolsInfoCacheExpiry = Date.now() + 30 * 60 * 1000;
       console.log(`[XT Symbols Metadata] Loaded ${map.size} symbols. OpenAPI-supported: ${map.size - unsupportedOpenApiXtSymbols.size}, Unsupported/Restricted: ${unsupportedOpenApiXtSymbols.size}`);
       return map;
@@ -737,7 +775,31 @@ async function getXtSymbolsOpenApiMap(): Promise<Map<string, { isOpenApi: boolea
   } catch (err: any) {
     console.warn('[XT Symbols Metadata Warning]:', err.message);
   }
-  return xtSymbolsInfoCache;
+  return xtSymbolsMetaCache;
+}
+
+function getXtSymbolMeta(symbol: string): XtSymbolMeta {
+  const clean = symbol.toLowerCase().replace(/[^a-z0-9_]/g, '');
+  const key = clean.includes('_') ? clean : (clean.endsWith('usdt') ? clean.slice(0, -4) + '_usdt' : clean + '_usdt');
+  if (xtSymbolsMetaCache.has(key)) {
+    return xtSymbolsMetaCache.get(key)!;
+  }
+  return {
+    symbol: key,
+    isOpenApi: true,
+    tradeSwitch: true,
+    openSwitch: true,
+    isApiSupported: true,
+    contractSize: key === 'inj_usdt' ? 1 : (key.startsWith('btc') ? 0.0001 : (key.startsWith('eth') ? 0.01 : 1)),
+    pricePrecision: key === 'inj_usdt' ? 3 : (key.startsWith('btc') ? 1 : (key.startsWith('eth') ? 2 : 3)),
+    minStepPrice: 0.001,
+    quantityPrecision: 0,
+    minQty: 1,
+    minNotional: 5,
+    multiplierUp: 0.1,
+    multiplierDown: 0.1,
+    marketTakeBound: 0.08,
+  };
 }
 
 // XT Public Tickers & Pairs fetcher (enriched with OpenAPI support status)
@@ -5495,9 +5557,45 @@ async function runServerScannerCycle() {
         );
 
         if (cfg.isLiveExecution && cfg.exchange === 'xt') {
-          addServerScannerLog('info', `🚀 در حال ارسال سفارش زنده فیوچرز به XT.COM برای ${xtSymbol.toUpperCase()}...`, chosen.symbol);
+          addServerScannerLog('info', `🚀 در حال اعتبارسنجی دقیق و ارسال سفارش زنده فیوچرز به XT.COM برای ${xtSymbol.toUpperCase()}...`, chosen.symbol);
           
-          const xtSizing = calculateXtContractQuantity(chosen.contractQty, chosen.curPrice, xtSymbol, 10);
+          const symMeta = getXtSymbolMeta(xtSymbol);
+
+          // 1. Fetch fresh live market price right before placing order
+          let livePrice = chosen.curPrice;
+          try {
+            const tickerRes = await fetch(`https://${XT_FAPI_HOST}/future/market/v1/public/q/ticker?symbol=${xtSymbol}`);
+            const tickerData = await tickerRes.json();
+            if (tickerData?.result?.c) {
+              const p = parseFloat(tickerData.result.c);
+              if (p > 0) livePrice = p;
+            }
+          } catch {}
+
+          const targetRiskUsdt = cfg.riskMode === 'fixed' && cfg.riskAmountFixed && cfg.riskAmountFixed > 0
+            ? cfg.riskAmountFixed
+            : (availableBalance * ((cfg.riskPercent || 1) / 100));
+
+          // 2. Calculate strictly risk-budgeted whole contract quantity for XT Futures
+          const xtSizing = calculateXtRiskBudgetedOrder({
+            riskBudget: targetRiskUsdt,
+            entryPrice: livePrice,
+            stopLoss: chosen.stopLoss,
+            symbol: xtSymbol,
+            contractSize: symMeta.contractSize,
+            minNotional: symMeta.minNotional,
+            pricePrecision: symMeta.pricePrecision,
+          });
+
+          if (xtSizing.contractQty <= 0) {
+            addServerScannerLog(
+              'warning',
+              `⛔ رد سیگنال ${chosen.symbol.toUpperCase()} برای جلوگیری از افزایش ضرر: حداقل ۱ قرارداد در صرافی XT (سایز ۱ قرارداد = ${symMeta.contractSize} واحد) زیانی معادل ${xtSizing.lossPerContract}$ در استاپ ایجاد می‌کند که از سقف ریسک تعیین‌شده (${targetRiskUsdt}$) بیشتر است. سفارش برای رعایت اکید مدیریت ریسک ارسال نشد.`,
+              chosen.symbol
+            );
+            continue; // Skip to next candidate signal
+          }
+
           const orderQty = xtSizing.contractQty;
 
           // Adjust leverage on XT first (swallow error if already set)
@@ -5509,16 +5607,34 @@ async function runServerScannerCycle() {
             });
           } catch {}
 
-          // XT Trigger price strict validation:
-          let validTriggerProfitPrice: number | undefined = chosen.takeProfit;
-          let validTriggerStopPrice: number | undefined = chosen.stopLoss;
+          // 3. XT Trigger price strict validation & pricePrecision rounding:
+          // XT rejects with invalid_trigger_profit_price if decimals exceed pricePrecision or price is crossed/outside allowed bound.
+          const priceDecimals = symMeta.pricePrecision ?? 3;
+          let validTriggerProfitPrice: number | undefined = undefined;
+          let validTriggerStopPrice: number | undefined = undefined;
+
+          const maxTakeBound = symMeta.marketTakeBound || 0.08;
+          const maxUpBound = symMeta.multiplierUp || 0.10;
+          const maxDownBound = symMeta.multiplierDown || 0.10;
 
           if (chosen.posSide === 'LONG') {
-            if (validTriggerStopPrice && validTriggerStopPrice >= chosen.curPrice) validTriggerStopPrice = undefined;
-            if (validTriggerProfitPrice && validTriggerProfitPrice <= chosen.curPrice) validTriggerProfitPrice = undefined;
+            if (chosen.takeProfit > livePrice * 1.002 && chosen.takeProfit <= livePrice * (1 + maxTakeBound)) {
+              validTriggerProfitPrice = parseFloat(chosen.takeProfit.toFixed(priceDecimals));
+            }
+            if (chosen.stopLoss < livePrice * 0.998 && chosen.stopLoss >= livePrice * (1 - maxDownBound)) {
+              validTriggerStopPrice = parseFloat(chosen.stopLoss.toFixed(priceDecimals));
+            }
           } else {
-            if (validTriggerStopPrice && validTriggerStopPrice <= chosen.curPrice) validTriggerStopPrice = undefined;
-            if (validTriggerProfitPrice && validTriggerProfitPrice >= chosen.curPrice) validTriggerProfitPrice = undefined;
+            if (chosen.takeProfit < livePrice * 0.998 && chosen.takeProfit >= livePrice * (1 - maxTakeBound)) {
+              validTriggerProfitPrice = parseFloat(chosen.takeProfit.toFixed(priceDecimals));
+            }
+            if (chosen.stopLoss > livePrice * 1.002 && chosen.stopLoss <= livePrice * (1 + maxUpBound)) {
+              validTriggerStopPrice = parseFloat(chosen.stopLoss.toFixed(priceDecimals));
+            }
+          }
+
+          if (!validTriggerProfitPrice && chosen.takeProfit) {
+            addServerScannerLog('info', `ℹ️ قیمت تارگت (${chosen.takeProfit}) به دلیل نوسان قیمت لحظه‌ای بازار (${livePrice}) یا خروج از محدوده مجاز ۸٪ صرافی، از سفارش اولیه حذف شد تا خطای invalid_trigger_profit_price رخ ندهد.`, chosen.symbol);
           }
 
           const orderPayload: any = {
@@ -5542,9 +5658,11 @@ async function runServerScannerCycle() {
             contractSize: xtSizing.contractSize,
             coinQty: xtSizing.effectiveCoinQty,
             nominalUsdt: xtSizing.nominalUsdt,
-            curPrice: chosen.curPrice,
+            curPrice: livePrice,
             stopLoss: chosen.stopLoss,
             takeProfit: chosen.takeProfit,
+            targetRiskUsdt,
+            actualLossAtSL: xtSizing.actualLossAtSL,
             payload: orderPayload,
           };
 
@@ -5809,36 +5927,54 @@ app.post('/api/live-scanner/test-trade', async (req, res) => {
       curPrice = xtSymbol.startsWith('btc') ? 81500 : (xtSymbol.startsWith('eth') ? 2500 : 100);
     }
 
+    const symMeta = getXtSymbolMeta(xtSymbol);
+    const priceDecimals = symMeta.pricePrecision ?? 3;
+
     // 2. Safe SL (0.3% distance) and TP (0.9% distance, 1:3 RR)
     const slDistance = curPrice * 0.003;
     const tpDistance = curPrice * 0.009;
 
     const stopLoss = posSide === 'LONG'
-      ? parseFloat((curPrice - slDistance).toFixed(1))
-      : parseFloat((curPrice + slDistance).toFixed(1));
+      ? parseFloat((curPrice - slDistance).toFixed(priceDecimals))
+      : parseFloat((curPrice + slDistance).toFixed(priceDecimals));
     const takeProfit = posSide === 'LONG'
-      ? parseFloat((curPrice + tpDistance).toFixed(1))
-      : parseFloat((curPrice - tpDistance).toFixed(1));
+      ? parseFloat((curPrice + tpDistance).toFixed(priceDecimals))
+      : parseFloat((curPrice - tpDistance).toFixed(priceDecimals));
 
-    // 3. Calculate minimum allowable contracts for XT (ensuring >= 10 USDT minNotional)
-    const xtSizing = calculateXtContractQuantity(0, curPrice, xtSymbol, 10);
+    // 3. Calculate minimum allowable contracts for XT (ensuring >= minNotional)
+    const xtSizing = calculateXtContractQuantity(0, curPrice, xtSymbol, symMeta.minNotional);
     const contractQty = xtSizing.contractQty;
 
-    // 4. Build order payload
-    const orderPayload = {
+    // 4. Build order payload with validated trigger prices
+    const orderPayload: any = {
       symbol: xtSymbol,
       orderSide: side,
       orderType: 'MARKET',
       positionSide: posSide,
       origQty: contractQty,
-      triggerProfitPrice: takeProfit,
-      triggerStopPrice: stopLoss,
     };
+
+    if (takeProfit && ((posSide === 'LONG' && takeProfit > curPrice) || (posSide === 'SHORT' && takeProfit < curPrice))) {
+      orderPayload.triggerProfitPrice = takeProfit;
+    }
+    if (stopLoss && ((posSide === 'LONG' && stopLoss < curPrice) || (posSide === 'SHORT' && stopLoss > curPrice))) {
+      orderPayload.triggerStopPrice = stopLoss;
+    }
 
     addServerScannerLog('info', `🧪 در حال ارسال معامله آزمایشی زنده به XT (${xtSymbol.toUpperCase()} | ${contractQty} قرارداد)...`, xtSymbol);
 
-    // 5. Send order to XT API
-    const orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', orderPayload);
+    // 5. Send order to XT API with automatic trigger price fallback
+    let orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', orderPayload);
+
+    if (orderRes && orderRes.returnCode !== 0 && (orderPayload.triggerProfitPrice || orderPayload.triggerStopPrice)) {
+      const errMsg = (orderRes.msgInfo || orderRes.msg || '').toLowerCase();
+      if (errMsg.includes('triger') || errMsg.includes('trigger') || errMsg.includes('stop') || errMsg.includes('price')) {
+        addServerScannerLog('warning', `⚠️ صرافی XT قیمت تریگر تست را رد کرد (${errMsg}). ارسال مجدد بدون تریگر به عنوان مارکت ساده...`, xtSymbol);
+        delete orderPayload.triggerProfitPrice;
+        delete orderPayload.triggerStopPrice;
+        orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', orderPayload);
+      }
+    }
 
     const execRecord: any = {
       id: `test_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,

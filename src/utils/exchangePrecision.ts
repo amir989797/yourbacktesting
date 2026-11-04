@@ -236,6 +236,7 @@ export const XT_CONTRACT_SIZES: Record<string, number> = {
   pepe_usdt: 100000,
   shib_usdt: 100000,
   dot_usdt: 1,
+  inj_usdt: 1,
   ltc_usdt: 0.1,
   apt_usdt: 0.1,
   trx_usdt: 100,
@@ -265,14 +266,14 @@ export interface XtContractQuantityResult {
   contractSize: number; // Amount of coin per contract
   effectiveCoinQty: number; // contractQty * contractSize
   nominalUsdt: number; // effectiveCoinQty * currentPrice
-  isMinCapped: boolean; // True if bumped up to meet XT minNotional of 10 USDT
+  isMinCapped: boolean; // True if bumped up to meet XT minNotional
 }
 
 export function calculateXtContractQuantity(
   targetCoinQty: number,
   currentPrice: number,
   symbol: string,
-  minNotional: number = 10
+  minNotional: number = 5
 ): XtContractQuantityResult {
   const contractSize = getXtContractSize(symbol, currentPrice);
   const price = currentPrice > 0 ? currentPrice : 1.0;
@@ -280,7 +281,7 @@ export function calculateXtContractQuantity(
   // Raw theoretical number of contracts
   const rawContracts = targetCoinQty > 0 ? Math.floor(targetCoinQty / contractSize) : 0;
   
-  // Calculate minimum contracts required to satisfy XT 10 USDT minNotional
+  // Calculate minimum contracts required to satisfy XT 5 USDT minNotional
   const notionalPerContract = contractSize * price;
   const minRequiredContracts = notionalPerContract > 0 ? Math.ceil(minNotional / notionalPerContract) : 1;
 
@@ -297,5 +298,121 @@ export function calculateXtContractQuantity(
     effectiveCoinQty,
     nominalUsdt,
     isMinCapped: rawContracts < minRequiredContracts,
+  };
+}
+
+export interface XtRiskBudgetedResult {
+  contractQty: number; // Integer contracts allowed without exceeding risk budget
+  contractSize: number; // Coins per contract
+  effectiveCoinQty: number; // contractQty * contractSize
+  nominalUsdt: number; // effectiveCoinQty * entryPrice
+  lossPerContract: number; // Realized loss at SL per 1 contract (including exchange fees)
+  actualLossAtSL: number; // contractQty * lossPerContract
+  riskBudget: number; // User's target risk budget (USDT)
+  minNotional: number; // Minimum order notional on XT (5 USDT)
+  meetsMinNotional: boolean;
+  exceedsRiskBudget: boolean; // True if even 1 contract loss > riskBudget
+  safeContractsMax: number; // Floor of theoretical contracts
+  pricePrecision: number;
+}
+
+/**
+ * Calculates the exact whole contract quantity for XT Futures strictly constrained by the user's risk budget.
+ * Unlike spot/Binance coin fractions, XT futures requires integer contracts.
+ * This guarantees actual loss at Stop Loss will NEVER exceed the risk budget.
+ */
+export function calculateXtRiskBudgetedOrder(params: {
+  riskBudget: number;
+  entryPrice: number;
+  stopLoss: number;
+  symbol: string;
+  contractSize?: number;
+  minNotional?: number;
+  entryFeeRate?: number;
+  exitFeeRate?: number;
+  pricePrecision?: number;
+}): XtRiskBudgetedResult {
+  const {
+    riskBudget,
+    entryPrice,
+    stopLoss,
+    symbol,
+    contractSize: passedContractSize,
+    minNotional = 5,
+    entryFeeRate = 0.0006,
+    exitFeeRate = 0.0006,
+    pricePrecision = 3,
+  } = params;
+
+  const contractSize = passedContractSize && passedContractSize > 0
+    ? passedContractSize
+    : getXtContractSize(symbol, entryPrice);
+
+  const price = entryPrice > 0 ? entryPrice : 1.0;
+  const stopDistance = Math.abs(price - stopLoss);
+  
+  // Realized fees per 1 contract on entry and exit
+  const feePerContract = (contractSize * price * entryFeeRate) + (contractSize * stopLoss * exitFeeRate);
+  const lossPerContract = (contractSize * stopDistance) + feePerContract;
+
+  if (lossPerContract <= 0.000001 || price <= 0 || riskBudget <= 0) {
+    return {
+      contractQty: 0,
+      contractSize,
+      effectiveCoinQty: 0,
+      nominalUsdt: 0,
+      lossPerContract: 0,
+      actualLossAtSL: 0,
+      riskBudget,
+      minNotional,
+      meetsMinNotional: false,
+      exceedsRiskBudget: false,
+      safeContractsMax: 0,
+      pricePrecision,
+    };
+  }
+
+  // Maximum integer contracts allowed without exceeding riskBudget
+  const safeContractsMax = Math.floor(riskBudget / lossPerContract);
+
+  // Minimum contracts needed to satisfy XT minNotional (5 USDT)
+  const notionalPerContract = contractSize * price;
+  const minRequiredContracts = notionalPerContract > 0 ? Math.ceil(minNotional / notionalPerContract) : 1;
+
+  let contractQty = safeContractsMax;
+  let exceedsRiskBudget = false;
+
+  // If even 1 contract produces a loss higher than the user's budget:
+  if (safeContractsMax < 1) {
+    exceedsRiskBudget = true;
+    contractQty = 0; // Guard against exceeding risk budget
+  } else if (contractQty < minRequiredContracts) {
+    // If safe contracts don't meet XT minNotional (5 USDT), check if minRequiredContracts would exceed risk
+    const minNotionalLoss = minRequiredContracts * lossPerContract;
+    if (minNotionalLoss > riskBudget) {
+      exceedsRiskBudget = true;
+      contractQty = 0; // Guard against forced minNotional bump that blows risk
+    } else {
+      contractQty = minRequiredContracts;
+    }
+  }
+
+  const effectiveCoinQty = parseFloat((contractQty * contractSize).toFixed(8));
+  const nominalUsdt = parseFloat((effectiveCoinQty * price).toFixed(2));
+  const actualLossAtSL = parseFloat((contractQty * lossPerContract).toFixed(4));
+
+  return {
+    contractQty,
+    contractSize,
+    effectiveCoinQty,
+    nominalUsdt,
+    lossPerContract: parseFloat(lossPerContract.toFixed(4)),
+    actualLossAtSL,
+    riskBudget,
+    minNotional,
+    meetsMinNotional: nominalUsdt >= minNotional,
+    exceedsRiskBudget,
+    safeContractsMax,
+    pricePrecision,
   };
 }

@@ -12,6 +12,8 @@ import { runStrategy1Backtest, runStrategy2Backtest } from '../utils/strategyEng
 import {
   calculateExactTradeSizing,
   calculateXtContractQuantity,
+  calculateXtRiskBudgetedOrder,
+  XtRiskBudgetedResult,
   getSymbolLotRule,
 } from '../utils/exchangePrecision';
 
@@ -23,8 +25,10 @@ export {
   runStrategy2Backtest,
   calculateExactTradeSizing,
   calculateXtContractQuantity,
+  calculateXtRiskBudgetedOrder,
   getSymbolLotRule,
 };
+export type { XtRiskBudgetedResult };
 
 export interface ServerStrategyConfig {
   strategyId: 'strategy_1_e_breakout' | 'strategy_2_next_pivot';
