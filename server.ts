@@ -5221,6 +5221,7 @@ interface ServerActiveSignal {
   qtyPrecision?: number;
   notionalUsdt: number;
   riskUsdt: number;
+  positionToRiskRatio?: number;
   targetRiskUsdt?: number;
   strategyName: string;
   discoveredAt: string;
@@ -5664,6 +5665,7 @@ async function runServerScannerCycle() {
         );
 
         const tfCandidateSignals: ServerActiveSignal[] = [];
+        let scannedCount = 0;
 
         for (const sym of activeTargetSymbols) {
           // Guard: Ensure single cycle never exceeds 4.5 minutes (270 seconds)
@@ -5677,6 +5679,8 @@ async function runServerScannerCycle() {
           if (activePositionSymbols.has(cleanSymNorm)) {
             continue;
           }
+
+          scannedCount++;
 
           try {
             let candles: CandleData[] = [];
@@ -5727,20 +5731,46 @@ async function runServerScannerCycle() {
         }
 
         if (tfCandidateSignals.length === 0) {
-          addServerScannerLog('info', `✅ تایم‌فریم ${currentTf}: در کندل جاری هیچ سیگنال معتبری شناسایی نشد.`, undefined, currentTf);
+          addServerScannerLog(
+            'info',
+            `✅ تایم‌فریم ${currentTf}: اسکن ${scannedCount} ارز به پایان رسید و در کندل جاری هیچ سیگنال معتبری شناسایی نشد.`,
+            undefined,
+            currentTf
+          );
           return;
         }
 
-        // Sort candidate signals by lowest margin requirement
-        tfCandidateSignals.sort((a, b) => a.requiredMargin - b.requiredMargin);
+        // Sort candidate signals by LOWEST positionToRiskRatio (نسبت حجم/ریسک)
+        tfCandidateSignals.sort((a, b) => {
+          const ratioA = (a.positionToRiskRatio !== undefined && a.positionToRiskRatio > 0)
+            ? a.positionToRiskRatio
+            : (a.riskUsdt > 0 ? a.notionalUsdt / a.riskUsdt : 999999);
+          const ratioB = (b.positionToRiskRatio !== undefined && b.positionToRiskRatio > 0)
+            ? b.positionToRiskRatio
+            : (b.riskUsdt > 0 ? b.notionalUsdt / b.riskUsdt : 999999);
+          if (ratioA !== ratioB) {
+            return ratioA - ratioB;
+          }
+          return a.requiredMargin - b.requiredMargin;
+        });
 
         const descList = tfCandidateSignals
-          .map((c) => `${c.symbol.toUpperCase()} (مارجین: ${c.requiredMargin}$ | اهرم ${c.maxLeverage}x | حجم: ${c.contractQty})`)
+          .map((c) => {
+            const ratio = (c.positionToRiskRatio !== undefined && c.positionToRiskRatio > 0)
+              ? c.positionToRiskRatio
+              : (c.riskUsdt > 0 ? +(c.notionalUsdt / c.riskUsdt).toFixed(1) : 0);
+            return `${c.symbol.toUpperCase()} (حجم/ریسک: ${ratio} | ارزش: $${c.notionalUsdt} | ریسک SL: $${c.riskUsdt} | مارجین: $${c.requiredMargin})`;
+          })
           .join(' ، ');
+
+        const chosenOptimal = tfCandidateSignals[0];
+        const optimalRatio = (chosenOptimal.positionToRiskRatio !== undefined && chosenOptimal.positionToRiskRatio > 0)
+          ? chosenOptimal.positionToRiskRatio
+          : (chosenOptimal.riskUsdt > 0 ? +(chosenOptimal.notionalUsdt / chosenOptimal.riskUsdt).toFixed(1) : 0);
 
         addServerScannerLog(
           'info',
-          `🎯 تایم‌فریم ${currentTf}: تعداد ${tfCandidateSignals.length} سیگنال کشف شد: [${descList}]. سیگنال بهینه: ${tfCandidateSignals[0].symbol.toUpperCase()}`,
+          `🎯 تایم‌فریم ${currentTf}: اسکن ${scannedCount} ارز به پایان رسید و تعداد ${tfCandidateSignals.length} فرصت معامله شناسایی شد: [${descList}]. سیگنال برگزیده با کمترین نسبت حجم/ریسک: ${chosenOptimal.symbol.toUpperCase()} (نسبت حجم/ریسک: ${optimalRatio})`,
           undefined,
           currentTf
         );
@@ -5770,9 +5800,13 @@ async function runServerScannerCycle() {
             continue;
           }
 
+          const chosenRatio = (chosen.positionToRiskRatio !== undefined && chosen.positionToRiskRatio > 0)
+            ? chosen.positionToRiskRatio
+            : (chosen.riskUsdt > 0 ? +(chosen.notionalUsdt / chosen.riskUsdt).toFixed(1) : 0);
+
           addServerScannerLog(
             'trade',
-            `⚡ [${currentTf}] سیگنال برگزیده ${chosen.posSide} برای ${chosen.symbol.toUpperCase()} با بیشترین اهرم (${chosen.maxLeverage}x) و حداقل مارجین (${chosen.requiredMargin} USDT) تأیید شد. حجم: ${chosen.contractQty} (ارزش: ${chosen.notionalUsdt}$) | استاپ: ${chosen.stopLoss} | تارگت: ${chosen.takeProfit}`,
+            `⚡ [${currentTf}] سیگنال برگزیده ${chosen.posSide} برای ${chosen.symbol.toUpperCase()} با کمترین نسبت حجم/ریسک (${chosenRatio}) انتخاب شد. حجم: ${chosen.contractQty} (ارزش: $${chosen.notionalUsdt} | ریسک SL: $${chosen.riskUsdt} | اهرم: ${chosen.maxLeverage}x | مارجین: $${chosen.requiredMargin}) | استاپ: ${chosen.stopLoss} | تارگت: ${chosen.takeProfit}`,
             chosen.symbol,
             currentTf
           );
@@ -5874,6 +5908,7 @@ async function runServerScannerCycle() {
               takeProfit: chosen.takeProfit,
               targetRiskUsdt,
               actualLossAtSL: xtSizing.actualLossAtSL,
+              positionToRiskRatio: chosen.positionToRiskRatio,
               payload: orderPayload,
             };
 

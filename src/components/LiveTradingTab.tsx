@@ -2343,6 +2343,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                         <div>تایم‌فریم: <strong className="text-cyan-300">{item.timeframe || '5m'}</strong></div>
                         <div>حجم: <strong className="text-cyan-300">{item.contractQty}</strong> قرارداد ({item.coinQty} کوین)</div>
                         <div>ارزش اسمی: <strong className="text-white">${item.nominalUsdt}</strong></div>
+                        <div>حجم/ریسک: <strong className="text-purple-300">{item.positionToRiskRatio || (item.actualLossAtSL > 0 ? (item.nominalUsdt / item.actualLossAtSL).toFixed(1) : (item.targetRiskUsdt > 0 ? (item.nominalUsdt / item.targetRiskUsdt).toFixed(1) : '---'))}</strong></div>
                         <div>زمان: <span className="text-gray-400">{item.timeFa || item.time?.slice(11, 19)}</span></div>
                         {item.stopLoss && <div>استاپ: <span className="text-rose-400">{item.stopLoss}</span></div>}
                         {item.takeProfit && <div>تارگت: <span className="text-emerald-400">{item.takeProfit}</span></div>}
@@ -2416,6 +2417,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                         <div>استاپ‌لاس: <span className="text-rose-400">{formatPrice(sig.stopLoss)}</span></div>
                         <div>تیک‌پرافیت: <span className="text-emerald-400">{formatPrice(sig.takeProfit)}</span></div>
                         <div>زیان در SL: <strong className="text-rose-300">${sig.riskUsdt}</strong></div>
+                        <div>حجم/ریسک: <strong className="text-purple-300">{sig.positionToRiskRatio || (sig.riskUsdt > 0 ? +(sig.notionalUsdt / sig.riskUsdt).toFixed(1) : '---')}</strong></div>
                       </div>
                     </div>
                   ))
