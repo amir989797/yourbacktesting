@@ -934,6 +934,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
             if (typeof config.maxBreakoutAtrMultiplier === 'number') setMaxBreakoutAtrMultiplier(config.maxBreakoutAtrMultiplier);
             if (typeof config.maxCandlesToEnter === 'number') setMaxCandlesToEnter(config.maxCandlesToEnter);
             if (typeof config.maxPositionToRiskRatio === 'number') setMaxPositionToRiskRatio(config.maxPositionToRiskRatio);
+            if (typeof config.timeStopEnabled === 'boolean') setTimeStopEnabled(config.timeStopEnabled);
+            if (typeof config.timeStopCandles === 'number') setTimeStopCandles(config.timeStopCandles);
           }
         }
 
@@ -1177,6 +1179,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           noConcurrentPositions,
           isLiveExecution,
           maxPositionToRiskRatio,
+          timeStopEnabled,
+          timeStopCandles,
           userId: currentUser || 'amir',
         };
 
@@ -2149,6 +2153,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                     try {
                       localStorage.setItem('livetrade_time_stop_candles', String(val));
                     } catch {}
+                    syncConfigToServer({ timeStopCandles: val });
                   }}
                   disabled={!timeStopEnabled}
                   className="w-20 px-2 py-1 bg-[#141a26] border border-[#2d384c] rounded-lg text-cyan-300 font-mono text-center font-bold text-xs disabled:opacity-40"
@@ -2165,6 +2170,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                       try {
                         localStorage.setItem('livetrade_time_stop_enabled', String(val));
                       } catch {}
+                      syncConfigToServer({ timeStopEnabled: val });
                     }}
                     className="w-4 h-4 rounded text-cyan-500 bg-[#171d28] border-[#2e394e] focus:ring-cyan-500 cursor-pointer"
                   />
