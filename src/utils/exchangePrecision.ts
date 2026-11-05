@@ -372,8 +372,10 @@ export function calculateXtRiskBudgetedOrder(params: {
     };
   }
 
-  // Maximum integer contracts allowed without exceeding riskBudget
-  const safeContractsMax = Math.floor(riskBudget / lossPerContract);
+  // Apply an 8% safety cushion to the risk budget to absorb stop-market order fill slippage & taker fee variance
+  const safeRiskBudget = riskBudget * 0.92;
+  // Maximum integer contracts allowed without exceeding riskBudget even with slippage
+  const safeContractsMax = Math.floor(safeRiskBudget / lossPerContract);
 
   // Minimum contracts needed to satisfy XT minNotional (5 USDT)
   const notionalPerContract = contractSize * price;
@@ -384,8 +386,13 @@ export function calculateXtRiskBudgetedOrder(params: {
 
   // If even 1 contract produces a loss higher than the user's budget:
   if (safeContractsMax < 1) {
-    exceedsRiskBudget = true;
-    contractQty = 0; // Guard against exceeding risk budget
+    // Check if 1 contract is within raw riskBudget (without slippage buffer)
+    if (lossPerContract <= riskBudget) {
+      contractQty = 1;
+    } else {
+      exceedsRiskBudget = true;
+      contractQty = 0; // Guard against exceeding risk budget
+    }
   } else if (contractQty < minRequiredContracts) {
     // If safe contracts don't meet XT minNotional (5 USDT), check if minRequiredContracts would exceed risk
     const minNotionalLoss = minRequiredContracts * lossPerContract;

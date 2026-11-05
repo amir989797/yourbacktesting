@@ -97,11 +97,12 @@ export const liveTrades = pgTable('live_trades', {
   userId: text('user_id').default('default'),
   exchange: text('exchange').notNull().default('xt'), // 'xt' | 'binance'
   symbol: text('symbol').notNull(),
+  timeframe: text('timeframe').notNull().default('5m'),
   side: text('side').notNull(),       // 'BUY' | 'SELL'
   posSide: text('pos_side').notNull(), // 'LONG' | 'SHORT'
   price: doublePrecision('price').notNull(),
   amount: doublePrecision('amount').notNull(),
-  status: text('status').notNull().default('NEW'), // 'SUCCESS' | 'FILLED' | 'FAILED' | 'CANCELED'
+  status: text('status').notNull().default('NEW'), // 'SUCCESS' | 'FILLED' | 'ACTIVE' | 'FAILED' | 'CANCELED' | 'CLOSED'
   stopLoss: doublePrecision('stop_loss'),
   takeProfit: doublePrecision('take_profit'),
   realizedPnl: doublePrecision('realized_pnl').default(0),
@@ -113,6 +114,8 @@ export const liveTrades = pgTable('live_trades', {
 }, (table) => [
   index('idx_live_trades_user_id').on(table.userId),
   index('idx_live_trades_symbol').on(table.symbol),
+  index('idx_live_trades_timeframe').on(table.timeframe),
+  index('idx_live_trades_status').on(table.status),
   index('idx_live_trades_created_at').on(table.createdAt),
 ]);
 

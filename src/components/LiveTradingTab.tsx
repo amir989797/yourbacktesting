@@ -306,8 +306,36 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
 
   // 4. Strategy & Order Execution Settings (پیش‌فرض: استراتژی دوم Next-Pivot)
   const [selectedStrategy, setSelectedStrategy] = useState<'strategy_1_e_breakout' | 'strategy_2_next_pivot'>('strategy_2_next_pivot');
-  const [tradeTimeframe, setTradeTimeframe] = useState<Timeframe>('5m');
+  const [selectedTimeframes, setSelectedTimeframes] = useState<Timeframe[]>(() => {
+    try {
+      const saved = localStorage.getItem('livetrade_timeframes');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return ['5m'];
+  });
+  const [tradeTimeframe, setTradeTimeframe] = useState<Timeframe>(() => selectedTimeframes[0] || '5m');
+  const [activeDbTrades, setActiveDbTrades] = useState<any[]>([]);
   const [riskRewardRatio, setRiskRewardRatio] = useState<number>(3.0);
+
+  const handleToggleTimeframe = (tf: Timeframe) => {
+    setSelectedTimeframes((prev) => {
+      let next: Timeframe[];
+      if (prev.includes(tf)) {
+        if (prev.length <= 1) return prev; // Keep at least one selected
+        next = prev.filter((t) => t !== tf);
+      } else {
+        next = [...prev, tf];
+      }
+      setTradeTimeframe(next[0]);
+      try {
+        localStorage.setItem('livetrade_timeframes', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
 
   // نحوه محاسبه ریسک: درصدی از موجودی زنده ('percent') یا مبلغ ثابت دلاری ('fixed')
   const [riskMode, setRiskMode] = useState<'percent' | 'fixed'>(() => {
@@ -880,7 +908,13 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           if (!hasInitializedConfigFromServer.current) {
             hasInitializedConfigFromServer.current = true;
             if (config.strategyId) setSelectedStrategy(config.strategyId);
-            if (config.timeframe) setTradeTimeframe(config.timeframe);
+            if (Array.isArray(config.timeframes) && config.timeframes.length > 0) {
+              setSelectedTimeframes(config.timeframes);
+              setTradeTimeframe(config.timeframes[0]);
+            } else if (config.timeframe) {
+              setSelectedTimeframes([config.timeframe]);
+              setTradeTimeframe(config.timeframe);
+            }
             if (config.exchange && typeof onSelectExchange === 'function') onSelectExchange(config.exchange);
             if (Array.isArray(config.symbols) && config.symbols.length > 0) setSelectedSymbols(config.symbols);
             if (config.riskMode) setRiskMode(config.riskMode);
@@ -900,6 +934,17 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
             if (typeof config.maxPositionToRiskRatio === 'number') setMaxPositionToRiskRatio(config.maxPositionToRiskRatio);
           }
         }
+
+        // Fetch tracked live trades from PostgreSQL
+        try {
+          const trRes = await fetch('/api/live-trades');
+          if (trRes.ok) {
+            const trData = await trRes.json();
+            if (trData.success && Array.isArray(trData.activeTrades)) {
+              setActiveDbTrades(trData.activeTrades);
+            }
+          }
+        } catch {}
 
         // Sync and append logs from server
         if (Array.isArray(logs) && logs.length > 0) {
@@ -1020,6 +1065,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       syncConfigToServer({
         strategyId: selectedStrategy,
         timeframe: tradeTimeframe,
+        timeframes: selectedTimeframes,
         exchange,
         symbols: selectedSymbols,
         riskMode,
@@ -1045,6 +1091,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   }, [
     selectedStrategy,
     tradeTimeframe,
+    selectedTimeframes,
     exchange,
     selectedSymbols,
     riskMode,
@@ -1103,6 +1150,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
 
         const configPayload = {
           timeframe: tradeTimeframe,
+          timeframes: selectedTimeframes,
           exchange,
           strategyId: selectedStrategy,
           symbols: targetSymbols,
@@ -1427,12 +1475,26 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 </div>
                 <div className="text-[11px] text-gray-400 flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 font-mono">
                   <span>صرافی: <strong className="text-white uppercase">{serverActiveConfig.exchange || exchange}</strong></span>
-                  <span>• تایم‌فریم: <strong className="text-cyan-300">{serverActiveConfig.timeframe || tradeTimeframe}</strong></span>
+                  <span>• تایم‌فریم‌ها: <strong className="text-cyan-300">{(serverActiveConfig.timeframes && serverActiveConfig.timeframes.length > 0 ? serverActiveConfig.timeframes : [serverActiveConfig.timeframe || tradeTimeframe]).join(', ')}</strong></span>
                   <span>• استراتژی: <strong className="text-amber-300">{serverActiveConfig.strategyId === 'strategy_2_next_pivot' ? 'Next-Pivot (۲)' : 'E-Breakout (۱)'}</strong></span>
                   <span>• بودجه ریسک: <strong className="text-emerald-300">{serverActiveConfig.riskMode === 'fixed' ? `$${serverActiveConfig.riskAmountFixed || 50} ثابت (با احتساب اعشار و کارمزد صرافی)` : `${serverActiveConfig.riskPercent || 1}% بالانس`}</strong></span>
-                  <span>• تک‌پوزیشن: <strong className={serverActiveConfig.noConcurrentPositions ? 'text-amber-300' : 'text-gray-400'}>{serverActiveConfig.noConcurrentPositions ? 'فعال' : 'غیرفعال'}</strong></span>
+                  <span>• تک‌پوزیشن هر تایم‌فریم: <strong className="text-amber-300">فعال (حداکثر ۱ معامله در هر تایم‌فریم)</strong></span>
                   <span>• واچ‌لیست: <strong className="text-cyan-300">{serverActiveConfig.symbols?.length || selectedSymbols?.length || 0} جفت‌ارز</strong></span>
                 </div>
+                {activeDbTrades.length > 0 && (
+                  <div className="flex items-center gap-2 flex-wrap mt-2 pt-2 border-t border-[#1b2536]">
+                    <span className="text-gray-400 text-[11px] font-sans">معاملات فعال دیتابیس ({activeDbTrades.length}):</span>
+                    {activeDbTrades.map((tr) => (
+                      <div key={tr.id} className="flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-emerald-950/70 border border-emerald-500/50 text-[11px] text-emerald-300 font-mono">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        <span className="font-bold text-cyan-300">[{tr.timeframe}]</span>
+                        <span className="uppercase text-white font-bold">{tr.symbol}</span>
+                        <span className="text-[10px] text-gray-400">شناسه: {tr.order_id || tr.id.slice(0, 10)}</span>
+                        <span className="text-[10px] text-amber-300 font-sans">{tr.pos_side}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1710,18 +1772,40 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
               </div>
 
               <div>
-                <label className="text-[11px] text-gray-400 block mb-1">تایم‌فریم اسکن:</label>
-                <select
-                  value={tradeTimeframe}
-                  onChange={(e) => setTradeTimeframe(e.target.value as any)}
-                  className="w-full px-2.5 py-1.5 bg-[#141924] border border-[#283346] rounded-xl text-cyan-300 font-mono font-bold text-xs focus:outline-none focus:border-cyan-400 cursor-pointer"
-                >
-                  <option value="1m">1m (اسکلپ سریع)</option>
-                  <option value="5m">5m (استاندارد اسکن ۵ دقیقه‌ای)</option>
-                  <option value="15m">15m</option>
-                  <option value="30m">30m</option>
-                  <option value="1h">1h (سویینگ ساعتی)</option>
-                </select>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[11px] text-gray-400 block">تایم‌فریم‌های اسکن موازی:</label>
+                  <span className="text-[10px] text-cyan-400 font-mono">
+                    {selectedTimeframes.length} تایم‌فریم فعال
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1 p-1 bg-[#141924] border border-[#283346] rounded-xl">
+                  {(['1m', '3m', '5m', '15m', '30m', '1h', '4h'] as Timeframe[]).map((tf) => {
+                    const isSelected = selectedTimeframes.includes(tf);
+                    const activeTrade = activeDbTrades.find((t) => t.timeframe === tf);
+                    return (
+                      <button
+                        key={tf}
+                        type="button"
+                        onClick={() => handleToggleTimeframe(tf)}
+                        className={`px-2 py-1 rounded-lg text-xs font-mono font-bold transition-all flex items-center gap-1 cursor-pointer ${
+                          isSelected
+                            ? 'bg-cyan-500/25 text-cyan-300 border border-cyan-400/60 shadow-xs'
+                            : 'bg-[#0f141e] text-gray-400 hover:text-gray-200 border border-transparent'
+                        }`}
+                        title={
+                          activeTrade
+                            ? `تایم‌فریم ${tf}: دارای معامله باز (${activeTrade.symbol?.toUpperCase()} | Order: ${activeTrade.order_id || activeTrade.id})`
+                            : `تایم‌فریم ${tf} (کلیک برای فعال/غیرفعال کردن)`
+                        }
+                      >
+                        <span>{tf}</span>
+                        {activeTrade && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" title="پوزیشن باز" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               <div>

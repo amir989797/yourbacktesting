@@ -88,6 +88,9 @@ export async function initDatabase(): Promise<{ success: boolean; tablesCreated:
         execution_logs_json TEXT,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
+      ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS timeframe TEXT DEFAULT '5m';
+      CREATE INDEX IF NOT EXISTS idx_live_trades_timeframe ON live_trades(timeframe);
+      CREATE INDEX IF NOT EXISTS idx_live_trades_status ON live_trades(status);
     `);
 
     // Quick existence check to prevent redundant DDL execution on every startup
@@ -231,6 +234,7 @@ export async function initDatabase(): Promise<{ success: boolean; tablesCreated:
         user_id TEXT DEFAULT 'default',
         exchange TEXT NOT NULL DEFAULT 'xt',
         symbol TEXT NOT NULL,
+        timeframe TEXT NOT NULL DEFAULT '5m',
         side TEXT NOT NULL,
         pos_side TEXT NOT NULL,
         price DOUBLE PRECISION NOT NULL,
@@ -245,8 +249,11 @@ export async function initDatabase(): Promise<{ success: boolean; tablesCreated:
         error_message TEXT,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
+      ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS timeframe TEXT DEFAULT '5m';
       CREATE INDEX IF NOT EXISTS idx_live_trades_user_id ON live_trades(user_id);
       CREATE INDEX IF NOT EXISTS idx_live_trades_symbol ON live_trades(symbol);
+      CREATE INDEX IF NOT EXISTS idx_live_trades_timeframe ON live_trades(timeframe);
+      CREATE INDEX IF NOT EXISTS idx_live_trades_status ON live_trades(status);
       CREATE INDEX IF NOT EXISTS idx_live_trades_created_at ON live_trades(created_at DESC);
     `);
 
@@ -359,3 +366,125 @@ export async function testDatabaseConnection() {
     client.release();
   }
 }
+
+/**
+ * Inserts or updates a live trade in PostgreSQL database
+ */
+export async function recordLiveTradeInDb(trade: {
+  id: string;
+  orderId?: string | null;
+  userId?: string;
+  exchange: string;
+  symbol: string;
+  timeframe: string;
+  side: string;
+  posSide: string;
+  price: number;
+  amount: number;
+  status: 'ACTIVE' | 'CLOSED' | 'FAILED' | 'NEW' | 'SUCCESS';
+  stopLoss?: number | null;
+  takeProfit?: number | null;
+  realizedPnl?: number;
+  strategyName?: string | null;
+  payloadJson?: string | null;
+  responseJson?: string | null;
+  errorMessage?: string | null;
+}) {
+  const client = await pool.connect();
+  try {
+    await client.query(
+      `INSERT INTO live_trades (
+        id, order_id, user_id, exchange, symbol, timeframe, side, pos_side, price, amount, status, stop_loss, take_profit, realized_pnl, strategy_name, payload_json, response_json, error_message, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW())
+      ON CONFLICT (id) DO UPDATE SET
+        order_id = COALESCE(EXCLUDED.order_id, live_trades.order_id),
+        timeframe = COALESCE(EXCLUDED.timeframe, live_trades.timeframe),
+        status = EXCLUDED.status,
+        stop_loss = COALESCE(EXCLUDED.stop_loss, live_trades.stop_loss),
+        take_profit = COALESCE(EXCLUDED.take_profit, live_trades.take_profit),
+        realized_pnl = COALESCE(EXCLUDED.realized_pnl, live_trades.realized_pnl),
+        response_json = COALESCE(EXCLUDED.response_json, live_trades.response_json),
+        error_message = COALESCE(EXCLUDED.error_message, live_trades.error_message);`,
+      [
+        trade.id,
+        trade.orderId || null,
+        trade.userId || 'default',
+        trade.exchange || 'xt',
+        trade.symbol.toLowerCase(),
+        trade.timeframe || '5m',
+        trade.side,
+        trade.posSide,
+        trade.price,
+        trade.amount,
+        trade.status,
+        trade.stopLoss || null,
+        trade.takeProfit || null,
+        trade.realizedPnl || 0,
+        trade.strategyName || null,
+        trade.payloadJson || null,
+        trade.responseJson || null,
+        trade.errorMessage || null,
+      ]
+    );
+  } catch (err: any) {
+    console.error('[PostgreSQL] ❌ Error in recordLiveTradeInDb:', err.message);
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Returns all currently ACTIVE trades from PostgreSQL
+ */
+export async function getActiveLiveTradesFromDb(): Promise<any[]> {
+  const client = await pool.connect();
+  try {
+    const res = await client.query(
+      `SELECT * FROM live_trades WHERE status = 'ACTIVE' ORDER BY created_at DESC;`
+    );
+    return res.rows || [];
+  } catch (err: any) {
+    console.error('[PostgreSQL] ❌ Error in getActiveLiveTradesFromDb:', err.message);
+    return [];
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Updates status of given trade IDs to 'CLOSED'
+ */
+export async function markLiveTradesClosedInDb(tradeIds: string[]) {
+  if (!tradeIds || tradeIds.length === 0) return;
+  const client = await pool.connect();
+  try {
+    await client.query(
+      `UPDATE live_trades SET status = 'CLOSED' WHERE id = ANY($1::text[]);`,
+      [tradeIds]
+    );
+  } catch (err: any) {
+    console.error('[PostgreSQL] ❌ Error in markLiveTradesClosedInDb:', err.message);
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Returns recent live trades from PostgreSQL
+ */
+export async function getAllLiveTradesFromDb(limit: number = 50): Promise<any[]> {
+  const client = await pool.connect();
+  try {
+    const res = await client.query(
+      `SELECT * FROM live_trades ORDER BY created_at DESC LIMIT $1;`,
+      [limit]
+    );
+    return res.rows || [];
+  } catch (err: any) {
+    console.error('[PostgreSQL] ❌ Error in getAllLiveTradesFromDb:', err.message);
+    return [];
+  } finally {
+    client.release();
+  }
+}
+
