@@ -99,6 +99,7 @@ interface ScanLogItem {
   type: 'info' | 'success' | 'warning' | 'trade';
   message: string;
   symbol?: string;
+  timeframe?: string;
 }
 
 // دیتابیس مارکت‌کپ ارزهای معتبر مارکت (به دلار)
@@ -318,6 +319,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   });
   const [tradeTimeframe, setTradeTimeframe] = useState<Timeframe>(() => selectedTimeframes[0] || '5m');
   const [activeDbTrades, setActiveDbTrades] = useState<any[]>([]);
+  const [allDbTrades, setAllDbTrades] = useState<any[]>([]);
   const [riskRewardRatio, setRiskRewardRatio] = useState<number>(3.0);
 
   const handleToggleTimeframe = (tf: Timeframe) => {
@@ -940,8 +942,13 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           const trRes = await fetch('/api/live-trades');
           if (trRes.ok) {
             const trData = await trRes.json();
-            if (trData.success && Array.isArray(trData.activeTrades)) {
-              setActiveDbTrades(trData.activeTrades);
+            if (trData.success) {
+              if (Array.isArray(trData.activeTrades)) {
+                setActiveDbTrades(trData.activeTrades);
+              }
+              if (Array.isArray(trData.allTrades)) {
+                setAllDbTrades(trData.allTrades);
+              }
             }
           }
         } catch {}
@@ -2256,6 +2263,11 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                       }`}
                     >
                       <span className="text-[10px] text-gray-500 whitespace-nowrap">[{log.time}]</span>
+                      {log.timeframe && (
+                        <span className="px-1.5 py-0.2 rounded font-mono text-[10px] font-bold bg-cyan-950 text-cyan-300 border border-cyan-500/40 whitespace-nowrap">
+                          {log.timeframe}
+                        </span>
+                      )}
                       <span>{log.message}</span>
                     </div>
                   ))
@@ -2292,6 +2304,9 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                             {item.posSide || item.side}
                           </span>
                           <strong className="text-white uppercase font-mono">{item.symbol}</strong>
+                          <span className="px-1.5 py-0.5 rounded font-mono text-[10px] font-bold bg-cyan-950 text-cyan-300 border border-cyan-500/40">
+                            {item.timeframe || '5m'}
+                          </span>
                           {item.isTestTrade && (
                             <span className="px-1 py-0.2 bg-amber-500/20 text-amber-300 rounded text-[9px]">تست $0.1</span>
                           )}
@@ -2318,7 +2333,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                         </div>
                       </div>
 
-                      <div className="text-[11px] text-gray-300 grid grid-cols-2 sm:grid-cols-3 gap-1 font-mono pt-1 border-t border-[#1e293b]">
+                      <div className="text-[11px] text-gray-300 grid grid-cols-2 sm:grid-cols-4 gap-1 font-mono pt-1 border-t border-[#1e293b]">
+                        <div>تایم‌فریم: <strong className="text-cyan-300">{item.timeframe || '5m'}</strong></div>
                         <div>حجم: <strong className="text-cyan-300">{item.contractQty}</strong> قرارداد ({item.coinQty} کوین)</div>
                         <div>ارزش اسمی: <strong className="text-white">${item.nominalUsdt}</strong></div>
                         <div>زمان: <span className="text-gray-400">{item.timeFa || item.time?.slice(11, 19)}</span></div>
@@ -2366,6 +2382,9 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                             {sig.posSide}
                           </span>
                           <strong className="text-white font-mono uppercase">{fromXtSymbol(sig.symbol)}</strong>
+                          <span className="px-1.5 py-0.5 rounded font-mono text-[10px] font-bold bg-cyan-950 text-cyan-300 border border-cyan-500/40">
+                            {sig.timeframe || tradeTimeframe || '5m'}
+                          </span>
                           <span className="text-[10px] text-gray-400 font-mono">({sig.strategyName})</span>
                         </div>
                         <div className="flex items-center gap-1.5">
@@ -2383,7 +2402,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                         </div>
                       </div>
 
-                      <div className="text-[11px] text-gray-300 grid grid-cols-2 sm:grid-cols-3 gap-1 font-mono pt-1 border-t border-[#1e293b]">
+                      <div className="text-[11px] text-gray-300 grid grid-cols-2 sm:grid-cols-4 gap-1 font-mono pt-1 border-t border-[#1e293b]">
+                        <div>تایم‌فریم: <strong className="text-cyan-300">{sig.timeframe || tradeTimeframe || '5m'}</strong></div>
                         <div>قیمت ورود: <strong className="text-white">{formatPrice(sig.curPrice)}</strong></div>
                         <div>اهرم: <strong className="text-amber-300">{sig.maxLeverage}x</strong></div>
                         <div>حجم مجاز: <strong className="text-cyan-300">{sig.contractQty}</strong></div>
@@ -2452,6 +2472,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 <thead>
                   <tr className="text-gray-400 border-b border-[#1f2838] text-[11px]">
                     <th className="py-2 px-3">جفت‌ارز</th>
+                    <th className="py-2 px-3 text-center">تایم‌فریم</th>
                     <th className="py-2 px-3 text-center">جهت</th>
                     <th className="py-2 px-3 text-center">اهرم</th>
                     <th className="py-2 px-3">حجم معامله</th>
@@ -2466,6 +2487,12 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 <tbody className="divide-y divide-[#18202d] font-mono">
                   {positions.map((pos, idx) => {
                     const isLong = pos.side === 'LONG';
+                    const cleanPosSym = (pos.symbol || '').toLowerCase().replace(/[-_]/g, '');
+                    const matchedTrade = activeDbTrades.find(
+                      (t) => (t.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanPosSym
+                    );
+                    const posTimeframe = pos.timeframe || matchedTrade?.timeframe || tradeTimeframe || '5m';
+
                     const effectiveCoinQty = pos.coinQty && pos.coinQty > 0
                       ? pos.coinQty
                       : (pos.contractQty ? pos.contractQty * (pos.contractSize || 1) : pos.amount);
@@ -2496,6 +2523,11 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                         <td className="py-2.5 px-3 font-bold text-white flex items-center gap-1.5">
                           <Flame className="w-3.5 h-3.5 text-amber-400 group-hover:scale-110 transition-transform" />
                           <span className="group-hover:text-amber-300 transition-colors">{fromXtSymbol(pos.symbol)}</span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span className="px-2 py-0.5 rounded-md font-mono text-[10px] font-bold bg-cyan-950/80 text-cyan-300 border border-cyan-500/40 shadow-xs">
+                            {posTimeframe}
+                          </span>
                         </td>
                         <td className="py-2.5 px-3 text-center">
                           <span
@@ -2652,6 +2684,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                   <tr className="text-gray-400 border-b border-[#1f2838] text-[11px]">
                     <th className="py-2 px-3">زمان ثبت</th>
                     <th className="py-2 px-3">جفت‌ارز</th>
+                    <th className="py-2 px-3 text-center">تایم‌فریم</th>
                     <th className="py-2 px-3 text-center">جهت</th>
                     <th className="py-2 px-3">استراتژی</th>
                     <th className="py-2 px-3">قیمت ورود</th>
@@ -2664,73 +2697,88 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#18202d] font-mono">
-                  {filteredHistory.map((order) => (
-                    <tr
-                      key={order.id}
-                      onClick={() => handleNavigateToChart(order.symbol, order)}
-                      className="hover:bg-[#182335] transition-colors cursor-pointer group"
-                      title="کلیک روی سطر برای نمایش چارت و خطوط ورود، استاپ و تارگت این معامله در تب تحلیل"
-                    >
-                      <td className="py-2.5 px-3 text-gray-400 text-[11px]">{order.timestamp}</td>
-                      <td className="py-2.5 px-3 font-bold text-white flex items-center gap-1.5">
-                        <span className="group-hover:text-cyan-300 transition-colors">{fromXtSymbol(order.symbol)}</span>
-                        <span className="text-[10px] text-cyan-400 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 font-sans">
-                          <LineChart className="w-3 h-3" />
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-3 text-center">
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            order.positionSide === 'LONG' || order.side === 'BUY'
-                              ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-500/40'
-                              : 'bg-rose-950/80 text-rose-400 border border-rose-500/40'
-                          }`}
-                        >
-                          {order.positionSide || order.side}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-3 text-gray-300 font-sans text-[11px]">{order.strategyName}</td>
-                      <td className="py-2.5 px-3 text-white font-bold">${formatPrice(order.price)}</td>
-                      <td className="py-2.5 px-3 text-emerald-400">${order.takeProfitPrice ? formatPrice(order.takeProfitPrice) : '---'}</td>
-                      <td className="py-2.5 px-3 text-rose-400">${order.stopLossPrice ? formatPrice(order.stopLossPrice) : '---'}</td>
-                      <td className="py-2.5 px-3 text-gray-300 font-mono">
-                        <span>{order.amount}</span>
-                        <span className="text-[10px] text-gray-500 mr-1 font-sans">قرارداد</span>
-                      </td>
-                      <td className="py-2.5 px-3 text-center">
-                        {order.realizedPnl !== undefined ? (
-                          <div className="inline-flex flex-col items-center">
-                            <span className={`font-bold text-xs font-mono ${order.realizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                              {order.realizedPnl >= 0 ? `+$${formatLivePnl(order.realizedPnl)}` : `-$${formatLivePnl(Math.abs(order.realizedPnl))}`}
-                            </span>
-                            {order.realizedPnlPercent !== undefined && (
-                              <span className={`text-[10px] font-mono px-1 rounded mt-0.5 ${order.realizedPnlPercent >= 0 ? 'bg-emerald-950/60 text-emerald-300' : 'bg-rose-950/60 text-rose-300'}`}>
-                                {order.realizedPnlPercent >= 0 ? `+${order.realizedPnlPercent.toFixed(1)}%` : `${order.realizedPnlPercent.toFixed(1)}%`}
+                  {filteredHistory.map((order) => {
+                    const cleanOrderSym = (order.symbol || '').toLowerCase().replace(/[-_]/g, '');
+                    const matchedDb = allDbTrades.find(
+                      (t) => (t.order_id && t.order_id === order.orderId) ||
+                        (t.id && t.id === order.id) ||
+                        ((t.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanOrderSym)
+                    );
+                    const orderTimeframe = order.timeframe || matchedDb?.timeframe || '5m';
+
+                    return (
+                      <tr
+                        key={order.id}
+                        onClick={() => handleNavigateToChart(order.symbol, order)}
+                        className="hover:bg-[#182335] transition-colors cursor-pointer group"
+                        title="کلیک روی سطر برای نمایش چارت و خطوط ورود، استاپ و تارگت این معامله در تب تحلیل"
+                      >
+                        <td className="py-2.5 px-3 text-gray-400 text-[11px]">{order.timestamp}</td>
+                        <td className="py-2.5 px-3 font-bold text-white flex items-center gap-1.5">
+                          <span className="group-hover:text-cyan-300 transition-colors">{fromXtSymbol(order.symbol)}</span>
+                          <span className="text-[10px] text-cyan-400 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 font-sans">
+                            <LineChart className="w-3 h-3" />
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span className="px-2 py-0.5 rounded-md font-mono text-[10px] font-bold bg-cyan-950/80 text-cyan-300 border border-cyan-500/40">
+                            {orderTimeframe}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              order.positionSide === 'LONG' || order.side === 'BUY'
+                                ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-500/40'
+                                : 'bg-rose-950/80 text-rose-400 border border-rose-500/40'
+                            }`}
+                          >
+                            {order.positionSide || order.side}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-gray-300 font-sans text-[11px]">{order.strategyName}</td>
+                        <td className="py-2.5 px-3 text-white font-bold">${formatPrice(order.price)}</td>
+                        <td className="py-2.5 px-3 text-emerald-400">${order.takeProfitPrice ? formatPrice(order.takeProfitPrice) : '---'}</td>
+                        <td className="py-2.5 px-3 text-rose-400">${order.stopLossPrice ? formatPrice(order.stopLossPrice) : '---'}</td>
+                        <td className="py-2.5 px-3 text-gray-300 font-mono">
+                          <span>{order.amount}</span>
+                          <span className="text-[10px] text-gray-500 mr-1 font-sans">قرارداد</span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          {order.realizedPnl !== undefined ? (
+                            <div className="inline-flex flex-col items-center">
+                              <span className={`font-bold text-xs font-mono ${order.realizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {order.realizedPnl >= 0 ? `+$${formatLivePnl(order.realizedPnl)}` : `-$${formatLivePnl(Math.abs(order.realizedPnl))}`}
                               </span>
-                            )}
-                          </div>
-                        ) : (
-                          <span className="text-gray-500">در جریان</span>
-                        )}
-                      </td>
-                      <td className="py-2.5 px-3 text-center">
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-950/60 text-cyan-300 border border-cyan-500/30">
-                          {order.status}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
-                        <button
-                          type="button"
-                          onClick={() => handleNavigateToChart(order.symbol, order)}
-                          className="px-2.5 py-1 rounded-lg bg-cyan-950/80 hover:bg-cyan-900 text-cyan-300 border border-cyan-500/40 text-[10px] font-bold cursor-pointer transition-all flex items-center gap-1 mx-auto shadow-xs"
-                          title="نمایش ستاپ و خطوط روی چارت مشابه تریدینگ‌ویو"
-                        >
-                          <LineChart className="w-3 h-3 text-cyan-400" />
-                          <span>چارت</span>
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                              {order.realizedPnlPercent !== undefined && (
+                                <span className={`text-[10px] font-mono px-1 rounded mt-0.5 ${order.realizedPnlPercent >= 0 ? 'bg-emerald-950/60 text-emerald-300' : 'bg-rose-950/60 text-rose-300'}`}>
+                                  {order.realizedPnlPercent >= 0 ? `+${order.realizedPnlPercent.toFixed(1)}%` : `${order.realizedPnlPercent.toFixed(1)}%`}
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-gray-500">در جریان</span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-950/60 text-cyan-300 border border-cyan-500/30">
+                            {order.status}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            type="button"
+                            onClick={() => handleNavigateToChart(order.symbol, order)}
+                            className="px-2.5 py-1 rounded-lg bg-cyan-950/80 hover:bg-cyan-900 text-cyan-300 border border-cyan-500/40 text-[10px] font-bold cursor-pointer transition-all flex items-center gap-1 mx-auto shadow-xs"
+                            title="نمایش ستاپ و خطوط روی چارت مشابه تریدینگ‌ویو"
+                          >
+                            <LineChart className="w-3 h-3 text-cyan-400" />
+                            <span>چارت</span>
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

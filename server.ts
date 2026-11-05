@@ -869,12 +869,13 @@ app.get('/api/xt/positions', async (req, res) => {
     const secretKey = (req.headers['x-secret-key'] as string) || DEFAULT_XT_SECRET_KEY;
     const params = symbol ? { symbol } : {};
 
-    // Parallel fetch: position list, position detail (for live floatingPL), profit-list (without state filter to prevent 0 items), and recent order history
-    const [listRes, posDetailRes, profitListRes, historyRes] = await Promise.all([
+    // Parallel fetch: position list, position detail (for live floatingPL), profit-list, recent order history, and active DB trades
+    const [listRes, posDetailRes, profitListRes, historyRes, activeDbTrades] = await Promise.all([
       requestXtApi('GET', '/future/user/v1/position/list', 'application/x-www-form-urlencoded', params, apiKey, secretKey).catch(() => ({ result: [] })),
       requestXtApi('GET', '/future/user/v1/position', 'application/x-www-form-urlencoded', params, apiKey, secretKey).catch(() => ({ result: [] })),
       requestXtApi('GET', '/future/trade/v1/entrust/profit-list', 'application/x-www-form-urlencoded', { ps: '50', ...(symbol ? { symbol } : {}) }, apiKey, secretKey).catch(() => ({ result: { items: [] } })),
       requestXtApi('GET', '/future/trade/v1/order/history-list', 'application/x-www-form-urlencoded', { ps: '20', ...(symbol ? { symbol } : {}) }, apiKey, secretKey).catch(() => ({ result: { items: [] } })),
+      getActiveLiveTradesFromDb().catch(() => []),
     ]);
 
     const rawListItems = Array.isArray(listRes?.result) ? listRes.result : [];
@@ -973,9 +974,16 @@ app.get('/api/xt/positions', async (req, res) => {
       const profitId = matchProfit?.profitId || item.profitId || undefined;
       const notionalUsdt = parseFloat((coinQty * markPrice).toFixed(2));
 
+      const cleanSym = (item.symbol || '').toLowerCase().replace(/[-_]/g, '');
+      const matchDbTrade = Array.isArray(activeDbTrades) ? activeDbTrades.find(
+        (d: any) => (d.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym
+      ) : null;
+      const posTimeframe = matchExec?.timeframe || matchDbTrade?.timeframe || '5m';
+
       return {
         ...item,
         symbol: item.symbol,
+        timeframe: posTimeframe,
         positionSide: item.positionSide,
         side: item.positionSide,
         contractQty,
@@ -1140,7 +1148,28 @@ app.get('/api/xt/orders/history', async (req, res) => {
     const params: any = {};
     if (req.query.symbol) params.symbol = req.query.symbol;
     if (req.query.limit) params.limit = req.query.limit;
-    const data = await requestXtApi('GET', '/future/trade/v1/order/list-history', 'application/x-www-form-urlencoded', params, apiKey, secretKey);
+
+    const [data, allDbTrades] = await Promise.all([
+      requestXtApi('GET', '/future/trade/v1/order/list-history', 'application/x-www-form-urlencoded', params, apiKey, secretKey),
+      getAllLiveTradesFromDb(100).catch(() => []),
+    ]);
+
+    const execLogs: any[] = ((global as any).serverScannerState || (typeof serverScannerState !== 'undefined' ? serverScannerState : null))?.executionLogs || [];
+
+    if (data?.result?.items && Array.isArray(data.result.items)) {
+      data.result.items = data.result.items.map((item: any) => {
+        const cleanSym = (item.symbol || '').toLowerCase().replace(/[-_]/g, '');
+        const matchExec = execLogs.find(
+          (l: any) => (l.orderId && l.orderId === String(item.orderId)) || (l.symbol && l.symbol.toLowerCase().replace(/[-_]/g, '') === cleanSym)
+        );
+        const matchDb = allDbTrades.find(
+          (t: any) => (t.order_id && t.order_id === String(item.orderId)) || (t.symbol && t.symbol.toLowerCase().replace(/[-_]/g, '') === cleanSym)
+        );
+        const timeframe = matchExec?.timeframe || matchDb?.timeframe || undefined;
+        return { ...item, timeframe };
+      });
+    }
+
     res.json(data);
   } catch (error: any) {
     res.status(500).json({ returnCode: -1, msgInfo: error.message, error: error.message, result: { items: [] } });
@@ -1156,13 +1185,22 @@ app.get('/api/xt/positions/history', async (req, res) => {
     const params: any = { ps: limit };
     if (req.query.symbol) params.symbol = toXtSymbol(req.query.symbol as string);
 
-    const historyRes = await requestXtApi('GET', '/future/user/v1/position/list-history', 'application/x-www-form-urlencoded', params, apiKey, secretKey);
+    const [historyRes, allDbTrades] = await Promise.all([
+      requestXtApi('GET', '/future/user/v1/position/list-history', 'application/x-www-form-urlencoded', params, apiKey, secretKey),
+      getAllLiveTradesFromDb(100).catch(() => []),
+    ]);
     const execLogs: any[] = serverScannerState.executionLogs || [];
     const items = historyRes?.result?.items || [];
 
     const formatted = items.map((item: any) => {
       const sym = item.symbol || '';
       const matchExec = execLogs.find((ex: any) => ex.symbol === sym || toXtSymbol(ex.symbol) === sym);
+
+      const cleanSym = sym.toLowerCase().replace(/[-_]/g, '');
+      const matchDb = Array.isArray(allDbTrades) ? allDbTrades.find(
+        (t: any) => (t.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym
+      ) : null;
+      const historyTimeframe = matchExec?.timeframe || matchDb?.timeframe || '5m';
 
       const posSide = (item.positionSide || 'LONG').toUpperCase() as 'LONG' | 'SHORT';
       const exitSide = posSide === 'LONG' ? 'SELL' : 'BUY';
@@ -1191,6 +1229,7 @@ app.get('/api/xt/positions/history', async (req, res) => {
         positionId: String(item.id || ''),
         exchange: 'xt',
         symbol: sym,
+        timeframe: historyTimeframe,
         side: exitSide,
         positionSide: posSide,
         orderType: 'MARKET',
@@ -5155,10 +5194,12 @@ interface ServerScannerLog {
   type: 'info' | 'success' | 'warning' | 'error' | 'trade';
   message: string;
   symbol?: string;
+  timeframe?: string;
 }
 
 interface ServerActiveSignal {
   symbol: string;
+  timeframe?: string;
   posSide: 'LONG' | 'SHORT';
   side: 'BUY' | 'SELL';
   curPrice: number;
@@ -5404,7 +5445,8 @@ if (savedDiskData) {
 function addServerScannerLog(
   type: 'info' | 'success' | 'warning' | 'error' | 'trade',
   message: string,
-  symbol?: string
+  symbol?: string,
+  timeframe?: string
 ) {
   const logItem: ServerScannerLog = {
     id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -5412,6 +5454,7 @@ function addServerScannerLog(
     type,
     message,
     symbol,
+    timeframe,
   };
   serverScannerState.logs = [logItem, ...serverScannerState.logs].slice(0, 100);
   console.log(`[ServerLiveScanner] [${type.toUpperCase()}] ${message}`);
@@ -5612,6 +5655,7 @@ async function runServerScannerCycle() {
           });
 
           if (signal) {
+            signal.timeframe = currentTf;
             tfCandidateSignals.push(signal);
             allDiscoveredSignals.push(signal);
           }
@@ -5622,7 +5666,7 @@ async function runServerScannerCycle() {
       }
 
       if (tfCandidateSignals.length === 0) {
-        addServerScannerLog('info', `✅ تایم‌فریم ${currentTf}: در کندل جاری هیچ سیگنال معتبری شناسایی نشد.`);
+        addServerScannerLog('info', `✅ تایم‌فریم ${currentTf}: در کندل جاری هیچ سیگنال معتبری شناسایی نشد.`, undefined, currentTf);
         continue;
       }
 
@@ -5635,7 +5679,9 @@ async function runServerScannerCycle() {
 
       addServerScannerLog(
         'info',
-        `🎯 تایم‌فریم ${currentTf}: تعداد ${tfCandidateSignals.length} سیگنال کشف شد: [${descList}]. سیگنال بهینه: ${tfCandidateSignals[0].symbol.toUpperCase()}`
+        `🎯 تایم‌فریم ${currentTf}: تعداد ${tfCandidateSignals.length} سیگنال کشف شد: [${descList}]. سیگنال بهینه: ${tfCandidateSignals[0].symbol.toUpperCase()}`,
+        undefined,
+        currentTf
       );
 
       // Attempt order execution for candidate in this timeframe
@@ -5651,7 +5697,8 @@ async function runServerScannerCycle() {
           addServerScannerLog(
             'warning',
             `⚠️ [${currentTf}] موجودی آزاد ناکافی برای ${chosen.symbol.toUpperCase()}: مارجین ${chosen.requiredMargin}$ > موجودی آزاد ${availableBalance.toFixed(2)}$`,
-            chosen.symbol
+            chosen.symbol,
+            currentTf
           );
           continue;
         }
@@ -5659,11 +5706,12 @@ async function runServerScannerCycle() {
         addServerScannerLog(
           'trade',
           `⚡ [${currentTf}] سیگنال برگزیده ${chosen.posSide} برای ${chosen.symbol.toUpperCase()} با بیشترین اهرم (${chosen.maxLeverage}x) و حداقل مارجین (${chosen.requiredMargin} USDT) تأیید شد. حجم: ${chosen.contractQty} (ارزش: ${chosen.notionalUsdt}$) | استاپ: ${chosen.stopLoss} | تارگت: ${chosen.takeProfit}`,
-          chosen.symbol
+          chosen.symbol,
+          currentTf
         );
 
         if (cfg.isLiveExecution && cfg.exchange === 'xt') {
-          addServerScannerLog('info', `🚀 در حال ارسال سفارش زنده فیوچرز به XT برای ${xtSymbol.toUpperCase()} در تایم‌فریم ${currentTf}...`, chosen.symbol);
+          addServerScannerLog('info', `🚀 در حال ارسال سفارش زنده فیوچرز به XT برای ${xtSymbol.toUpperCase()} در تایم‌فریم ${currentTf}...`, chosen.symbol, currentTf);
 
           const symMeta = getXtSymbolMeta(xtSymbol);
 

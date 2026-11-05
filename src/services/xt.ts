@@ -138,6 +138,7 @@ export async function fetchXtPositions(symbol?: string): Promise<LivePosition[]>
 
         return {
           symbol: item.symbol || 'btc_usdt',
+          timeframe: item.timeframe || undefined,
           exchange: 'xt',
           side,
           positionSide: side,
@@ -242,6 +243,7 @@ export async function fetchXtOrderHistory(symbol?: string, limit: number = 30): 
           amount: parseFloat(item.origQty || item.executedQty || '0'),
           status: (item.state === 'FILLED' ? 'FILLED' : item.state === 'CANCELED' ? 'CANCELED' : 'NEW'),
           strategyName: 'ZigZag Strategy',
+          timeframe: item.timeframe || undefined,
           takeProfitPrice: item.triggerProfitPrice ? parseFloat(item.triggerProfitPrice) : undefined,
           stopLossPrice: item.triggerStopPrice ? parseFloat(item.triggerStopPrice) : undefined,
           realizedPnl: item.closeProfit ? parseFloat(item.closeProfit) : undefined,

@@ -66,6 +66,7 @@ export interface CandidateSignal {
   positionToRiskRatio?: number;
   targetRiskUsdt?: number;
   strategyName: string;
+  timeframe?: string;
   discoveredAt: string;
 }
 

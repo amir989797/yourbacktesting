@@ -117,6 +117,7 @@ export interface ExchangeAccountBalance {
 
 export interface LivePosition {
   symbol: string;
+  timeframe?: string;
   exchange: ExchangeType;
   side: 'LONG' | 'SHORT';
   positionSide: 'LONG' | 'SHORT';
@@ -144,6 +145,7 @@ export interface LiveTradeOrder {
   clientOrderId?: string;
   exchange: ExchangeType;
   symbol: string;
+  timeframe?: string;
   side: 'BUY' | 'SELL';
   positionSide: 'LONG' | 'SHORT';
   orderType: 'MARKET' | 'LIMIT';
