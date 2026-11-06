@@ -980,6 +980,18 @@ app.get('/api/xt/positions', async (req, res) => {
       ) : null;
       const posTimeframe = matchExec?.timeframe || matchDbTrade?.timeframe || '5m';
 
+      // Time-Stop remaining candles calculation
+      const openTimeMs = matchDbTrade?.created_at
+        ? new Date(matchDbTrade.created_at).getTime()
+        : (matchExec?.timestamp
+            ? new Date(matchExec.timestamp).getTime()
+            : Number(item.openTime || item.ctime || item.mtime || Date.now()));
+      const tfMs = getTimeframeMs(posTimeframe);
+      const candlesElapsed = Math.max(0, Math.floor((Date.now() - openTimeMs) / tfMs));
+      const maxTimeStopCandles = (serverScannerState.config?.timeStopCandles) || 80;
+      const candlesRemaining = Math.max(0, maxTimeStopCandles - candlesElapsed);
+      const timeStopEnabled = serverScannerState.config?.timeStopEnabled !== false;
+
       return {
         ...item,
         symbol: item.symbol,
@@ -1003,6 +1015,11 @@ app.get('/api/xt/positions', async (req, res) => {
         triggerProfitPrice,
         triggerStopPrice,
         profitId,
+        openTimeMs,
+        candlesElapsed,
+        maxTimeStopCandles,
+        candlesRemaining,
+        timeStopEnabled,
       };
     });
 
@@ -5379,6 +5396,7 @@ const serverScannerState = {
   } as ServerLiveScannerConfig,
   lastRunAt: null as string | null,
   nextRunAt: null as string | null,
+  lastDurationMs: null as number | null,
   totalRunsCount: 0,
   lastResult: null as any,
   activeSignals: [] as ServerActiveSignal[],
@@ -5575,11 +5593,6 @@ async function runServerScannerCycle() {
     ? cfg.timeframes
     : [cfg.timeframe || '5m'];
 
-  addServerScannerLog(
-    'info',
-    `🔍 شروع چرخه اسکن سرور روی ${activeTargetSymbols.length} ارز در تایم‌فریم‌های [${targetTimeframes.join(', ')}] (${cfg.exchange.toUpperCase()})...`
-  );
-
   const allDiscoveredSignals: ServerActiveSignal[] = [];
 
   try {
@@ -5684,22 +5697,70 @@ async function runServerScannerCycle() {
       );
     }
 
-    // Process all target timeframes IN PARALLEL at the beginning of each cycle
-    await Promise.all(
-      targetTimeframes.map(async (currentTf) => {
-        // Rule: Exactly ONE trade allowed per timeframe!
-        if (activeTfToTradeMap.has(currentTf)) {
-          const existingTrade = activeTfToTradeMap.get(currentTf);
-          addServerScannerLog(
-            'info',
-            `⏳ تایم‌فریم ${currentTf} در حال حاضر دارای معامله باز است (ارز: ${(existingTrade.symbol || '').toUpperCase()} | شناسه سفارش صرافی: ${existingTrade.order_id || existingTrade.id}). اسکن برای باز کردن پوزیشن جدید در این تایم‌فریم تا زمان بسته شدن پوزیشن معلق می‌ماند.`,
-            existingTrade.symbol,
-            currentTf
-          );
-          return;
+    // Also check any open positions on XT exchange that might not have been recorded in activeDbTrades
+    for (const pos of openXtPositions) {
+      const cleanSym = (pos.symbol || '').toLowerCase().replace(/[-_]/g, '');
+      activePositionSymbols.add(cleanSym);
+      let alreadyMapped = false;
+      for (const [_, tr] of activeTfToTradeMap.entries()) {
+        if ((tr.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym) {
+          alreadyMapped = true;
+          break;
         }
+      }
+      if (!alreadyMapped) {
+        const matchExec = serverScannerState.executionLogs?.find(
+          (ex: any) => (ex.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym
+        );
+        const resolvedTf = matchExec?.timeframe || cfg.timeframe || '5m';
+        if (!activeTfToTradeMap.has(resolvedTf)) {
+          activeTfToTradeMap.set(resolvedTf, {
+            symbol: pos.symbol,
+            timeframe: resolvedTf,
+            id: pos.positionId || cleanSym,
+            amount: pos.positionSize || pos.amount || '0',
+          });
+        }
+      }
+    }
 
-        // Timeframe is free: scan all activeTargetSymbols for this timeframe in parallel
+    // Separate occupied vs available timeframes
+    const activeTimeframesWithPosition = targetTimeframes.filter((tf) => activeTfToTradeMap.has(tf));
+    const availableTimeframesToScan = targetTimeframes.filter((tf) => !activeTfToTradeMap.has(tf));
+
+    if (activeTimeframesWithPosition.length > 0) {
+      const occupiedDetails = activeTimeframesWithPosition
+        .map((tf) => `${tf}: ${(activeTfToTradeMap.get(tf)?.symbol || '').toUpperCase()}`)
+        .join(' | ');
+      addServerScannerLog(
+        'info',
+        `⏳ پوزیشن‌های فعال در تایم‌فریم‌ها: [${occupiedDetails}]. اسکن برای این تایم‌فریم‌ها کاملاً رد شد تا پوزیشن در جریان بماند.`
+      );
+    }
+
+    // If ALL target timeframes have an open position, do NOT scan any coins at all!
+    if (availableTimeframesToScan.length === 0) {
+      addServerScannerLog(
+        'info',
+        `⏸️ تمام تایم‌فریم‌های انتخابی [${activeTimeframesWithPosition.join(', ')}] دارای پوزیشن فعال در صرافی هستند. اسکن بازار در این چرخه به طور کامل متوقف شد (مدیریت پوزیشن‌های باز و خروج زمانی Time-Stop در جریان است).`
+      );
+      serverScannerState.lastRunAt = new Date().toISOString();
+      serverScannerState.totalRunsCount = (serverScannerState.totalRunsCount || 0) + 1;
+      serverScannerState.lastDurationMs = Date.now() - startTime;
+      serverScannerState.isScanning = false;
+      saveLiveConfigToDisk();
+      return;
+    }
+
+    addServerScannerLog(
+      'info',
+      `🔍 شروع اسکن موازی روی ${activeTargetSymbols.length} ارز در تایم‌فریم‌های آزاد [${availableTimeframesToScan.join(', ')}] (${cfg.exchange.toUpperCase()})...`
+    );
+
+    // Process ONLY available free timeframes IN PARALLEL at the beginning of each cycle
+    await Promise.all(
+      availableTimeframesToScan.map(async (currentTf) => {
+        // Timeframe is guaranteed free: scan all activeTargetSymbols for this timeframe in parallel
         addServerScannerLog(
           'info',
           `🔍 شروع اسکن موازی روی ${activeTargetSymbols.length} ارز در تایم‌فریم ${currentTf} (${cfg.exchange.toUpperCase()})...`,

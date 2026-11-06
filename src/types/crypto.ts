@@ -136,6 +136,11 @@ export interface LivePosition {
   takeProfitPrice?: number;
   stopLossPrice?: number;
   profitId?: string;
+  openTimeMs?: number;
+  candlesElapsed?: number;
+  maxTimeStopCandles?: number;
+  candlesRemaining?: number;
+  timeStopEnabled?: boolean;
   updatedAt: string;
 }
 

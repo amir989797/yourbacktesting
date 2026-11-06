@@ -389,6 +389,7 @@ export default function App() {
             currentPair={selectedPair}
             exchange={exchange}
             onSelectExchange={handleSelectExchange}
+            onSelectTimeframe={(tf) => setTimeframe(tf)}
             onSelectPair={(p) => {
               setSelectedPair(p);
               setActiveTab('chart');
@@ -405,6 +406,9 @@ export default function App() {
                   name: fromXtSymbol(clean),
                   category: 'Futures',
                 });
+              }
+              if (order && order.timeframe) {
+                setTimeframe(order.timeframe);
               }
               setActiveTab('chart');
             }}

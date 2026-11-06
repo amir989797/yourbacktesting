@@ -88,6 +88,7 @@ interface LiveTradingTabProps {
   exchange: ExchangeType;
   onSelectExchange: (exchange: ExchangeType) => void;
   onSelectPair?: (pair: CryptoPair) => void;
+  onSelectTimeframe?: (tf: Timeframe) => void;
   onSelectLiveOrder?: (order: any) => void;
   onClose?: () => void;
   currentUser?: string;
@@ -186,6 +187,24 @@ export function getMaxLeverageForSymbol(rawSymbol: string): number {
   return 20;
 }
 
+export function getTimeframeMsHelper(tf: string): number {
+  switch (tf) {
+    case '1m': return 60 * 1000;
+    case '3m': return 3 * 60 * 1000;
+    case '5m': return 5 * 60 * 1000;
+    case '15m': return 15 * 60 * 1000;
+    case '30m': return 30 * 60 * 1000;
+    case '1h': return 60 * 60 * 1000;
+    case '2h': return 2 * 60 * 60 * 1000;
+    case '4h': return 4 * 60 * 60 * 1000;
+    case '6h': return 6 * 60 * 60 * 1000;
+    case '8h': return 8 * 60 * 60 * 1000;
+    case '12h': return 12 * 60 * 60 * 1000;
+    case '1d': return 24 * 60 * 60 * 1000;
+    default: return 5 * 60 * 1000;
+  }
+}
+
 interface CandidateSignal {
   sym: string;
   posSide: 'LONG' | 'SHORT';
@@ -266,6 +285,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   exchange,
   onSelectExchange,
   onSelectPair,
+  onSelectTimeframe,
   onSelectLiveOrder,
   onClose,
   currentUser = 'amir',
@@ -599,8 +619,12 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       name: fromXtSymbol(clean),
       category: 'Futures',
     };
-    showToast(`📊 انتقال به چارت تحلیلی نماد ${fromXtSymbol(clean)}`);
-    addLog('info', `📊 انتقال به تب چارت برای بررسی ${fromXtSymbol(clean)}`, clean);
+    const targetTf = (orderData?.timeframe || tradeTimeframe || '5m') as Timeframe;
+    showToast(`📊 انتقال به چارت تحلیلی نماد ${fromXtSymbol(clean)} در تایم‌فریم ${targetTf}`);
+    addLog('info', `📊 انتقال به تب چارت برای بررسی ${fromXtSymbol(clean)} (${targetTf})`, clean);
+    if (onSelectTimeframe && targetTf) {
+      onSelectTimeframe(targetTf);
+    }
     if (orderData && onSelectLiveOrder) {
       const tradeTimestampMs = orderData.entryTimeMs ||
                                orderData.rawTimeMs ||
@@ -613,6 +637,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       onSelectLiveOrder({
         ...orderData,
         symbol: clean,
+        timeframe: targetTf,
         price: orderData.price || orderData.entryPrice || 0,
         stopLossPrice: orderData.stopLossPrice || orderData.stopLoss || 0,
         takeProfitPrice: orderData.takeProfitPrice || orderData.takeProfit || 0,
@@ -2522,6 +2547,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                     <th className="py-2 px-3">قیمت فعلی</th>
                     <th className="py-2 px-3">حد سود (TP)</th>
                     <th className="py-2 px-3">حد ضرر (SL)</th>
+                    <th className="py-2 px-3 text-center">کندل مانده تا بستن (Time-Stop)</th>
                     <th className="py-2 px-3 text-center">سود/زیان و ROI شناور</th>
                     <th className="py-2 px-3 text-center">عملیات</th>
                   </tr>
@@ -2534,6 +2560,13 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                       (t) => (t.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanPosSym
                     );
                     const posTimeframe = pos.timeframe || matchedTrade?.timeframe || tradeTimeframe || '5m';
+
+                    const openTimeMs = pos.openTimeMs || (matchedTrade?.created_at ? new Date(matchedTrade.created_at).getTime() : Date.now());
+                    const tfMs = getTimeframeMsHelper(posTimeframe);
+                    const candlesElapsed = pos.candlesElapsed !== undefined ? pos.candlesElapsed : Math.max(0, Math.floor((Date.now() - openTimeMs) / tfMs));
+                    const maxTimeStopCandles = pos.maxTimeStopCandles || timeStopCandles || 80;
+                    const candlesRemaining = pos.candlesRemaining !== undefined ? pos.candlesRemaining : Math.max(0, maxTimeStopCandles - candlesElapsed);
+                    const isTimeStopActive = pos.timeStopEnabled !== false && timeStopEnabled;
 
                     const effectiveCoinQty = pos.coinQty && pos.coinQty > 0
                       ? pos.coinQty
@@ -2558,7 +2591,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                     return (
                       <tr
                         key={`${pos.symbol}-${idx}`}
-                        onClick={() => handleNavigateToChart(pos.symbol, pos)}
+                        onClick={() => handleNavigateToChart(pos.symbol, { ...pos, timeframe: posTimeframe })}
                         className="hover:bg-[#182335] transition-colors cursor-pointer group"
                         title="کلیک روی سطر برای نمایش چارت این جفت‌ارز و خطوط ورود، حد سود و ضرر مشابه تریدینگ‌ویو"
                       >
@@ -2618,6 +2651,26 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                           )}
                         </td>
                         <td className="py-2.5 px-3 text-center">
+                          {isTimeStopActive ? (
+                            <div className="inline-flex flex-col items-center">
+                              <span className={`px-2 py-0.5 rounded-md font-mono text-[11px] font-bold border shadow-xs ${
+                                candlesRemaining <= 10
+                                  ? 'bg-rose-950/80 text-rose-300 border-rose-500/60 animate-pulse'
+                                  : candlesRemaining <= 30
+                                    ? 'bg-amber-950/80 text-amber-300 border-amber-500/40'
+                                    : 'bg-[#141d2c] text-cyan-300 border-cyan-500/30'
+                              }`}>
+                                {candlesRemaining} کندل مانده
+                              </span>
+                              <span className="text-[9px] text-gray-400 font-mono mt-0.5">
+                                ({candlesElapsed} از {maxTimeStopCandles} کندل)
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-gray-500 text-[10px]">غیرفعال</span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
                           <div className="inline-flex flex-col items-center">
                             <div className={`flex items-center gap-1.5 font-bold text-xs font-mono ${calculatedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                               <span className={`w-2 h-2 rounded-full ${calculatedPnl >= 0 ? 'bg-emerald-400 shadow-[0_0_8px_#10b981]' : 'bg-rose-400 shadow-[0_0_8px_#ef4444]'} animate-pulse`} />
@@ -2632,7 +2685,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                           <div className="flex items-center justify-center gap-1.5">
                             <button
                               type="button"
-                              onClick={() => handleNavigateToChart(pos.symbol, pos)}
+                              onClick={() => handleNavigateToChart(pos.symbol, { ...pos, timeframe: posTimeframe })}
                               className="px-2 py-1 rounded-lg bg-cyan-950/70 hover:bg-cyan-900/90 text-cyan-300 border border-cyan-500/40 text-[10px] font-bold cursor-pointer transition-all flex items-center gap-1 shadow-xs"
                               title="مشاهده چارت زنده و خطوط ورود، استاپ و تارگت مشابه تریدینگ‌ویو"
                             >
@@ -2752,7 +2805,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                     return (
                       <tr
                         key={order.id}
-                        onClick={() => handleNavigateToChart(order.symbol, order)}
+                        onClick={() => handleNavigateToChart(order.symbol, { ...order, timeframe: orderTimeframe })}
                         className="hover:bg-[#182335] transition-colors cursor-pointer group"
                         title="کلیک روی سطر برای نمایش چارت و خطوط ورود، استاپ و تارگت این معامله در تب تحلیل"
                       >
@@ -2824,7 +2877,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                         <td className="py-2.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
                           <button
                             type="button"
-                            onClick={() => handleNavigateToChart(order.symbol, order)}
+                            onClick={() => handleNavigateToChart(order.symbol, { ...order, timeframe: orderTimeframe })}
                             className="px-2.5 py-1 rounded-lg bg-cyan-950/80 hover:bg-cyan-900 text-cyan-300 border border-cyan-500/40 text-[10px] font-bold cursor-pointer transition-all flex items-center gap-1 mx-auto shadow-xs"
                             title="نمایش ستاپ و خطوط روی چارت مشابه تریدینگ‌ویو"
                           >
