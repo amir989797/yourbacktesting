@@ -157,10 +157,15 @@ export interface LiveTradeOrder {
   stopLossPrice?: number;
   realizedPnl?: number;
   realizedPnlPercent?: number;
+  fee?: number;
+  grossProfit?: number;
   exitPrice?: number;
   exitTime?: string;
   exitReason?: 'TP' | 'SL' | 'MANUAL';
   timestamp: string;
+  entryTimeMs?: number;
+  exitTimeMs?: number;
+  rawTimeMs?: number;
 }
 
 export interface LiveTradeSettings {

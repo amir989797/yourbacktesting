@@ -1231,6 +1231,8 @@ app.get('/api/xt/positions/history', async (req, res) => {
       const entryTimeMs = Number(item.ctime || item.openTime || item.closeTime || Date.now());
       const exitTimeMs = Number(item.closeTime || item.mtime || item.ctime || Date.now());
       const dateObj = new Date(exitTimeMs);
+      const pad = (n: number) => n.toString().padStart(2, '0');
+      const timeEn = `${dateObj.getFullYear()}-${pad(dateObj.getMonth() + 1)}-${pad(dateObj.getDate())} ${pad(dateObj.getHours())}:${pad(dateObj.getMinutes())}:${pad(dateObj.getSeconds())}`;
       const timeFa = dateObj.toLocaleTimeString('fa-IR');
 
       return {
@@ -1253,10 +1255,13 @@ app.get('/api/xt/positions/history', async (req, res) => {
         grossProfit,
         fee,
         realizedPnlPercent: parseFloat(pnlPercent.toFixed(2)),
-        exitTime: timeFa,
-        timestamp: timeFa,
+        exitTime: timeEn,
+        timestamp: timeEn,
+        timeEn,
+        timeFa,
         rawTimeMs: entryTimeMs,
         entryTimeMs,
+        exitTimeMs,
         timestampMs: entryTimeMs,
         time: entryTimeMs,
         closeType: item.force ? 'LIQUIDATION' : 'CLOSED',
@@ -3515,6 +3520,44 @@ app.delete('/api/backtest/range', async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+// 6.5.5.B Clear ALL Candle Datasets & Chunks from PostgreSQL and Disk Cache
+const handleClearAllCandles = async (_req: any, res: any) => {
+  try {
+    await pool.query('TRUNCATE TABLE candle_chunks;');
+    const delRes = await pool.query('DELETE FROM candle_datasets;');
+    serverDatasetCandleCache.clear();
+
+    try {
+      const diskBase = path.join('/tmp', 'candle_chunks');
+      if (fs.existsSync(diskBase)) {
+        fs.rmSync(diskBase, { recursive: true, force: true });
+      }
+    } catch {}
+
+    serverBacktestState.isScanning = false;
+    serverBacktestState.stage = 'idle';
+    serverBacktestState.results = [];
+    serverBacktestState.allTrades = [];
+    serverBacktestState.datasetId = null;
+    serverBacktestState.symbolCount = 0;
+    serverBacktestState.totalCandles = 0;
+    serverBacktestState.dataSizeFormatted = '0 B';
+
+    res.json({
+      success: true,
+      message: 'تمام دیتای کندل‌های ذخیره‌شده در دیتابیس PostgreSQL و حافظه کش با موفقیت پاکسازی شد.',
+      deletedCount: delRes.rowCount || 0,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+app.post('/api/candles/clear-all', handleClearAllCandles);
+app.delete('/api/candles/clear-all', handleClearAllCandles);
+app.post('/api/datasets/clear-all', handleClearAllCandles);
+
 
 // =========================================================================
 // 6.5.6 AUTONOMOUS SERVER-SIDE OPTIMIZER ENGINE (Connected directly to PostgreSQL)

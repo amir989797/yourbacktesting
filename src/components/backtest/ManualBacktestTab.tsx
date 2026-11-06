@@ -105,6 +105,7 @@ export interface ManualBacktestTabProps {
   handleStartScan: (useCachedOnly?: boolean, overrideConfig?: any, scanMode?: any) => void;
   handleRerunOnCachedData: () => void;
   handleClearCandleCache: () => void;
+  handleClearAllCandlesDatabase?: () => void;
   handleStopScan: () => void;
   cachedCount: number;
   handleOpenSaveConfigModal: () => void;
@@ -224,6 +225,7 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
   handleStartScan,
   handleRerunOnCachedData,
   handleClearCandleCache,
+  handleClearAllCandlesDatabase,
   handleStopScan,
   cachedCount,
   handleOpenSaveConfigModal,
@@ -937,6 +939,18 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
+                    )}
+
+                    {handleClearAllCandlesDatabase && (
+                      <button
+                        type="button"
+                        onClick={handleClearAllCandlesDatabase}
+                        className="px-3 py-1.5 rounded-xl bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 hover:text-white border border-rose-500/40 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all shadow-sm"
+                        title="پاکسازی کامل تمام دیتای کندل‌های ذخیره‌شده در تمام تایم‌فریم‌ها و صرافی‌ها از دیتابیس PostgreSQL"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                        <span>پاکسازی کل دیتای کندل‌های دیتابیس</span>
+                      </button>
                     )}
 
                       {/* انتخابگر تعداد ورکر همزمان برای افزایش سرعت اسکن ۶۵۰ ارز */}

@@ -445,6 +445,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const [isCheckingRange, setIsCheckingRange] = useState<boolean>(false);
   const [isRescanPromptOpen, setIsRescanPromptOpen] = useState<boolean>(false);
   const [isDeleteRangePromptOpen, setIsDeleteRangePromptOpen] = useState<boolean>(false);
+  const [isClearAllCandlesPromptOpen, setIsClearAllCandlesPromptOpen] = useState<boolean>(false);
+  const [isClearingAllCandles, setIsClearingAllCandles] = useState<boolean>(false);
 
   useEffect(() => {
     setCachedCount(getCachedUniqueCount());
@@ -1276,6 +1278,42 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       }
     } catch (err) {
       showToast('❌ خطا در برقراری ارتباط با دیتابیس.');
+    }
+  };
+
+  const handleClearAllCandlesDatabase = () => {
+    setIsClearAllCandlesPromptOpen(true);
+  };
+
+  const handleConfirmClearAllCandlesDatabase = async () => {
+    try {
+      setIsClearingAllCandles(true);
+      const res = await fetch('/api/candles/clear-all', { method: 'POST' });
+      const data = await res.json();
+      if (data && data.success) {
+        GLOBAL_CANDLE_CACHE.clear();
+        await clearCandleDbStore();
+        setCachedCount(0);
+        setResults([]);
+        setAllCollectedTrades([]);
+        setScanMaxDrawdown(0);
+        setRangeStatus({ exists: false });
+        setActiveSessionDatasetId(null);
+        try {
+          localStorage.removeItem('backtest_scanned_results_v2');
+          localStorage.removeItem('backtest_scanned_trades_v2');
+        } catch {}
+        setIsClearAllCandlesPromptOpen(false);
+        setIsDeleteRangePromptOpen(false);
+        showToast('🗑️ تمام دیتای کندل‌های ذخیره‌شده در دیتابیس PostgreSQL و حافظه کش با موفقیت پاکسازی شدند.');
+        checkCurrentRangeStatusRef.current?.({ datasetId: null });
+      } else {
+        showToast(`❌ خطا در پاکسازی دیتابیس: ${data.error || 'خطای سرور'}`);
+      }
+    } catch (err: any) {
+      showToast(`❌ خطا در ارتباط با سرور: ${err.message || 'خطا'}`);
+    } finally {
+      setIsClearingAllCandles(false);
     }
   };
 
@@ -3487,6 +3525,17 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                 <CloudDownload className="w-3.5 h-3.5 text-cyan-400" />
                 <span className="hidden sm:inline">لود کندل‌ها</span>
               </button>
+
+              <button
+                type="button"
+                onClick={handleClearAllCandlesDatabase}
+                className="px-2.5 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 hover:text-rose-200 border border-rose-500/30 text-xs font-bold transition-all cursor-pointer flex items-center gap-1 shadow-sm hover:scale-[1.02] active:scale-[0.98]"
+                title="پاکسازی کامل تمام دیتای کندل‌های ذخیره‌شده در دیتابیس PostgreSQL (تمام تایم‌فریم‌ها و صرافی‌ها)"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                <span className="hidden sm:inline">پاکسازی کل کندل‌ها</span>
+                <span className="sm:hidden">پاکسازی</span>
+              </button>
             </div>
           </div>
 
@@ -3568,6 +3617,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             handleStartScan={handleStartScan}
             handleRerunOnCachedData={handleRerunOnCachedData}
             handleClearCandleCache={handleClearCandleCache}
+            handleClearAllCandlesDatabase={handleClearAllCandlesDatabase}
             handleStopScan={handleStopScan}
             cachedCount={cachedCount}
             rangeStatus={rangeStatus}
@@ -4112,21 +4162,96 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                 </p>
               </div>
 
+              <div className="flex items-center justify-between gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsDeleteRangePromptOpen(false);
+                    setIsClearAllCandlesPromptOpen(true);
+                  }}
+                  className="text-xs text-rose-400 hover:text-rose-300 underline cursor-pointer transition-colors"
+                >
+                  پاکسازی کل دیتای کندل‌های دیتابیس (همه تایم‌فریم‌ها)
+                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsDeleteRangePromptOpen(false)}
+                    className="px-4 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-bold cursor-pointer transition-all"
+                  >
+                    انصراف
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmDeleteCurrentRange}
+                    className="px-5 py-2 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-extrabold text-xs flex items-center gap-2 shadow-lg shadow-rose-600/30 cursor-pointer transition-all"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>بله، پاکسازی فقط این بازه از دیتابیس</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* MODAL: CLEAR ALL STORED CANDLES FROM POSTGRESQL */}
+        {/* ========================================================= */}
+        {isClearAllCandlesPromptOpen && (
+          <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/85 backdrop-blur-sm p-4">
+            <div className="bg-[#101622] border border-rose-500/60 rounded-2xl p-6 max-w-md w-full shadow-2xl text-right animate-in fade-in zoom-in-95 duration-150">
+              <div className="flex items-center gap-3 mb-4 text-rose-400">
+                <AlertTriangle className="w-6 h-6 shrink-0" />
+                <h3 className="text-base font-extrabold text-white">
+                  پاکسازی کامل تمام دیتای کندل‌های دیتابیس
+                </h3>
+              </div>
+
+              <div className="bg-[#1c151e] p-4 rounded-xl border border-rose-500/30 text-xs text-gray-300 space-y-3 mb-5">
+                <p className="text-rose-300 text-xs leading-relaxed font-bold">
+                  ⚠️ آیا اطمینان کامل دارید که می‌خواهید <span className="underline text-white">تمام کندل‌های ذخیره‌شده</span> در پایگاه‌داده PostgreSQL (<span className="font-mono text-cyan-300">crypto_strategy_lab</span>) برای کلیه صرافی‌ها و تایم‌فریم‌ها پاکسازی شوند؟
+                </p>
+                <div className="bg-[#120d14] p-3 rounded-lg border border-rose-500/20 space-y-1.5 text-[11px] text-gray-300">
+                  <div className="flex items-center gap-2 text-rose-300 font-semibold">
+                    <span>• تخلیه کامل جدول‌های candle_datasets و candle_chunks</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-rose-300 font-semibold">
+                    <span>• پاکسازی حافظه کش کلاینت (IndexedDB) و کش دیسک سرور</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-emerald-400 font-semibold">
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                    <span>کانفیگ‌ها و پارامترهای ذخیره‌شده شما دست‌نخورده باقی می‌مانند.</span>
+                  </div>
+                </div>
+              </div>
+
               <div className="flex items-center justify-end gap-3">
                 <button
                   type="button"
-                  onClick={() => setIsDeleteRangePromptOpen(false)}
+                  onClick={() => setIsClearAllCandlesPromptOpen(false)}
+                  disabled={isClearingAllCandles}
                   className="px-4 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-bold cursor-pointer transition-all"
                 >
                   انصراف
                 </button>
                 <button
                   type="button"
-                  onClick={handleConfirmDeleteCurrentRange}
-                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-extrabold text-xs flex items-center gap-2 shadow-lg shadow-rose-600/30 cursor-pointer transition-all"
+                  onClick={handleConfirmClearAllCandlesDatabase}
+                  disabled={isClearingAllCandles}
+                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-extrabold text-xs flex items-center gap-2 shadow-lg shadow-rose-600/30 cursor-pointer transition-all disabled:opacity-50"
                 >
-                  <Trash2 className="w-4 h-4" />
-                  <span>بله، پاکسازی فقط این بازه از دیتابیس</span>
+                  {isClearingAllCandles ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>در حال پاکسازی کل دیتابیس...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-4 h-4" />
+                      <span>بله، پاکسازی کامل کل کندل‌ها</span>
+                    </>
+                  )}
                 </button>
               </div>
             </div>

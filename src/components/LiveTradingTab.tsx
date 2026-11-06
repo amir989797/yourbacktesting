@@ -554,6 +554,40 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     return 300;
   });
 
+  // تبدیل و فرمت زمان به ارقام انگلیسی همراه با تاریخ کامل (YYYY-MM-DD HH:mm:ss)
+  const formatOrderDateTimeEn = (order: any): string => {
+    const ms = order.exitTimeMs || order.entryTimeMs || order.rawTimeMs || order.timestampMs || order.time;
+    if (ms && !isNaN(Number(ms))) {
+      const d = new Date(Number(ms));
+      const pad = (n: number) => n.toString().padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+    if (order.timeEn && typeof order.timeEn === 'string') {
+      return order.timeEn;
+    }
+    if (order.timestamp && typeof order.timestamp === 'string') {
+      if (/^\d{4}-\d{2}-\d{2}/.test(order.timestamp)) {
+        return order.timestamp;
+      }
+      const parsed = Date.parse(order.timestamp);
+      if (!isNaN(parsed)) {
+        const d = new Date(parsed);
+        const pad = (n: number) => n.toString().padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      }
+    }
+    return order.timestamp || '---';
+  };
+
+  // فرمت کوتاه ستون استراتژی صرفاً به صورت «استراتژی ۱» یا «استراتژی ۲»
+  const formatStrategyShort = (strategyName?: string, matchedName?: string): string => {
+    const combined = `${strategyName || ''} ${matchedName || ''}`.toLowerCase();
+    if (combined.includes('1') || combined.includes('breakout') || combined.includes('شکست')) {
+      return 'استراتژی ۱';
+    }
+    return 'استراتژی ۲';
+  };
+
   // کلیک روی ردیف پوزیشن یا تاریخچه برای نمایش چارت جفت‌ارز و ستاپ معامله در تب اصلی چارت (مشابه تریدینگ‌ویو)
   const handleNavigateToChart = (rawSymbol: string, orderData?: any) => {
     const clean = exchange === 'xt' ? toXtSymbol(rawSymbol) : rawSymbol.replace('_', '').toUpperCase();
@@ -2690,15 +2724,16 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
               <table className="w-full text-xs text-right">
                 <thead>
                   <tr className="text-gray-400 border-b border-[#1f2838] text-[11px]">
-                    <th className="py-2 px-3">زمان ثبت</th>
+                    <th className="py-2 px-3">زمان و تاریخ ثبت</th>
                     <th className="py-2 px-3">جفت‌ارز</th>
                     <th className="py-2 px-3 text-center">تایم‌فریم</th>
                     <th className="py-2 px-3 text-center">جهت</th>
-                    <th className="py-2 px-3">استراتژی</th>
+                    <th className="py-2 px-3 text-center">استراتژی</th>
                     <th className="py-2 px-3">قیمت ورود</th>
                     <th className="py-2 px-3">حد سود (TP)</th>
                     <th className="py-2 px-3">حد ضرر (SL)</th>
                     <th className="py-2 px-3">حجم</th>
+                    <th className="py-2 px-3 text-center">میزان کارمزد</th>
                     <th className="py-2 px-3 text-center">سود/زیان (PnL)</th>
                     <th className="py-2 px-3 text-center">وضعیت</th>
                     <th className="py-2 px-3 text-center">چارت</th>
@@ -2721,7 +2756,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                         className="hover:bg-[#182335] transition-colors cursor-pointer group"
                         title="کلیک روی سطر برای نمایش چارت و خطوط ورود، استاپ و تارگت این معامله در تب تحلیل"
                       >
-                        <td className="py-2.5 px-3 text-gray-400 text-[11px]">{order.timestamp}</td>
+                        <td className="py-2.5 px-3 text-gray-300 font-mono text-[11px] whitespace-nowrap">{formatOrderDateTimeEn(order)}</td>
                         <td className="py-2.5 px-3 font-bold text-white flex items-center gap-1.5">
                           <span className="group-hover:text-cyan-300 transition-colors">{fromXtSymbol(order.symbol)}</span>
                           <span className="text-[10px] text-cyan-400 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 font-sans">
@@ -2744,13 +2779,26 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                             {order.positionSide || order.side}
                           </span>
                         </td>
-                        <td className="py-2.5 px-3 text-gray-300 font-sans text-[11px]">{order.strategyName}</td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-bold font-sans bg-cyan-950/70 text-cyan-300 border border-cyan-500/30">
+                            {formatStrategyShort(order.strategyName, matchedDb?.strategy_name)}
+                          </span>
+                        </td>
                         <td className="py-2.5 px-3 text-white font-bold">${formatPrice(order.price)}</td>
                         <td className="py-2.5 px-3 text-emerald-400">${order.takeProfitPrice ? formatPrice(order.takeProfitPrice) : '---'}</td>
                         <td className="py-2.5 px-3 text-rose-400">${order.stopLossPrice ? formatPrice(order.stopLossPrice) : '---'}</td>
                         <td className="py-2.5 px-3 text-gray-300 font-mono">
                           <span>{order.amount}</span>
                           <span className="text-[10px] text-gray-500 mr-1 font-sans">قرارداد</span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center font-mono text-[11px]">
+                          {order.fee !== undefined ? (
+                            <span className="text-amber-400 font-bold">
+                              ${Math.abs(order.fee).toFixed(4)}
+                            </span>
+                          ) : (
+                            <span className="text-gray-500">$0.0000</span>
+                          )}
                         </td>
                         <td className="py-2.5 px-3 text-center">
                           {order.realizedPnl !== undefined ? (
