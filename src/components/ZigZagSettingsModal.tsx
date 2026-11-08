@@ -17,6 +17,7 @@ export const DEFAULT_ZIGZAG_SETTINGS: ZigZagSettings = {
   longLegAtrMultiplier: 10,
   maxBlueLegPercent: 60,
   maxBreakoutAtrMultiplier: 5,
+  minVolumeGrowthPercent: 0,
   maxPositionToRiskRatio: 300,
 };
 
@@ -49,6 +50,9 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
   const [maxBreakoutAtrMultiplier, setMaxBreakoutAtrMultiplier] = useState<number | string>(
     settings.maxBreakoutAtrMultiplier ?? 5
   );
+  const [minVolumeGrowthPercent, setMinVolumeGrowthPercent] = useState<number | string>(
+    settings.minVolumeGrowthPercent ?? 0
+  );
 
   // Sync state when opened or settings change
   useEffect(() => {
@@ -61,6 +65,7 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
       setLongLegAtrMultiplier(settings.longLegAtrMultiplier ?? 10);
       setMaxBlueLegPercent(settings.maxBlueLegPercent ?? 60);
       setMaxBreakoutAtrMultiplier(settings.maxBreakoutAtrMultiplier ?? 5);
+      setMinVolumeGrowthPercent(settings.minVolumeGrowthPercent ?? 0);
     }
   }, [isOpen, settings]);
 
@@ -75,6 +80,7 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
     setLongLegAtrMultiplier(DEFAULT_ZIGZAG_SETTINGS.longLegAtrMultiplier);
     setMaxBlueLegPercent(DEFAULT_ZIGZAG_SETTINGS.maxBlueLegPercent ?? 60);
     setMaxBreakoutAtrMultiplier(DEFAULT_ZIGZAG_SETTINGS.maxBreakoutAtrMultiplier ?? 5);
+    setMinVolumeGrowthPercent(DEFAULT_ZIGZAG_SETTINGS.minVolumeGrowthPercent ?? 0);
   };
 
   const handleSave = (e: React.FormEvent) => {
@@ -87,6 +93,7 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
     const finalLongAtrMult = Math.max(0.1, parseFloat(String(longLegAtrMultiplier)) || 10);
     const finalMaxBlue = Math.max(1, parseFloat(String(maxBlueLegPercent)) || 60);
     const finalMaxBreakout = Math.max(0.5, parseFloat(String(maxBreakoutAtrMultiplier)) || 5);
+    const finalMinVolGrowth = Math.max(0, parseFloat(String(minVolumeGrowthPercent)) || 0);
 
     onSave({
       atrPeriod: finalAtrPeriod,
@@ -96,6 +103,7 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
       longLegAtrMultiplier: finalLongAtrMult,
       maxBlueLegPercent: finalMaxBlue,
       maxBreakoutAtrMultiplier: finalMaxBreakout,
+      minVolumeGrowthPercent: finalMinVolGrowth,
       maxPositionToRiskRatio: finalMaxRatio,
     });
     onClose();
@@ -419,7 +427,7 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
               </div>
 
               {/* 7. Max Breakout Penetration ATR */}
-              <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-indigo-500/40 transition-colors sm:col-span-2">
+              <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-indigo-500/40 transition-colors">
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
                     <span className="w-2 h-2 rounded-full bg-indigo-400" />
@@ -445,6 +453,40 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
                     value={maxBreakoutAtrMultiplier}
                     onChange={(e) => setMaxBreakoutAtrMultiplier(e.target.value)}
                     className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-indigo-400 bg-[#10141c] border border-[#323d50] rounded-lg"
+                  />
+                </div>
+              </div>
+
+              {/* 8. Min Volume Growth Percent (AB, CD, EF) */}
+              <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-emerald-500/40 transition-colors">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                    حداقل رشد حجم در طول لگ (Volume Slope %)
+                  </label>
+                  <span className="text-[11px] font-mono text-emerald-400 font-bold">
+                    {Number(minVolumeGrowthPercent) > 0 ? `${minVolumeGrowthPercent}%+` : '۰٪ (غیرفعال)'}
+                  </span>
+                </div>
+                <p className="text-[10px] text-gray-400 mb-1.5">الزام شیب صعودی میانگین حجم کندل‌ها از ابتدای لگ به انتهای لگ برای AB، CD و EF</p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={Number(minVolumeGrowthPercent) || 0}
+                    onChange={(e) => setMinVolumeGrowthPercent(Number(e.target.value))}
+                    className="flex-1 accent-emerald-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    max={500}
+                    step={1}
+                    value={minVolumeGrowthPercent}
+                    onChange={(e) => setMinVolumeGrowthPercent(e.target.value)}
+                    className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-emerald-400 bg-[#10141c] border border-[#323d50] rounded-lg"
                   />
                 </div>
               </div>

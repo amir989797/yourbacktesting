@@ -43,6 +43,27 @@ export interface CryptoPair {
   isApiSupported?: boolean;
 }
 
+// ۳۶ نماد فارکس، شاخص و کامودیتی در صرافی XT که به دلیل عدم ارائه دیتا یا توقف معاملات نباید نمایش داده شوند
+export const XT_EXCLUDED_36_SYMBOLS = new Set<string>([
+  'gbp_usdt', 'eur_usdt', 'aud_usdt', 'eurchf_usdt', 'audnzd_usdt', 'nzdusd_usdt',
+  'usdcad_usdt', 'usdnok_usdt', 'audcad_usdt', 'nzdchf_usdt', 'usdsek_usdt', 'usdchf_usdt',
+  'usdsgd_usdt', 'euraud_usdt', 'gbpaud_usdt', 'eurcad_usdt', 'eurgbp_usdt', 'cadchf_usdt',
+  'usdcnh_usdt', 'gbpnzd_usdt', 'nzdjpy_usdt', 'xpt_usdt', 'chfjpy_usdt', 'audchf_usdt',
+  'gbpjpy_usdt', 'usdmxn_usdt', 'eurjpy_usdt', 'cadjpy_usdt', 'xpd_usdt', 'usdtry_usdt',
+  'usdjpy_usdt', 'nzdcad_usdt', 'usdzar_usdt', 'audjpy_usdt', 'sp500_usdt', 'nas100_usdt'
+]);
+
+export function isXtExcludedSymbol(symbol: string): boolean {
+  if (!symbol) return false;
+  let s = symbol.toLowerCase().replace('/', '');
+  if (!s.includes('_') && s.endsWith('usdt')) {
+    s = s.slice(0, -4) + '_usdt';
+  } else if (!s.includes('_')) {
+    s = s + '_usdt';
+  }
+  return XT_EXCLUDED_36_SYMBOLS.has(s);
+}
+
 export type Timeframe = '1m' | '5m' | '15m' | '30m' | '1h' | '4h' | '1d' | '1w';
 
 export type ChartType = 'candlestick' | 'line' | 'area';
@@ -63,6 +84,7 @@ export interface ZigZagSettings {
   longLegAtrMultiplier: number; // ضریب ATR نوسان لگ‌های بزرگ (پیش‌فرض 10)
   maxBlueLegPercent?: number; // سقف درصدی اندازه لگ‌های آبی نسبت به قرمز/سبز (پیش‌فرض 60)
   maxBreakoutAtrMultiplier?: number; // سقف نفوذ شکست انتهای لگ بر مبنای ATR (پیش‌فرض 5)
+  minVolumeGrowthPercent?: number; // حداقل درصد رشد حجم در طول لگ‌های AB، CD و EF (پیش‌فرض 0)
   maxRiskReward?: number;
   maxPositionToRiskRatio?: number; // حداکثر نسبت ارزش پوزیشن به ریسک (پیش‌فرض 300)
 }

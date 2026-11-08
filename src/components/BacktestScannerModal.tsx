@@ -35,7 +35,7 @@ import {
   Loader2,
   Coins,
 } from 'lucide-react';
-import { CryptoPair, CandleData, Timeframe, ZigZagSettings, ExchangeType } from '../types/crypto';
+import { CryptoPair, CandleData, Timeframe, ZigZagSettings, ExchangeType, isXtExcludedSymbol } from '../types/crypto';
 import { StrategyConfig, StrategyTrade } from '../types/strategy';
 import {
   fetchUSDTMarketPairs,
@@ -270,12 +270,18 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       const saved = localStorage.getItem('backtest_selected_allowed_symbols');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const clean = parsed.filter((s: string) => !isXtExcludedSymbol(s));
+          if (clean.length > 0) return clean;
+        }
       }
       const liveSaved = localStorage.getItem('livetrade_selected_symbols');
       if (liveSaved) {
         const parsed = JSON.parse(liveSaved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const clean = parsed.filter((s: string) => !isXtExcludedSymbol(s));
+          if (clean.length > 0) return clean;
+        }
       }
     } catch {}
     return DEFAULT_POPULAR_WATCHLIST;
@@ -286,10 +292,11 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     loadAllowedPairsFromFirestore(currentUser || 'amir', selectedExchange)
       .then((loaded) => {
         if (loaded && loaded.length > 0) {
-          setSelectedAllowedSymbols(loaded);
+          const clean = loaded.filter((s) => !isXtExcludedSymbol(s));
+          setSelectedAllowedSymbols(clean);
           checkCurrentRangeStatusRef.current?.({
             exchange: selectedExchange,
-            symbols: loaded,
+            symbols: clean,
           });
         }
       })
@@ -297,15 +304,24 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   }, [currentUser, selectedExchange]);
 
   const handleSaveAllowedSymbols = (symbols: string[]) => {
-    setSelectedAllowedSymbols(symbols);
+    const clean = symbols.filter((s) => !isXtExcludedSymbol(s));
+    setSelectedAllowedSymbols(clean);
     try {
-      localStorage.setItem('backtest_selected_allowed_symbols', JSON.stringify(symbols));
-      localStorage.setItem(`backtest_selected_allowed_symbols_${selectedExchange}`, JSON.stringify(symbols));
+      localStorage.setItem('backtest_selected_allowed_symbols', JSON.stringify(clean));
+      localStorage.setItem(`backtest_selected_allowed_symbols_${selectedExchange}`, JSON.stringify(clean));
     } catch {}
     checkCurrentRangeStatusRef.current?.({
       exchange: selectedExchange,
-      symbols,
+      symbols: clean,
     });
+  };
+
+  const handleRemoveSkippedSymbolsFromAllowed = (symbolsToRemove: string[]) => {
+    const toRemoveSet = new Set(symbolsToRemove.map((s) => s.toLowerCase().replace(/[^a-z0-9]/g, '')));
+    const updated = selectedAllowedSymbols.filter((s) => !toRemoveSet.has(s.toLowerCase().replace(/[^a-z0-9]/g, '')));
+    handleSaveAllowedSymbols(updated);
+    setSkippedSymbols([]);
+    showToast(`🧹 ${symbolsToRemove.length} ارز بدون دیتای صرافی از لیست مجاز حذف شدند (${updated.length} ارز باقی ماند).`);
   };
 
   const handleQuickSelectSymbols = async (count: number | 'all') => {
@@ -440,8 +456,11 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     coverage?: any;
     results?: BacktestResultItem[] | null;
     allTrades?: StrategyTrade[] | null;
+    skippedSymbols?: { symbol: string; reason: string }[] | null;
+    requestedSymbolsCount?: number | null;
   }
   const [rangeStatus, setRangeStatus] = useState<RangeStatusData | null>(null);
+  const [skippedSymbols, setSkippedSymbols] = useState<{ symbol: string; reason: string }[]>([]);
   const [isCheckingRange, setIsCheckingRange] = useState<boolean>(false);
   const [isRescanPromptOpen, setIsRescanPromptOpen] = useState<boolean>(false);
   const [isDeleteRangePromptOpen, setIsDeleteRangePromptOpen] = useState<boolean>(false);
@@ -562,6 +581,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const [optMaxBreakoutAtr, setOptMaxBreakoutAtr] = useState<number>(zigzagSettings?.maxBreakoutAtrMultiplier ?? 5.0);
   const [lockMaxBreakoutAtr, setLockMaxBreakoutAtr] = useState<boolean>(false);
 
+  const [optMinVolumeGrowthPercent, setOptMinVolumeGrowthPercent] = useState<number>(zigzagSettings?.minVolumeGrowthPercent ?? 0);
+  const [lockMinVolumeGrowthPercent, setLockMinVolumeGrowthPercent] = useState<boolean>(false);
+
   const [optMaxRiskReward, setOptMaxRiskReward] = useState<number>(2.0);
   const [lockMaxRiskReward, setLockMaxRiskReward] = useState<boolean>(false);
 
@@ -605,6 +627,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       if (zigzagSettings.longLegAtrMultiplier && zigzagSettings.longLegAtrMultiplier !== prev?.longLegAtrMultiplier) setOptLongLegAtrMult(zigzagSettings.longLegAtrMultiplier);
       if (zigzagSettings.maxBlueLegPercent !== undefined && zigzagSettings.maxBlueLegPercent !== prev?.maxBlueLegPercent) setOptMaxBlueLegPercent(zigzagSettings.maxBlueLegPercent);
       if (zigzagSettings.maxBreakoutAtrMultiplier !== undefined && zigzagSettings.maxBreakoutAtrMultiplier !== prev?.maxBreakoutAtrMultiplier) setOptMaxBreakoutAtr(zigzagSettings.maxBreakoutAtrMultiplier);
+      if (zigzagSettings.minVolumeGrowthPercent !== undefined && zigzagSettings.minVolumeGrowthPercent !== prev?.minVolumeGrowthPercent) setOptMinVolumeGrowthPercent(zigzagSettings.minVolumeGrowthPercent);
       prevZigzagSettingsRef.current = zigzagSettings;
     }
   }, [zigzagSettings]);
@@ -927,6 +950,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               setAllCollectedTrades(data.allTrades);
             }
           }
+          if (Array.isArray(data.skippedSymbols) && data.skippedSymbols.length > 0) {
+            setSkippedSymbols(data.skippedSymbols);
+          }
           if (data.strategyId && results.length === 0) {
             setSelectedStrategyId(data.strategyId);
           }
@@ -1051,12 +1077,18 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             if (Array.isArray(st.results) && st.results.length > 0) {
               setResults(st.results);
             }
+            if (Array.isArray(st.skippedSymbols)) {
+              setSkippedSymbols(st.skippedSymbols);
+            }
             // دریافت یکباره تمام معاملات در پایان اسکن
             try {
               const fullTradesRes = await fetch('/api/backtest/status?includeTrades=true');
               const fullTradesData = await fullTradesRes.json();
               if (fullTradesData?.state?.allTrades && isMounted) {
                 setAllCollectedTrades(fullTradesData.state.allTrades);
+              }
+              if (Array.isArray(fullTradesData?.state?.skippedSymbols) && isMounted) {
+                setSkippedSymbols(fullTradesData.state.skippedSymbols);
               }
             } catch {}
 
@@ -1125,6 +1157,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     setErrorMsg(null);
     setResults([]);
     setAllCollectedTrades([]);
+    setSkippedSymbols([]);
     const targetSymbols = (selectedAllowedSymbols && selectedAllowedSymbols.length > 0)
       ? selectedAllowedSymbols
       : (universeOption === 'all_market' ? [] : selectedAllowedSymbols);
@@ -1180,6 +1213,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             optMaxBlueLegPercent: overrideConfig?.maxBlueLegPercent ?? optMaxBlueLegPercent,
             maxBreakoutAtrMultiplier: overrideConfig?.maxBreakoutAtrMultiplier ?? optMaxBreakoutAtr,
             optMaxBreakoutAtr: overrideConfig?.maxBreakoutAtrMultiplier ?? optMaxBreakoutAtr,
+            minVolumeGrowthPercent: overrideConfig?.minVolumeGrowthPercent ?? optMinVolumeGrowthPercent,
+            optMinVolumeGrowthPercent: overrideConfig?.minVolumeGrowthPercent ?? optMinVolumeGrowthPercent,
             noConcurrentPositions: overrideConfig?.noConcurrentPositions ?? noConcurrentPositions,
             timeStopEnabled: overrideConfig?.timeStopEnabled ?? optTimeStopEnabled,
             optTimeStopEnabled: overrideConfig?.timeStopEnabled ?? optTimeStopEnabled,
@@ -1649,6 +1684,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         optLongLegAtrMult,
         optMaxBlueLegPercent,
         optMaxBreakoutAtr,
+        optMinVolumeGrowthPercent,
         optMaxRiskReward,
         optTimeStopCandles,
         optMaxPositionToRiskRatio,
@@ -1704,6 +1740,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     if (config.optLongLegAtrMult) setOptLongLegAtrMult(config.optLongLegAtrMult);
     if (config.optMaxBlueLegPercent !== undefined) setOptMaxBlueLegPercent(config.optMaxBlueLegPercent);
     if (config.optMaxBreakoutAtr !== undefined) setOptMaxBreakoutAtr(config.optMaxBreakoutAtr);
+    if ((config as any).optMinVolumeGrowthPercent !== undefined) setOptMinVolumeGrowthPercent((config as any).optMinVolumeGrowthPercent);
     if (config.optMaxRiskReward) setOptMaxRiskReward(config.optMaxRiskReward);
     if (config.optTimeStopCandles) setOptTimeStopCandles(config.optTimeStopCandles);
     if (config.optMaxPositionToRiskRatio) setOptMaxPositionToRiskRatio(config.optMaxPositionToRiskRatio);
@@ -2608,6 +2645,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       longLegAtrMultiplier: number;
       maxBlueLegPercent: number;
       maxBreakoutAtrMultiplier: number;
+      minVolumeGrowthPercent?: number;
       maxRiskReward: number;
       timeStopCandles?: number;
     },
@@ -2674,7 +2712,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         params.minCandlesForLongLeg,
         params.longLegAtrMultiplier,
         params.maxBlueLegPercent,
-        params.maxBreakoutAtrMultiplier
+        params.maxBreakoutAtrMultiplier,
+        candles,
+        params.minVolumeGrowthPercent || 0
       );
 
       const tempConfig: StrategyConfig = {
@@ -2859,6 +2899,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       longLegAtrMultiplier: optLongLegAtrMult,
       maxBlueLegPercent: optMaxBlueLegPercent,
       maxBreakoutAtrMultiplier: optMaxBreakoutAtr,
+      minVolumeGrowthPercent: optMinVolumeGrowthPercent,
       maxRiskReward: optMaxRiskReward,
       maxPositionToRiskRatio: optMaxPositionToRiskRatio,
       timeStopCandles: optTimeStopCandles,
@@ -2888,6 +2929,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             noConcurrentPositions,
             maxRiskReward: optMaxRiskReward,
             optMaxRiskReward,
+            minVolumeGrowthPercent: optMinVolumeGrowthPercent,
+            optMinVolumeGrowthPercent,
             maxPositionToRiskRatio: optMaxPositionToRiskRatio,
             optMaxPositionToRiskRatio,
             maxCandlesToEnter,
@@ -2932,6 +2975,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     longLegAtrMultiplier: number;
     maxBlueLegPercent: number;
     maxBreakoutAtrMultiplier: number;
+    minVolumeGrowthPercent: number;
     maxRiskReward: number;
     timeStopCandles: number;
   } | null => {
@@ -2991,6 +3035,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         longLegAtrMultiplier: sampleParam(ranges.longLegAtrMultiplier, lockLongLegAtrMult, optLongLegAtrMult),
         maxBlueLegPercent: sampleParam(ranges.maxBlueLegPercent, lockMaxBlueLegPercent, optMaxBlueLegPercent),
         maxBreakoutAtrMultiplier: sampleParam(ranges.maxBreakoutAtrMultiplier, lockMaxBreakoutAtr, optMaxBreakoutAtr),
+        minVolumeGrowthPercent: sampleParam(ranges.minVolumeGrowthPercent, lockMinVolumeGrowthPercent, optMinVolumeGrowthPercent),
         maxRiskReward: sampleParam(ranges.maxRiskReward, lockMaxRiskReward, optMaxRiskReward),
         maxPositionToRiskRatio: sampleParam(ranges.maxPositionToRiskRatio, lockMaxPositionToRiskRatio, optMaxPositionToRiskRatio),
         timeStopCandles: sampleParam(ranges.timeStopCandles, lockTimeStopCandles, optTimeStopCandles),
@@ -3182,6 +3227,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     setOptLongLegAtrMult(trial.longLegAtrMultiplier);
     setOptMaxBlueLegPercent(trial.maxBlueLegPercent);
     setOptMaxBreakoutAtr(trial.maxBreakoutAtrMultiplier);
+    setOptMinVolumeGrowthPercent(trial.minVolumeGrowthPercent || 0);
     setOptMaxRiskReward(trial.maxRiskReward);
     if (trial.maxPositionToRiskRatio) {
       setOptMaxPositionToRiskRatio(trial.maxPositionToRiskRatio);
@@ -3198,6 +3244,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         longLegAtrMultiplier: trial.longLegAtrMultiplier,
         maxBlueLegPercent: trial.maxBlueLegPercent,
         maxBreakoutAtrMultiplier: trial.maxBreakoutAtrMultiplier,
+        minVolumeGrowthPercent: trial.minVolumeGrowthPercent || 0,
         maxPositionToRiskRatio: trial.maxPositionToRiskRatio || 300,
       });
     }
@@ -3228,6 +3275,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         longLegAtrMultiplier: trial.longLegAtrMultiplier,
         maxBlueLegPercent: trial.maxBlueLegPercent,
         maxBreakoutAtrMultiplier: trial.maxBreakoutAtrMultiplier,
+        minVolumeGrowthPercent: trial.minVolumeGrowthPercent || 0,
         maxRiskReward: trial.maxRiskReward,
         timeStopCandles: trial.timeStopCandles,
       });
@@ -3602,6 +3650,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setOptMaxBlueLegPercent={setOptMaxBlueLegPercent}
             optMaxBreakoutAtr={optMaxBreakoutAtr}
             setOptMaxBreakoutAtr={setOptMaxBreakoutAtr}
+            optMinVolumeGrowthPercent={optMinVolumeGrowthPercent}
+            setOptMinVolumeGrowthPercent={setOptMinVolumeGrowthPercent}
             optMaxRiskReward={optMaxRiskReward}
             setOptMaxRiskReward={setOptMaxRiskReward}
             optMaxPositionToRiskRatio={optMaxPositionToRiskRatio}
@@ -3668,6 +3718,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             selectedExchange={selectedExchange}
             onOpenRescanChoiceModal={() => setIsRescanPromptOpen(true)}
             handleStartIncrementalScan={handleStartIncrementalScan}
+            skippedSymbols={skippedSymbols}
+            onRemoveSkippedSymbols={handleRemoveSkippedSymbolsFromAllowed}
           />
         )}
 
@@ -3749,6 +3801,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setOptMaxBlueLegPercent={setOptMaxBlueLegPercent}
             optMaxBreakoutAtr={optMaxBreakoutAtr}
             setOptMaxBreakoutAtr={setOptMaxBreakoutAtr}
+            optMinVolumeGrowthPercent={optMinVolumeGrowthPercent}
+            setOptMinVolumeGrowthPercent={setOptMinVolumeGrowthPercent}
+            lockMinVolumeGrowthPercent={lockMinVolumeGrowthPercent}
+            setLockMinVolumeGrowthPercent={setLockMinVolumeGrowthPercent}
             optMaxRiskReward={optMaxRiskReward}
             setOptMaxRiskReward={setOptMaxRiskReward}
             optMaxPositionToRiskRatio={optMaxPositionToRiskRatio}
@@ -4113,7 +4169,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                   >
                     <div className="flex items-center gap-2">
                       <Download className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                      <span>🚀 دانلود مجدد کامل از صفر (جایگزینی تمام ۶۹۸ نماد در دیتابیس)</span>
+                      <span>🚀 دانلود مجدد کامل از صفر (جایگزینی تمام {reqCount || availableCount || 729} نماد در دیتابیس)</span>
                     </div>
                     <span className="text-[10px] text-gray-400 font-mono">دانلود تازه</span>
                   </button>

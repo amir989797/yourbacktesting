@@ -39,6 +39,7 @@ import {
   Layers,
   HardDrive,
   BarChart2,
+  X,
 } from 'lucide-react';
 import { Timeframe, ZigZagSettings } from '../../types/crypto';
 import { BacktestResultItem, GLOBAL_CANDLE_CACHE } from './types';
@@ -90,6 +91,8 @@ export interface ManualBacktestTabProps {
   setOptMaxBlueLegPercent: (val: number) => void;
   optMaxBreakoutAtr: number;
   setOptMaxBreakoutAtr: (val: number) => void;
+  optMinVolumeGrowthPercent?: number;
+  setOptMinVolumeGrowthPercent?: (val: number) => void;
   optMaxRiskReward: number;
   setOptMaxRiskReward: (val: number) => void;
   optMaxPositionToRiskRatio?: number;
@@ -156,6 +159,8 @@ export interface ManualBacktestTabProps {
   selectedExchange?: 'xt' | 'binance';
   onOpenRescanChoiceModal?: () => void;
   handleStartIncrementalScan?: () => void;
+  skippedSymbols?: { symbol: string; reason: string }[];
+  onRemoveSkippedSymbols?: (symbolsToRemove: string[]) => void;
 }
 
 export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
@@ -168,6 +173,8 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
   selectedExchange = 'xt',
   onOpenRescanChoiceModal,
   handleStartIncrementalScan,
+  skippedSymbols = [],
+  onRemoveSkippedSymbols,
   onOpenAllowedPairsModal,
   onQuickSelectSymbols,
   onOpenTimeRangeModal,
@@ -210,6 +217,8 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
   setOptMaxBlueLegPercent,
   optMaxBreakoutAtr,
   setOptMaxBreakoutAtr,
+  optMinVolumeGrowthPercent = 0,
+  setOptMinVolumeGrowthPercent,
   optMaxRiskReward,
   setOptMaxRiskReward,
   optMaxPositionToRiskRatio = 300,
@@ -272,6 +281,8 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
   isChartDragging,
   onSelectPairAndClose,
 }) => {
+  const [isSkippedModalOpen, setIsSkippedModalOpen] = useState<boolean>(false);
+
   return (
           <div className="flex-1 flex flex-col overflow-y-auto p-4 space-y-3.5">
             {/* فرم پارامترها */}
@@ -646,7 +657,7 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                     </button>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
                   <div>
                     <label className="text-[9px] text-gray-400 block mb-0.5">دوره ATR:</label>
                     <input
@@ -729,7 +740,7 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                     />
                   </div>
                   <div>
-                    <label className="text-[9px] text-gray-400 block mb-0.5">ضریب لگ بزرگ:</label>
+                    <label className="text-[9px] text-gray-400 block mb-0.5">ضریب لگ بلند:</label>
                     <input
                       type="number"
                       step={0.5}
@@ -789,6 +800,30 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                         }
                       }}
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[9px] text-gray-400 block mb-0.5">رشد حجم لگ %:</label>
+                    <input
+                      type="number"
+                      step={5}
+                      min={0}
+                      value={optMinVolumeGrowthPercent === 0 || optMinVolumeGrowthPercent ? optMinVolumeGrowthPercent : ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        const num = v === '' ? ('' as any) : parseFloat(v);
+                        setOptMinVolumeGrowthPercent?.(num);
+                        if (typeof num === 'number' && !isNaN(num)) onUpdateZigZagSettings?.({ ...zigzagSettings, minVolumeGrowthPercent: num });
+                      }}
+                      onBlur={() => {
+                        if (optMinVolumeGrowthPercent === undefined || isNaN(optMinVolumeGrowthPercent)) {
+                          setOptMinVolumeGrowthPercent?.(0);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, minVolumeGrowthPercent: 0 });
+                        }
+                      }}
+                      placeholder="0"
+                      title="حداقل شیب درصد رشد میانگین حجم در طول لگ‌های AB، CD و EF (0 = بدون محدودیت)"
+                      className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-emerald-400 text-xs font-mono text-center focus:outline-none focus:border-emerald-400"
                     />
                   </div>
                 </div>
@@ -1081,6 +1116,45 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                 </div>
               </div>
             </div>
+
+            {/* هشدار و تحلیل شفاف ارزهای نادیده گرفته‌شده توسط صرافی */}
+            {skippedSymbols && skippedSymbols.length > 0 && results.length > 0 && (
+              <div className="p-3 bg-[#131924] border border-amber-500/30 rounded-xl flex items-center justify-between flex-wrap gap-2 text-xs shrink-0">
+                <div className="flex items-center gap-2.5 text-amber-200">
+                  <div className="w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                    <AlertTriangle className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="font-extrabold text-white text-xs sm:text-sm">
+                      توضیح تطابق ارزها: {results.length} ارز اسکن شدند ({skippedSymbols.length} ارز فاقد دیتا در صرافی {selectedExchange.toUpperCase()})
+                    </div>
+                    <div className="text-[11px] text-gray-300">
+                      از مجموع {selectedAllowedSymbols.length || (results.length + skippedSymbols.length)} ارز مجاز انتخابی شما، {skippedSymbols.length} ارز (مانند جفت‌ارزهای متوقف فارکس EUR/USDT و شاخص‌ها) به دلیل عدم ارائه دیتا در این تایم‌فریم توسط سرور صرافی XT نادیده گرفته شدند.
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsSkippedModalOpen(true)}
+                    className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-bold border border-amber-500/40 text-xs cursor-pointer transition-all"
+                  >
+                    مشاهده {skippedSymbols.length} ارز رد شده
+                  </button>
+                  {onRemoveSkippedSymbols && (
+                    <button
+                      type="button"
+                      onClick={() => onRemoveSkippedSymbols(skippedSymbols.map((s) => s.symbol))}
+                      className="px-3 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 font-bold border border-rose-500/30 text-xs cursor-pointer transition-all flex items-center gap-1.5"
+                      title="حذف این ارزهای بدون دیتا از لیست ارزهای مجاز تا در اسکن‌های بعدی تداخل ایجاد نکنند"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                      <span>حذف {skippedSymbols.length} ارز از لیست مجاز</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* کارت‌های آمار استراتژی در تب اسکن */}
             {results.length > 0 && (
@@ -1449,6 +1523,70 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       </div>
                     );
                   })()}
+                </div>
+              </div>
+            )}
+
+            {/* مودال جزئیات ارزهای رد شده توسط صرافی */}
+            {isSkippedModalOpen && (
+              <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+                <div className="bg-[#101622] border border-[#233147] rounded-2xl p-5 max-w-xl w-full shadow-2xl text-right animate-in fade-in zoom-in-95 duration-150 flex flex-col max-h-[85vh]">
+                  <div className="flex items-center justify-between pb-3 border-b border-[#233147] mb-3">
+                    <div className="flex items-center gap-2 text-amber-400">
+                      <AlertTriangle className="w-5 h-5 text-amber-400" />
+                      <h3 className="font-extrabold text-sm sm:text-base text-white">
+                        ارزهای رد شده به دلیل عدم ارائه دیتا در صرافی {selectedExchange.toUpperCase()} ({skippedSymbols.length} نماد)
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsSkippedModalOpen(false)}
+                      className="p-1 rounded-lg text-gray-400 hover:text-white hover:bg-[#1a2333] cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="bg-[#141b27] p-3 rounded-xl border border-[#243247] text-xs text-gray-300 leading-relaxed mb-3">
+                    <p>
+                      سرور فیوچرز صرافی <span className="text-amber-300 font-bold">{selectedExchange.toUpperCase()}</span> برای جفت‌ارزهای زیر دیتای کندل ارائه نمی‌دهد (معاملات فیوچرز آنها متوقف است یا جفت‌ارزهای فارکس/کامودیتی مانند EUR و GBP و SP500 هستند). سیستم این نمادها را فیلتر کرده تا اسکن بک‌تست با دیتای واقعی و بدون کندل‌های خالی یا خطای صرافی انجام شود.
+                    </p>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto space-y-1.5 pr-1 border border-[#1b2536] rounded-xl p-2 bg-[#0c1017]">
+                    {skippedSymbols.map((item, idx) => (
+                      <div key={idx} className="flex items-center justify-between p-2 rounded-lg bg-[#131924] border border-[#1e283a] text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className="w-5 text-[10px] text-gray-500 font-mono text-center">{idx + 1}</span>
+                          <span className="font-mono font-bold text-amber-300">{item.symbol.toUpperCase()}</span>
+                        </div>
+                        <span className="text-[11px] text-gray-400">{item.reason}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 pt-3 border-t border-[#233147] mt-3">
+                    {onRemoveSkippedSymbols && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onRemoveSkippedSymbols(skippedSymbols.map((s) => s.symbol));
+                          setIsSkippedModalOpen(false);
+                        }}
+                        className="px-3 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-xs font-bold cursor-pointer transition-all flex items-center gap-1.5"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                        <span>حذف تمام {skippedSymbols.length} نماد از لیست مجاز من</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setIsSkippedModalOpen(false)}
+                      className="px-4 py-1.5 rounded-xl bg-[#1c2538] hover:bg-[#25324c] text-white text-xs font-bold cursor-pointer transition-all mr-auto"
+                    >
+                      بستن
+                    </button>
+                  </div>
                 </div>
               </div>
             )}

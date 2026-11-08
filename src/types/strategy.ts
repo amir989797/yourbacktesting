@@ -33,6 +33,8 @@ export interface StrategyParams {
   optMaxBlueLegPercent?: number;
   maxBreakoutAtrMultiplier?: number;
   optMaxBreakoutAtr?: number;
+  minVolumeGrowthPercent?: number; // حداقل درصد رشد حجم لگ‌ها (AB, CD, EF)
+  optMinVolumeGrowthPercent?: number;
   optMaxRiskReward?: number;
   optTimeStopEnabled?: boolean;
   optTimeStopCandles?: number;
@@ -59,6 +61,7 @@ export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
   timeStopEnabled: true,
   timeStopCandles: 80,
   maxPositionToRiskRatio: 300,
+  minVolumeGrowthPercent: 0,
 };
 
 export type TradeStatus = 'PENDING' | 'ACTIVE' | 'WIN' | 'LOSS' | 'BREAKEVEN' | 'EXPIRED' | 'OPEN';

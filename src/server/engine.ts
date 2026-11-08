@@ -40,6 +40,7 @@ export interface ServerStrategyConfig {
   longLegAtrMultiplier: number;
   maxBlueLegPercent: number;
   maxBreakoutAtrMultiplier: number;
+  minVolumeGrowthPercent?: number;
   riskRewardRatio: number;
   riskMode: 'percent' | 'fixed';
   riskAmountFixed?: number;
@@ -133,7 +134,9 @@ export function evaluateSymbolForLiveSignal(params: {
     config.minCandlesForLongLeg || 5,
     config.longLegAtrMultiplier || 3.0,
     config.maxBlueLegPercent || 70,
-    config.maxBreakoutAtrMultiplier || 3.0
+    config.maxBreakoutAtrMultiplier || 3.0,
+    candles,
+    config.minVolumeGrowthPercent || 0
   );
 
   // 2. Configure strategy parameters
@@ -148,6 +151,7 @@ export function evaluateSymbolForLiveSignal(params: {
     maxCandlesToEnter: config.maxCandlesToEnter || 35,
     noConcurrentPositions: Boolean(config.noConcurrentPositions),
     maxPositionToRiskRatio: config.maxPositionToRiskRatio ?? 300,
+    minVolumeGrowthPercent: config.minVolumeGrowthPercent || 0,
     symbol,
   };
 

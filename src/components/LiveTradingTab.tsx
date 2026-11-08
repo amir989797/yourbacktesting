@@ -50,6 +50,7 @@ import {
   LiveTradeOrder,
   Timeframe,
   ZigZagSettings,
+  isXtExcludedSymbol,
 } from '../types/crypto';
 import { StrategyConfig, DEFAULT_STRATEGY_CONFIG } from '../types/strategy';
 import {
@@ -395,7 +396,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       const saved = localStorage.getItem('livetrade_selected_symbols');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const clean = parsed.filter((s: string) => !isXtExcludedSymbol(s));
+          if (clean.length > 0) return clean;
+        }
       }
     } catch {}
     return DEFAULT_POPULAR_WATCHLIST;
@@ -404,13 +408,17 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   // مودال انتخاب ارزها و مارکت‌کپ
   const [isPairsModalOpen, setIsPairsModalOpen] = useState<boolean>(false);
   const [allAvailablePairs, setAllAvailablePairs] = useState<CryptoPair[]>(() => {
-    return COMPREHENSIVE_FALLBACK_PAIRS.map((p) => ({
-      ...p,
-      marketCap: getEstimatedMarketCap(p.baseAsset, p.volume24h),
-    })).sort((a: any, b: any) => (b.marketCap || 0) - (a.marketCap || 0));
+    return COMPREHENSIVE_FALLBACK_PAIRS
+      .filter((p) => !isXtExcludedSymbol(p.symbol))
+      .map((p) => ({
+        ...p,
+        marketCap: getEstimatedMarketCap(p.baseAsset, p.volume24h),
+      })).sort((a: any, b: any) => (b.marketCap || 0) - (a.marketCap || 0));
   });
   const [isLoadingAllPairs, setIsLoadingAllPairs] = useState<boolean>(false);
-  const [tempSelectedSymbols, setTempSelectedSymbols] = useState<Set<string>>(new Set(selectedSymbols));
+  const [tempSelectedSymbols, setTempSelectedSymbols] = useState<Set<string>>(
+    () => new Set(selectedSymbols.filter((s) => !isXtExcludedSymbol(s)))
+  );
   const [pairsSearchQuery, setPairsSearchQuery] = useState<string>('');
   const [filterOnlyOpenApi, setFilterOnlyOpenApi] = useState<boolean>(true);
 
@@ -425,6 +433,11 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     // فیلتر ارزهای بدون OpenAPI (۴۰۶ نماد غیرمجاز XT)
     if (exchange === 'xt' && filterOnlyOpenApi) {
       list = list.filter((p) => p.isApiSupported !== false && p.isOpenApi !== false && p.tradeSwitch !== false);
+    }
+
+    // فیلتر کامل ۳۶ نماد غیرمجاز XT (فارکس، شاخص و کامودیتی)
+    if (exchange === 'xt') {
+      list = list.filter((p) => !isXtExcludedSymbol(p.symbol));
     }
 
     if (!pairsSearchQuery.trim()) return list;
@@ -475,17 +488,19 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
 
   const handleOpenPairsModal = async () => {
     setIsPairsModalOpen(true);
-    setTempSelectedSymbols(new Set(selectedSymbols));
+    setTempSelectedSymbols(new Set(selectedSymbols.filter((s) => !isXtExcludedSymbol(s))));
     try {
       setIsLoadingAllPairs(true);
       const res = await fetch(`/api/market/pairs?exchange=${exchange}`);
       const data = await res.json();
       if (data && data.success && Array.isArray(data.pairs) && data.pairs.length > 0) {
-        const mapped = data.pairs.map((p: any) => ({
-          ...p,
-          baseAsset: p.baseAsset || p.symbol.split('_')[0].toUpperCase(),
-          marketCap: p.marketCap || getEstimatedMarketCap(p.baseAsset || p.symbol.split('_')[0], p.volume24h),
-        })).sort((a: any, b: any) => (b.marketCap || 0) - (a.marketCap || 0));
+        const mapped = data.pairs
+          .filter((p: any) => !isXtExcludedSymbol(p.symbol || ''))
+          .map((p: any) => ({
+            ...p,
+            baseAsset: p.baseAsset || p.symbol.split('_')[0].toUpperCase(),
+            marketCap: p.marketCap || getEstimatedMarketCap(p.baseAsset || p.symbol.split('_')[0], p.volume24h),
+          })).sort((a: any, b: any) => (b.marketCap || 0) - (a.marketCap || 0));
         setAllAvailablePairs(mapped);
       }
     } catch (err) {
@@ -496,7 +511,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   };
 
   const handleSaveSelectedPairs = () => {
-    const arr = Array.from(tempSelectedSymbols);
+    const arr = Array.from(tempSelectedSymbols).filter((s) => !isXtExcludedSymbol(s));
     if (arr.length === 0) {
       showToast('⚠️ حداقل باید ۱ ارز برای اسکن انتخاب شود.');
       return;
@@ -672,6 +687,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   const [minCandlesForLongLeg, setMinCandlesForLongLeg] = useState<number>(10);
   const [maxBlueLegPercent, setMaxBlueLegPercent] = useState<number>(50);
   const [maxBreakoutAtrMultiplier, setMaxBreakoutAtrMultiplier] = useState<number>(3.0);
+  const [minVolumeGrowthPercent, setMinVolumeGrowthPercent] = useState<number>(0);
   const [maxCandlesToEnter, setMaxCandlesToEnter] = useState<number>(35);
   const [entryCommissionPercent, setEntryCommissionPercent] = useState<number>(0.06);
   const [exitCommissionPercent, setExitCommissionPercent] = useState<number>(0.06);
@@ -770,6 +786,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           if (best.minCandlesForLongLeg) setMinCandlesForLongLeg(best.minCandlesForLongLeg);
           if (best.maxBlueLegPercent) setMaxBlueLegPercent(best.maxBlueLegPercent);
           if (best.maxBreakoutAtrMultiplier) setMaxBreakoutAtrMultiplier(best.maxBreakoutAtrMultiplier);
+          if (best.minVolumeGrowthPercent !== undefined) setMinVolumeGrowthPercent(best.minVolumeGrowthPercent);
           if (best.maxRiskReward) setRiskRewardRatio(best.maxRiskReward);
 
           addLog('success', `🎯 بهترین کانفیگ بهینه‌ساز با وین‌ریت ${best.winRate}% و سود ${best.netProfit}% بارگذاری شد.`);
@@ -785,6 +802,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       setMinCandlesForLongLeg(10);
       setMaxBlueLegPercent(50);
       setMaxBreakoutAtrMultiplier(3.0);
+      setMinVolumeGrowthPercent(0);
       setRiskRewardRatio(3.0);
       addLog('info', '⚡ کانفیگ کالیبره‌شده اسکلپ ۵ دقیقه‌ای با موفقیت بارگذاری شد.');
     } catch {
@@ -805,6 +823,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         if (zz.minCandlesForLongLeg) setMinCandlesForLongLeg(zz.minCandlesForLongLeg);
         if (zz.maxBlueLegPercent !== undefined) setMaxBlueLegPercent(zz.maxBlueLegPercent);
         if (zz.maxBreakoutAtrMultiplier !== undefined) setMaxBreakoutAtrMultiplier(zz.maxBreakoutAtrMultiplier);
+        if (zz.minVolumeGrowthPercent !== undefined) setMinVolumeGrowthPercent(zz.minVolumeGrowthPercent);
         if (zz.maxRiskReward) setRiskRewardRatio(zz.maxRiskReward);
       }
 
@@ -845,6 +864,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     if (cfg.optMinCandlesLong) setMinCandlesForLongLeg(cfg.optMinCandlesLong);
     if (cfg.optMaxBlueLegPercent !== undefined) setMaxBlueLegPercent(cfg.optMaxBlueLegPercent);
     if (cfg.optMaxBreakoutAtr !== undefined) setMaxBreakoutAtrMultiplier(cfg.optMaxBreakoutAtr);
+    if ((cfg as any).optMinVolumeGrowthPercent !== undefined) setMinVolumeGrowthPercent((cfg as any).optMinVolumeGrowthPercent);
     if (cfg.optMaxRiskReward) setRiskRewardRatio(cfg.optMaxRiskReward);
     if (cfg.selectedStrategyId) setSelectedStrategy(cfg.selectedStrategyId as any);
     if (cfg.timeframe) setTradeTimeframe(cfg.timeframe as any);
@@ -901,6 +921,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         optLongLegAtrMult: longLegAtrMultiplier,
         optMaxBlueLegPercent: maxBlueLegPercent,
         optMaxBreakoutAtr: maxBreakoutAtrMultiplier,
+        optMinVolumeGrowthPercent: minVolumeGrowthPercent,
         optMaxRiskReward: riskRewardRatio,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -991,6 +1012,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
             if (typeof config.longLegAtrMultiplier === 'number') setLongLegAtrMultiplier(config.longLegAtrMultiplier);
             if (typeof config.maxBlueLegPercent === 'number') setMaxBlueLegPercent(config.maxBlueLegPercent);
             if (typeof config.maxBreakoutAtrMultiplier === 'number') setMaxBreakoutAtrMultiplier(config.maxBreakoutAtrMultiplier);
+            if (typeof config.minVolumeGrowthPercent === 'number') setMinVolumeGrowthPercent(config.minVolumeGrowthPercent);
             if (typeof config.maxCandlesToEnter === 'number') setMaxCandlesToEnter(config.maxCandlesToEnter);
             if (typeof config.maxPositionToRiskRatio === 'number') setMaxPositionToRiskRatio(config.maxPositionToRiskRatio);
             if (typeof config.timeStopEnabled === 'boolean') setTimeStopEnabled(config.timeStopEnabled);
@@ -1149,6 +1171,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         longLegAtrMultiplier,
         maxBlueLegPercent,
         maxBreakoutAtrMultiplier,
+        minVolumeGrowthPercent,
         maxCandlesToEnter,
         entryCommissionPercent,
         exitCommissionPercent,
@@ -1175,6 +1198,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     longLegAtrMultiplier,
     maxBlueLegPercent,
     maxBreakoutAtrMultiplier,
+    minVolumeGrowthPercent,
     maxCandlesToEnter,
     entryCommissionPercent,
     exitCommissionPercent,
@@ -1230,6 +1254,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           longLegAtrMultiplier,
           maxBlueLegPercent,
           maxBreakoutAtrMultiplier,
+          minVolumeGrowthPercent,
           riskRewardRatio,
           riskMode,
           riskAmountFixed,
@@ -1977,6 +2002,20 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                   onChange={(e) => setMaxBreakoutAtrMultiplier(parseFloat(e.target.value) || 3.0)}
                   className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-amber-300 font-mono text-center font-bold"
                   title="سقف مجاز نفوذ شکست قیمت در نقطه E نسبت به ATR"
+                />
+              </div>
+
+              <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42]">
+                <span className="text-[10px] text-emerald-400 block font-bold">رشد حجم لگ (%):</span>
+                <input
+                  type="number"
+                  step={5}
+                  min={0}
+                  value={minVolumeGrowthPercent}
+                  onChange={(e) => setMinVolumeGrowthPercent(parseFloat(e.target.value) || 0)}
+                  placeholder="0"
+                  className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-emerald-300 font-mono text-center font-bold"
+                  title="حداقل درصد رشد حجم در طول لگ‌های AB، CD و EF (0 = بدون شرط حجم)"
                 />
               </div>
 

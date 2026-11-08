@@ -10,6 +10,7 @@ import {
   deleteDoc,
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
+import { isXtExcludedSymbol } from '../types/crypto';
 
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 let _authInstance: any = null;
@@ -92,14 +93,15 @@ export async function saveAllowedPairsToFirestore(
   const slug = cleanName.toLowerCase().replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, '_');
   const docId = `${safeUserId}_${exchange}_${slug}`;
 
+  const cleanSymbols = exchange === 'xt' ? symbols.filter((s) => !isXtExcludedSymbol(s)) : symbols;
   const now = new Date().toISOString();
   const record: AllowedPairsRecord = {
     id: docId,
     userId: safeUserId,
     exchange,
     listName: cleanName,
-    symbols,
-    count: symbols.length,
+    symbols: cleanSymbols,
+    count: cleanSymbols.length,
     createdAt: now,
     updatedAt: now,
   };
@@ -115,8 +117,8 @@ export async function saveAllowedPairsToFirestore(
       // update local mirror
       try {
         localStorage.setItem(`allowed_pairs_lists_${safeUserId}_${exchange}`, JSON.stringify([record]));
-        localStorage.setItem(`backtest_selected_allowed_symbols_${exchange}`, JSON.stringify(symbols));
-        localStorage.setItem('backtest_selected_allowed_symbols', JSON.stringify(symbols));
+        localStorage.setItem(`backtest_selected_allowed_symbols_${exchange}`, JSON.stringify(cleanSymbols));
+        localStorage.setItem('backtest_selected_allowed_symbols', JSON.stringify(cleanSymbols));
       } catch {}
       return {
         success: true,
@@ -132,8 +134,8 @@ export async function saveAllowedPairsToFirestore(
   try {
     const localKey = `allowed_pairs_lists_${safeUserId}_${exchange}`;
     localStorage.setItem(localKey, JSON.stringify([record]));
-    localStorage.setItem(`backtest_selected_allowed_symbols_${exchange}`, JSON.stringify(symbols));
-    localStorage.setItem('backtest_selected_allowed_symbols', JSON.stringify(symbols));
+    localStorage.setItem(`backtest_selected_allowed_symbols_${exchange}`, JSON.stringify(cleanSymbols));
+    localStorage.setItem('backtest_selected_allowed_symbols', JSON.stringify(cleanSymbols));
   } catch {}
 
   return {
@@ -152,7 +154,14 @@ export async function loadAllAllowedPairsListsFromFirestore(
     const res = await fetch(`/api/allowed-pairs?userId=${encodeURIComponent(safeUserId)}&exchange=${encodeURIComponent(exchange)}`);
     const data = await res.json();
     if (data && data.success && Array.isArray(data.lists) && data.lists.length > 0) {
-      return data.lists;
+      return data.lists.map((l: any) => {
+        const clean = exchange === 'xt' ? (l.symbols || []).filter((s: string) => !isXtExcludedSymbol(s)) : (l.symbols || []);
+        return {
+          ...l,
+          symbols: clean,
+          count: clean.length,
+        };
+      });
     }
   } catch (err) {
     console.warn('loadAllAllowedPairsListsFromFirestore PostgreSQL error, trying localStorage:', err);
@@ -165,7 +174,14 @@ export async function loadAllAllowedPairsListsFromFirestore(
     if (cached) {
       const parsed = JSON.parse(cached);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed.slice(0, MAX_SAVED_LISTS_PER_EXCHANGE);
+        return parsed.slice(0, MAX_SAVED_LISTS_PER_EXCHANGE).map((l: any) => {
+          const clean = exchange === 'xt' ? (l.symbols || []).filter((s: string) => !isXtExcludedSymbol(s)) : (l.symbols || []);
+          return {
+            ...l,
+            symbols: clean,
+            count: clean.length,
+          };
+        });
       }
     }
   } catch {}
@@ -212,7 +228,8 @@ export async function loadAllowedPairsFromFirestore(
     if (lists.length > 0) {
       const match = lists.find((l) => l.listName === listName) || lists[0];
       if (match && Array.isArray(match.symbols) && match.symbols.length > 0) {
-        return match.symbols;
+        const clean = exchange === 'xt' ? match.symbols.filter((s) => !isXtExcludedSymbol(s)) : match.symbols;
+        return clean;
       }
     }
   } catch {}
@@ -221,7 +238,10 @@ export async function loadAllowedPairsFromFirestore(
     const localList = localStorage.getItem(`backtest_selected_allowed_symbols_${exchange}`) || localStorage.getItem('backtest_selected_allowed_symbols');
     if (localList) {
       const parsed = JSON.parse(localList);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const clean = exchange === 'xt' ? parsed.filter((s: string) => !isXtExcludedSymbol(s)) : parsed;
+        return clean;
+      }
     }
   } catch {}
 
@@ -249,6 +269,8 @@ export interface TestParameterConfigRecord {
   optLongLegAtrMult?: number;
   optMaxBlueLegPercent?: number;
   optMaxBreakoutAtr?: number;
+  optMinVolumeGrowthPercent?: number;
+  minVolumeGrowthPercent?: number;
   optMaxRiskReward?: number;
   optTimeStopCandles?: number;
   optMaxPositionToRiskRatio?: number;

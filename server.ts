@@ -28,6 +28,7 @@ import {
   markLiveTradesClosedInDb,
   getAllLiveTradesFromDb,
 } from './src/db/index';
+import { isXtExcludedSymbol } from './src/types/crypto.ts';
 
 dotenv.config();
 
@@ -819,16 +820,18 @@ async function fetchXtServerPairs(): Promise<CryptoPair[]> {
   const data = await response.json();
 
   if (data?.result && Array.isArray(data.result)) {
-    return data.result.map((item: any) => {
-      const sym = (item.s || '').toLowerCase();
-      const parts = sym.split('_');
-      const baseAsset = (parts[0] || '').toUpperCase();
-      const quoteAsset = (parts[1] || 'USDT').toUpperCase();
-      const meta = openApiMap.get(sym);
-      const isOpenApi = meta ? meta.isOpenApi : true;
-      const tradeSwitch = meta ? meta.tradeSwitch : true;
-      const openSwitch = meta ? meta.openSwitch : true;
-      const isApiSupported = meta ? meta.isApiSupported : true;
+    return data.result
+      .filter((item: any) => !isXtExcludedSymbol(item.s || ''))
+      .map((item: any) => {
+        const sym = (item.s || '').toLowerCase();
+        const parts = sym.split('_');
+        const baseAsset = (parts[0] || '').toUpperCase();
+        const quoteAsset = (parts[1] || 'USDT').toUpperCase();
+        const meta = openApiMap.get(sym);
+        const isOpenApi = meta ? meta.isOpenApi : true;
+        const tradeSwitch = meta ? meta.tradeSwitch : true;
+        const openSwitch = meta ? meta.openSwitch : true;
+        const isApiSupported = meta ? meta.isApiSupported : true;
 
       return {
         symbol: sym,
@@ -2191,6 +2194,8 @@ const serverBacktestState = {
   symbolCount: 0,
   totalCandles: 0,
   dataSizeFormatted: '0 B',
+  requestedSymbolsCount: 0,
+  skippedSymbols: [] as { symbol: string; reason: string }[],
 };
 
 function getRangeDatasetId(exchange: string, timeframe: string, startTime?: number | null, endTime?: number | null): string {
@@ -2410,6 +2415,8 @@ async function runServerBacktestCycle(params: {
   serverBacktestState.errorMsg = null;
   serverBacktestState.results = [];
   serverBacktestState.allTrades = [];
+  serverBacktestState.requestedSymbolsCount = symbols.length;
+  serverBacktestState.skippedSymbols = [];
   serverBacktestState.progress = { current: 0, total: symbols.length, percent: 0, currentSymbol: 'آماده‌سازی...' };
 
   const cfg = strategyConfig || {};
@@ -2425,6 +2432,7 @@ async function runServerBacktestCycle(params: {
   const longLegAtrMultiplier = Number(cfg.optLongLegAtrMult ?? cfg.longLegAtrMultiplier) || 8.0;
   const maxBlueLegPercent = Number(cfg.optMaxBlueLegPercent ?? cfg.maxBlueLegPercent) || 50;
   const maxBreakoutAtrMultiplier = Number(cfg.optMaxBreakoutAtr ?? cfg.maxBreakoutAtrMultiplier) || 3.0;
+  const minVolumeGrowthPercent = Number(cfg.optMinVolumeGrowthPercent ?? cfg.minVolumeGrowthPercent) || 0;
   const maxRiskReward = Number(cfg.optMaxRiskReward ?? cfg.maxRiskReward) || 3.0;
   const maxCandlesToEnter = Number(cfg.maxCandlesToEnter) || 100;
   const entryCommission = Number(cfg.entryCommissionPercent) || 0.06;
@@ -2433,14 +2441,14 @@ async function runServerBacktestCycle(params: {
   const timeStopCandles = Number(cfg.optTimeStopCandles ?? cfg.timeStopCandles) || 80;
   const maxPositionToRiskRatio = Number(cfg.optMaxPositionToRiskRatio ?? cfg.maxPositionToRiskRatio) || 300;
 
-  console.log(`[Server Backtest] 🚀 Starting cycle: Dataset=${datasetId}, Mode=${incrementalSync ? 'INCREMENTAL_SYNC' : (forceRedownload ? 'FORCE_REDOWNLOAD' : 'SMART_DB')}, Strategy=${strategyId}, ATR=${atrPeriod}, Mult=${atrMultiplier}, minCandles=${minCandles}, minLong=${minCandlesForLongLeg}, longMult=${longLegAtrMultiplier}, blue%=${maxBlueLegPercent}, breakoutMult=${maxBreakoutAtrMultiplier}, RR=${maxRiskReward}, timeStop=${timeStopCandles}, maxPosRatio=${maxPositionToRiskRatio}, capital=${capital}, risk=${riskPercent}%`);
+  console.log(`[Server Backtest] 🚀 Starting cycle: Dataset=${datasetId}, Mode=${incrementalSync ? 'INCREMENTAL_SYNC' : (forceRedownload ? 'FORCE_REDOWNLOAD' : 'SMART_DB')}, Strategy=${strategyId}, ATR=${atrPeriod}, Mult=${atrMultiplier}, minCandles=${minCandles}, minLong=${minCandlesForLongLeg}, longMult=${longLegAtrMultiplier}, blue%=${maxBlueLegPercent}, breakoutMult=${maxBreakoutAtrMultiplier}, volGrowth%=${minVolumeGrowthPercent}, RR=${maxRiskReward}, timeStop=${timeStopCandles}, maxPosRatio=${maxPositionToRiskRatio}, capital=${capital}, risk=${riskPercent}%`);
 
   const processSymbolStrategy = (pair: { symbol: string; baseAsset: string; quoteAsset: string }, candles: CandleData[]) => {
     if (!candles || candles.length < 50) return null;
 
     const atrResult = calculateATR(candles, atrPeriod);
     const zzResult = calculateAtrZigZag(candles, atrResult.atrValues, atrMultiplier, minCandles);
-    const legs = analyzeZigZagLegs(zzResult.points, minCandlesForLongLeg, longLegAtrMultiplier, maxBlueLegPercent, maxBreakoutAtrMultiplier);
+    const legs = analyzeZigZagLegs(zzResult.points, minCandlesForLongLeg, longLegAtrMultiplier, maxBlueLegPercent, maxBreakoutAtrMultiplier, candles, minVolumeGrowthPercent);
 
     const stratConfig: any = {
       capital,
@@ -2461,6 +2469,8 @@ async function runServerBacktestCycle(params: {
       timeStopCandles,
       maxPositionToRiskRatio,
       optMaxPositionToRiskRatio: maxPositionToRiskRatio,
+      minVolumeGrowthPercent,
+      optMinVolumeGrowthPercent: minVolumeGrowthPercent,
     };
 
     let backtestRes: any;
@@ -2528,6 +2538,7 @@ async function runServerBacktestCycle(params: {
     let savedSymbolsCount = 0;
     let savedTotalCandles = 0;
     const savedSymbolsList: string[] = [];
+    const skippedSymbols: { symbol: string; reason: string }[] = [];
 
     // 1. Check if dataset already exists in RAM cache or PostgreSQL
     if (!forceRedownload) {
@@ -2612,6 +2623,11 @@ async function runServerBacktestCycle(params: {
                     if (candles && candles.length >= 50) {
                       const baseAsset = sym.includes('_') ? sym.split('_')[0].toUpperCase() : sym.replace(/USDT$/i, '');
                       appendedEntries.push({ pair: { symbol: sym, baseAsset, quoteAsset: 'USDT' }, candles, timeframe });
+                    } else {
+                      const reason = (!candles || candles.length === 0)
+                        ? 'عدم ارائه دیتای کندل توسط صرافی XT در این تایم‌فریم (قرارداد متوقف یا فاقد معامله در فیوچرز)'
+                        : `تعداد کندل دریافتی کمتر از ۵۰ کندل است (${candles ? candles.length : 0} کندل)`;
+                      skippedSymbols.push({ symbol: sym, reason });
                     }
                   } catch (err: any) {
                     console.warn(`[Incremental Worker Error] ${sym}:`, err.message);
@@ -2729,6 +2745,20 @@ async function runServerBacktestCycle(params: {
 
           savedSymbolsCount = processedSymbols;
           savedTotalCandles = totalCandlesSum;
+
+          if (symbols && symbols.length > 0) {
+            const foundSet = new Set(savedSymbolsList.map((s) => s.toUpperCase().replace(/[^A-Z0-9]/g, '')));
+            for (const s of symbols) {
+              const clean = s.toUpperCase().replace(/[^A-Z0-9]/g, '');
+              if (!foundSet.has(clean)) {
+                skippedSymbols.push({
+                  symbol: s,
+                  reason: 'عدم وجود دیتای کندل در دیتابیس یا عدم ارائه کندل توسط صرافی XT در این تایم‌فریم',
+                });
+              }
+            }
+          }
+          serverBacktestState.skippedSymbols = skippedSymbols;
         }
       }
     }
@@ -2794,7 +2824,7 @@ async function runServerBacktestCycle(params: {
       serverBacktestState.stage = 'downloading';
       serverDatasetCandleCache.clear(); // Free old cache immediately to prevent memory leak
 
-      let targetSymbols = symbols && symbols.length > 0 ? symbols : [];
+      let targetSymbols = symbols && symbols.length > 0 ? [...symbols] : [];
 
       if (targetSymbols.length === 0) {
         if (exchange === 'xt') {
@@ -2804,12 +2834,10 @@ async function runServerBacktestCycle(params: {
           const sPairs = await fetchServerPairs('futures', 1000);
           targetSymbols = sPairs.map((p) => p.symbol);
         }
-      } else if (exchange === 'xt') {
-        await getXtSymbolsOpenApiMap();
-        targetSymbols = targetSymbols.filter((sym) => !unsupportedOpenApiXtSymbols.has(toXtSymbol(sym)));
       }
 
       const total = targetSymbols.length;
+      serverBacktestState.requestedSymbolsCount = total;
       serverBacktestState.progress.total = total;
       serverBacktestState.progress.current = 0;
       serverBacktestState.progress.percent = 0;
@@ -2939,6 +2967,11 @@ async function runServerBacktestCycle(params: {
 
               // Flush to PostgreSQL in small batches so RAM never bloats
               await flushBatchToDatabase(false);
+            } else {
+              const reason = (!candles || candles.length === 0)
+                ? 'عدم ارائه دیتای کندل توسط صرافی XT در این تایم‌فریم (قرارداد متوقف یا فاقد معامله در فیوچرز)'
+                : `تعداد کندل دریافتی کمتر از ۵۰ کندل است (${candles ? candles.length : 0} کندل)`;
+              skippedSymbols.push({ symbol: sym, reason });
             }
           } catch (err: any) {
             console.warn(`[Backtest Worker Error] ${sym}:`, err.message);
@@ -2975,8 +3008,14 @@ async function runServerBacktestCycle(params: {
       serverBacktestState.dataSizeFormatted = dataSizeFormatted;
 
       // Ensure dataset is marked COMPLETED in PostgreSQL with partial data so optimizer & stats work immediately
+      serverBacktestState.skippedSymbols = skippedSymbols;
       try {
-        const resultsJson = JSON.stringify({ results: serverBacktestState.results, allTrades: serverBacktestState.allTrades });
+        const resultsJson = JSON.stringify({
+          results: serverBacktestState.results,
+          allTrades: serverBacktestState.allTrades,
+          skippedSymbols: serverBacktestState.skippedSymbols,
+          requestedSymbolsCount: serverBacktestState.requestedSymbolsCount,
+        });
         await pool.query(
           `UPDATE candle_datasets 
            SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
@@ -3003,6 +3042,7 @@ async function runServerBacktestCycle(params: {
     serverBacktestState.symbolCount = savedSymbolsCount;
     serverBacktestState.totalCandles = totalCandles;
     serverBacktestState.dataSizeFormatted = dataSizeFormatted;
+    serverBacktestState.skippedSymbols = skippedSymbols;
     serverBacktestState.lastRunAt = new Date().toISOString();
     serverBacktestState.progress.current = serverBacktestState.progress.total || savedSymbolsCount;
     serverBacktestState.progress.percent = 100;
@@ -3012,7 +3052,12 @@ async function runServerBacktestCycle(params: {
 
     // 4. Persist final results in PostgreSQL safely (non-blocking)
     try {
-      const resultsJson = JSON.stringify({ results: serverBacktestState.results, allTrades: serverBacktestState.allTrades });
+      const resultsJson = JSON.stringify({
+        results: serverBacktestState.results,
+        allTrades: serverBacktestState.allTrades,
+        skippedSymbols: serverBacktestState.skippedSymbols,
+        requestedSymbolsCount: serverBacktestState.requestedSymbolsCount,
+      });
       await pool.query(
         `UPDATE candle_datasets 
          SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
@@ -3277,11 +3322,15 @@ async function handleRangeStatusQuery(params: {
 
   let parsedResults = null;
   let parsedTrades = null;
+  let parsedSkippedSymbols = null;
+  let parsedRequestedSymbolsCount = null;
   if (row.results_json) {
     try {
       const parsed = JSON.parse(row.results_json);
       parsedResults = parsed.results || null;
       parsedTrades = parsed.allTrades || null;
+      parsedSkippedSymbols = parsed.skippedSymbols || null;
+      parsedRequestedSymbolsCount = parsed.requestedSymbolsCount || null;
     } catch {}
   }
 
@@ -3319,6 +3368,8 @@ async function handleRangeStatusQuery(params: {
     results: parsedResults,
     allTrades: params.includeTrades || !parsedTrades || parsedTrades.length <= 500 ? parsedTrades : parsedTrades.slice(0, 500),
     allTradesCount: parsedTrades ? parsedTrades.length : 0,
+    skippedSymbols: parsedSkippedSymbols || [],
+    requestedSymbolsCount: parsedRequestedSymbolsCount || null,
   };
 }
 
@@ -3459,6 +3510,8 @@ app.get('/api/backtest/status', (req, res) => {
       totalCandles: serverBacktestState.totalCandles,
       symbolCount: serverBacktestState.symbolCount,
       dataSizeFormatted: serverBacktestState.dataSizeFormatted,
+      requestedSymbolsCount: serverBacktestState.requestedSymbolsCount || (serverBacktestState.progress.total || 0),
+      skippedSymbols: serverBacktestState.skippedSymbols || [],
     },
   });
 });
@@ -3592,6 +3645,7 @@ interface ServerOptimizerTrial {
   longLegAtrMultiplier: number;
   maxBlueLegPercent: number;
   maxBreakoutAtrMultiplier: number;
+  minVolumeGrowthPercent?: number;
   maxRiskReward: number;
   timeStopCandles: number;
   maxPositionToRiskRatio?: number;
@@ -3633,11 +3687,12 @@ function generateConfigHash(p: {
   longLegAtrMultiplier: number;
   maxBlueLegPercent: number;
   maxBreakoutAtrMultiplier: number;
+  minVolumeGrowthPercent?: number;
   maxRiskReward: number;
   timeStopCandles?: number;
   maxPositionToRiskRatio?: number;
 }): string {
-  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxRiskReward}_${p.timeStopCandles || 80}_${p.maxPositionToRiskRatio ?? 300}`;
+  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.minVolumeGrowthPercent || 0}_${p.maxRiskReward}_${p.timeStopCandles || 80}_${p.maxPositionToRiskRatio ?? 300}`;
 }
 
 function calculateQualityScore(trial: {
@@ -3693,6 +3748,7 @@ function refineAdaptiveRangesSmart(
     'longLegAtrMultiplier',
     'maxBlueLegPercent',
     'maxBreakoutAtrMultiplier',
+    'minVolumeGrowthPercent',
     'maxRiskReward',
     'timeStopCandles',
     'maxPositionToRiskRatio',
@@ -3706,6 +3762,7 @@ function refineAdaptiveRangesSmart(
     longLegAtrMultiplier: { lockProp: 'lockLongLegAtrMult', valProp: 'optLongLegAtrMult' },
     maxBlueLegPercent: { lockProp: 'lockMaxBlueLegPercent', valProp: 'optMaxBlueLegPercent' },
     maxBreakoutAtrMultiplier: { lockProp: 'lockMaxBreakoutAtr', valProp: 'optMaxBreakoutAtr' },
+    minVolumeGrowthPercent: { lockProp: 'lockMinVolumeGrowthPercent', valProp: 'optMinVolumeGrowthPercent' },
     maxRiskReward: { lockProp: 'lockMaxRiskReward', valProp: 'optMaxRiskReward' },
     timeStopCandles: { lockProp: 'lockTimeStopCandles', valProp: 'optTimeStopCandles' },
     maxPositionToRiskRatio: { lockProp: 'lockMaxPositionToRiskRatio', valProp: 'optMaxPositionToRiskRatio' },
@@ -3832,6 +3889,7 @@ function getDefaultRangesForTimeframe(timeframe: string): any {
       longLegAtrMultiplier: makeRange(6.0, 14.5, 4.0, 22.0, 9.5, 0.5),
       maxBlueLegPercent: makeRange(35, 75, 20, 90, 55, 5),
       maxBreakoutAtrMultiplier: makeRange(2.0, 5.5, 1.0, 8.0, 3.5, 0.5),
+      minVolumeGrowthPercent: makeRange(0, 30, 0, 80, 0, 5),
       maxRiskReward: makeRange(1.5, 4.5, 1.0, 10.0, 2.5, 0.25),
       timeStopCandles: makeRange(20, 120, 5, 200, 80, 5),
       maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
@@ -3847,6 +3905,7 @@ function getDefaultRangesForTimeframe(timeframe: string): any {
       longLegAtrMultiplier: makeRange(4.5, 12.0, 3.0, 18.0, 8.0, 0.5),
       maxBlueLegPercent: makeRange(30, 70, 20, 85, 50, 5),
       maxBreakoutAtrMultiplier: makeRange(1.5, 5.0, 1.0, 7.0, 3.0, 0.5),
+      minVolumeGrowthPercent: makeRange(0, 30, 0, 80, 0, 5),
       maxRiskReward: makeRange(1.5, 7.0, 1.0, 12.0, 3.5, 0.5),
       timeStopCandles: makeRange(20, 120, 5, 200, 60, 5),
       maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
@@ -3861,6 +3920,7 @@ function getDefaultRangesForTimeframe(timeframe: string): any {
     longLegAtrMultiplier: makeRange(5.0, 14.0, 3.5, 20.0, 9.0, 0.5),
     maxBlueLegPercent: makeRange(35, 75, 25, 85, 55, 5),
     maxBreakoutAtrMultiplier: makeRange(1.8, 5.5, 1.0, 7.5, 3.5, 0.5),
+    minVolumeGrowthPercent: makeRange(0, 30, 0, 80, 0, 5),
     maxRiskReward: makeRange(1.5, 6.0, 1.0, 10.0, 3.0, 0.5),
     timeStopCandles: makeRange(20, 120, 5, 200, 80, 5),
     maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
@@ -3931,6 +3991,7 @@ function getNextCandidateFromAdaptiveRanges(
       longLegAtrMultiplier: sampleParam(ranges.longLegAtrMultiplier, l.lockLongLegAtrMult, l.optLongLegAtrMult ?? 9.5),
       maxBlueLegPercent: sampleParam(ranges.maxBlueLegPercent, l.lockMaxBlueLegPercent, l.optMaxBlueLegPercent ?? 55),
       maxBreakoutAtrMultiplier: sampleParam(ranges.maxBreakoutAtrMultiplier, l.lockMaxBreakoutAtr, l.optMaxBreakoutAtr ?? 3.5),
+      minVolumeGrowthPercent: sampleParam(ranges.minVolumeGrowthPercent, l.lockMinVolumeGrowthPercent, l.optMinVolumeGrowthPercent ?? 0),
       maxRiskReward: sampleParam(ranges.maxRiskReward, l.lockMaxRiskReward, l.optMaxRiskReward ?? 2.5),
       timeStopCandles: sampleParam(ranges.timeStopCandles, l.lockTimeStopCandles, l.optTimeStopCandles ?? 80),
       maxPositionToRiskRatio: sampleParam(ranges.maxPositionToRiskRatio, l.lockMaxPositionToRiskRatio, l.optMaxPositionToRiskRatio ?? 300),
@@ -4161,7 +4222,9 @@ async function streamEvaluateDatasetFromPostgres(
             candidate.minCandlesForLongLeg,
             candidate.longLegAtrMultiplier,
             candidate.maxBlueLegPercent,
-            candidate.maxBreakoutAtrMultiplier
+            candidate.maxBreakoutAtrMultiplier,
+            candles,
+            candidate.minVolumeGrowthPercent || 0
           );
 
           const stratConfig: any = {
@@ -4249,7 +4312,9 @@ async function streamEvaluateDatasetFromPostgres(
             candidate.minCandlesForLongLeg,
             candidate.longLegAtrMultiplier,
             candidate.maxBlueLegPercent,
-            candidate.maxBreakoutAtrMultiplier
+            candidate.maxBreakoutAtrMultiplier,
+            candles,
+            candidate.minVolumeGrowthPercent || 0
           );
 
           const stratConfig: any = {
@@ -4306,6 +4371,7 @@ async function evaluateCombinationOnServer(
     longLegAtrMultiplier: number;
     maxBlueLegPercent: number;
     maxBreakoutAtrMultiplier: number;
+    minVolumeGrowthPercent?: number;
     maxRiskReward: number;
     timeStopCandles?: number;
     maxPositionToRiskRatio?: number;
@@ -4349,7 +4415,9 @@ async function evaluateCombinationOnServer(
       params.minCandlesForLongLeg,
       params.longLegAtrMultiplier,
       params.maxBlueLegPercent,
-      params.maxBreakoutAtrMultiplier
+      params.maxBreakoutAtrMultiplier,
+      candles,
+      params.minVolumeGrowthPercent || 0
     );
 
     const stratConfig: any = {
@@ -4772,6 +4840,7 @@ app.post('/api/optimizer/start', async (req, res) => {
       optLongLegAtrMult: Number(locks?.optLongLegAtrMult ?? cfg?.longLegAtrMultiplier ?? cfg?.optLongLegAtrMult ?? 9.5),
       optMaxBlueLegPercent: Number(locks?.optMaxBlueLegPercent ?? cfg?.maxBlueLegPercent ?? cfg?.optMaxBlueLegPercent ?? 55),
       optMaxBreakoutAtr: Number(locks?.optMaxBreakoutAtr ?? cfg?.maxBreakoutAtrMultiplier ?? cfg?.optMaxBreakoutAtr ?? 3.5),
+      optMinVolumeGrowthPercent: Number(locks?.optMinVolumeGrowthPercent ?? cfg?.minVolumeGrowthPercent ?? cfg?.optMinVolumeGrowthPercent ?? 0),
       optMaxRiskReward: Number(locks?.optMaxRiskReward ?? cfg?.maxRiskReward ?? cfg?.optMaxRiskReward ?? 2.5),
       optTimeStopCandles: Number(locks?.optTimeStopCandles ?? cfg?.timeStopCandles ?? cfg?.optTimeStopCandles ?? 80),
       optMaxPositionToRiskRatio: Number(locks?.optMaxPositionToRiskRatio ?? cfg?.maxPositionToRiskRatio ?? cfg?.optMaxPositionToRiskRatio ?? 300),
@@ -4788,6 +4857,7 @@ app.post('/api/optimizer/start', async (req, res) => {
       'longLegAtrMultiplier',
       'maxBlueLegPercent',
       'maxBreakoutAtrMultiplier',
+      'minVolumeGrowthPercent',
       'maxRiskReward',
       'timeStopCandles',
       'maxPositionToRiskRatio',
@@ -4820,6 +4890,7 @@ app.post('/api/optimizer/start', async (req, res) => {
       longLegAtrMultiplier: { lockProp: 'lockLongLegAtrMult', valProp: 'optLongLegAtrMult' },
       maxBlueLegPercent: { lockProp: 'lockMaxBlueLegPercent', valProp: 'optMaxBlueLegPercent' },
       maxBreakoutAtrMultiplier: { lockProp: 'lockMaxBreakoutAtr', valProp: 'optMaxBreakoutAtr' },
+      minVolumeGrowthPercent: { lockProp: 'lockMinVolumeGrowthPercent' as any, valProp: 'optMinVolumeGrowthPercent' },
       maxRiskReward: { lockProp: 'lockMaxRiskReward', valProp: 'optMaxRiskReward' },
       timeStopCandles: { lockProp: 'lockTimeStopCandles', valProp: 'optTimeStopCandles' },
       maxPositionToRiskRatio: { lockProp: 'lockMaxPositionToRiskRatio', valProp: 'optMaxPositionToRiskRatio' },
@@ -5302,6 +5373,7 @@ interface ServerLiveScannerConfig {
   longLegAtrMultiplier: number;
   maxBlueLegPercent: number;
   maxBreakoutAtrMultiplier: number;
+  minVolumeGrowthPercent?: number;
   riskRewardRatio: number;
   riskMode?: 'percent' | 'fixed';
   riskAmountFixed?: number;
@@ -5382,6 +5454,7 @@ const serverScannerState = {
     longLegAtrMultiplier: 3.0,
     maxBlueLegPercent: 70,
     maxBreakoutAtrMultiplier: 3.0,
+    minVolumeGrowthPercent: 0,
     riskRewardRatio: 2.0,
     riskMode: 'percent',
     riskAmountFixed: 50,
@@ -5576,10 +5649,10 @@ async function runServerScannerCycle() {
     ? cfg.symbols
     : ['btc_usdt', 'eth_usdt', 'sol_usdt', 'xrp_usdt', 'doge_usdt'];
 
-  let activeTargetSymbols = targetSymbols;
+  let activeTargetSymbols = targetSymbols.filter((s) => !isXtExcludedSymbol(s));
   if (cfg.exchange === 'xt') {
     await getXtSymbolsOpenApiMap();
-    activeTargetSymbols = targetSymbols.filter((s) => !unsupportedOpenApiXtSymbols.has(toXtSymbol(s)));
+    activeTargetSymbols = activeTargetSymbols.filter((s) => !unsupportedOpenApiXtSymbols.has(toXtSymbol(s)));
     const excludedCount = targetSymbols.length - activeTargetSymbols.length;
     if (excludedCount > 0) {
       addServerScannerLog(
@@ -5811,6 +5884,7 @@ async function runServerScannerCycle() {
                 longLegAtrMultiplier: cfg.longLegAtrMultiplier || 3.0,
                 maxBlueLegPercent: cfg.maxBlueLegPercent || 70,
                 maxBreakoutAtrMultiplier: cfg.maxBreakoutAtrMultiplier || 3.0,
+                minVolumeGrowthPercent: cfg.minVolumeGrowthPercent || 0,
                 riskRewardRatio: cfg.riskRewardRatio || 2.0,
                 riskMode: cfg.riskMode || 'percent',
                 riskAmountFixed: cfg.riskAmountFixed || 50,

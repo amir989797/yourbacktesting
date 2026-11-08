@@ -465,6 +465,49 @@ export function calculateAtrZigZag(
   return { points: cleanPivots, series };
 }
 
+/**
+ * فرمول محاسبه شیب و درصد رشد میانگین حجم در طول یک لگ (از ابتدا تا انتهای لگ):
+ * ۱. شاخص شروع و پایان کندل‌های لگ استخراج می‌شود (N = E - S + 1).
+ * ۲. اگر تعداد کندل‌ها کمتر از ۲ باشد، رشد ۰ درصد تلقی می‌شود.
+ * ۳. لگ به دو نیمه زمانی مساوی تقسیم می‌شود:
+ *    - نیمه اول (ابتدای لگ مثلاً از نقطه A): میانگین حجم کندل‌های نیمه اول = V_start
+ *    - نیمه دوم (انتهای لگ مثلاً به سمت نقطه B): میانگین حجم کندل‌های نیمه دوم = V_end
+ * ۴. درصد رشد میانگین حجم انتهای لگ نسبت به ابتدای لگ:
+ *    Volume Growth % = ((V_end - V_start) / V_start) * 100
+ */
+export function calculateLegVolumeGrowth(
+  candles: CandleData[],
+  startCandleIdx: number,
+  endCandleIdx: number
+): number {
+  if (!candles || candles.length < 2) return 0;
+  const s = Math.max(0, Math.min(startCandleIdx, endCandleIdx));
+  const e = Math.min(candles.length - 1, Math.max(startCandleIdx, endCandleIdx));
+  const n = e - s + 1;
+  if (n < 2) return 0;
+
+  const mid = Math.floor(n / 2);
+  let sumStart = 0;
+  for (let i = s; i < s + mid; i++) {
+    sumStart += (candles[i].volume || 0);
+  }
+  const avgStart = sumStart / mid;
+
+  const secondCount = n - mid;
+  let sumEnd = 0;
+  for (let i = s + mid; i <= e; i++) {
+    sumEnd += (candles[i].volume || 0);
+  }
+  const avgEnd = sumEnd / secondCount;
+
+  if (avgStart <= 0) {
+    return avgEnd > 0 ? 100 : 0;
+  }
+
+  const growthPercent = ((avgEnd - avgStart) / avgStart) * 100;
+  return parseFloat(growthPercent.toFixed(2));
+}
+
 export interface ZigZagLeg {
   index: number;
   startIndex: number;
@@ -485,17 +528,20 @@ export interface ZigZagLeg {
   cycleGiantLegIndex?: number;
   cyclePointAPrice?: number;
   cyclePointATime?: number;
+  volumeGrowthPercent?: number; // درصد رشد حجم در طول لگ
 }
 
 /**
  * Classifies ZigZag legs based on user rules:
- * 1. Giant leg > 1000% of ATR (>= 10 * ATR) AND > 20 candles:
+ * 1. Giant leg > 1000% of ATR (>= 10 * ATR) AND > 20 candles AND Volume Growth >= minVolumeGrowthPercent:
  *    - Bold Green for bullish (صعودی)
  *    - Bold Red for bearish (نزولی)
  * 2. آبی کم‌رنگ (Light Blue):
- *    - لگ دوم بعد از سبز یا قرمز (G + 2) است که انتهای لگ سبز یا قرمز را شکسته باشد.
+ *    - لگ دوم بعد از سبز یا قرمز (G + 2) یا چهارم (G + 4) است که انتهای لگ سبز یا قرمز را شکسته باشد
+ *      و شرط حداقل رشد حجم را دارا باشد.
  * 3. آبی پررنگ (Dark Blue):
- *    - لگ دوم بعد از آبی کم‌رنگ (B + 2) است که انتهای آن‌را شکسته باشد.
+ *    - لگ دوم بعد از آبی کم‌رنگ (B + 2) یا چهارم (B + 4) است که انتهای آن‌را شکسته باشد
+ *      و شرط حداقل رشد حجم را دارا باشد.
  * 4. سپس تا شرایط تشکیل قرمز یا سبز مجدد صبر کن.
  * 5. سایر لگ‌ها: سفید (White)
  */
@@ -504,7 +550,9 @@ export function analyzeZigZagLegs(
   minCandlesForLongLeg: number = 20,
   longLegAtrMultiplier: number = 10,
   maxBlueLegPercent: number = 60,
-  maxBreakoutAtrMultiplier: number = 5
+  maxBreakoutAtrMultiplier: number = 5,
+  candles?: CandleData[],
+  minVolumeGrowthPercent: number = 0
 ): ZigZagLeg[] {
   if (points.length < 2) return [];
 
@@ -513,6 +561,7 @@ export function analyzeZigZagLegs(
   const minLongRatio = Math.max(0.1, longLegAtrMultiplier);
   const maxBlueRatio = Math.max(0.01, (maxBlueLegPercent || 60) / 100);
   const maxBreakoutMult = Math.max(0.1, maxBreakoutAtrMultiplier || 5);
+  const requiredVolGrowth = minVolumeGrowthPercent || 0;
 
   for (let i = 1; i < points.length; i++) {
     const start = points[i - 1];
@@ -527,8 +576,15 @@ export function analyzeZigZagLegs(
     let color: 'white' | 'green' | 'red' | 'blue' | 'dark_blue' = 'white';
     let isGiant = false;
 
+    const volGrowth = (candles && candles.length > 0)
+      ? calculateLegVolumeGrowth(candles, startCandleIdx, endCandleIdx)
+      : 0;
+
+    // شرط رشد حجم لگ بزرگ (لگ AB): در صورت تعریف حداقل رشد حجم، شیب میانگین حجم باید افزایشی باشد
+    const satisfiesVolGiant = requiredVolGrowth <= 0 || !candles || candles.length === 0 || volGrowth >= requiredVolGrowth;
+
     // Condition: Leg >= minLongRatio * ATR AND >= minLongCandles candles (لگ سبز و قرمز بلند)
-    if (ratio >= minLongRatio && candleCount >= minLongCandles) {
+    if (ratio >= minLongRatio && candleCount >= minLongCandles && satisfiesVolGiant) {
       isGiant = true;
       color = isUp ? 'green' : 'red';
     }
@@ -547,6 +603,7 @@ export function analyzeZigZagLegs(
       candleCount,
       color,
       isGiantLeg: isGiant,
+      volumeGrowthPercent: volGrowth,
     });
   }
 
@@ -619,7 +676,16 @@ export function analyzeZigZagLegs(
       // شرط محدودیت درصدی (پیش‌فرض ۶۰ درصد): اندازه لگ آبی باید کمتر از maxBluePts باشد
       const isUnder60PctG2 = g2.legPoints < maxBluePts;
 
-      if (brokeGiant && within5AtrG2 && isUnder60PctG2 && !g2.isGiantLeg) {
+      // بررسی شرط رشد حجم برای لگ CD (لگ دوم)
+      const g2StartCandle = points[g2.startIndex]?.candleIndex ?? 0;
+      const g2EndCandle = points[g2.endIndex]?.candleIndex ?? 0;
+      const volGrowthG2 = (candles && candles.length > 0)
+        ? calculateLegVolumeGrowth(candles, g2StartCandle, g2EndCandle)
+        : (g2.volumeGrowthPercent ?? 0);
+      g2.volumeGrowthPercent = volGrowthG2;
+      const satisfiesVolG2 = requiredVolGrowth <= 0 || !candles || candles.length === 0 || volGrowthG2 >= requiredVolGrowth;
+
+      if (brokeGiant && within5AtrG2 && isUnder60PctG2 && !g2.isGiantLeg && satisfiesVolG2) {
         g2.color = 'blue';
         g2.breaksGiantLegIndex = giant.index;
         g2.cycleGiantLegIndex = cycleGiantLegIndex;
@@ -633,7 +699,7 @@ export function analyzeZigZagLegs(
       }
     }
 
-    // اگر لگ دوم (G+2) برک‌اوت نکرد، بررسی لگ چهارم (G+4) پس از سبز یا قرمز:
+    // اگر لگ دوم (G+2) برک‌اوت نکرد یا شرط حجم را نداشت، بررسی لگ چهارم (G+4) پس از سبز یا قرمز:
     if (blueIdx === -1) {
       const g4Index = giantIdx + 4;
       if (g4Index < legs.length) {
@@ -658,7 +724,16 @@ export function analyzeZigZagLegs(
           const within5AtrG4 = breakoutDist4 <= maxBreakoutMult * refAtrG4;
           const isUnder60PctG4 = g4.legPoints < maxBluePts;
 
-          if (brokeGiant4 && within5AtrG4 && isUnder60PctG4 && !g4.isGiantLeg) {
+          // بررسی شرط رشد حجم برای لگ CD (لگ چهارم)
+          const g4StartCandle = points[g4.startIndex]?.candleIndex ?? 0;
+          const g4EndCandle = points[g4.endIndex]?.candleIndex ?? 0;
+          const volGrowthG4 = (candles && candles.length > 0)
+            ? calculateLegVolumeGrowth(candles, g4StartCandle, g4EndCandle)
+            : (g4.volumeGrowthPercent ?? 0);
+          g4.volumeGrowthPercent = volGrowthG4;
+          const satisfiesVolG4 = requiredVolGrowth <= 0 || !candles || candles.length === 0 || volGrowthG4 >= requiredVolGrowth;
+
+          if (brokeGiant4 && within5AtrG4 && isUnder60PctG4 && !g4.isGiantLeg && satisfiesVolG4) {
             g4.color = 'blue';
             g4.breaksGiantLegIndex = giant.index;
             g4.cycleGiantLegIndex = cycleGiantLegIndex;
@@ -706,7 +781,16 @@ export function analyzeZigZagLegs(
         // شرط محدودیت درصدی: اندازه لگ آبی پررنگ نیز باید کمتر از maxBluePts باشد
         const isUnder60PctB2 = b2.legPoints < maxBluePts;
 
-        if (brokeBlue && within5AtrB2 && isUnder60PctB2 && !b2.isGiantLeg) {
+        // بررسی شرط رشد حجم برای لگ EF (لگ دوم بعد از CD)
+        const b2StartCandle = points[b2.startIndex]?.candleIndex ?? 0;
+        const b2EndCandle = points[b2.endIndex]?.candleIndex ?? 0;
+        const volGrowthB2 = (candles && candles.length > 0)
+          ? calculateLegVolumeGrowth(candles, b2StartCandle, b2EndCandle)
+          : (b2.volumeGrowthPercent ?? 0);
+        b2.volumeGrowthPercent = volGrowthB2;
+        const satisfiesVolB2 = requiredVolGrowth <= 0 || !candles || candles.length === 0 || volGrowthB2 >= requiredVolGrowth;
+
+        if (brokeBlue && within5AtrB2 && isUnder60PctB2 && !b2.isGiantLeg && satisfiesVolB2) {
           b2.color = 'dark_blue';
           b2.cycleGiantLegIndex = cycleGiantLegIndex;
           b2.cyclePointAPrice = cyclePointAPrice;
@@ -747,7 +831,16 @@ export function analyzeZigZagLegs(
             const within5AtrB4 = breakoutDistB4 <= maxBreakoutMult * refAtrB4;
             const isUnder60PctB4 = b4.legPoints < maxBluePts;
 
-            if (brokeBlue4 && within5AtrB4 && isUnder60PctB4 && !b4.isGiantLeg) {
+            // بررسی شرط رشد حجم برای لگ EF (لگ چهارم بعد از CD)
+            const b4StartCandle = points[b4.startIndex]?.candleIndex ?? 0;
+            const b4EndCandle = points[b4.endIndex]?.candleIndex ?? 0;
+            const volGrowthB4 = (candles && candles.length > 0)
+              ? calculateLegVolumeGrowth(candles, b4StartCandle, b4EndCandle)
+              : (b4.volumeGrowthPercent ?? 0);
+            b4.volumeGrowthPercent = volGrowthB4;
+            const satisfiesVolB4 = requiredVolGrowth <= 0 || !candles || candles.length === 0 || volGrowthB4 >= requiredVolGrowth;
+
+            if (brokeBlue4 && within5AtrB4 && isUnder60PctB4 && !b4.isGiantLeg && satisfiesVolB4) {
               b4.color = 'dark_blue';
               b4.cycleGiantLegIndex = cycleGiantLegIndex;
               b4.cyclePointAPrice = cyclePointAPrice;

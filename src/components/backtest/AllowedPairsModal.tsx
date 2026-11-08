@@ -18,7 +18,7 @@ import {
   Tag,
   Clock,
 } from 'lucide-react';
-import { CryptoPair } from '../../types/crypto';
+import { CryptoPair, isXtExcludedSymbol } from '../../types/crypto';
 import {
   COMPREHENSIVE_FALLBACK_PAIRS,
   getEstimatedMarketCap,
@@ -52,12 +52,16 @@ export const AllowedPairsModal: React.FC<AllowedPairsModalProps> = ({
   showToast = () => {},
 }) => {
   const [activeExchange, setActiveExchange] = useState<'xt' | 'binance'>(exchange);
-  const [tempSelectedSymbols, setTempSelectedSymbols] = useState<Set<string>>(new Set(selectedSymbols));
+  const [tempSelectedSymbols, setTempSelectedSymbols] = useState<Set<string>>(
+    () => new Set((selectedSymbols || []).filter((s) => !isXtExcludedSymbol(s)))
+  );
   const [allAvailablePairs, setAllAvailablePairs] = useState<CryptoPair[]>(() => {
-    return COMPREHENSIVE_FALLBACK_PAIRS.map((p) => ({
-      ...p,
-      marketCap: getEstimatedMarketCap(p.baseAsset, p.volume24h),
-    })).sort((a: any, b: any) => (b.marketCap || 0) - (a.marketCap || 0));
+    return COMPREHENSIVE_FALLBACK_PAIRS
+      .filter((p) => !isXtExcludedSymbol(p.symbol))
+      .map((p) => ({
+        ...p,
+        marketCap: getEstimatedMarketCap(p.baseAsset, p.volume24h),
+      })).sort((a: any, b: any) => (b.marketCap || 0) - (a.marketCap || 0));
   });
 
   const [isLoadingAllPairs, setIsLoadingAllPairs] = useState<boolean>(false);
@@ -80,7 +84,7 @@ export const AllowedPairsModal: React.FC<AllowedPairsModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       setActiveExchange(exchange);
-      setTempSelectedSymbols(new Set(selectedSymbols));
+      setTempSelectedSymbols(new Set((selectedSymbols || []).filter((s) => !isXtExcludedSymbol(s))));
       setListName(`لیست ${exchange.toUpperCase()} من`);
       loadPairsFromExchange(exchange);
       loadSavedLists(exchange);
@@ -93,11 +97,13 @@ export const AllowedPairsModal: React.FC<AllowedPairsModalProps> = ({
       const res = await fetch(`/api/market/pairs?exchange=${targetEx}`);
       const data = await res.json();
       if (data && data.success && Array.isArray(data.pairs) && data.pairs.length > 0) {
-        const mapped = data.pairs.map((p: any) => ({
-          ...p,
-          baseAsset: p.baseAsset || p.symbol.split('_')[0].toUpperCase(),
-          marketCap: p.marketCap || getEstimatedMarketCap(p.baseAsset || p.symbol.split('_')[0], p.volume24h),
-        })).sort((a: any, b: any) => (b.marketCap || 0) - (a.marketCap || 0));
+        const mapped = data.pairs
+          .filter((p: any) => !isXtExcludedSymbol(p.symbol || ''))
+          .map((p: any) => ({
+            ...p,
+            baseAsset: p.baseAsset || p.symbol.split('_')[0].toUpperCase(),
+            marketCap: p.marketCap || getEstimatedMarketCap(p.baseAsset || p.symbol.split('_')[0], p.volume24h),
+          })).sort((a: any, b: any) => (b.marketCap || 0) - (a.marketCap || 0));
         setAllAvailablePairs(mapped);
       }
     } catch (err) {
@@ -137,6 +143,11 @@ export const AllowedPairsModal: React.FC<AllowedPairsModalProps> = ({
     // فیلتر ارزهای بدون OpenAPI (۴۰۶ نماد XT با isOpenApi: false یا tradeSwitch: false)
     if (activeExchange === 'xt' && filterOnlyOpenApi) {
       list = list.filter((p) => p.isApiSupported !== false && p.isOpenApi !== false && p.tradeSwitch !== false);
+    }
+
+    // فیلتر کامل ۳۶ نماد غیرمجاز XT (فارکس، شاخص و کامودیتی)
+    if (activeExchange === 'xt') {
+      list = list.filter((p) => !isXtExcludedSymbol(p.symbol));
     }
 
     if (!pairsSearchQuery.trim()) return list;
@@ -214,7 +225,7 @@ export const AllowedPairsModal: React.FC<AllowedPairsModalProps> = ({
 
   // ذخیره در دیتابیس Firestore با تفکیک صرافی و محدودیت ۱۰ لیست
   const handleSaveToDatabase = async () => {
-    const arr = Array.from(tempSelectedSymbols);
+    const arr = Array.from(tempSelectedSymbols).filter((s) => !isXtExcludedSymbol(s));
     if (arr.length === 0) {
       showToast('⚠️ حداقل باید ۱ ارز برای ذخیره در دیتابیس انتخاب شود.');
       return;
@@ -242,10 +253,11 @@ export const AllowedPairsModal: React.FC<AllowedPairsModalProps> = ({
   // بارگذاری یک لیست انتخابی از ۱۰ لیست ذخیره‌شده
   const handleSelectSavedList = (record: AllowedPairsRecord) => {
     if (Array.isArray(record.symbols) && record.symbols.length > 0) {
-      setTempSelectedSymbols(new Set(record.symbols));
+      const cleanSymbols = record.symbols.filter((s) => !isXtExcludedSymbol(s));
+      setTempSelectedSymbols(new Set(cleanSymbols));
       setListName(record.listName);
       setShowSavedListsView(false);
-      showToast(`📥 لیست «${record.listName}» شامل ${record.symbols.length} ارز با موفقیت بارگذاری شد.`);
+      showToast(`📥 لیست «${record.listName}» شامل ${cleanSymbols.length} ارز با موفقیت بارگذاری شد.`);
     }
   };
 
@@ -267,7 +279,7 @@ export const AllowedPairsModal: React.FC<AllowedPairsModalProps> = ({
 
   // ذخیره و اعمال نهایی در صفحه بکتست
   const handleSaveAndApply = async () => {
-    const arr = Array.from(tempSelectedSymbols);
+    const arr = Array.from(tempSelectedSymbols).filter((s) => !isXtExcludedSymbol(s));
     if (arr.length === 0) {
       showToast('⚠️ حداقل باید ۱ ارز برای اسکن بکتست انتخاب شود.');
       return;

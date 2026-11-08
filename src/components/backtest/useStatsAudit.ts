@@ -28,6 +28,7 @@ export interface UseStatsAuditProps {
   optLongLegAtrMult: number;
   optMaxBlueLegPercent: number;
   optMaxBreakoutAtr: number;
+  optMinVolumeGrowthPercent?: number;
   optMaxRiskReward: number;
   targetMaxDrawdown: number;
   targetMinWinRate: number;
@@ -62,6 +63,7 @@ export function useStatsAudit(props: UseStatsAuditProps) {
     optLongLegAtrMult,
     optMaxBlueLegPercent,
     optMaxBreakoutAtr,
+    optMinVolumeGrowthPercent = 0,
     optMaxRiskReward,
     targetMaxDrawdown,
     targetMinWinRate,

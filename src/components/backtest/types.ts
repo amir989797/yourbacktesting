@@ -45,6 +45,7 @@ export interface OptimizationTrial {
   longLegAtrMultiplier: number;
   maxBlueLegPercent: number;
   maxBreakoutAtrMultiplier: number;
+  minVolumeGrowthPercent?: number; // حداقل درصد رشد حجم لگ‌های AB، CD و EF
   maxRiskReward: number;
   timeStopCandles?: number;
   maxPositionToRiskRatio?: number; // حداکثر نسبت ارزش پوزیشن به ریسک (پیش‌فرض 300)
@@ -87,6 +88,7 @@ export interface AdaptiveRanges {
   longLegAtrMultiplier: ParameterRange;
   maxBlueLegPercent: ParameterRange;
   maxBreakoutAtrMultiplier: ParameterRange;
+  minVolumeGrowthPercent: ParameterRange;
   maxRiskReward: ParameterRange;
   timeStopCandles: ParameterRange;
   maxPositionToRiskRatio: ParameterRange;
@@ -157,6 +159,7 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
       longLegAtrMultiplier: makeRange(6.0, 14.5, 4.0, 22.0, 9.5, 0.5),
       maxBlueLegPercent: makeRange(35, 75, 20, 90, 55, 5),
       maxBreakoutAtrMultiplier: makeRange(2.0, 5.5, 1.0, 8.0, 3.5, 0.5),
+      minVolumeGrowthPercent: makeRange(0, 30, 0, 80, 0, 5),
       maxRiskReward: makeRange(1.5, 4.5, 1.0, 10.0, 2.5, 0.25),
       timeStopCandles: makeRange(20, 120, 5, 200, 80, 5),
       maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
@@ -172,6 +175,7 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
       longLegAtrMultiplier: makeRange(4.5, 12.0, 3.0, 18.0, 8.0, 0.5),
       maxBlueLegPercent: makeRange(30, 70, 20, 85, 50, 5),
       maxBreakoutAtrMultiplier: makeRange(1.5, 5.0, 1.0, 7.0, 3.0, 0.5),
+      minVolumeGrowthPercent: makeRange(0, 30, 0, 80, 0, 5),
       maxRiskReward: makeRange(1.5, 7.0, 1.0, 12.0, 3.5, 0.5),
       timeStopCandles: makeRange(20, 120, 5, 200, 60, 5),
       maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
@@ -187,6 +191,7 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
     longLegAtrMultiplier: makeRange(5.0, 14.0, 3.5, 20.0, 9.0, 0.5),
     maxBlueLegPercent: makeRange(35, 75, 25, 85, 55, 5),
     maxBreakoutAtrMultiplier: makeRange(1.8, 5.5, 1.0, 7.5, 3.5, 0.5),
+    minVolumeGrowthPercent: makeRange(0, 30, 0, 80, 0, 5),
     maxRiskReward: makeRange(1.5, 6.0, 1.0, 10.0, 3.0, 0.5),
     timeStopCandles: makeRange(20, 120, 5, 200, 80, 5),
     maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
@@ -247,6 +252,7 @@ export function refineAdaptiveRangesSmart(
     'longLegAtrMultiplier',
     'maxBlueLegPercent',
     'maxBreakoutAtrMultiplier',
+    'minVolumeGrowthPercent',
     'maxRiskReward',
     'timeStopCandles',
     'maxPositionToRiskRatio',
@@ -306,9 +312,10 @@ export function generateConfigHash(p: {
   longLegAtrMultiplier: number;
   maxBlueLegPercent: number;
   maxBreakoutAtrMultiplier: number;
+  minVolumeGrowthPercent?: number;
   maxRiskReward: number;
   timeStopCandles?: number;
   maxPositionToRiskRatio?: number;
 }): string {
-  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxRiskReward}_${p.timeStopCandles || 80}_${p.maxPositionToRiskRatio ?? 300}`;
+  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.minVolumeGrowthPercent || 0}_${p.maxRiskReward}_${p.timeStopCandles || 80}_${p.maxPositionToRiskRatio ?? 300}`;
 }

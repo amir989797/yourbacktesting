@@ -96,6 +96,10 @@ export interface OptimizerTabProps {
   setOptMaxBlueLegPercent: (val: number) => void;
   optMaxBreakoutAtr: number;
   setOptMaxBreakoutAtr: (val: number) => void;
+  optMinVolumeGrowthPercent?: number;
+  setOptMinVolumeGrowthPercent?: (val: number) => void;
+  lockMinVolumeGrowthPercent?: boolean;
+  setLockMinVolumeGrowthPercent?: (val: boolean) => void;
   optMaxRiskReward: number;
   setOptMaxRiskReward: (val: number) => void;
   optMaxPositionToRiskRatio?: number;
@@ -205,6 +209,10 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
   setOptMaxBlueLegPercent,
   optMaxBreakoutAtr,
   setOptMaxBreakoutAtr,
+  optMinVolumeGrowthPercent = 0,
+  setOptMinVolumeGrowthPercent,
+  lockMinVolumeGrowthPercent = false,
+  setLockMinVolumeGrowthPercent,
   optMaxRiskReward,
   setOptMaxRiskReward,
   optMaxPositionToRiskRatio = 300,
@@ -633,6 +641,48 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                     <span className="text-gray-500 font-mono">گام: {adaptiveRanges.maxBreakoutAtrMultiplier.step}</span>
                   </div>
                 </div>
+
+                {/* 8. Min Volume Growth Percent */}
+                {adaptiveRanges.minVolumeGrowthPercent && (
+                  <div className="bg-[#0e121a] p-2.5 rounded-xl border border-[#232e42] space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-gray-200">۸. رشد حجم لگ (AB/CD/EF)</span>
+                      <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/60 px-1.5 py-0.5 rounded">
+                        همگرایی {adaptiveRanges.minVolumeGrowthPercent.convergence}%
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-1 text-[10px] text-gray-400">
+                      <div className="flex items-center gap-1">
+                        <span>حداقل:</span>
+                        <input
+                          type="number"
+                          step={adaptiveRanges.minVolumeGrowthPercent.step || 5}
+                          min={0}
+                          value={adaptiveRanges.minVolumeGrowthPercent.min}
+                          disabled={isOptimizing || lockMinVolumeGrowthPercent}
+                          onChange={(e) => handleUpdateParamRange('minVolumeGrowthPercent', 'min', parseFloat(e.target.value) || 0)}
+                          className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-emerald-300 font-mono text-xs text-center focus:outline-none focus:border-emerald-400"
+                        />
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span>حداکثر:</span>
+                        <input
+                          type="number"
+                          step={adaptiveRanges.minVolumeGrowthPercent.step || 5}
+                          min={0}
+                          value={adaptiveRanges.minVolumeGrowthPercent.max}
+                          disabled={isOptimizing || lockMinVolumeGrowthPercent}
+                          onChange={(e) => handleUpdateParamRange('minVolumeGrowthPercent', 'max', parseFloat(e.target.value) || 0)}
+                          className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-emerald-300 font-mono text-xs text-center focus:outline-none focus:border-emerald-400"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5 border-t border-[#1a2230]">
+                      <span>بهترین مقدار: <strong className="text-amber-300 font-mono">{adaptiveRanges.minVolumeGrowthPercent.bestVal}%</strong></span>
+                      <span className="text-gray-500 font-mono">گام: {adaptiveRanges.minVolumeGrowthPercent.step}</span>
+                    </div>
+                  </div>
+                )}
 
                 {/* 8. Max Risk Reward */}
                 <div className="bg-[#0e121a] p-2.5 rounded-xl border border-[#232e42] space-y-1.5">
@@ -1068,6 +1118,31 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   />
                 </div>
 
+                <div className={`p-2 rounded-xl border transition-all ${lockMinVolumeGrowthPercent ? 'bg-amber-950/25 border-amber-500/70 shadow-sm shadow-amber-500/10' : 'bg-[#171e2b] border-[#2a364a]'}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] font-semibold text-gray-200">رشد حجم لگ %</label>
+                    <label className="flex items-center gap-1 text-[10px] text-amber-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={lockMinVolumeGrowthPercent}
+                        onChange={(e) => setLockMinVolumeGrowthPercent?.(e.target.checked)}
+                        className="rounded bg-[#0d1017] border-gray-600 text-amber-500 focus:ring-0 cursor-pointer"
+                      />
+                      <span className={lockMinVolumeGrowthPercent ? 'font-bold text-amber-300' : ''}>{lockMinVolumeGrowthPercent ? '🔒 قفل' : 'آزاد'}</span>
+                    </label>
+                  </div>
+                  <input
+                    type="number"
+                    step={5}
+                    min={0}
+                    value={optMinVolumeGrowthPercent}
+                    disabled={isOptimizing}
+                    onChange={(e) => setOptMinVolumeGrowthPercent?.(parseFloat(e.target.value) || 0)}
+                    placeholder="0"
+                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockMinVolumeGrowthPercent ? 'border-amber-500/70 text-amber-300 font-bold' : 'border-[#2e3a4e] text-emerald-400'} disabled:bg-[#1b202c] disabled:text-gray-500`}
+                  />
+                </div>
+
                 <div className={`p-2 rounded-xl border transition-all ${lockMaxRiskReward ? 'bg-amber-950/25 border-amber-500/70 shadow-sm shadow-amber-500/10' : 'bg-[#171e2b] border-[#2a364a]'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-gray-200">۸. ریسک به ریوارد (R:R)</label>
@@ -1474,6 +1549,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                       <th className="py-2.5 px-2 text-center">ضریب بزرگ</th>
                       <th className="py-2.5 px-2 text-center">سقف آبی%</th>
                       <th className="py-2.5 px-2 text-center">نفوذ شکست</th>
+                      <th className="py-2.5 px-2 text-center text-emerald-400">رشد حجم%</th>
                       <th className="py-2.5 px-2 text-center cursor-pointer" onClick={() => handleOptSort('maxRiskReward')}>
                         R:R {renderOptSortArrow('maxRiskReward')}
                       </th>
@@ -1506,7 +1582,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   <tbody className="divide-y divide-[#1e2736] font-mono text-[11px]">
                     {sortedTop10.length === 0 ? (
                       <tr>
-                        <td colSpan={19} className="py-8 text-center text-gray-500 font-sans">
+                        <td colSpan={20} className="py-8 text-center text-gray-500 font-sans">
                           هنوز آزمایشی ثبت نشده است. با زدن «شروع بهینه‌سازی رنج‌محور»، تست‌ها شروع شده و ۱۰ ترکیب برتر اینجا نمایش داده می‌شوند.
                         </td>
                       </tr>
@@ -1533,6 +1609,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                             <td className="py-2 px-2 text-center text-gray-300">{row.longLegAtrMultiplier}×</td>
                             <td className="py-2 px-2 text-center text-gray-300">{row.maxBlueLegPercent}%</td>
                             <td className="py-2 px-2 text-center text-gray-300">{row.maxBreakoutAtrMultiplier}×</td>
+                            <td className="py-2 px-2 text-center text-emerald-300 font-bold">{row.minVolumeGrowthPercent ? `${row.minVolumeGrowthPercent}%` : '0%'}</td>
                             <td className="py-2 px-2 text-center font-bold text-cyan-300">{row.maxRiskReward}</td>
                             <td className="py-2 px-2 text-center font-bold text-cyan-400">
                               {row.timeStopCandles ? `${row.timeStopCandles}c` : '80c'}
