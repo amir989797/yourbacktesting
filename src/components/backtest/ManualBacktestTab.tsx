@@ -644,16 +644,16 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                     <button
                       type="button"
                       onClick={handleRerunOnCachedData}
-                      disabled={isScanning || !(cachedCount > 0 || rangeStatus?.exists)}
+                      disabled={isScanning || !(cachedCount > 0 || rangeStatus?.exists || results.length > 0)}
                       className={`px-3 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                        (cachedCount > 0 || rangeStatus?.exists) && !isScanning
+                        (cachedCount > 0 || rangeStatus?.exists || results.length > 0) && !isScanning
                           ? 'bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-black shadow-md shadow-emerald-500/25'
                           : 'bg-[#182030] text-gray-500 border border-[#2b3548] cursor-not-allowed opacity-60'
                       }`}
-                      title={!(cachedCount > 0 || rangeStatus?.exists) ? 'ابتدا باید داده‌های بازار را با دکمه اسکن دانلود کنید' : 'محاسبه مجدد فوری با پارامترهای جدید'}
+                      title={!(cachedCount > 0 || rangeStatus?.exists || results.length > 0) ? 'ابتدا باید داده‌های بازار را با دکمه اسکن دانلود کنید' : 'محاسبه مجدد فوری با پارامترهای جدید بدون نیاز به دانلود'}
                     >
                       <RefreshCw className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin' : ''}`} />
-                      <span>⚡ محاسبه و آپدیت با پارامترهای جدید ({rangeStatus?.dataset?.symbolCount || cachedCount || 0} ارز)</span>
+                      <span>⚡ محاسبه و آپدیت با پارامترهای جدید ({rangeStatus?.coverage?.availableSymbolsCount || rangeStatus?.dataset?.symbolCount || cachedCount || results.length || 0} ارز)</span>
                     </button>
                   </div>
                 </div>
@@ -954,7 +954,7 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       </button>
                     )}
 
-                    {(cachedCount > 0 || rangeStatus?.exists) && (
+                    {(cachedCount > 0 || rangeStatus?.exists || results.length > 0) && (
                       <div className="flex items-center gap-1.5">
                         <button
                           type="button"
@@ -963,7 +963,7 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                           title="اجرای مجدد بک‌تست بدون هیچ دانلودی با استفاده از داده‌های موجود در PostgreSQL"
                         >
                           <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />
-                          <span>⚡ اجرای سریع با داده‌های دیتابیس ({rangeStatus?.coverage?.availableSymbolsCount || rangeStatus?.dataset?.symbolCount || cachedCount} ارز)</span>
+                          <span>⚡ اجرای سریع با داده‌های دیتابیس ({rangeStatus?.coverage?.availableSymbolsCount || rangeStatus?.dataset?.symbolCount || cachedCount || results.length || 0} ارز)</span>
                         </button>
                         <button
                           type="button"

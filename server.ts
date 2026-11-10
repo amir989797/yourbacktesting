@@ -2331,15 +2331,21 @@ async function findBestMatchingDataset(params: {
   // 1. If explicit dataset ID was provided, test exact match first
   if (explicitDatasetId) {
     const exactRes = await pool.query(`SELECT * FROM candle_datasets WHERE id = $1 LIMIT 1;`, [explicitDatasetId]);
-    if (exactRes.rows.length > 0 && Number(exactRes.rows[0].total_candles || 0) > 0) {
-      return exactRes.rows[0];
+    if (exactRes.rows.length > 0) {
+      if (Number(exactRes.rows[0].total_candles || 0) > 0) {
+        return exactRes.rows[0];
+      }
+      const chunkCheck = await pool.query(`SELECT 1 FROM candle_chunks WHERE dataset_id = $1 LIMIT 1;`, [explicitDatasetId]);
+      if (chunkCheck.rows.length > 0) {
+        return exactRes.rows[0];
+      }
     }
   }
 
-  // 2. Query all candidate datasets for this exchange & timeframe with candles > 0
+  // 2. Query all candidate datasets for this exchange & timeframe with candles > 0 or status = 'COMPLETED'
   const allCandidatesRes = await pool.query(
     `SELECT * FROM candle_datasets 
-     WHERE LOWER(exchange) = LOWER($1) AND timeframe = $2 AND total_candles > 0 
+     WHERE LOWER(exchange) = LOWER($1) AND timeframe = $2 AND (total_candles > 0 OR status = 'COMPLETED') 
      ORDER BY total_candles DESC, updated_at DESC;`,
     [exchange, timeframe]
   );
@@ -2435,8 +2441,9 @@ async function runServerBacktestCycle(params: {
   strategyConfig: any;
   forceRedownload?: boolean;
   incrementalSync?: boolean;
+  scanMode?: 'cached' | 'incremental' | 'full';
 }) {
-  const { exchange, timeframe, startTime, endTime, symbols, workersCount, strategyId, strategyConfig, forceRedownload, incrementalSync } = params;
+  const { exchange, timeframe, startTime, endTime, symbols, workersCount, strategyId, strategyConfig, forceRedownload, incrementalSync, scanMode } = params;
   let datasetId = params.datasetId || getRangeDatasetId(exchange, timeframe, startTime, endTime);
 
   serverBacktestState.isScanning = true;
@@ -2603,6 +2610,10 @@ async function runServerBacktestCycle(params: {
         if (matchedRow) {
           datasetId = matchedRow.id;
           serverBacktestState.datasetId = datasetId;
+          if (matchedRow.start_time && matchedRow.end_time) {
+            serverBacktestState.startTime = Number(matchedRow.start_time);
+            serverBacktestState.endTime = Number(matchedRow.end_time);
+          }
         }
 
         if (dsRes.rows.length > 0) {
@@ -2717,8 +2728,26 @@ async function runServerBacktestCycle(params: {
           }
 
           const isFullScan = !symbols || symbols.length === 0;
+          const memeAliasNormMap: Record<string, string> = {
+            'PEPEUSDT': '1000PEPEUSDT',
+            'SHIBUSDT': '1000SHIBUSDT',
+            'BONKUSDT': '1000BONKUSDT',
+            'FLOKIUSDT': '1000FLOKIUSDT',
+            'LUNCUSDT': '1000LUNCUSDT',
+            'RATSUSDT': '1000RATSUSDT',
+            'SATSUSDT': '1000SATSUSDT',
+            'XECUSDT': '1000XECUSDT',
+            'CATUSDT': '1000CATUSDT',
+            'CHEEMSUSDT': '1000CHEEMSUSDT',
+            'BTTUSDT': '1000BTTUSDT',
+          };
           const symbolsFilterSet = !isFullScan && symbols && symbols.length > 0
-            ? new Set(symbols.map((s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '')))
+            ? new Set(symbols.flatMap((s: string) => {
+                const c = s.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                const mapped = memeAliasNormMap[c];
+                const stripped = c.startsWith('1000') ? c.slice(4) : null;
+                return [c, mapped, stripped].filter(Boolean) as string[];
+              }))
             : null;
 
           serverBacktestState.stage = 'analyzing';
@@ -2746,7 +2775,9 @@ async function runServerBacktestCycle(params: {
                 for (const item of items) {
                   if (serverBacktestState.shouldStop) break;
                   const cleanSym = (item.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-                  if (symbolsFilterSet && !symbolsFilterSet.has(cleanSym)) continue;
+                  const mappedClean = memeAliasNormMap[cleanSym] || (cleanSym.startsWith('1000') ? cleanSym.slice(4) : null);
+                  const isSymAllowed = !symbolsFilterSet || symbolsFilterSet.has(cleanSym) || (mappedClean && symbolsFilterSet.has(mappedClean));
+                  if (!isSymAllowed) continue;
                   if (seenInRun.has(cleanSym)) continue;
                   seenInRun.add(cleanSym);
 
@@ -2860,6 +2891,9 @@ async function runServerBacktestCycle(params: {
         savedSymbolsList.push(e.pair.symbol);
       }
     } else if (savedSymbolsCount === 0) {
+      if (scanMode === 'cached') {
+        throw new Error('داده‌های کندل این بازه زمانی در دیتابیس PostgreSQL یافت نشد. لطفاً ابتدا اسکن کامل را انجام دهید.');
+      }
       // 3. Download from exchange with STREAMING DIRECT-TO-POSTGRESQL & ZERO RAM BLOAT
       serverBacktestState.stage = 'downloading';
       serverDatasetCandleCache.clear(); // Free old cache immediately to prevent memory leak
@@ -3533,6 +3567,7 @@ app.post('/api/backtest/start', async (req, res) => {
       strategyConfig: strategyConfig || {},
       forceRedownload: isForce,
       incrementalSync: isIncremental,
+      scanMode,
     }).catch((err) => {
       console.error('[Server Backtest Background Task Error]:', err.message);
     });

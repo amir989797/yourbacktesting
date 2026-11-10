@@ -920,8 +920,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       const targetEnd = overrides?.endTime !== undefined ? overrides.endTime : timeRangeEndMs;
       const targetExchange = overrides?.exchange !== undefined ? overrides.exchange : selectedExchange;
       const targetTf = overrides?.timeframe !== undefined ? overrides.timeframe : timeframe;
-      const targetSymbols = overrides?.symbols !== undefined ? overrides.symbols : selectedAllowedSymbols;
-      const explicitId = overrides?.datasetId !== undefined ? (overrides.datasetId || undefined) : undefined;
+      const targetSymbols = overrides?.symbols !== undefined
+        ? overrides.symbols
+        : (universeOption === 'all_market' ? [] : selectedAllowedSymbols);
+      const explicitId = overrides?.datasetId !== undefined
+        ? (overrides.datasetId || undefined)
+        : (activeSessionDatasetId || rangeStatus?.datasetId || undefined);
 
       const res = await fetch('/api/backtest/range-status', {
         method: 'POST',
@@ -943,7 +947,19 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           if (matchedId) {
             setActiveSessionDatasetId(matchedId);
           }
-          setCachedCount(data.coverage?.availableSymbolsCount || data.dataset.symbolCount || 0);
+          const availableCount = data.coverage?.availableSymbolsCount || data.dataset.symbolCount || (results.length > 0 ? results.length : 0);
+          setCachedCount(availableCount);
+
+          // تطبیق هوشمند و دقیق بازه زمانی رابط کاربری با بازه واقعی ذخیره شده در پایگاه‌داده
+          if (data.dataset.startTime && data.dataset.endTime) {
+            const dStart = Number(data.dataset.startTime);
+            const dEnd = Number(data.dataset.endTime);
+            if (dStart > 0 && dEnd > dStart) {
+              setTimeRangeStartMs(dStart);
+              setTimeRangeEndMs(dEnd);
+            }
+          }
+
           if (Array.isArray(data.results) && data.results.length > 0 && results.length === 0) {
             setResults(data.results);
             if (Array.isArray(data.allTrades)) {
@@ -957,10 +973,11 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setSelectedStrategyId(data.strategyId);
           }
         } else {
-          setCachedCount(0);
+          // در صورتی که دیتای این بازه در دیتابیس یافت نشد، نتایج فعال روی صفحه پاک نشوند
+          if (results.length === 0) {
+            setCachedCount(0);
+          }
           setActiveSessionDatasetId(null);
-          setResults([]);
-          setAllCollectedTrades([]);
         }
       }
     } catch (err) {
@@ -968,7 +985,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     } finally {
       setIsCheckingRange(false);
     }
-  }, [selectedExchange, timeframe, timeRangeStartMs, timeRangeEndMs, selectedAllowedSymbols]);
+  }, [selectedExchange, timeframe, timeRangeStartMs, timeRangeEndMs, selectedAllowedSymbols, universeOption, activeSessionDatasetId, rangeStatus?.datasetId, results.length]);
 
   useEffect(() => {
     checkCurrentRangeStatusRef.current = checkCurrentRangeStatus;
@@ -1103,8 +1120,33 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               setActiveSessionDatasetId(st.datasetId);
               hasSyncedDatasetIdRef.current = st.datasetId;
             }
+
+            // تطبیق هوشمند بازه زمانی و نمادها با دیتابیس بلافاصله پس از اتمام اسکن
+            const dbStartTime = Number(st.startTime) || 0;
+            const dbEndTime = Number(st.endTime) || 0;
+            if (dbStartTime > 0 && dbEndTime > dbStartTime) {
+              setTimeRangeStartMs(dbStartTime);
+              setTimeRangeEndMs(dbEndTime);
+            }
+
+            const finalCount = (Array.isArray(st.results) && st.results.length > 0)
+              ? st.results.length
+              : (st.symbolCount || (Array.isArray(st.results) ? st.results.length : 0));
+            if (finalCount > 0) {
+              setCachedCount(finalCount);
+            }
+
+            // فراخوانی فوری چک وضعیت بازه دیتابیس جهت فعال‌سازی بی‌درنگ دکمه «محاسبه و آپدیت با پارامترهای جدید»
+            checkCurrentRangeStatusRef.current?.({
+              datasetId: st.datasetId || undefined,
+              exchange: st.exchange || selectedExchange,
+              timeframe: st.timeframe || timeframe,
+              startTime: dbStartTime > 0 ? dbStartTime : undefined,
+              endTime: dbEndTime > 0 ? dbEndTime : undefined,
+            });
+
             if (st.stage === 'completed') {
-              showToast('✅ اسکن جفت‌ارزها با موفقیت پایان یافت.');
+              showToast('✅ اسکن جفت‌ارزها پایان یافت و با موفقیت با دیتابیس تطبیق داده شد.');
             }
           } else if (!initialPollDoneRef.current) {
             // بارگذاری اولیه یکباره در زمان باز شدن صفحه در صورتی که دیتای سرور موجود است
@@ -1117,6 +1159,22 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               setActiveSessionDatasetId(st.datasetId);
               hasSyncedDatasetIdRef.current = st.datasetId;
             }
+            const dbStartTime = Number(st.startTime) || 0;
+            const dbEndTime = Number(st.endTime) || 0;
+            if (dbStartTime > 0 && dbEndTime > dbStartTime) {
+              setTimeRangeStartMs(dbStartTime);
+              setTimeRangeEndMs(dbEndTime);
+            }
+            if (Array.isArray(st.results) && st.results.length > 0) {
+              setCachedCount(st.results.length);
+            }
+            checkCurrentRangeStatusRef.current?.({
+              datasetId: st.datasetId || undefined,
+              exchange: st.exchange || selectedExchange,
+              timeframe: st.timeframe || timeframe,
+              startTime: dbStartTime > 0 ? dbStartTime : undefined,
+              endTime: dbEndTime > 0 ? dbEndTime : undefined,
+            });
           } else {
             // در حالت بیکار (Idle) وضعیت در حال اسکن غیرفعال نگه داشته می‌شود بدون ری‌رندر مداوم کامپوننت‌ها
             if (isScanning) {
@@ -1158,9 +1216,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     setResults([]);
     setAllCollectedTrades([]);
     setSkippedSymbols([]);
-    const targetSymbols = (selectedAllowedSymbols && selectedAllowedSymbols.length > 0)
-      ? selectedAllowedSymbols
-      : (universeOption === 'all_market' ? [] : selectedAllowedSymbols);
+    const targetSymbols = universeOption === 'all_market'
+      ? []
+      : (selectedAllowedSymbols && selectedAllowedSymbols.length > 0 ? selectedAllowedSymbols : []);
 
     const missingCount = rangeStatus?.coverage?.missingSymbolsCount || 0;
     setProgress({
