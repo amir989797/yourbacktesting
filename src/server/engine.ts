@@ -77,11 +77,25 @@ export interface CandidateSignal {
 export function toXtSymbol(symbol: string): string {
   if (!symbol) return 'btc_usdt';
   let s = symbol.toLowerCase().replace('/', '');
-  if (s.includes('_')) return s;
-  if (s.endsWith('usdt')) {
-    return s.slice(0, -4) + '_usdt';
+  if (s.endsWith('usdt') && !s.includes('_')) {
+    s = s.slice(0, -4) + '_usdt';
+  } else if (!s.includes('_')) {
+    s = s + '_usdt';
   }
-  return s + '_usdt';
+  const standardMemeMap: Record<string, string> = {
+    'pepe_usdt': '1000pepe_usdt',
+    'shib_usdt': '1000shib_usdt',
+    'bonk_usdt': '1000bonk_usdt',
+    'floki_usdt': '1000floki_usdt',
+    'lunc_usdt': '1000lunc_usdt',
+    'rats_usdt': '1000rats_usdt',
+    'sats_usdt': '1000sats_usdt',
+    'xec_usdt': '1000xec_usdt',
+    'cat_usdt': '1000cat_usdt',
+    'cheems_usdt': '1000cheems_usdt',
+    'btt_usdt': '1000btt_usdt',
+  };
+  return standardMemeMap[s] || s;
 }
 
 /**

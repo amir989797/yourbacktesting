@@ -35,6 +35,9 @@ export interface StrategyParams {
   optMaxBreakoutAtr?: number;
   minVolumeGrowthPercent?: number; // حداقل درصد رشد حجم لگ‌ها (AB, CD, EF)
   optMinVolumeGrowthPercent?: number;
+  minEntryPivotDistanceAtr?: number; // حداقل فاصله قیمت ورود تا پیوت قبل بر حسب ATR (مثلاً 1.0)
+  optMinEntryPivotDistanceAtr?: number;
+  optMaxCandlesToEnter?: number;
   optMaxRiskReward?: number;
   optTimeStopEnabled?: boolean;
   optTimeStopCandles?: number;
@@ -50,7 +53,8 @@ export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
   riskMode: 'percent',
   riskAmountFixed: 10,
   riskPercent: 1.0,
-  maxCandlesToEnter: 100,
+  maxCandlesToEnter: 35,
+  minEntryPivotDistanceAtr: 1.0,
   maxRiskReward: 2,
   maxTradesPerLeg: 3,
   showOnChart: true,

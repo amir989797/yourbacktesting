@@ -52,6 +52,9 @@ interface CandleData {
   low: number;
   close: number;
   volume: number;
+  quoteVolume?: number;
+  trades?: number;
+  isClosed?: boolean;
 }
 
 interface CryptoPair {
@@ -598,11 +601,26 @@ async function requestXtApi(
 function toXtSymbol(symbol: string): string {
   if (!symbol) return 'btc_usdt';
   let s = symbol.toLowerCase().replace('/', '');
-  if (s.includes('_')) return s;
-  if (s.endsWith('usdt')) {
-    return s.slice(0, -4) + '_usdt';
+  if (s.endsWith('usdt') && !s.includes('_')) {
+    s = s.slice(0, -4) + '_usdt';
+  } else if (!s.includes('_')) {
+    s = s + '_usdt';
   }
-  return s + '_usdt';
+  // XT Futures contracts for low-priced coins are denominated in 1000x units
+  const standardMemeMap: Record<string, string> = {
+    'pepe_usdt': '1000pepe_usdt',
+    'shib_usdt': '1000shib_usdt',
+    'bonk_usdt': '1000bonk_usdt',
+    'floki_usdt': '1000floki_usdt',
+    'lunc_usdt': '1000lunc_usdt',
+    'rats_usdt': '1000rats_usdt',
+    'sats_usdt': '1000sats_usdt',
+    'xec_usdt': '1000xec_usdt',
+    'cat_usdt': '1000cat_usdt',
+    'cheems_usdt': '1000cheems_usdt',
+    'btt_usdt': '1000btt_usdt',
+  };
+  return standardMemeMap[s] || s;
 }
 
 // XT Public Kline fetcher with automated multi-batch pagination, API delay pacing & date range support
@@ -668,7 +686,9 @@ async function fetchXtServerKlines(
           high: parseFloat(item.h),
           low: parseFloat(item.l),
           close: parseFloat(item.c),
-          volume: parseFloat(item.v || item.a || '0'),
+          // In XT Futures API: 'a' is base volume / contract count, 'v' is turnover in USDT
+          volume: parseFloat(item.a || item.v || '0'),
+          quoteVolume: parseFloat(item.v || '0'),
         });
       }
 
@@ -2545,8 +2565,10 @@ async function runServerBacktestCycle(params: {
       serverBacktestState.stage = 'downloading';
       serverBacktestState.progress.currentSymbol = 'بررسی داده‌های ذخیره‌شده در دیتابیس PostgreSQL...';
 
-      // Check RAM cache first for instantaneous recalculation
-      if (serverDatasetCandleCache.has(datasetId)) {
+      if (incrementalSync) {
+        // When incremental sync is requested, invalidate RAM cache so fresh missing symbols are pulled and saved
+        serverDatasetCandleCache.delete(datasetId);
+      } else if (serverDatasetCandleCache.has(datasetId)) {
         const cached = serverDatasetCandleCache.get(datasetId);
         if (cached && cached.length > 0) {
           entries = cached;
@@ -2692,6 +2714,7 @@ async function runServerBacktestCycle(params: {
           const pageSize = 15;
           let processedSymbols = 0;
           let totalCandlesSum = 0;
+          const seenInRun = new Set<string>();
 
           while (!serverBacktestState.shouldStop) {
             const chunkRes = await pool.query(
@@ -2709,6 +2732,8 @@ async function runServerBacktestCycle(params: {
                   if (serverBacktestState.shouldStop) break;
                   const cleanSym = (item.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
                   if (symbolsFilterSet && !symbolsFilterSet.has(cleanSym)) continue;
+                  if (seenInRun.has(cleanSym)) continue;
+                  seenInRun.add(cleanSym);
 
                   let candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
                     time: t[0],
@@ -3016,14 +3041,23 @@ async function runServerBacktestCycle(params: {
           skippedSymbols: serverBacktestState.skippedSymbols,
           requestedSymbolsCount: serverBacktestState.requestedSymbolsCount,
         });
-        await pool.query(
-          `UPDATE candle_datasets 
-           SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
-               status = 'COMPLETED', results_json = $6, strategy_id = $7, strategy_config_json = $8, updated_at = NOW()
-           WHERE id = $9;`,
-          [savedSymbolsCount, totalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, resultsJson, strategyId, JSON.stringify(cfg), datasetId]
-        );
-        console.log(`[Server Backtest] ⏸️ Scan stopped gracefully by user. Saved ${savedSymbolsCount} symbols and ${totalCandles} candles.`);
+        if (!forceRedownload) {
+          await pool.query(
+            `UPDATE candle_datasets 
+             SET status = 'COMPLETED', results_json = $1, strategy_id = $2, strategy_config_json = $3, updated_at = NOW()
+             WHERE id = $4;`,
+            [resultsJson, strategyId, JSON.stringify(cfg), datasetId]
+          );
+        } else {
+          await pool.query(
+            `UPDATE candle_datasets 
+             SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
+                 status = 'COMPLETED', results_json = $6, strategy_id = $7, strategy_config_json = $8, updated_at = NOW()
+             WHERE id = $9;`,
+            [savedSymbolsCount, totalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, resultsJson, strategyId, JSON.stringify(cfg), datasetId]
+          );
+        }
+        console.log(`[Server Backtest] ⏸️ Scan stopped gracefully by user for ${datasetId}.`);
       } catch (err: any) {
         console.warn('[Server Backtest] Warning saving stopped state:', err.message);
       }
@@ -3058,14 +3092,23 @@ async function runServerBacktestCycle(params: {
         skippedSymbols: serverBacktestState.skippedSymbols,
         requestedSymbolsCount: serverBacktestState.requestedSymbolsCount,
       });
-      await pool.query(
-        `UPDATE candle_datasets 
-         SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
-             status = 'COMPLETED', results_json = $6, strategy_id = $7, strategy_config_json = $8, updated_at = NOW()
-         WHERE id = $9;`,
-        [savedSymbolsCount, totalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, resultsJson, strategyId, JSON.stringify(cfg), datasetId]
-      );
-      console.log(`[Server Backtest] ✅ Completed backtest for ${datasetId} on ${serverBacktestState.results.length} pairs in PostgreSQL (${totalCandles} candles).`);
+      if (!forceRedownload) {
+        await pool.query(
+          `UPDATE candle_datasets 
+           SET status = 'COMPLETED', results_json = $1, strategy_id = $2, strategy_config_json = $3, updated_at = NOW()
+           WHERE id = $4;`,
+          [resultsJson, strategyId, JSON.stringify(cfg), datasetId]
+        );
+      } else {
+        await pool.query(
+          `UPDATE candle_datasets 
+           SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
+               status = 'COMPLETED', results_json = $6, strategy_id = $7, strategy_config_json = $8, updated_at = NOW()
+           WHERE id = $9;`,
+          [savedSymbolsCount, totalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, resultsJson, strategyId, JSON.stringify(cfg), datasetId]
+        );
+      }
+      console.log(`[Server Backtest] ✅ Completed backtest for ${datasetId} on ${serverBacktestState.results.length} pairs in PostgreSQL.`);
     } catch (dbErr: any) {
       console.warn(`[Server Backtest] Warning: Could not update candle_datasets status in PostgreSQL:`, dbErr.message);
     }
@@ -3085,7 +3128,23 @@ async function computeDatasetCoverage(
   startTime?: number | null,
   endTime?: number | null
 ) {
-  const norm = (s: string) => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const memeAliasNormMap: Record<string, string> = {
+    'PEPEUSDT': '1000PEPEUSDT',
+    'SHIBUSDT': '1000SHIBUSDT',
+    'BONKUSDT': '1000BONKUSDT',
+    'FLOKIUSDT': '1000FLOKIUSDT',
+    'LUNCUSDT': '1000LUNCUSDT',
+    'RATSUSDT': '1000RATSUSDT',
+    'SATSUSDT': '1000SATSUSDT',
+    'XECUSDT': '1000XECUSDT',
+    'CATUSDT': '1000CATUSDT',
+    'CHEEMSUSDT': '1000CHEEMSUSDT',
+    'BTTUSDT': '1000BTTUSDT',
+  };
+  const norm = (s: string) => {
+    const raw = (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    return memeAliasNormMap[raw] || raw;
+  };
 
   let dbSymbolsList: string[] = [];
   if (row.symbols_list) {
@@ -5443,7 +5502,7 @@ const serverScannerState = {
     symbols: [
       'btc_usdt', 'eth_usdt', 'sol_usdt', 'xrp_usdt', 'doge_usdt',
       'sui_usdt', 'ada_usdt', 'near_usdt', 'avax_usdt', 'link_usdt',
-      'pepe_usdt', 'shib_usdt', 'dot_usdt', 'ltc_usdt', 'apt_usdt',
+      '1000pepe_usdt', '1000shib_usdt', 'dot_usdt', 'ltc_usdt', 'apt_usdt',
     ],
     isFutures: true,
     intervalMs: 5 * 60 * 1000,

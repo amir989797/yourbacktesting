@@ -1117,44 +1117,6 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
               </div>
             </div>
 
-            {/* هشدار و تحلیل شفاف ارزهای نادیده گرفته‌شده توسط صرافی */}
-            {skippedSymbols && skippedSymbols.length > 0 && results.length > 0 && (
-              <div className="p-3 bg-[#131924] border border-amber-500/30 rounded-xl flex items-center justify-between flex-wrap gap-2 text-xs shrink-0">
-                <div className="flex items-center gap-2.5 text-amber-200">
-                  <div className="w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
-                    <AlertTriangle className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <div className="font-extrabold text-white text-xs sm:text-sm">
-                      توضیح تطابق ارزها: {results.length} ارز اسکن شدند ({skippedSymbols.length} ارز فاقد دیتا در صرافی {selectedExchange.toUpperCase()})
-                    </div>
-                    <div className="text-[11px] text-gray-300">
-                      از مجموع {selectedAllowedSymbols.length || (results.length + skippedSymbols.length)} ارز مجاز انتخابی شما، {skippedSymbols.length} ارز (مانند جفت‌ارزهای متوقف فارکس EUR/USDT و شاخص‌ها) به دلیل عدم ارائه دیتا در این تایم‌فریم توسط سرور صرافی XT نادیده گرفته شدند.
-                    </div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setIsSkippedModalOpen(true)}
-                    className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-bold border border-amber-500/40 text-xs cursor-pointer transition-all"
-                  >
-                    مشاهده {skippedSymbols.length} ارز رد شده
-                  </button>
-                  {onRemoveSkippedSymbols && (
-                    <button
-                      type="button"
-                      onClick={() => onRemoveSkippedSymbols(skippedSymbols.map((s) => s.symbol))}
-                      className="px-3 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 font-bold border border-rose-500/30 text-xs cursor-pointer transition-all flex items-center gap-1.5"
-                      title="حذف این ارزهای بدون دیتا از لیست ارزهای مجاز تا در اسکن‌های بعدی تداخل ایجاد نکنند"
-                    >
-                      <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-                      <span>حذف {skippedSymbols.length} ارز از لیست مجاز</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
 
             {/* کارت‌های آمار استراتژی در تب اسکن */}
             {results.length > 0 && (

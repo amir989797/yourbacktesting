@@ -486,17 +486,35 @@ export function calculateLegVolumeGrowth(
   const n = e - s + 1;
   if (n < 2) return 0;
 
+  // Helper to get normalized candle volume, scaling in-progress live candles smoothly
+  const getVol = (idx: number): number => {
+    const c = candles[idx];
+    if (!c) return 0;
+    const rawVol = c.volume || 0;
+    // In live scanner, the latest candle (candles.length - 1) is currently open/forming
+    if (idx === candles.length - 1) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const stepSec = candles.length > 1 ? Math.max(60, candles[1].time - candles[0].time) : 300;
+      const elapsed = nowSec - c.time;
+      if (elapsed > 0 && elapsed < stepSec) {
+        const ratio = Math.max(0.1, elapsed / stepSec);
+        return rawVol / ratio; // Project volume to full candle period
+      }
+    }
+    return rawVol;
+  };
+
   const mid = Math.floor(n / 2);
   let sumStart = 0;
   for (let i = s; i < s + mid; i++) {
-    sumStart += (candles[i].volume || 0);
+    sumStart += getVol(i);
   }
   const avgStart = sumStart / mid;
 
   const secondCount = n - mid;
   let sumEnd = 0;
   for (let i = s + mid; i <= e; i++) {
-    sumEnd += (candles[i].volume || 0);
+    sumEnd += getVol(i);
   }
   const avgEnd = sumEnd / secondCount;
 
@@ -676,14 +694,15 @@ export function analyzeZigZagLegs(
       // شرط محدودیت درصدی (پیش‌فرض ۶۰ درصد): اندازه لگ آبی باید کمتر از maxBluePts باشد
       const isUnder60PctG2 = g2.legPoints < maxBluePts;
 
-      // بررسی شرط رشد حجم برای لگ CD (لگ دوم)
+      // ثبت درصد تغییر حجم برای لگ CD (لگ دوم)
       const g2StartCandle = points[g2.startIndex]?.candleIndex ?? 0;
       const g2EndCandle = points[g2.endIndex]?.candleIndex ?? 0;
       const volGrowthG2 = (candles && candles.length > 0)
         ? calculateLegVolumeGrowth(candles, g2StartCandle, g2EndCandle)
         : (g2.volumeGrowthPercent ?? 0);
       g2.volumeGrowthPercent = volGrowthG2;
-      const satisfiesVolG2 = requiredVolGrowth <= 0 || !candles || candles.length === 0 || volGrowthG2 >= requiredVolGrowth;
+      // شرط اصلی رشد حجم بر روی لگ پرقدرت اولیه (لگ بزرگ AB) اعمال می‌شود
+      const satisfiesVolG2 = true;
 
       if (brokeGiant && within5AtrG2 && isUnder60PctG2 && !g2.isGiantLeg && satisfiesVolG2) {
         g2.color = 'blue';
@@ -724,14 +743,14 @@ export function analyzeZigZagLegs(
           const within5AtrG4 = breakoutDist4 <= maxBreakoutMult * refAtrG4;
           const isUnder60PctG4 = g4.legPoints < maxBluePts;
 
-          // بررسی شرط رشد حجم برای لگ CD (لگ چهارم)
+          // ثبت درصد تغییر حجم برای لگ CD (لگ چهارم)
           const g4StartCandle = points[g4.startIndex]?.candleIndex ?? 0;
           const g4EndCandle = points[g4.endIndex]?.candleIndex ?? 0;
           const volGrowthG4 = (candles && candles.length > 0)
             ? calculateLegVolumeGrowth(candles, g4StartCandle, g4EndCandle)
             : (g4.volumeGrowthPercent ?? 0);
           g4.volumeGrowthPercent = volGrowthG4;
-          const satisfiesVolG4 = requiredVolGrowth <= 0 || !candles || candles.length === 0 || volGrowthG4 >= requiredVolGrowth;
+          const satisfiesVolG4 = true;
 
           if (brokeGiant4 && within5AtrG4 && isUnder60PctG4 && !g4.isGiantLeg && satisfiesVolG4) {
             g4.color = 'blue';
@@ -781,14 +800,14 @@ export function analyzeZigZagLegs(
         // شرط محدودیت درصدی: اندازه لگ آبی پررنگ نیز باید کمتر از maxBluePts باشد
         const isUnder60PctB2 = b2.legPoints < maxBluePts;
 
-        // بررسی شرط رشد حجم برای لگ EF (لگ دوم بعد از CD)
+        // ثبت درصد تغییر حجم برای لگ EF (لگ دوم بعد از CD)
         const b2StartCandle = points[b2.startIndex]?.candleIndex ?? 0;
         const b2EndCandle = points[b2.endIndex]?.candleIndex ?? 0;
         const volGrowthB2 = (candles && candles.length > 0)
           ? calculateLegVolumeGrowth(candles, b2StartCandle, b2EndCandle)
           : (b2.volumeGrowthPercent ?? 0);
         b2.volumeGrowthPercent = volGrowthB2;
-        const satisfiesVolB2 = requiredVolGrowth <= 0 || !candles || candles.length === 0 || volGrowthB2 >= requiredVolGrowth;
+        const satisfiesVolB2 = true;
 
         if (brokeBlue && within5AtrB2 && isUnder60PctB2 && !b2.isGiantLeg && satisfiesVolB2) {
           b2.color = 'dark_blue';
@@ -831,14 +850,14 @@ export function analyzeZigZagLegs(
             const within5AtrB4 = breakoutDistB4 <= maxBreakoutMult * refAtrB4;
             const isUnder60PctB4 = b4.legPoints < maxBluePts;
 
-            // بررسی شرط رشد حجم برای لگ EF (لگ چهارم بعد از CD)
+            // ثبت درصد تغییر حجم برای لگ EF (لگ چهارم بعد از CD)
             const b4StartCandle = points[b4.startIndex]?.candleIndex ?? 0;
             const b4EndCandle = points[b4.endIndex]?.candleIndex ?? 0;
             const volGrowthB4 = (candles && candles.length > 0)
               ? calculateLegVolumeGrowth(candles, b4StartCandle, b4EndCandle)
               : (b4.volumeGrowthPercent ?? 0);
             b4.volumeGrowthPercent = volGrowthB4;
-            const satisfiesVolB4 = requiredVolGrowth <= 0 || !candles || candles.length === 0 || volGrowthB4 >= requiredVolGrowth;
+            const satisfiesVolB4 = true;
 
             if (brokeBlue4 && within5AtrB4 && isUnder60PctB4 && !b4.isGiantLeg && satisfiesVolB4) {
               b4.color = 'dark_blue';

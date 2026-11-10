@@ -278,7 +278,7 @@ export const COMPREHENSIVE_FALLBACK_PAIRS: CryptoPair[] = [
 export const DEFAULT_POPULAR_WATCHLIST = [
   'btc_usdt', 'eth_usdt', 'sol_usdt', 'xrp_usdt', 'doge_usdt',
   'sui_usdt', 'ada_usdt', 'near_usdt', 'avax_usdt', 'link_usdt',
-  'pepe_usdt', 'shib_usdt', 'dot_usdt', 'ltc_usdt', 'apt_usdt',
+  '1000pepe_usdt', '1000shib_usdt', 'dot_usdt', 'ltc_usdt', 'apt_usdt',
 ];
 
 export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({

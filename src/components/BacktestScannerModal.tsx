@@ -4119,60 +4119,98 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                 </div>
 
                 <div className="flex flex-col gap-2.5">
-                  {/* گزینه ۱: دانلود تکمیلی هوشمند */}
-                  <button
-                    type="button"
-                    onClick={() => handleStartScan(false, undefined, 'incremental')}
-                    className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-400 hover:to-emerald-500 text-black font-extrabold text-xs flex items-center justify-between shadow-lg shadow-emerald-500/20 cursor-pointer transition-all group"
-                  >
-                    <div className="flex items-center gap-2 text-right">
-                      <RefreshCw className="w-4 h-4 shrink-0 group-hover:rotate-180 transition-transform duration-500" />
-                      <div>
-                        <div className="font-extrabold">🔄 دانلود تکمیلی هوشمند (فقط کسری‌ها) [پیشنهادی]</div>
-                        <div className="text-[10px] text-black/80 font-normal">
-                          {missingCount > 0
-                            ? `فقط ${missingCount} نماد کسری را از صرافی اضافه کرده و بقیه را از دیتابیس می‌خواند.`
-                            : 'همگام‌سازی سریع و تکمیل رکوردهای جدید.'}
+                  {/* اگر نماد کسری وجود ندارد: اسکن سریع با دیتابیس گزینه پیشنهادی اصلی است */}
+                  {missingCount === 0 ? (
+                    <>
+                      {/* گزینه ۱: اسکن فوری با موجودی ۱۰۰٪ دیتابیس */}
+                      <button
+                        type="button"
+                        onClick={() => handleStartScan(false, undefined, 'cached')}
+                        className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-black font-extrabold text-xs flex items-center justify-between shadow-lg shadow-emerald-500/20 cursor-pointer transition-all group"
+                      >
+                        <div className="flex items-center gap-2 text-right">
+                          <Play className="w-4 h-4 text-black shrink-0 fill-current" />
+                          <div>
+                            <div className="font-extrabold">⚡ اسکن سریع با نمادهای موجود در دیتابیس ({availableCount} نماد) [پیشنهادی]</div>
+                            <div className="text-[10px] text-black/80 font-normal">
+                              بدون نیاز به دانلود؛ تمام نمادهای انتخابی در دیتابیس PostgreSQL موجود و آماده پردازش فوری هستند.
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    </div>
-                    <span className="px-2 py-0.5 rounded bg-black/20 text-black font-mono text-[10px] font-bold">
-                      بهینه‌ترین سرعت
-                    </span>
-                  </button>
+                        <span className="px-2 py-0.5 rounded bg-black/20 text-black font-mono text-[10px] font-bold">
+                          فوری (۱ ثانیه)
+                        </span>
+                      </button>
 
-                  {/* گزینه ۲: اسکن سریع فقط با موجودی دیتابیس */}
-                  <button
-                    type="button"
-                    onClick={() => handleStartScan(false, undefined, 'cached')}
-                    className="w-full py-2.5 px-4 rounded-xl bg-[#172233] hover:bg-[#1e2c42] text-emerald-300 border border-emerald-500/40 font-bold text-xs flex items-center justify-between cursor-pointer transition-all"
-                  >
-                    <div className="flex items-center gap-2 text-right">
-                      <Play className="w-4 h-4 text-emerald-400 shrink-0 fill-current" />
-                      <div>
-                        <div>⚡ اسکن سریع با نمادهای موجود در دیتابیس ({availableCount} نماد)</div>
-                        <div className="text-[10px] text-gray-400 font-normal">
-                          بدون هیچ‌گونه دانلود مجدد؛ نمادهای اضافی دیتابیس نیز به صورت خودکار لحاظ نمی‌شوند.
+                      {/* گزینه ۲: دانلود مجدد کامل */}
+                      <button
+                        type="button"
+                        onClick={() => handleStartScan(true, undefined, 'full')}
+                        className="w-full py-2 px-4 rounded-xl bg-[#141b27] hover:bg-[#1c2738] text-gray-300 hover:text-white border border-[#2b3952] text-xs font-medium flex items-center justify-between cursor-pointer transition-all"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Download className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                          <span>🚀 دانلود مجدد کامل از صفر (جایگزینی تمام {reqCount || availableCount || 729} نماد در دیتابیس)</span>
                         </div>
-                      </div>
-                    </div>
-                    <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 font-mono text-[10px]">
-                      فوری (۱ ثانیه)
-                    </span>
-                  </button>
+                        <span className="text-[10px] text-gray-400 font-mono">دانلود تازه</span>
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {/* گزینه ۱: دانلود تکمیلی فقط برای نمادهای کسری */}
+                      <button
+                        type="button"
+                        onClick={() => handleStartScan(false, undefined, 'incremental')}
+                        className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-400 hover:to-emerald-500 text-black font-extrabold text-xs flex items-center justify-between shadow-lg shadow-emerald-500/20 cursor-pointer transition-all group"
+                      >
+                        <div className="flex items-center gap-2 text-right">
+                          <RefreshCw className="w-4 h-4 shrink-0 group-hover:rotate-180 transition-transform duration-500" />
+                          <div>
+                            <div className="font-extrabold">🔄 دانلود تکمیلی هوشمند (فقط {missingCount} نماد کسری) [پیشنهادی]</div>
+                            <div className="text-[10px] text-black/80 font-normal">
+                              فقط {missingCount} نماد کسری از صرافی دریافت و به دیتابیس افزوده می‌شوند و نمادهای موجود از دیتابیس خوانده می‌شوند.
+                            </div>
+                          </div>
+                        </div>
+                        <span className="px-2 py-0.5 rounded bg-black/20 text-black font-mono text-[10px] font-bold">
+                          بهینه‌ترین سرعت
+                        </span>
+                      </button>
 
-                  {/* گزینه ۳: دانلود کامل مجدد از نو */}
-                  <button
-                    type="button"
-                    onClick={() => handleStartScan(true, undefined, 'full')}
-                    className="w-full py-2 px-4 rounded-xl bg-[#141b27] hover:bg-[#1c2738] text-gray-300 hover:text-white border border-[#2b3952] text-xs font-medium flex items-center justify-between cursor-pointer transition-all"
-                  >
-                    <div className="flex items-center gap-2">
-                      <Download className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                      <span>🚀 دانلود مجدد کامل از صفر (جایگزینی تمام {reqCount || availableCount || 729} نماد در دیتابیس)</span>
-                    </div>
-                    <span className="text-[10px] text-gray-400 font-mono">دانلود تازه</span>
-                  </button>
+                      {/* گزینه ۲: اسکن با نمادهای فعلی دیتابیس بدون دانلود کسری‌ها */}
+                      <button
+                        type="button"
+                        onClick={() => handleStartScan(false, undefined, 'cached')}
+                        className="w-full py-2.5 px-4 rounded-xl bg-[#172233] hover:bg-[#1e2c42] text-emerald-300 border border-emerald-500/40 font-bold text-xs flex items-center justify-between cursor-pointer transition-all"
+                      >
+                        <div className="flex items-center gap-2 text-right">
+                          <Play className="w-4 h-4 text-emerald-400 shrink-0 fill-current" />
+                          <div>
+                            <div>⚡ اسکن با {availableCount} نماد موجود در دیتابیس (بدون دانلود {missingCount} نماد کسری)</div>
+                            <div className="text-[10px] text-gray-400 font-normal">
+                              فقط روی نمادهایی که همین حالا در PostgreSQL آماده هستند اجرا می‌شود.
+                            </div>
+                          </div>
+                        </div>
+                        <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 font-mono text-[10px]">
+                          فوری (۱ ثانیه)
+                        </span>
+                      </button>
+
+                      {/* گزینه ۳: دانلود کامل مجدد از نو */}
+                      <button
+                        type="button"
+                        onClick={() => handleStartScan(true, undefined, 'full')}
+                        className="w-full py-2 px-4 rounded-xl bg-[#141b27] hover:bg-[#1c2738] text-gray-300 hover:text-white border border-[#2b3952] text-xs font-medium flex items-center justify-between cursor-pointer transition-all"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Download className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                          <span>🚀 دانلود مجدد کامل از صفر (جایگزینی تمام {reqCount || availableCount || 729} نماد در دیتابیس)</span>
+                        </div>
+                        <span className="text-[10px] text-gray-400 font-mono">دانلود تازه</span>
+                      </button>
+                    </>
+                  )}
 
                   <button
                     type="button"

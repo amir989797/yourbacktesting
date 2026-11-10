@@ -50,7 +50,8 @@ export const XT_EXCLUDED_36_SYMBOLS = new Set<string>([
   'usdsgd_usdt', 'euraud_usdt', 'gbpaud_usdt', 'eurcad_usdt', 'eurgbp_usdt', 'cadchf_usdt',
   'usdcnh_usdt', 'gbpnzd_usdt', 'nzdjpy_usdt', 'xpt_usdt', 'chfjpy_usdt', 'audchf_usdt',
   'gbpjpy_usdt', 'usdmxn_usdt', 'eurjpy_usdt', 'cadjpy_usdt', 'xpd_usdt', 'usdtry_usdt',
-  'usdjpy_usdt', 'nzdcad_usdt', 'usdzar_usdt', 'audjpy_usdt', 'sp500_usdt', 'nas100_usdt'
+  'usdjpy_usdt', 'nzdcad_usdt', 'usdzar_usdt', 'audjpy_usdt', 'sp500_usdt', 'nas100_usdt',
+  'soxx_usdt'
 ]);
 
 export function isXtExcludedSymbol(symbol: string): boolean {
@@ -85,6 +86,8 @@ export interface ZigZagSettings {
   maxBlueLegPercent?: number; // سقف درصدی اندازه لگ‌های آبی نسبت به قرمز/سبز (پیش‌فرض 60)
   maxBreakoutAtrMultiplier?: number; // سقف نفوذ شکست انتهای لگ بر مبنای ATR (پیش‌فرض 5)
   minVolumeGrowthPercent?: number; // حداقل درصد رشد حجم در طول لگ‌های AB، CD و EF (پیش‌فرض 0)
+  minEntryPivotDistanceAtr?: number; // حداقل فاصله قیمت ورود تا پیوت قبل بر حسب ATR (مثلاً 1.0)
+  maxCandlesToEnter?: number; // سقف کندل ورود (استراتژی ۱: مهلت ورود پس از الگو | استراتژی ۲: سقف کندل از نقطه پیوت تا ورود)
   maxRiskReward?: number;
   maxPositionToRiskRatio?: number; // حداکثر نسبت ارزش پوزیشن به ریسک (پیش‌فرض 300)
 }

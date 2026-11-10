@@ -145,6 +145,24 @@ export function runStrategy1Backtest(
             break;
           }
 
+          // شرط حداقل فاصله قیمت ورود تا پیوت قبل بر حسب مضرب ATR
+          if (config.minEntryPivotDistanceAtr && config.minEntryPivotDistanceAtr > 0) {
+            const entryCandle = candles[entryCandleIdx];
+            const candleAtr = Math.max(0.00001, entryCandle.high - entryCandle.low);
+            let prevPivotPrice = priceF;
+            for (let pIdx = points.length - 1; pIdx >= 0; pIdx--) {
+              if (points[pIdx].time < entryCandle.time) {
+                prevPivotPrice = points[pIdx].value;
+                break;
+              }
+            }
+            const pivotDistance = Math.abs(entryPrice - prevPivotPrice);
+            if (pivotDistance < config.minEntryPivotDistanceAtr * candleAtr) {
+              scanStartIdx = entryCandleIdx + 1;
+              continue;
+            }
+          }
+
           // عدم ورود به معامله جدید در صورت وجود پوزیشن باز
           if (config.noConcurrentPositions && entryCandleIdx <= lastTradeExitCandleIdx) {
             break;
@@ -450,6 +468,7 @@ export function runStrategy2Backtest(
 
   const effectiveMinCandles = Math.max(1, minCandles);
   const effectiveAtrMult = atrMultiplier > 0 ? atrMultiplier : 3;
+  const effectiveMaxCandles = (config.maxCandlesToEnter && config.maxCandlesToEnter > 0) ? config.maxCandlesToEnter : 35;
 
   let currentGiant: ZigZagLeg | null = null;
   let lastTradeExitCandleIdx = -1;
@@ -493,6 +512,13 @@ export function runStrategy2Backtest(
           const candleDist = cIdx - currentFIdx;
           const priceDist = currentFVal - c.low;
 
+          // سقف کندل ورود برای استراتژی ۲:
+          // شمارش از نقطه پیوت (currentFIdx) تا کندل ورود.
+          // اگر تعداد کندل‌های سپری شده از نقطه پیوت بیش از سقف مجاز باشد، ستاپ منقضی می‌شود.
+          if (candleDist > effectiveMaxCandles) {
+            break;
+          }
+
           // شرط اولین بار تشکیل لگ نزولی بعد از F:
           // حداقل minCandles کندل گذشته باشد و افت قیمت حداقل برابر atrMultiplier * ATR باشد
           if (candleDist >= effectiveMinCandles && priceDist >= requiredDistance) {
@@ -506,6 +532,13 @@ export function runStrategy2Backtest(
 
             if (config.noConcurrentPositions && entryCandleIdx <= lastTradeExitCandleIdx) {
               break;
+            }
+
+            // شرط حداقل فاصله قیمت ورود تا پیوت قبل (بر حسب مضرب ATR)
+            if (config.minEntryPivotDistanceAtr && config.minEntryPivotDistanceAtr > 0) {
+              if (stopDistance < config.minEntryPivotDistanceAtr * atr) {
+                continue;
+              }
             }
 
             if (stopDistance > 0.000001) {
@@ -667,7 +700,7 @@ export function runStrategy2Backtest(
                 exitTime,
                 exitCandleIdx,
                 exitPrice: exitPrice,
-                candlesElapsedToEntry: entryCandleIdx - candleIdxF,
+                candlesElapsedToEntry: entryCandleIdx - currentFIdx,
                 candlesRemainingToEnter: 0,
                 waitingForPostLeg: false,
                 hasPostLeg: true,
@@ -706,6 +739,13 @@ export function runStrategy2Backtest(
           const candleDist = cIdx - currentFIdx;
           const priceDist = c.high - currentFVal;
 
+          // سقف کندل ورود برای استراتژی ۲:
+          // شمارش از نقطه پیوت (currentFIdx) تا کندل ورود.
+          // اگر تعداد کندل‌های سپری شده از نقطه پیوت بیش از سقف مجاز باشد، ستاپ منقضی می‌شود.
+          if (candleDist > effectiveMaxCandles) {
+            break;
+          }
+
           // شرط اولین بار تشکیل لگ صعودی بعد از F:
           // حداقل minCandles کندل گذشته باشد و رشد قیمت حداقل برابر atrMultiplier * ATR باشد
           if (candleDist >= effectiveMinCandles && priceDist >= requiredDistance) {
@@ -718,6 +758,13 @@ export function runStrategy2Backtest(
 
             if (config.noConcurrentPositions && entryCandleIdx <= lastTradeExitCandleIdx) {
               break;
+            }
+
+            // شرط حداقل فاصله قیمت ورود تا پیوت قبل (بر حسب مضرب ATR)
+            if (config.minEntryPivotDistanceAtr && config.minEntryPivotDistanceAtr > 0) {
+              if (stopDistance < config.minEntryPivotDistanceAtr * atr) {
+                continue;
+              }
             }
 
             if (stopDistance > 0.000001) {
@@ -879,7 +926,7 @@ export function runStrategy2Backtest(
                 exitTime,
                 exitCandleIdx,
                 exitPrice: exitPrice,
-                candlesElapsedToEntry: entryCandleIdx - candleIdxF,
+                candlesElapsedToEntry: entryCandleIdx - currentFIdx,
                 candlesRemainingToEnter: 0,
                 waitingForPostLeg: false,
                 hasPostLeg: true,

@@ -100,6 +100,14 @@ export interface OptimizerTabProps {
   setOptMinVolumeGrowthPercent?: (val: number) => void;
   lockMinVolumeGrowthPercent?: boolean;
   setLockMinVolumeGrowthPercent?: (val: boolean) => void;
+  optMinEntryPivotDistanceAtr?: number;
+  setOptMinEntryPivotDistanceAtr?: (val: number) => void;
+  lockMinEntryPivotDistanceAtr?: boolean;
+  setLockMinEntryPivotDistanceAtr?: (val: boolean) => void;
+  optMaxCandlesToEnter?: number;
+  setOptMaxCandlesToEnter?: (val: number) => void;
+  lockMaxCandlesToEnter?: boolean;
+  setLockMaxCandlesToEnter?: (val: boolean) => void;
   optMaxRiskReward: number;
   setOptMaxRiskReward: (val: number) => void;
   optMaxPositionToRiskRatio?: number;
@@ -213,6 +221,14 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
   setOptMinVolumeGrowthPercent,
   lockMinVolumeGrowthPercent = false,
   setLockMinVolumeGrowthPercent,
+  optMinEntryPivotDistanceAtr = 1.0,
+  setOptMinEntryPivotDistanceAtr,
+  lockMinEntryPivotDistanceAtr = false,
+  setLockMinEntryPivotDistanceAtr,
+  optMaxCandlesToEnter = 35,
+  setOptMaxCandlesToEnter,
+  lockMaxCandlesToEnter = false,
+  setLockMaxCandlesToEnter,
   optMaxRiskReward,
   setOptMaxRiskReward,
   optMaxPositionToRiskRatio = 300,
@@ -684,6 +700,90 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   </div>
                 )}
 
+                {/* 8.5. Min Entry Pivot Distance ATR (گام 0.25) */}
+                {adaptiveRanges.minEntryPivotDistanceAtr && (
+                  <div className="bg-[#0e121a] p-2.5 rounded-xl border border-amber-500/30 space-y-1.5 shadow-sm">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-amber-300">فاصله ورود تا پیوت (ATR)</span>
+                      <span className="text-[10px] font-mono text-amber-400 bg-amber-950/60 px-1.5 py-0.5 rounded">
+                        همگرایی {adaptiveRanges.minEntryPivotDistanceAtr.convergence}%
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-1 text-[10px] text-gray-400">
+                      <div className="flex items-center gap-1">
+                        <span>حداقل:</span>
+                        <input
+                          type="number"
+                          step={0.25}
+                          min={0}
+                          value={adaptiveRanges.minEntryPivotDistanceAtr.min}
+                          disabled={isOptimizing || lockMinEntryPivotDistanceAtr}
+                          onChange={(e) => handleUpdateParamRange('minEntryPivotDistanceAtr', 'min', parseFloat(e.target.value) || 0)}
+                          className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-amber-300 font-mono text-xs text-center focus:outline-none focus:border-amber-400"
+                        />
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span>حداکثر:</span>
+                        <input
+                          type="number"
+                          step={0.25}
+                          min={0}
+                          value={adaptiveRanges.minEntryPivotDistanceAtr.max}
+                          disabled={isOptimizing || lockMinEntryPivotDistanceAtr}
+                          onChange={(e) => handleUpdateParamRange('minEntryPivotDistanceAtr', 'max', parseFloat(e.target.value) || 0)}
+                          className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-amber-300 font-mono text-xs text-center focus:outline-none focus:border-amber-400"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5 border-t border-[#1a2230]">
+                      <span>بهترین مقدار: <strong className="text-amber-300 font-mono">{adaptiveRanges.minEntryPivotDistanceAtr.bestVal} ATR</strong></span>
+                      <span className="text-amber-400 font-mono font-bold">گام: 0.25</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* 8.6. Max Candles To Enter (سقف کندل ورود) */}
+                {adaptiveRanges.maxCandlesToEnter && (
+                  <div className="bg-[#0e121a] p-2.5 rounded-xl border border-cyan-500/30 space-y-1.5 shadow-sm">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-cyan-300" title="استراتژی ۱: مهلت ورود از زمان تکمیل الگو تا شکست E | استراتژی ۲: حداکثر تعداد کندل مجاز از نقطه پیوت تا فعال‌شدن ورود">سقف کندل ورود</span>
+                      <span className="text-[10px] font-mono text-cyan-400 bg-cyan-950/60 px-1.5 py-0.5 rounded">
+                        همگرایی {adaptiveRanges.maxCandlesToEnter.convergence}%
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-1 text-[10px] text-gray-400">
+                      <div className="flex items-center gap-1">
+                        <span>حداقل:</span>
+                        <input
+                          type="number"
+                          step={5}
+                          min={5}
+                          value={adaptiveRanges.maxCandlesToEnter.min}
+                          disabled={isOptimizing || lockMaxCandlesToEnter}
+                          onChange={(e) => handleUpdateParamRange('maxCandlesToEnter', 'min', parseFloat(e.target.value) || 0)}
+                          className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        />
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span>حداکثر:</span>
+                        <input
+                          type="number"
+                          step={5}
+                          min={5}
+                          value={adaptiveRanges.maxCandlesToEnter.max}
+                          disabled={isOptimizing || lockMaxCandlesToEnter}
+                          onChange={(e) => handleUpdateParamRange('maxCandlesToEnter', 'max', parseFloat(e.target.value) || 0)}
+                          className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5 border-t border-[#1a2230]">
+                      <span>بهترین مقدار: <strong className="text-amber-300 font-mono">{adaptiveRanges.maxCandlesToEnter.bestVal} کندل</strong></span>
+                      <span className="text-cyan-400 font-mono font-bold">گام: 5</span>
+                    </div>
+                  </div>
+                )}
+
                 {/* 8. Max Risk Reward */}
                 <div className="bg-[#0e121a] p-2.5 rounded-xl border border-[#232e42] space-y-1.5">
                   <div className="flex items-center justify-between">
@@ -1140,6 +1240,56 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                     onChange={(e) => setOptMinVolumeGrowthPercent?.(parseFloat(e.target.value) || 0)}
                     placeholder="0"
                     className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockMinVolumeGrowthPercent ? 'border-amber-500/70 text-amber-300 font-bold' : 'border-[#2e3a4e] text-emerald-400'} disabled:bg-[#1b202c] disabled:text-gray-500`}
+                  />
+                </div>
+
+                <div className={`p-2 rounded-xl border transition-all ${lockMinEntryPivotDistanceAtr ? 'bg-amber-950/25 border-amber-500/70 shadow-sm shadow-amber-500/10' : 'bg-[#171e2b] border-[#2a364a]'}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] font-semibold text-gray-200">فاصله ورود تا پیوت (ATR)</label>
+                    <label className="flex items-center gap-1 text-[10px] text-amber-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={lockMinEntryPivotDistanceAtr}
+                        onChange={(e) => setLockMinEntryPivotDistanceAtr?.(e.target.checked)}
+                        className="rounded bg-[#0d1017] border-gray-600 text-amber-500 focus:ring-0 cursor-pointer"
+                      />
+                      <span className={lockMinEntryPivotDistanceAtr ? 'font-bold text-amber-300' : ''}>{lockMinEntryPivotDistanceAtr ? '🔒 قفل' : 'آزاد'}</span>
+                    </label>
+                  </div>
+                  <input
+                    type="number"
+                    step={0.25}
+                    min={0}
+                    value={optMinEntryPivotDistanceAtr}
+                    disabled={isOptimizing}
+                    onChange={(e) => setOptMinEntryPivotDistanceAtr?.(parseFloat(e.target.value) || 0)}
+                    placeholder="1.0"
+                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockMinEntryPivotDistanceAtr ? 'border-amber-500/70 text-amber-300 font-bold' : 'border-[#2e3a4e] text-amber-300'} disabled:bg-[#1b202c] disabled:text-gray-500`}
+                  />
+                </div>
+
+                <div className={`p-2 rounded-xl border transition-all ${lockMaxCandlesToEnter ? 'bg-cyan-950/25 border-cyan-500/70 shadow-sm shadow-cyan-500/10' : 'bg-[#171e2b] border-[#2a364a]'}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] font-semibold text-gray-200" title="استراتژی ۱: مهلت ورود از زمان تکمیل الگو تا شکست E | استراتژی ۲: حداکثر تعداد کندل مجاز از نقطه پیوت تا فعال‌شدن ورود">سقف کندل ورود</label>
+                    <label className="flex items-center gap-1 text-[10px] text-cyan-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={lockMaxCandlesToEnter}
+                        onChange={(e) => setLockMaxCandlesToEnter?.(e.target.checked)}
+                        className="rounded bg-[#0d1017] border-gray-600 text-cyan-500 focus:ring-0 cursor-pointer"
+                      />
+                      <span className={lockMaxCandlesToEnter ? 'font-bold text-cyan-300' : ''}>{lockMaxCandlesToEnter ? '🔒 قفل' : 'آزاد'}</span>
+                    </label>
+                  </div>
+                  <input
+                    type="number"
+                    step={5}
+                    min={5}
+                    value={optMaxCandlesToEnter}
+                    disabled={isOptimizing}
+                    onChange={(e) => setOptMaxCandlesToEnter?.(parseInt(e.target.value, 10) || 0)}
+                    placeholder="35"
+                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockMaxCandlesToEnter ? 'border-cyan-500/70 text-cyan-300 font-bold' : 'border-[#2e3a4e] text-cyan-300'} disabled:bg-[#1b202c] disabled:text-gray-500`}
                   />
                 </div>
 

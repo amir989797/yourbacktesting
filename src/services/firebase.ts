@@ -271,6 +271,8 @@ export interface TestParameterConfigRecord {
   optMaxBreakoutAtr?: number;
   optMinVolumeGrowthPercent?: number;
   minVolumeGrowthPercent?: number;
+  optMinEntryPivotDistanceAtr?: number;
+  minEntryPivotDistanceAtr?: number;
   optMaxRiskReward?: number;
   optTimeStopCandles?: number;
   optMaxPositionToRiskRatio?: number;

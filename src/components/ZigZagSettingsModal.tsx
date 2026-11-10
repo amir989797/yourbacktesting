@@ -18,6 +18,8 @@ export const DEFAULT_ZIGZAG_SETTINGS: ZigZagSettings = {
   maxBlueLegPercent: 60,
   maxBreakoutAtrMultiplier: 5,
   minVolumeGrowthPercent: 0,
+  minEntryPivotDistanceAtr: 1.0,
+  maxCandlesToEnter: 35,
   maxPositionToRiskRatio: 300,
 };
 
@@ -53,6 +55,12 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
   const [minVolumeGrowthPercent, setMinVolumeGrowthPercent] = useState<number | string>(
     settings.minVolumeGrowthPercent ?? 0
   );
+  const [minEntryPivotDistanceAtr, setMinEntryPivotDistanceAtr] = useState<number | string>(
+    settings.minEntryPivotDistanceAtr ?? 1.0
+  );
+  const [maxCandlesToEnter, setMaxCandlesToEnter] = useState<number | string>(
+    settings.maxCandlesToEnter ?? 35
+  );
 
   // Sync state when opened or settings change
   useEffect(() => {
@@ -66,6 +74,8 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
       setMaxBlueLegPercent(settings.maxBlueLegPercent ?? 60);
       setMaxBreakoutAtrMultiplier(settings.maxBreakoutAtrMultiplier ?? 5);
       setMinVolumeGrowthPercent(settings.minVolumeGrowthPercent ?? 0);
+      setMinEntryPivotDistanceAtr(settings.minEntryPivotDistanceAtr ?? 1.0);
+      setMaxCandlesToEnter(settings.maxCandlesToEnter ?? 35);
     }
   }, [isOpen, settings]);
 
@@ -81,6 +91,8 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
     setMaxBlueLegPercent(DEFAULT_ZIGZAG_SETTINGS.maxBlueLegPercent ?? 60);
     setMaxBreakoutAtrMultiplier(DEFAULT_ZIGZAG_SETTINGS.maxBreakoutAtrMultiplier ?? 5);
     setMinVolumeGrowthPercent(DEFAULT_ZIGZAG_SETTINGS.minVolumeGrowthPercent ?? 0);
+    setMinEntryPivotDistanceAtr(DEFAULT_ZIGZAG_SETTINGS.minEntryPivotDistanceAtr ?? 1.0);
+    setMaxCandlesToEnter(DEFAULT_ZIGZAG_SETTINGS.maxCandlesToEnter ?? 35);
   };
 
   const handleSave = (e: React.FormEvent) => {
@@ -94,6 +106,8 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
     const finalMaxBlue = Math.max(1, parseFloat(String(maxBlueLegPercent)) || 60);
     const finalMaxBreakout = Math.max(0.5, parseFloat(String(maxBreakoutAtrMultiplier)) || 5);
     const finalMinVolGrowth = Math.max(0, parseFloat(String(minVolumeGrowthPercent)) || 0);
+    const finalMinPivotDist = Math.max(0, parseFloat(String(minEntryPivotDistanceAtr)) || 0);
+    const finalMaxCandles = Math.max(1, parseInt(String(maxCandlesToEnter), 10) || 35);
 
     onSave({
       atrPeriod: finalAtrPeriod,
@@ -104,6 +118,8 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
       maxBlueLegPercent: finalMaxBlue,
       maxBreakoutAtrMultiplier: finalMaxBreakout,
       minVolumeGrowthPercent: finalMinVolGrowth,
+      minEntryPivotDistanceAtr: finalMinPivotDist,
+      maxCandlesToEnter: finalMaxCandles,
       maxPositionToRiskRatio: finalMaxRatio,
     });
     onClose();
@@ -487,6 +503,74 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
                     value={minVolumeGrowthPercent}
                     onChange={(e) => setMinVolumeGrowthPercent(e.target.value)}
                     className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-emerald-400 bg-[#10141c] border border-[#323d50] rounded-lg"
+                  />
+                </div>
+              </div>
+
+              {/* 9. Min Entry to Prev Pivot Distance (ATR) */}
+              <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-amber-500/40 transition-colors">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-amber-400" />
+                    فاصله ورود تا پیوت قبل (Pivot Distance)
+                  </label>
+                  <span className="text-[11px] font-mono text-amber-400 font-bold">
+                    {Number(minEntryPivotDistanceAtr) > 0 ? `${minEntryPivotDistanceAtr}× ATR` : '۰ (غیرفعال)'}
+                  </span>
+                </div>
+                <p className="text-[10px] text-gray-400 mb-1.5">حداقل فاصله قیمت ورود نسبت به پیوت قبلی بر حسب مضرب ATR (مثلاً حداقل ۱ ATR)</p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={0}
+                    max={5}
+                    step={0.25}
+                    value={Number(minEntryPivotDistanceAtr) || 0}
+                    onChange={(e) => setMinEntryPivotDistanceAtr(Number(e.target.value))}
+                    className="flex-1 accent-amber-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    max={20}
+                    step={0.25}
+                    value={minEntryPivotDistanceAtr}
+                    onChange={(e) => setMinEntryPivotDistanceAtr(e.target.value)}
+                    className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-amber-400 bg-[#10141c] border border-[#323d50] rounded-lg"
+                  />
+                </div>
+              </div>
+
+              {/* 10. Max Candles To Enter */}
+              <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-cyan-500/40 transition-colors">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-cyan-400" />
+                    سقف کندل ورود (Entry Window)
+                  </label>
+                  <span className="text-[11px] font-mono text-cyan-400 font-bold">
+                    {maxCandlesToEnter} کندل
+                  </span>
+                </div>
+                <p className="text-[10px] text-gray-400 mb-1.5 leading-relaxed">استراتژی ۱: مهلت ورود پس از تکمیل الگو تا شکست E | استراتژی ۲: حداکثر تعداد کندل مجاز از نقطه پیوت تا فعال‌شدن کندل ورود</p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={5}
+                    max={200}
+                    step={5}
+                    value={Number(maxCandlesToEnter) || 35}
+                    onChange={(e) => setMaxCandlesToEnter(Number(e.target.value))}
+                    className="flex-1 accent-cyan-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
+                  />
+                  <input
+                    type="number"
+                    min={1}
+                    max={500}
+                    step={1}
+                    value={maxCandlesToEnter}
+                    onChange={(e) => setMaxCandlesToEnter(e.target.value)}
+                    className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-cyan-400 bg-[#10141c] border border-[#323d50] rounded-lg"
                   />
                 </div>
               </div>
