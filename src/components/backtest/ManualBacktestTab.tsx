@@ -911,12 +911,24 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                   <div className="flex flex-wrap items-center gap-2 pt-1">
                     <button
                       type="button"
-                      onClick={() => handleStartScan(rangeStatus?.exists ? undefined : false)}
+                      onClick={() => {
+                        if (rangeStatus?.exists) {
+                          if (onOpenRescanChoiceModal) {
+                            onOpenRescanChoiceModal();
+                          } else {
+                            handleStartScan(undefined);
+                          }
+                        } else {
+                          handleStartScan(true, undefined, 'full');
+                        }
+                      }}
                       className="px-5 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-extrabold text-xs flex items-center gap-2 shadow-lg shadow-amber-500/25 transition-all cursor-pointer"
                     >
                       <Play className="w-4 h-4 fill-current" />
                       <span>
-                        {`شروع اسکن بکتست (${selectedAllowedSymbols.length} ارز مجاز انتخابی)`}
+                        {selectedAllowedSymbols.length > 0
+                          ? `شروع اسکن بکتست (${selectedAllowedSymbols.length} ارز مجاز انتخابی)`
+                          : 'شروع اسکن بکتست'}
                       </span>
                     </button>
 

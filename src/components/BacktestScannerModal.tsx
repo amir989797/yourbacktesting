@@ -922,10 +922,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       const targetTf = overrides?.timeframe !== undefined ? overrides.timeframe : timeframe;
       const targetSymbols = overrides?.symbols !== undefined
         ? overrides.symbols
-        : (universeOption === 'all_market' ? [] : selectedAllowedSymbols);
+        : (selectedAllowedSymbols && selectedAllowedSymbols.length > 0 ? selectedAllowedSymbols : []);
       const explicitId = overrides?.datasetId !== undefined
         ? (overrides.datasetId || undefined)
-        : (activeSessionDatasetId || rangeStatus?.datasetId || undefined);
+        : (activeSessionDatasetId || undefined);
 
       const res = await fetch('/api/backtest/range-status', {
         method: 'POST',
@@ -945,38 +945,24 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         if (data.exists && data.dataset) {
           const matchedId = data.datasetId || data.dataset.id;
           if (matchedId) {
-            setActiveSessionDatasetId(matchedId);
+            setActiveSessionDatasetId((prev) => (prev !== matchedId ? matchedId : prev));
           }
-          const availableCount = data.coverage?.availableSymbolsCount || data.dataset.symbolCount || (results.length > 0 ? results.length : 0);
+          const availableCount = data.coverage?.availableSymbolsCount || data.dataset.symbolCount || 0;
           setCachedCount(availableCount);
 
-          // تطبیق هوشمند و دقیق بازه زمانی رابط کاربری با بازه واقعی ذخیره شده در پایگاه‌داده
-          if (data.dataset.startTime && data.dataset.endTime) {
-            const dStart = Number(data.dataset.startTime);
-            const dEnd = Number(data.dataset.endTime);
-            if (dStart > 0 && dEnd > dStart) {
-              setTimeRangeStartMs(dStart);
-              setTimeRangeEndMs(dEnd);
-            }
-          }
-
-          if (Array.isArray(data.results) && data.results.length > 0 && results.length === 0) {
-            setResults(data.results);
+          if (Array.isArray(data.results) && data.results.length > 0) {
+            setResults((prev) => (prev.length === 0 ? data.results : prev));
             if (Array.isArray(data.allTrades)) {
-              setAllCollectedTrades(data.allTrades);
+              setAllCollectedTrades((prev) => (prev.length === 0 ? data.allTrades : prev));
             }
           }
           if (Array.isArray(data.skippedSymbols) && data.skippedSymbols.length > 0) {
             setSkippedSymbols(data.skippedSymbols);
           }
-          if (data.strategyId && results.length === 0) {
-            setSelectedStrategyId(data.strategyId);
+          if (data.strategyId) {
+            setSelectedStrategyId((prev) => (!prev ? data.strategyId : prev));
           }
         } else {
-          // در صورتی که دیتای این بازه در دیتابیس یافت نشد، نتایج فعال روی صفحه پاک نشوند
-          if (results.length === 0) {
-            setCachedCount(0);
-          }
           setActiveSessionDatasetId(null);
         }
       }
@@ -985,7 +971,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     } finally {
       setIsCheckingRange(false);
     }
-  }, [selectedExchange, timeframe, timeRangeStartMs, timeRangeEndMs, selectedAllowedSymbols, universeOption, activeSessionDatasetId, rangeStatus?.datasetId, results.length]);
+  }, [selectedExchange, timeframe, timeRangeStartMs, timeRangeEndMs, selectedAllowedSymbols, activeSessionDatasetId]);
 
   useEffect(() => {
     checkCurrentRangeStatusRef.current = checkCurrentRangeStatus;
@@ -1054,7 +1040,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
   useEffect(() => {
     checkCurrentRangeStatus();
-  }, [checkCurrentRangeStatus]);
+  }, [selectedExchange, timeframe, timeRangeStartMs, timeRangeEndMs]);
 
   const hasSyncedDatasetIdRef = useRef<string | null>(null);
   const wasScanningRef = useRef<boolean>(false);
@@ -1091,6 +1077,13 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             // تنها یک بار در لحظه پایان اسکن اجرا شود
             wasScanningRef.current = false;
             setIsScanning(false);
+
+            if (st.stage === 'error') {
+              setErrorMsg(st.errorMsg || 'خطا در اسکن.');
+              showToast(`❌ خطا در اسکن: ${st.errorMsg || 'ناشناخته'}`);
+              return;
+            }
+
             if (Array.isArray(st.results) && st.results.length > 0) {
               setResults(st.results);
             }
@@ -1208,7 +1201,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       return;
     }
 
-    const effectiveScanMode = scanMode || (forceRedownload ? 'full' : 'cached');
+    // اگر دیتابیس وجود ندارد، اسکن حتماً باید دانلود کامل باشد
+    let effectiveScanMode: 'cached' | 'incremental' | 'full' = scanMode || (forceRedownload ? 'full' : (rangeStatus?.exists ? 'cached' : 'full'));
+    if (!rangeStatus?.exists && effectiveScanMode === 'cached') {
+      effectiveScanMode = 'full';
+    }
+
     setIsRescanPromptOpen(false);
     setIsScanning(true);
     abortControllerRef.current = false;
@@ -1216,9 +1214,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     setResults([]);
     setAllCollectedTrades([]);
     setSkippedSymbols([]);
-    const targetSymbols = universeOption === 'all_market'
-      ? []
-      : (selectedAllowedSymbols && selectedAllowedSymbols.length > 0 ? selectedAllowedSymbols : []);
+    const targetSymbols = (selectedAllowedSymbols && selectedAllowedSymbols.length > 0)
+      ? selectedAllowedSymbols
+      : [];
 
     const missingCount = rangeStatus?.coverage?.missingSymbolsCount || 0;
     setProgress({
