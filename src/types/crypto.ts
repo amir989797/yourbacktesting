@@ -185,6 +185,8 @@ export interface LiveTradeOrder {
   strategyName: string;
   takeProfitPrice?: number;
   stopLossPrice?: number;
+  riskReward?: number;
+  realizedR?: number;
   realizedPnl?: number;
   realizedPnlPercent?: number;
   fee?: number;

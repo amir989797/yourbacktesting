@@ -57,6 +57,7 @@ export interface CandidateSignal {
   curPrice: number;
   stopLoss: number;
   takeProfit: number;
+  riskReward?: number;
   contractQty: number;
   stepSize?: number;
   qtyPrecision?: number;
@@ -203,8 +204,22 @@ export function evaluateSymbolForLiveSignal(params: {
   const side: 'BUY' | 'SELL' = lastTrade.direction === 'BUY' ? 'BUY' : 'SELL';
   const posSide: 'LONG' | 'SHORT' = lastTrade.direction === 'BUY' ? 'LONG' : 'SHORT';
   const curPrice = candles[candles.length - 1].close;
-  const stopLoss = parseFloat(Number(lastTrade.stopLoss || curPrice * (posSide === 'LONG' ? 0.98 : 1.02)).toFixed(4));
-  const takeProfit = parseFloat(Number(lastTrade.takeProfit || curPrice * (posSide === 'LONG' ? 1.06 : 0.94)).toFixed(4));
+  const targetRR = config.riskRewardRatio && config.riskRewardRatio > 0 ? config.riskRewardRatio : 2.0;
+
+  // Exact Stop Loss from pivot leg
+  const stopLoss = (lastTrade.stopLoss && lastTrade.stopLoss > 0)
+    ? lastTrade.stopLoss
+    : (posSide === 'LONG' ? curPrice * 0.98 : curPrice * 1.02);
+
+  const stopDistance = Math.abs(curPrice - stopLoss);
+  if (stopDistance <= 0) {
+    return null;
+  }
+
+  // Exact Take Profit strictly matching configured targetRR without arbitrary toFixed truncation
+  const takeProfit = posSide === 'LONG'
+    ? curPrice + stopDistance * targetRR
+    : curPrice - stopDistance * targetRR;
   const maxLev = getMaxLeverageForSymbol(symbol);
 
   const riskBudgetUsdt = config.riskMode === 'fixed' && config.riskAmountFixed && config.riskAmountFixed > 0
@@ -243,6 +258,7 @@ export function evaluateSymbolForLiveSignal(params: {
     curPrice,
     stopLoss,
     takeProfit,
+    riskReward: targetRR,
     contractQty,
     stepSize: sizing.stepSize,
     qtyPrecision: sizing.qtyPrecision,

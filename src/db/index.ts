@@ -89,6 +89,7 @@ export async function initDatabase(): Promise<{ success: boolean; tablesCreated:
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
       ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS timeframe TEXT DEFAULT '5m';
+      ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS risk_reward DOUBLE PRECISION;
       CREATE INDEX IF NOT EXISTS idx_live_trades_timeframe ON live_trades(timeframe);
       CREATE INDEX IF NOT EXISTS idx_live_trades_status ON live_trades(status);
     `);
@@ -250,6 +251,7 @@ export async function initDatabase(): Promise<{ success: boolean; tablesCreated:
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
       ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS timeframe TEXT DEFAULT '5m';
+      ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS risk_reward DOUBLE PRECISION;
       CREATE INDEX IF NOT EXISTS idx_live_trades_user_id ON live_trades(user_id);
       CREATE INDEX IF NOT EXISTS idx_live_trades_symbol ON live_trades(symbol);
       CREATE INDEX IF NOT EXISTS idx_live_trades_timeframe ON live_trades(timeframe);
@@ -384,6 +386,7 @@ export async function recordLiveTradeInDb(trade: {
   status: 'ACTIVE' | 'CLOSED' | 'FAILED' | 'NEW' | 'SUCCESS';
   stopLoss?: number | null;
   takeProfit?: number | null;
+  riskReward?: number | null;
   realizedPnl?: number;
   strategyName?: string | null;
   payloadJson?: string | null;
@@ -392,16 +395,21 @@ export async function recordLiveTradeInDb(trade: {
 }) {
   const client = await pool.connect();
   try {
+    const slDist = (trade.price && trade.stopLoss) ? Math.abs(trade.price - trade.stopLoss) : 0;
+    const tpDist = (trade.price && trade.takeProfit) ? Math.abs(trade.takeProfit - trade.price) : 0;
+    const effectiveRR = trade.riskReward || (slDist > 0 ? parseFloat((tpDist / slDist).toFixed(2)) : null);
+
     await client.query(
       `INSERT INTO live_trades (
-        id, order_id, user_id, exchange, symbol, timeframe, side, pos_side, price, amount, status, stop_loss, take_profit, realized_pnl, strategy_name, payload_json, response_json, error_message, created_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW())
+        id, order_id, user_id, exchange, symbol, timeframe, side, pos_side, price, amount, status, stop_loss, take_profit, risk_reward, realized_pnl, strategy_name, payload_json, response_json, error_message, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW())
       ON CONFLICT (id) DO UPDATE SET
         order_id = COALESCE(EXCLUDED.order_id, live_trades.order_id),
         timeframe = COALESCE(EXCLUDED.timeframe, live_trades.timeframe),
         status = EXCLUDED.status,
         stop_loss = COALESCE(EXCLUDED.stop_loss, live_trades.stop_loss),
         take_profit = COALESCE(EXCLUDED.take_profit, live_trades.take_profit),
+        risk_reward = COALESCE(EXCLUDED.risk_reward, live_trades.risk_reward),
         realized_pnl = COALESCE(EXCLUDED.realized_pnl, live_trades.realized_pnl),
         response_json = COALESCE(EXCLUDED.response_json, live_trades.response_json),
         error_message = COALESCE(EXCLUDED.error_message, live_trades.error_message);`,
@@ -419,6 +427,7 @@ export async function recordLiveTradeInDb(trade: {
         trade.status,
         trade.stopLoss || null,
         trade.takeProfit || null,
+        effectiveRR,
         trade.realizedPnl || 0,
         trade.strategyName || null,
         trade.payloadJson || null,

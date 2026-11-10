@@ -85,19 +85,13 @@ export function runStrategy1Backtest(
       const naturalTargetDistance = Math.abs(priceA - entryPrice);
       const naturalRR = stopDistance > 0 ? naturalTargetDistance / stopDistance : 0;
 
-      // User Rule: حداکثر RR هم بزار و مقدارش رو 5قرار بده
-      const maxRR = config.maxRiskReward > 0 ? config.maxRiskReward : 5;
-      let takeProfit = priceA;
-      let riskReward = naturalRR;
-
-      const isTargetValidInDirection = direction === 'BUY' ? priceA > entryPrice : priceA < entryPrice;
-      if (!isTargetValidInDirection || naturalRR > maxRR || naturalRR <= 0.05) {
-        riskReward = maxRR;
-        takeProfit =
-          direction === 'BUY'
-            ? entryPrice + stopDistance * maxRR
-            : entryPrice - stopDistance * maxRR;
-      }
+      // محاسبه حد سود (Take Profit) دقیقاً بر اساس پارامتر ریسک به ریوارد (همانند استراتژی ۲ و ترید زنده)
+      const targetRR = config.maxRiskReward > 0 ? config.maxRiskReward : 2.0;
+      const riskReward = targetRR;
+      const takeProfit =
+        direction === 'BUY'
+          ? entryPrice + stopDistance * targetRR
+          : entryPrice - stopDistance * targetRR;
 
       const timeF = darkBlueLeg.endTime;
       const candleIdxF = findCandleIndex(timeF);
@@ -545,9 +539,9 @@ export function runStrategy2Backtest(
               const direction: 'BUY' | 'SELL' = 'SELL'; // ریزش از سقف F
               const cycleType: 'bullish' | 'bearish' = giantLeg.isUp ? 'bullish' : 'bearish';
 
-              const maxRR = config.maxRiskReward > 0 ? config.maxRiskReward : 5;
-              const riskReward = maxRR;
-              const takeProfit = entryPrice - stopDistance * maxRR;
+              const targetRR = config.maxRiskReward > 0 ? config.maxRiskReward : 2.0;
+              const riskReward = targetRR;
+              const takeProfit = entryPrice - stopDistance * targetRR;
 
               const riskBudget =
                 config.riskMode === 'fixed' && config.riskAmountFixed && config.riskAmountFixed > 0
@@ -771,9 +765,9 @@ export function runStrategy2Backtest(
               const direction: 'BUY' | 'SELL' = 'BUY'; // صعود از کف F
               const cycleType: 'bullish' | 'bearish' = giantLeg.isUp ? 'bullish' : 'bearish';
 
-              const maxRR = config.maxRiskReward > 0 ? config.maxRiskReward : 5;
-              const riskReward = maxRR;
-              const takeProfit = entryPrice + stopDistance * maxRR;
+              const targetRR = config.maxRiskReward > 0 ? config.maxRiskReward : 2.0;
+              const riskReward = targetRR;
+              const takeProfit = entryPrice + stopDistance * targetRR;
 
               const riskBudget =
                 config.riskMode === 'fixed' && config.riskAmountFixed && config.riskAmountFixed > 0
@@ -1221,7 +1215,7 @@ export function runBreakoutStrategy(
     const risk = Math.abs(entryPrice - stopLoss);
     if (risk <= 0) continue;
 
-    const targetRR = Math.min(params.maxRiskReward || 2.0, 5.0);
+    const targetRR = params.maxRiskReward && params.maxRiskReward > 0 ? params.maxRiskReward : 2.0;
     const takeProfit = isLong ? entryPrice + risk * targetRR : entryPrice - risk * targetRR;
 
     let status: 'OPEN' | 'WIN' | 'LOSS' | 'ACTIVE' = 'ACTIVE';

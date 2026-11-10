@@ -1291,6 +1291,21 @@ app.get('/api/xt/positions/history', async (req, res) => {
         strategyName: matchExec?.strategyName || 'Next Pivot Strategy',
         takeProfitPrice: matchExec?.takeProfit || (item.triggerProfitPrice ? parseFloat(item.triggerProfitPrice) : undefined),
         stopLossPrice: matchExec?.stopLoss || (item.triggerStopPrice ? parseFloat(item.triggerStopPrice) : undefined),
+        riskReward: (function() {
+          const tp = matchExec?.takeProfit || (item.triggerProfitPrice ? parseFloat(item.triggerProfitPrice) : undefined);
+          const sl = matchExec?.stopLoss || (item.triggerStopPrice ? parseFloat(item.triggerStopPrice) : undefined);
+          const slDist = (entryPrice > 0 && sl) ? Math.abs(entryPrice - sl) : 0;
+          const tpDist = (entryPrice > 0 && tp) ? Math.abs(tp - entryPrice) : 0;
+          return slDist > 0 ? parseFloat((tpDist / slDist).toFixed(2)) : (matchExec?.riskReward || undefined);
+        })(),
+        realizedR: (function() {
+          const sl = matchExec?.stopLoss || (item.triggerStopPrice ? parseFloat(item.triggerStopPrice) : undefined);
+          const slDist = (entryPrice > 0 && sl) ? Math.abs(entryPrice - sl) : 0;
+          if (slDist > 0 && exitPrice > 0) {
+            return parseFloat(((exitPrice - entryPrice) * (posSide === 'LONG' ? 1 : -1) / slDist).toFixed(2));
+          }
+          return undefined;
+        })(),
         realizedPnl: netProfit,
         grossProfit,
         fee,
@@ -6052,6 +6067,8 @@ async function runServerScannerCycle() {
             addServerScannerLog('info', `🚀 در حال ارسال سفارش زنده فیوچرز به XT برای ${xtSymbol.toUpperCase()} در تایم‌فریم ${currentTf}...`, chosen.symbol, currentTf);
 
             const symMeta = getXtSymbolMeta(xtSymbol);
+            const priceDecimals = symMeta.pricePrecision ?? 3;
+            const targetRR = cfg.riskRewardRatio && cfg.riskRewardRatio > 0 ? cfg.riskRewardRatio : 2.0;
 
             let livePrice = chosen.curPrice;
             try {
@@ -6063,6 +6080,22 @@ async function runServerScannerCycle() {
               }
             } catch {}
 
+            // Calculate exact Stop Loss and Take Profit at live execution price:
+            const rawStopLoss = chosen.stopLoss;
+            const liveStopDist = Math.abs(livePrice - rawStopLoss);
+            if (liveStopDist <= 0) {
+              addServerScannerLog('warning', `⚠️ رد سیگنال ${chosen.symbol.toUpperCase()}: فاصله استاپ تا قیمت ورود صفر است.`, chosen.symbol, currentTf);
+              continue;
+            }
+
+            // Exactly derive Take Profit from livePrice and liveStopDist using targetRR to guarantee 100% exact R:R
+            const rawTakeProfit = chosen.posSide === 'LONG'
+              ? livePrice + liveStopDist * targetRR
+              : livePrice - liveStopDist * targetRR;
+
+            const finalStopLoss = parseFloat(rawStopLoss.toFixed(priceDecimals));
+            const finalTakeProfit = parseFloat(rawTakeProfit.toFixed(priceDecimals));
+
             const targetRiskUsdt = cfg.riskMode === 'fixed' && cfg.riskAmountFixed && cfg.riskAmountFixed > 0
               ? cfg.riskAmountFixed
               : (availableBalance * ((cfg.riskPercent || 1) / 100));
@@ -6070,7 +6103,7 @@ async function runServerScannerCycle() {
             const xtSizing = calculateXtRiskBudgetedOrder({
               riskBudget: targetRiskUsdt,
               entryPrice: livePrice,
-              stopLoss: chosen.stopLoss,
+              stopLoss: finalStopLoss,
               symbol: xtSymbol,
               contractSize: symMeta.contractSize,
               minNotional: symMeta.minNotional,
@@ -6098,24 +6131,15 @@ async function runServerScannerCycle() {
               });
             } catch {}
 
-            const priceDecimals = symMeta.pricePrecision ?? 3;
             let validTriggerProfitPrice: number | undefined = undefined;
             let validTriggerStopPrice: number | undefined = undefined;
 
             if (chosen.posSide === 'LONG') {
-              if (chosen.takeProfit && chosen.takeProfit > livePrice * 1.001) {
-                validTriggerProfitPrice = parseFloat(chosen.takeProfit.toFixed(priceDecimals));
-              }
-              if (chosen.stopLoss && chosen.stopLoss < livePrice * 0.999 && chosen.stopLoss > 0) {
-                validTriggerStopPrice = parseFloat(chosen.stopLoss.toFixed(priceDecimals));
-              }
+              if (finalTakeProfit > livePrice) validTriggerProfitPrice = finalTakeProfit;
+              if (finalStopLoss < livePrice && finalStopLoss > 0) validTriggerStopPrice = finalStopLoss;
             } else {
-              if (chosen.takeProfit && chosen.takeProfit < livePrice * 0.999 && chosen.takeProfit > 0) {
-                validTriggerProfitPrice = parseFloat(chosen.takeProfit.toFixed(priceDecimals));
-              }
-              if (chosen.stopLoss && chosen.stopLoss > livePrice * 1.001) {
-                validTriggerStopPrice = parseFloat(chosen.stopLoss.toFixed(priceDecimals));
-              }
+              if (finalTakeProfit < livePrice && finalTakeProfit > 0) validTriggerProfitPrice = finalTakeProfit;
+              if (finalStopLoss > livePrice) validTriggerStopPrice = finalStopLoss;
             }
 
             const orderPayload: any = {
@@ -6141,8 +6165,9 @@ async function runServerScannerCycle() {
               coinQty: xtSizing.effectiveCoinQty,
               nominalUsdt: xtSizing.nominalUsdt,
               curPrice: livePrice,
-              stopLoss: chosen.stopLoss,
-              takeProfit: chosen.takeProfit,
+              stopLoss: finalStopLoss,
+              takeProfit: finalTakeProfit,
+              riskReward: targetRR,
               targetRiskUsdt,
               actualLossAtSL: xtSizing.actualLossAtSL,
               positionToRiskRatio: chosen.positionToRiskRatio,
@@ -6186,13 +6211,13 @@ async function runServerScannerCycle() {
                 execRecord.orderId = orderId;
                 addServerScannerLog(
                   'success',
-                  `✅ سفارش زنده فیوچرز در تایم‌فریم ${currentTf} با موفقیت در صرافی XT ثبت شد (Order ID: ${orderId}) | حجم: ${orderQty} قرارداد (${xtSizing.effectiveCoinQty} واحد، ارزش: $${xtSizing.nominalUsdt}) | استاپ: ${chosen.stopLoss} | تارگت: ${chosen.takeProfit}`,
+                  `✅ سفارش زنده فیوچرز در تایم‌فریم ${currentTf} با موفقیت در صرافی XT ثبت شد (Order ID: ${orderId}) | حجم: ${orderQty} قرارداد (${xtSizing.effectiveCoinQty} واحد، ارزش: $${xtSizing.nominalUsdt}) | استاپ: ${finalStopLoss} | تارگت: ${finalTakeProfit} | نسبت R:R: 1:${targetRR}`,
                   chosen.symbol,
                   currentTf
                 );
                 serverScannerState.executionLogs = [execRecord, ...serverScannerState.executionLogs].slice(0, 100);
 
-                // 🌟 Store Order ID and Timeframe in PostgreSQL database!
+                // 🌟 Store Order ID, Timeframe, and exact Risk:Reward in PostgreSQL database!
                 await recordLiveTradeInDb({
                   id: execRecord.id,
                   orderId: String(orderId),
@@ -6205,8 +6230,9 @@ async function runServerScannerCycle() {
                   price: livePrice,
                   amount: orderQty,
                   status: 'ACTIVE',
-                  stopLoss: chosen.stopLoss,
-                  takeProfit: chosen.takeProfit,
+                  stopLoss: finalStopLoss,
+                  takeProfit: finalTakeProfit,
+                  riskReward: targetRR,
                   strategyName: cfg.strategyId,
                   payloadJson: JSON.stringify(orderPayload),
                   responseJson: JSON.stringify(orderRes),
@@ -6490,10 +6516,11 @@ app.post('/api/live-scanner/test-trade', async (req, res) => {
 
     const symMeta = getXtSymbolMeta(xtSymbol);
     const priceDecimals = symMeta.pricePrecision ?? 3;
+    const targetRR = parseFloat(String(req.body?.riskRewardRatio || serverScannerState.config.riskRewardRatio || 2.0));
 
-    // 2. Safe SL (0.3% distance) and TP (0.9% distance, 1:3 RR)
-    const slDistance = curPrice * 0.003;
-    const tpDistance = curPrice * 0.009;
+    // 2. Exact SL (0.4% distance) and TP strictly according to configured targetRR
+    const slDistance = curPrice * 0.004;
+    const tpDistance = slDistance * targetRR;
 
     const stopLoss = posSide === 'LONG'
       ? parseFloat((curPrice - slDistance).toFixed(priceDecimals))
@@ -6581,6 +6608,7 @@ app.post('/api/live-scanner/test-trade', async (req, res) => {
         status: 'ACTIVE',
         stopLoss,
         takeProfit,
+        riskReward: targetRR,
         strategyName: 'test_trade',
         payloadJson: JSON.stringify(orderPayload),
         responseJson: JSON.stringify(orderRes),

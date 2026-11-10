@@ -2671,9 +2671,16 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                         <td className="py-2.5 px-3 text-cyan-300 font-bold">${formatPrice(pos.markPrice)}</td>
                         <td className="py-2.5 px-3 font-mono">
                           {pos.takeProfitPrice ? (
-                            <div className="flex items-center gap-1 text-emerald-400 font-bold">
-                              <Target className="w-3 h-3 text-emerald-400 shrink-0" />
-                              <span>${formatPrice(pos.takeProfitPrice)}</span>
+                            <div className="flex flex-col">
+                              <div className="flex items-center gap-1 text-emerald-400 font-bold">
+                                <Target className="w-3 h-3 text-emerald-400 shrink-0" />
+                                <span>${formatPrice(pos.takeProfitPrice)}</span>
+                              </div>
+                              {pos.entryPrice && pos.stopLossPrice && Math.abs(pos.entryPrice - pos.stopLossPrice) > 0 && (
+                                <span className="text-[10px] text-amber-300 font-mono font-bold mt-0.5" title="ریسک به ریوارد تارگت">
+                                  R:R 1:{(Math.abs(pos.takeProfitPrice - pos.entryPrice) / Math.abs(pos.entryPrice - pos.stopLossPrice)).toFixed(2)}
+                                </span>
+                              )}
                             </div>
                           ) : (
                             <span className="text-gray-500 text-[11px]">---</span>
@@ -2824,6 +2831,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                     <th className="py-2 px-3">قیمت ورود</th>
                     <th className="py-2 px-3">حد سود (TP)</th>
                     <th className="py-2 px-3">حد ضرر (SL)</th>
+                    <th className="py-2 px-3 text-center">ریسک به ریوارد (R:R)</th>
                     <th className="py-2 px-3">حجم</th>
                     <th className="py-2 px-3 text-center">میزان کارمزد</th>
                     <th className="py-2 px-3 text-center">سود/زیان (PnL)</th>
@@ -2879,6 +2887,53 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                         <td className="py-2.5 px-3 text-white font-bold">${formatPrice(order.price)}</td>
                         <td className="py-2.5 px-3 text-emerald-400">${order.takeProfitPrice ? formatPrice(order.takeProfitPrice) : '---'}</td>
                         <td className="py-2.5 px-3 text-rose-400">${order.stopLossPrice ? formatPrice(order.stopLossPrice) : '---'}</td>
+                        <td className="py-2.5 px-3 text-center">
+                          {(() => {
+                            const entryP = Number(order.price) || 0;
+                            const slP = Number(order.stopLossPrice) || 0;
+                            const tpP = Number(order.takeProfitPrice) || 0;
+                            const slDist = (entryP > 0 && slP > 0) ? Math.abs(entryP - slP) : 0;
+                            const tpDist = (entryP > 0 && tpP > 0) ? Math.abs(tpP - entryP) : 0;
+                            const calculatedRR = slDist > 0 ? parseFloat((tpDist / slDist).toFixed(2)) : (order.riskReward || (matchedDb?.risk_reward ? Number(matchedDb.risk_reward) : null));
+                            const exitP = Number(order.exitPrice) || 0;
+                            const isLong = order.positionSide === 'LONG' || order.side === 'BUY';
+                            let realizedR: number | null = null;
+                            if (slDist > 0 && exitP > 0) {
+                              realizedR = parseFloat(((exitP - entryP) * (isLong ? 1 : -1) / slDist).toFixed(2));
+                            } else if (order.realizedR !== undefined) {
+                              realizedR = Number(order.realizedR);
+                            }
+
+                            if (!calculatedRR && realizedR === null) {
+                              return <span className="text-gray-500 text-[11px] font-mono">---</span>;
+                            }
+
+                            return (
+                              <div className="inline-flex flex-col items-center">
+                                {calculatedRR && (
+                                  <span
+                                    className="font-bold text-xs font-mono text-amber-300 bg-amber-950/60 px-2 py-0.5 rounded border border-amber-500/40 shadow-xs"
+                                    title={`ریسک به ریوارد تارگت: 1 به ${calculatedRR} (فاصله تارگت: ${tpDist.toFixed(4)} | فاصله استاپ: ${slDist.toFixed(4)})`}
+                                  >
+                                    1:{calculatedRR}
+                                  </span>
+                                )}
+                                {realizedR !== null && (
+                                  <span
+                                    className={`text-[10px] font-mono px-1.5 py-0.2 rounded mt-0.5 font-bold ${
+                                      realizedR >= 0
+                                        ? 'text-emerald-300 bg-emerald-950/80 border border-emerald-500/30'
+                                        : 'text-rose-300 bg-rose-950/80 border border-rose-500/30'
+                                    }`}
+                                    title="ضریب بازدهی واقعی محقق شده (Realized R)"
+                                  >
+                                    {realizedR >= 0 ? `+${realizedR}R` : `${realizedR}R`}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </td>
                         <td className="py-2.5 px-3 text-gray-300 font-mono">
                           <span>{order.amount}</span>
                           <span className="text-[10px] text-gray-500 mr-1 font-sans">قرارداد</span>
