@@ -950,23 +950,36 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   // Fetch status of background scanner running on server.ts
   const fetchServerScannerStatus = useCallback(async () => {
     try {
-      const res = await fetch('/api/live-scanner/status');
+      const res = await fetch(`/api/live-scanner/status?_t=${Date.now()}`, {
+        cache: 'no-store',
+        headers: {
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+          'Expires': '0',
+        },
+      });
       if (!res.ok) return;
       const contentType = res.headers.get('content-type') || '';
       if (!contentType.includes('application/json')) return;
       const data = await res.json();
       if (data.success && data.state) {
         const { isRunning, isScanning, secondsUntilNextRun, totalRunsCount, lastRunAt, activeSignals, logs, config, executionLogs, startedAt, elapsedSeconds } = data.state;
-        setIsAutoScanning(isRunning);
-        setIsScanningNow(isScanning);
-        setServerStartedAt(startedAt || null);
-        if (typeof elapsedSeconds === 'number') {
-          setElapsedActiveSeconds(elapsedSeconds);
-        } else if (startedAt) {
-          setElapsedActiveSeconds(Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000)));
-        } else if (!isRunning) {
+        const running = Boolean(isRunning);
+        setIsAutoScanning(running);
+        setIsScanningNow(Boolean(isScanning));
+
+        if (running && startedAt) {
+          setServerStartedAt(startedAt);
+          // Precise elapsed active duration calculated relative to authoritative server clock
+          const serverNow = typeof data.serverTime === 'number' ? data.serverTime : Date.now();
+          const startedMs = new Date(startedAt).getTime();
+          const diff = Math.max(0, Math.floor((serverNow - startedMs) / 1000));
+          setElapsedActiveSeconds(typeof elapsedSeconds === 'number' ? elapsedSeconds : diff);
+        } else {
+          setServerStartedAt(null);
           setElapsedActiveSeconds(0);
         }
+
         if (typeof secondsUntilNextRun === 'number') {
           setScanSecondsLeft(secondsUntilNextRun);
         }
@@ -1058,9 +1071,12 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     try {
       addLog('info', '🔍 ارسال درخواست اجرای اسکن فوری به سرور Node.js...');
       showToast('🔍 در حال اجرای اسکن کامل در سرور...');
-      const res = await fetch('/api/live-scanner/scan-now', {
+      const res = await fetch(`/api/live-scanner/scan-now?_t=${Date.now()}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache, no-store',
+        },
       });
       const data = await res.json();
       if (data.success) {
@@ -1085,7 +1101,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       showToast(`❌ خطای شبکه: ${err.message}`);
     } finally {
       setIsScanningNow(false);
-      fetchServerScannerStatus();
+      await fetchServerScannerStatus();
       handleRefreshBalance();
     }
   }, [isScanningNow, addLog, fetchServerScannerStatus, handleRefreshBalance]);
@@ -1093,9 +1109,12 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   // Save changes directly to server backend
   const syncConfigToServer = useCallback(async (partialConfig: any) => {
     try {
-      const res = await fetch('/api/live-scanner/config', {
+      const res = await fetch(`/api/live-scanner/config?_t=${Date.now()}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache, no-store',
+        },
         body: JSON.stringify({ config: partialConfig }),
       });
       if (res.ok) {
@@ -1268,9 +1287,12 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           userId: currentUser || 'amir',
         };
 
-        const res = await fetch('/api/live-scanner/start', {
+        const res = await fetch(`/api/live-scanner/start?_t=${Date.now()}`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-cache, no-store',
+          },
           body: JSON.stringify({ config: configPayload }),
         });
 
@@ -1288,8 +1310,11 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           showToast('❌ خطا در فعال‌سازی اسکنر سرور.');
         }
       } else {
-        const res = await fetch('/api/live-scanner/stop', {
+        const res = await fetch(`/api/live-scanner/stop?_t=${Date.now()}`, {
           method: 'POST',
+          headers: {
+            'Cache-Control': 'no-cache, no-store',
+          },
         });
 
         if (res.ok) {
@@ -1307,7 +1332,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       showToast(`❌ خطای شبکه: ${err.message}`);
     } finally {
       setIsTogglingServer(false);
-      fetchServerScannerStatus();
+      await fetchServerScannerStatus();
     }
   };
 

@@ -2,26 +2,13 @@
   "config": {
     "timeframe": "5m",
     "timeframes": [
-      "5m",
-      "15m"
+      "5m"
     ],
     "exchange": "xt",
     "strategyId": "strategy_2_next_pivot",
     "symbols": [
       "btc_usdt",
-      "eth_usdt",
-      "sol_usdt",
-      "xrp_usdt",
-      "doge_usdt",
-      "sui_usdt",
-      "ada_usdt",
-      "near_usdt",
-      "avax_usdt",
-      "1000pepe_usdt",
-      "1000shib_usdt",
-      "dot_usdt",
-      "ltc_usdt",
-      "apt_usdt"
+      "eth_usdt"
     ],
     "isFutures": true,
     "intervalMs": 300000,
@@ -45,11 +32,81 @@
     "isLiveExecution": false,
     "userId": "amir"
   },
-  "isRunning": true,
-  "startedAt": "2026-11-03T11:32:52.064Z",
-  "lastRunAt": "2026-11-10T00:24:08.813Z",
-  "totalRunsCount": 10,
+  "isRunning": false,
+  "startedAt": null,
+  "lastRunAt": "2026-11-10T18:13:13.954Z",
+  "totalRunsCount": 12,
   "logs": [
+    {
+      "id": "log_1794334413441_57jk",
+      "time": "۱۸:۱۳:۳۳",
+      "type": "warning",
+      "message": "⏸️ اتوپایلوت مداوم در پس‌زمینه سرور متوقف گردید."
+    },
+    {
+      "id": "log_1794334393954_5ea4",
+      "time": "۱۸:۱۳:۱۳",
+      "type": "info",
+      "message": "⏱️ چرخه اسکن شماره 12 در تایم‌فریم‌های [5m] به پایان رسید. زمان سپری‌شده: 0.8 ثانیه."
+    },
+    {
+      "id": "log_1794334393953_r4iy",
+      "time": "۱۸:۱۳:۱۳",
+      "type": "info",
+      "message": "✅ تایم‌فریم 5m: اسکن 2 ارز به پایان رسید و در کندل جاری هیچ سیگنال معتبری شناسایی نشد.",
+      "timeframe": "5m"
+    },
+    {
+      "id": "log_1794334393542_mwgw",
+      "time": "۱۸:۱۳:۱۳",
+      "type": "info",
+      "message": "🔍 شروع اسکن موازی روی 2 ارز در تایم‌فریم 5m (XT)...",
+      "timeframe": "5m"
+    },
+    {
+      "id": "log_1794334393542_k9m9",
+      "time": "۱۸:۱۳:۱۳",
+      "type": "info",
+      "message": "🔍 شروع اسکن موازی روی 2 ارز در تایم‌فریم‌های آزاد [5m] (XT)..."
+    },
+    {
+      "id": "log_1794334393148_6rlj",
+      "time": "۱۸:۱۳:۱۳",
+      "type": "success",
+      "message": "🚀 اتوپایلوت مداوم سرور فعال شد [حالت: 📝 شبیه‌ساز (Paper Trading)]: تایم‌فریم‌های موازی [5m] با تکرار هر 5 دقیقه (2 ارز). اسکن اول فوراً آغاز شد."
+    },
+    {
+      "id": "log_1794334389084_oeqa",
+      "time": "۱۸:۱۳:۰۹",
+      "type": "info",
+      "message": "⏱️ چرخه اسکن شماره 11 در تایم‌فریم‌های [5m] به پایان رسید. زمان سپری‌شده: 1.2 ثانیه."
+    },
+    {
+      "id": "log_1794334389083_eyu4",
+      "time": "۱۸:۱۳:۰۹",
+      "type": "info",
+      "message": "✅ تایم‌فریم 5m: اسکن 2 ارز به پایان رسید و در کندل جاری هیچ سیگنال معتبری شناسایی نشد.",
+      "timeframe": "5m"
+    },
+    {
+      "id": "log_1794334388689_dkja",
+      "time": "۱۸:۱۳:۰۸",
+      "type": "info",
+      "message": "🔍 شروع اسکن موازی روی 2 ارز در تایم‌فریم 5m (XT)...",
+      "timeframe": "5m"
+    },
+    {
+      "id": "log_1794334388687_wz8p",
+      "time": "۱۸:۱۳:۰۸",
+      "type": "info",
+      "message": "🔍 شروع اسکن موازی روی 2 ارز در تایم‌فریم‌های آزاد [5m] (XT)..."
+    },
+    {
+      "id": "log_1794334387882_cf18",
+      "time": "۱۸:۱۳:۰۷",
+      "type": "success",
+      "message": "🚀 اتوپایلوت مداوم سرور فعال شد [حالت: 📝 شبیه‌ساز (Paper Trading)]: تایم‌فریم‌های موازی [5m] با تکرار هر 5 دقیقه (2 ارز). اسکن اول فوراً آغاز شد."
+    },
     {
       "id": "log_1794270248813_cekg",
       "time": "۰۰:۲۴:۰۸",
@@ -492,5 +549,5 @@
     }
   ],
   "executionLogs": [],
-  "updatedAt": "2026-11-10T00:24:08.813Z"
+  "updatedAt": "2026-11-10T18:13:33.442Z"
 }

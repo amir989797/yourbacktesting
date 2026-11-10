@@ -5601,11 +5601,10 @@ function loadLiveConfigFromDisk(): PersistentLiveScannerData | null {
   return null;
 }
 
-async function syncLiveConfigToDatabase(data: PersistentLiveScannerData) {
+async function syncLiveConfigToDatabase(data: PersistentLiveScannerData): Promise<boolean> {
   try {
-    const client = (global as any)._postgresPool;
-    if (!client) return;
-    await client.query(
+    if (!pool) return false;
+    await pool.query(
       `INSERT INTO live_scanner_state (id, is_running, started_at, last_run_at, total_runs_count, config_json, logs_json, execution_logs_json, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
        ON CONFLICT (id) DO UPDATE SET
@@ -5619,16 +5618,90 @@ async function syncLiveConfigToDatabase(data: PersistentLiveScannerData) {
          updated_at = NOW();`,
       [
         'current',
-        data.isRunning,
+        !!data.isRunning,
         data.startedAt ? new Date(data.startedAt) : null,
         data.lastRunAt ? new Date(data.lastRunAt) : null,
         data.totalRunsCount || 0,
-        JSON.stringify(data.config),
+        JSON.stringify(data.config || {}),
         JSON.stringify(data.logs || []),
         JSON.stringify(data.executionLogs || []),
       ]
     );
-  } catch {}
+    return true;
+  } catch (err: any) {
+    console.warn('[ServerLiveScanner] Error syncing config to PostgreSQL:', err.message);
+    return false;
+  }
+}
+
+async function loadLiveConfigFromDatabase(): Promise<boolean> {
+  try {
+    if (!pool) return false;
+    const res = await pool.query('SELECT * FROM live_scanner_state WHERE id = $1', ['current']);
+    if (res && res.rows && res.rows.length > 0) {
+      const row = res.rows[0];
+      let parsedConfig: any = null;
+      let parsedLogs: any[] = [];
+      let parsedExecLogs: any[] = [];
+      try {
+        parsedConfig = typeof row.config_json === 'string' ? JSON.parse(row.config_json) : row.config_json;
+      } catch {}
+      try {
+        parsedLogs = typeof row.logs_json === 'string' ? JSON.parse(row.logs_json) : (row.logs_json || []);
+      } catch {}
+      try {
+        parsedExecLogs = typeof row.execution_logs_json === 'string' ? JSON.parse(row.execution_logs_json) : (row.execution_logs_json || []);
+      } catch {}
+
+      if (parsedConfig && typeof parsedConfig === 'object') {
+        serverScannerState.config = {
+          ...serverScannerState.config,
+          ...parsedConfig,
+        };
+      }
+      if (!serverScannerState.config.timeframes || !serverScannerState.config.timeframes.length) {
+        serverScannerState.config.timeframes = [serverScannerState.config.timeframe || '5m'];
+      }
+      serverScannerState.isRunning = !!row.is_running;
+      serverScannerState.startedAt = row.started_at ? new Date(row.started_at).toISOString() : null;
+      serverScannerState.lastRunAt = row.last_run_at ? new Date(row.last_run_at).toISOString() : null;
+      serverScannerState.totalRunsCount = Number(row.total_runs_count) || 0;
+      if (Array.isArray(parsedLogs) && parsedLogs.length > 0) {
+        serverScannerState.logs = parsedLogs;
+      }
+      if (Array.isArray(parsedExecLogs) && parsedExecLogs.length > 0) {
+        serverScannerState.executionLogs = parsedExecLogs;
+      }
+
+      console.log(`[ServerLiveScanner] 🗄️ Loaded authoritative state from PostgreSQL (isRunning: ${serverScannerState.isRunning}, startedAt: ${serverScannerState.startedAt || 'None'})`);
+
+      // If autopilot is marked running in DB, ensure background loop timer is running
+      if (serverScannerState.isRunning) {
+        if (!serverScannerState.startedAt) {
+          serverScannerState.startedAt = new Date().toISOString();
+        }
+        const interval = serverScannerState.config.intervalMs || getShortestIntervalMs(serverScannerState.config.timeframes, serverScannerState.config.timeframe || '5m');
+        serverScannerState.config.intervalMs = interval;
+        serverScannerState.nextRunAt = new Date(Date.now() + interval).toISOString();
+
+        if (serverScannerTimer) {
+          clearInterval(serverScannerTimer);
+        }
+        serverScannerTimer = setInterval(() => {
+          runServerScannerCycle().catch((err) => {
+            addServerScannerLog('error', `خطا در اجرای اسکن دوره‌ای سرور: ${err.message}`);
+            serverScannerState.isScanning = false;
+          });
+        }, interval);
+
+        console.log(`[ServerLiveScanner] 🚀 Autopilot background loop automatically resumed via PostgreSQL (Interval: ${interval}ms)`);
+      }
+      return true;
+    }
+  } catch (err: any) {
+    console.warn('[ServerLiveScanner] Warning reading state from PostgreSQL:', err.message);
+  }
+  return false;
 }
 
 function saveLiveConfigToDisk() {
@@ -5654,7 +5727,7 @@ function saveLiveConfigToDisk() {
   }
 }
 
-// Initialize and resume persistent state from disk
+// Initial bootstrap from local disk if present (before DB connects)
 const savedDiskData = loadLiveConfigFromDisk();
 if (savedDiskData) {
   serverScannerState.config = {
@@ -5674,29 +5747,7 @@ if (savedDiskData) {
   if (Array.isArray(savedDiskData.executionLogs) && savedDiskData.executionLogs.length > 0) {
     serverScannerState.executionLogs = savedDiskData.executionLogs;
   }
-  console.log(`[ServerLiveScanner] ✅ Loaded persistent config from ${CONFIG_FILE_PATH} (Active: ${serverScannerState.isRunning}, Started: ${serverScannerState.startedAt || 'None'})`);
-
-  // If autopilot was running prior to server process reload, seamlessly resume background loop
-  if (serverScannerState.isRunning) {
-    if (!serverScannerState.startedAt) {
-      serverScannerState.startedAt = new Date().toISOString();
-    }
-    const interval = serverScannerState.config.intervalMs || getShortestIntervalMs(serverScannerState.config.timeframes, serverScannerState.config.timeframe || '5m');
-    serverScannerState.config.intervalMs = interval;
-    serverScannerState.nextRunAt = new Date(Date.now() + interval).toISOString();
-
-    if (serverScannerTimer) {
-      clearInterval(serverScannerTimer);
-    }
-    serverScannerTimer = setInterval(() => {
-      runServerScannerCycle().catch((err) => {
-        addServerScannerLog('error', `خطا در اجرای اسکن دوره‌ای سرور: ${err.message}`);
-        serverScannerState.isScanning = false;
-      });
-    }, interval);
-
-    console.log(`[ServerLiveScanner] 🚀 Autopilot background loop automatically resumed on startup! (Interval: ${interval}ms)`);
-  }
+  console.log(`[ServerLiveScanner] ✅ Pre-loaded fallback config from disk cache (Active: ${serverScannerState.isRunning}, Started: ${serverScannerState.startedAt || 'None'})`);
 }
 
 function addServerScannerLog(
@@ -5720,15 +5771,17 @@ function addServerScannerLog(
 }
 
 function getScannerPublicState() {
+  const now = Date.now();
   let secondsUntilNextRun = 0;
   if (serverScannerState.isRunning && serverScannerState.nextRunAt) {
-    secondsUntilNextRun = Math.max(0, Math.round((new Date(serverScannerState.nextRunAt).getTime() - Date.now()) / 1000));
+    secondsUntilNextRun = Math.max(0, Math.round((new Date(serverScannerState.nextRunAt).getTime() - now) / 1000));
   }
   let elapsedSeconds = 0;
   if (serverScannerState.isRunning && serverScannerState.startedAt) {
-    elapsedSeconds = Math.max(0, Math.floor((Date.now() - new Date(serverScannerState.startedAt).getTime()) / 1000));
+    elapsedSeconds = Math.max(0, Math.floor((now - new Date(serverScannerState.startedAt).getTime()) / 1000));
   }
   return {
+    serverTime: now,
     isRunning: serverScannerState.isRunning,
     isScanning: serverScannerState.isScanning,
     startedAt: serverScannerState.startedAt,
@@ -6339,8 +6392,14 @@ async function runServerScannerCycle() {
 }
 
 // 7.1 Update and Persist Live Scanner Configuration
-app.post('/api/live-scanner/config', (req, res) => {
+app.post('/api/live-scanner/config', async (req, res) => {
   try {
+    res.set({
+      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+    });
+
     const userCfg = req.body?.config || req.body || {};
     serverScannerState.config = {
       ...serverScannerState.config,
@@ -6359,8 +6418,18 @@ app.post('/api/live-scanner/config', (req, res) => {
       serverScannerState.config.intervalMs = calculatedInterval;
     }
     
-    // Immediately persist to disk
+    // Immediately persist to disk and PostgreSQL
     saveLiveConfigToDisk();
+    await syncLiveConfigToDatabase({
+      config: serverScannerState.config,
+      isRunning: serverScannerState.isRunning,
+      startedAt: serverScannerState.startedAt,
+      lastRunAt: serverScannerState.lastRunAt,
+      totalRunsCount: serverScannerState.totalRunsCount,
+      logs: serverScannerState.logs.slice(0, 100),
+      executionLogs: serverScannerState.executionLogs.slice(0, 50),
+      updatedAt: new Date().toISOString(),
+    });
 
     // If autopilot is actively running, update timer interval
     if (serverScannerState.isRunning) {
@@ -6375,9 +6444,10 @@ app.post('/api/live-scanner/config', (req, res) => {
       }, serverScannerState.config.intervalMs);
     }
 
-    addServerScannerLog('info', `💾 تنظیمات اسکنر و تایم‌فریم‌های [${(serverScannerState.config.timeframes || [serverScannerState.config.timeframe]).join(', ')}] در دیسک سرور پایدار شد.`);
+    addServerScannerLog('info', `💾 تنظیمات اسکنر و تایم‌فریم‌های [${(serverScannerState.config.timeframes || [serverScannerState.config.timeframe]).join(', ')}] در دیتابیس و دیسک سرور پایدار شد.`);
     res.json({
       success: true,
+      serverTime: Date.now(),
       message: 'Server live scanner config updated and persisted',
       config: serverScannerState.config,
       isRunning: serverScannerState.isRunning,
@@ -6390,6 +6460,12 @@ app.post('/api/live-scanner/config', (req, res) => {
 // 7.2 Start Live Scanner on Server
 app.post('/api/live-scanner/start', async (req, res) => {
   try {
+    res.set({
+      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+    });
+
     const userCfg = req.body?.config || {};
     serverScannerState.config = {
       ...serverScannerState.config,
@@ -6417,8 +6493,18 @@ app.post('/api/live-scanner/start', async (req, res) => {
     serverScannerState.startedAt = serverScannerState.startedAt || new Date().toISOString();
     serverScannerState.nextRunAt = new Date(Date.now() + serverScannerState.config.intervalMs).toISOString();
 
-    // Persist running state to disk & DB
+    // Persist running state authoritatively to disk and PostgreSQL
     saveLiveConfigToDisk();
+    await syncLiveConfigToDatabase({
+      config: serverScannerState.config,
+      isRunning: true,
+      startedAt: serverScannerState.startedAt,
+      lastRunAt: serverScannerState.lastRunAt,
+      totalRunsCount: serverScannerState.totalRunsCount,
+      logs: serverScannerState.logs.slice(0, 100),
+      executionLogs: serverScannerState.executionLogs.slice(0, 50),
+      updatedAt: new Date().toISOString(),
+    });
 
     const tradeModeText = serverScannerState.config.isLiveExecution ? '⚡ معامله زنده صرافی (Real Orders)' : '📝 شبیه‌ساز (Paper Trading)';
     const tfList = (serverScannerState.config.timeframes || [serverScannerState.config.timeframe]).join(', ');
@@ -6443,6 +6529,7 @@ app.post('/api/live-scanner/start', async (req, res) => {
 
     res.json({
       success: true,
+      serverTime: Date.now(),
       message: 'Server live scanner started successfully',
       state: getScannerPublicState(),
     });
@@ -6467,8 +6554,14 @@ app.get('/api/live-trades', async (req, res) => {
 });
 
 // 7.4 Stop Live Scanner on Server
-app.post('/api/live-scanner/stop', (_req, res) => {
+app.post('/api/live-scanner/stop', async (_req, res) => {
   try {
+    res.set({
+      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+    });
+
     if (serverScannerTimer) {
       clearInterval(serverScannerTimer);
       serverScannerTimer = null;
@@ -6478,13 +6571,24 @@ app.post('/api/live-scanner/stop', (_req, res) => {
     serverScannerState.nextRunAt = null;
     serverScannerState.isScanning = false;
 
-    // Persist stopped state to disk & DB
+    // Persist stopped state authoritatively to disk and PostgreSQL
     saveLiveConfigToDisk();
+    await syncLiveConfigToDatabase({
+      config: serverScannerState.config,
+      isRunning: false,
+      startedAt: null,
+      lastRunAt: serverScannerState.lastRunAt,
+      totalRunsCount: serverScannerState.totalRunsCount,
+      logs: serverScannerState.logs.slice(0, 100),
+      executionLogs: serverScannerState.executionLogs.slice(0, 50),
+      updatedAt: new Date().toISOString(),
+    });
 
     addServerScannerLog('warning', '⏸️ اتوپایلوت مداوم در پس‌زمینه سرور متوقف گردید.');
 
     res.json({
       success: true,
+      serverTime: Date.now(),
       message: 'Server live scanner stopped',
       state: getScannerPublicState(),
     });
@@ -6494,9 +6598,29 @@ app.post('/api/live-scanner/stop', (_req, res) => {
 });
 
 // 7.4 Get Live Scanner Status from Server
-app.get('/api/live-scanner/status', (_req, res) => {
+app.get('/api/live-scanner/status', async (_req, res) => {
+  res.set({
+    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
+    'Pragma': 'no-cache',
+    'Expires': '0',
+    'Surrogate-Control': 'no-store',
+  });
+
+  // If in-memory state is not running or out of sync, check PostgreSQL directly
+  if (!serverScannerState.isRunning) {
+    try {
+      const dbCheck = await pool.query('SELECT is_running FROM live_scanner_state WHERE id = $1', ['current']);
+      if (dbCheck.rows.length > 0 && dbCheck.rows[0].is_running) {
+        await loadLiveConfigFromDatabase();
+      }
+    } catch (err: any) {
+      console.warn('[ServerLiveScanner] Error verifying DB status in status endpoint:', err.message);
+    }
+  }
+
   res.json({
     success: true,
+    serverTime: Date.now(),
     state: getScannerPublicState(),
   });
 });
@@ -6864,12 +6988,14 @@ async function startServer() {
 
     // Run PostgreSQL database table verification asynchronously in background so port 3000 opens instantly
     initDatabase()
-      .then((dbInitResult) => {
+      .then(async (dbInitResult) => {
         if (dbInitResult.success) {
           console.log(`[PostgreSQL] 🚀 Auto-initialized ${dbInitResult.tablesCreated.length} tables on remote database.`);
         } else {
           console.warn(`[PostgreSQL] ⚠️ Database auto-init warning:`, dbInitResult.error);
         }
+        // Authoritatively hydrate live scanner state directly from PostgreSQL
+        await loadLiveConfigFromDatabase();
       })
       .catch((dbErr: any) => {
         console.warn(`[PostgreSQL] ⚠️ Database startup warning:`, dbErr.message);
