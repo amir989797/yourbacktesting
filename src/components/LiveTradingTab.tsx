@@ -63,6 +63,8 @@ import {
   closeAllXtPositions,
   cancelXtOrder,
   fetchXtKlines,
+  optimizeXtLiveRiskReward,
+  LiveRrOptimizationResult,
   toXtSymbol,
   fromXtSymbol,
 } from '../services/xt';
@@ -685,9 +687,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   const [longLegAtrMultiplier, setLongLegAtrMultiplier] = useState<number>(8.0);
   const [minCandles, setMinCandles] = useState<number>(2);
   const [minCandlesForLongLeg, setMinCandlesForLongLeg] = useState<number>(10);
+  const [minCandlesForBlueLeg, setMinCandlesForBlueLeg] = useState<number>(2);
+  const [blueLegAtrMultiplier, setBlueLegAtrMultiplier] = useState<number>(2.0);
   const [maxBlueLegPercent, setMaxBlueLegPercent] = useState<number>(50);
   const [maxBreakoutAtrMultiplier, setMaxBreakoutAtrMultiplier] = useState<number>(3.0);
-  const [minVolumeGrowthPercent, setMinVolumeGrowthPercent] = useState<number>(0);
   const [maxCandlesToEnter, setMaxCandlesToEnter] = useState<number>(35);
   const [entryCommissionPercent, setEntryCommissionPercent] = useState<number>(0.06);
   const [exitCommissionPercent, setExitCommissionPercent] = useState<number>(0.06);
@@ -717,6 +720,32 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   // History Tab Filter: 'all' | 'wins' | 'losses' | 'open'
   const [historyFilter, setHistoryFilter] = useState<'all' | 'wins' | 'losses' | 'open'>('all');
 
+  // Optimal R:R (1.0 - 3.0) Analyzer from Real Exchange History
+  const [rrOptResult, setRrOptResult] = useState<LiveRrOptimizationResult | null>(null);
+  const [isOptimizingRr, setIsOptimizingRr] = useState<boolean>(false);
+  const [rrOptStep, setRrOptStep] = useState<0.1 | 0.25>(0.1);
+  const [rrOptLimit, setRrOptLimit] = useState<number>(0);
+  const [showRrTradeDetails, setShowRrTradeDetails] = useState<boolean>(false);
+
+  const handleAnalyzeOptimalRr = useCallback(async () => {
+    setIsOptimizingRr(true);
+    try {
+      const res = await optimizeXtLiveRiskReward({ limit: rrOptLimit, step: rrOptStep });
+      setRrOptResult(res);
+      if (res.success && res.optimal) {
+        showToast(`✅ تحلیل تاریخچه صرافی کامل شد: بهترین R:R برابر 1:${res.optimal.rr} با سود خالص $${res.optimal.netPnl.toFixed(2)}`);
+      } else if (res.error) {
+        showToast(`❌ ${res.error}`);
+      } else if (res.message) {
+        showToast(`ℹ️ ${res.message}`);
+      }
+    } catch (err: any) {
+      showToast(`❌ خطا در تحلیل R:R بهینه: ${err?.message || 'نامشخص'}`);
+    } finally {
+      setIsOptimizingRr(false);
+    }
+  }, [rrOptLimit, rrOptStep]);
+
   const addLog = useCallback((type: 'info' | 'success' | 'warning' | 'trade', message: string, symbol?: string) => {
     const item: ScanLogItem = {
       id: Math.random().toString(36).substring(2, 9),
@@ -744,9 +773,9 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       const pos = await fetchXtPositions();
       setPositions(pos);
 
-      // Auto-sync real closed trade history directly from XT exchange engine
+      // Auto-sync ALL real closed trade history directly from XT exchange engine
       try {
-        const history = await fetchXtPositionHistory();
+        const history = await fetchXtPositionHistory(undefined, 2000);
         if (history && history.length > 0) {
           setTradeHistory((prev) => {
             const exchangeIds = new Set(history.map((h) => h.id));
@@ -784,9 +813,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           if (best.longLegAtrMultiplier) setLongLegAtrMultiplier(best.longLegAtrMultiplier);
           if (best.minCandles) setMinCandles(best.minCandles);
           if (best.minCandlesForLongLeg) setMinCandlesForLongLeg(best.minCandlesForLongLeg);
+          if (best.minCandlesForBlueLeg) setMinCandlesForBlueLeg(best.minCandlesForBlueLeg);
+          if (best.blueLegAtrMultiplier) setBlueLegAtrMultiplier(best.blueLegAtrMultiplier);
           if (best.maxBlueLegPercent) setMaxBlueLegPercent(best.maxBlueLegPercent);
           if (best.maxBreakoutAtrMultiplier) setMaxBreakoutAtrMultiplier(best.maxBreakoutAtrMultiplier);
-          if (best.minVolumeGrowthPercent !== undefined) setMinVolumeGrowthPercent(best.minVolumeGrowthPercent);
           if (best.maxRiskReward) setRiskRewardRatio(best.maxRiskReward);
 
           addLog('success', `🎯 بهترین کانفیگ بهینه‌ساز با وین‌ریت ${best.winRate}% و سود ${best.netProfit}% بارگذاری شد.`);
@@ -800,9 +830,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       setLongLegAtrMultiplier(8.0);
       setMinCandles(2);
       setMinCandlesForLongLeg(10);
+      setMinCandlesForBlueLeg(2);
+      setBlueLegAtrMultiplier(2.0);
       setMaxBlueLegPercent(50);
       setMaxBreakoutAtrMultiplier(3.0);
-      setMinVolumeGrowthPercent(0);
       setRiskRewardRatio(3.0);
       addLog('info', '⚡ کانفیگ کالیبره‌شده اسکلپ ۵ دقیقه‌ای با موفقیت بارگذاری شد.');
     } catch {
@@ -821,9 +852,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         if (zz.longLegAtrMultiplier) setLongLegAtrMultiplier(zz.longLegAtrMultiplier);
         if (zz.minCandles) setMinCandles(zz.minCandles);
         if (zz.minCandlesForLongLeg) setMinCandlesForLongLeg(zz.minCandlesForLongLeg);
+        if (zz.minCandlesForBlueLeg) setMinCandlesForBlueLeg(zz.minCandlesForBlueLeg);
+        if (zz.blueLegAtrMultiplier) setBlueLegAtrMultiplier(zz.blueLegAtrMultiplier);
         if (zz.maxBlueLegPercent !== undefined) setMaxBlueLegPercent(zz.maxBlueLegPercent);
         if (zz.maxBreakoutAtrMultiplier !== undefined) setMaxBreakoutAtrMultiplier(zz.maxBreakoutAtrMultiplier);
-        if (zz.minVolumeGrowthPercent !== undefined) setMinVolumeGrowthPercent(zz.minVolumeGrowthPercent);
         if (zz.maxRiskReward) setRiskRewardRatio(zz.maxRiskReward);
       }
 
@@ -862,9 +894,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     if (cfg.optLongLegAtrMult) setLongLegAtrMultiplier(cfg.optLongLegAtrMult);
     if (cfg.optMinCandles) setMinCandles(cfg.optMinCandles);
     if (cfg.optMinCandlesLong) setMinCandlesForLongLeg(cfg.optMinCandlesLong);
+    if (cfg.optMinCandlesBlue) setMinCandlesForBlueLeg(cfg.optMinCandlesBlue);
+    if (cfg.optBlueLegAtrMult) setBlueLegAtrMultiplier(cfg.optBlueLegAtrMult);
     if (cfg.optMaxBlueLegPercent !== undefined) setMaxBlueLegPercent(cfg.optMaxBlueLegPercent);
     if (cfg.optMaxBreakoutAtr !== undefined) setMaxBreakoutAtrMultiplier(cfg.optMaxBreakoutAtr);
-    if ((cfg as any).optMinVolumeGrowthPercent !== undefined) setMinVolumeGrowthPercent((cfg as any).optMinVolumeGrowthPercent);
     if (cfg.optMaxRiskReward) setRiskRewardRatio(cfg.optMaxRiskReward);
     if (cfg.selectedStrategyId) setSelectedStrategy(cfg.selectedStrategyId as any);
     if (cfg.timeframe) setTradeTimeframe(cfg.timeframe as any);
@@ -917,11 +950,12 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         optAtrPeriod: atrPeriod,
         optMinCandles: minCandles,
         optMinCandlesLong: minCandlesForLongLeg,
+        optMinCandlesBlue: minCandlesForBlueLeg,
         optAtrMultiplier: atrMultiplier,
         optLongLegAtrMult: longLegAtrMultiplier,
+        optBlueLegAtrMult: blueLegAtrMultiplier,
         optMaxBlueLegPercent: maxBlueLegPercent,
         optMaxBreakoutAtr: maxBreakoutAtrMultiplier,
-        optMinVolumeGrowthPercent: minVolumeGrowthPercent,
         optMaxRiskReward: riskRewardRatio,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -1023,9 +1057,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
             if (typeof config.minCandles === 'number') setMinCandles(config.minCandles);
             if (typeof config.minCandlesForLongLeg === 'number') setMinCandlesForLongLeg(config.minCandlesForLongLeg);
             if (typeof config.longLegAtrMultiplier === 'number') setLongLegAtrMultiplier(config.longLegAtrMultiplier);
+            if (typeof config.minCandlesForBlueLeg === 'number') setMinCandlesForBlueLeg(config.minCandlesForBlueLeg);
+            if (typeof config.blueLegAtrMultiplier === 'number') setBlueLegAtrMultiplier(config.blueLegAtrMultiplier);
             if (typeof config.maxBlueLegPercent === 'number') setMaxBlueLegPercent(config.maxBlueLegPercent);
             if (typeof config.maxBreakoutAtrMultiplier === 'number') setMaxBreakoutAtrMultiplier(config.maxBreakoutAtrMultiplier);
-            if (typeof config.minVolumeGrowthPercent === 'number') setMinVolumeGrowthPercent(config.minVolumeGrowthPercent);
             if (typeof config.maxCandlesToEnter === 'number') setMaxCandlesToEnter(config.maxCandlesToEnter);
             if (typeof config.maxPositionToRiskRatio === 'number') setMaxPositionToRiskRatio(config.maxPositionToRiskRatio);
             if (typeof config.timeStopEnabled === 'boolean') setTimeStopEnabled(config.timeStopEnabled);
@@ -1188,9 +1223,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         minCandles,
         minCandlesForLongLeg,
         longLegAtrMultiplier,
+        minCandlesForBlueLeg,
+        blueLegAtrMultiplier,
         maxBlueLegPercent,
         maxBreakoutAtrMultiplier,
-        minVolumeGrowthPercent,
         maxCandlesToEnter,
         entryCommissionPercent,
         exitCommissionPercent,
@@ -1215,9 +1251,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     minCandles,
     minCandlesForLongLeg,
     longLegAtrMultiplier,
+    minCandlesForBlueLeg,
+    blueLegAtrMultiplier,
     maxBlueLegPercent,
     maxBreakoutAtrMultiplier,
-    minVolumeGrowthPercent,
     maxCandlesToEnter,
     entryCommissionPercent,
     exitCommissionPercent,
@@ -1271,9 +1308,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           minCandles,
           minCandlesForLongLeg,
           longLegAtrMultiplier,
+          minCandlesForBlueLeg,
+          blueLegAtrMultiplier,
           maxBlueLegPercent,
           maxBreakoutAtrMultiplier,
-          minVolumeGrowthPercent,
           riskRewardRatio,
           riskMode,
           riskAmountFixed,
@@ -2007,6 +2045,29 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 />
               </div>
 
+              <div className="bg-[#141924] p-2.5 rounded-xl border border-cyan-500/30">
+                <span className="text-[10px] text-cyan-300 block font-bold" title="حداقل کندل تشکیل‌دهنده لگ CD و EF">کندل لگ CD, EF:</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={minCandlesForBlueLeg}
+                  onChange={(e) => setMinCandlesForBlueLeg(parseInt(e.target.value, 10) || 1)}
+                  className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-cyan-300 font-mono text-center font-bold"
+                />
+              </div>
+
+              <div className="bg-[#141924] p-2.5 rounded-xl border border-blue-500/30">
+                <span className="text-[10px] text-blue-300 block font-bold" title="ضریب ATR لگ CD و EF">ضریب لگ CD, EF:</span>
+                <input
+                  type="number"
+                  min={0.1}
+                  step={0.25}
+                  value={blueLegAtrMultiplier}
+                  onChange={(e) => setBlueLegAtrMultiplier(parseFloat(e.target.value) || 0.1)}
+                  className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-blue-300 font-mono text-center font-bold"
+                />
+              </div>
+
               <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42]">
                 <span className="text-[10px] text-gray-400 block">۶. سقف لگ آبی (%):</span>
                 <input
@@ -2027,20 +2088,6 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                   onChange={(e) => setMaxBreakoutAtrMultiplier(parseFloat(e.target.value) || 3.0)}
                   className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-amber-300 font-mono text-center font-bold"
                   title="سقف مجاز نفوذ شکست قیمت در نقطه E نسبت به ATR"
-                />
-              </div>
-
-              <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42]">
-                <span className="text-[10px] text-emerald-400 block font-bold">رشد حجم لگ (%):</span>
-                <input
-                  type="number"
-                  step={5}
-                  min={0}
-                  value={minVolumeGrowthPercent}
-                  onChange={(e) => setMinVolumeGrowthPercent(parseFloat(e.target.value) || 0)}
-                  placeholder="0"
-                  className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-emerald-300 font-mono text-center font-bold"
-                  title="حداقل درصد رشد حجم در طول لگ‌های AB، CD و EF (0 = بدون شرط حجم)"
                 />
               </div>
 
@@ -2803,7 +2850,55 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
             </div>
 
             {/* فیلترها و دکمه‌های کنترلی */}
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1.5 bg-[#0d121d] border border-amber-500/30 rounded-xl px-2 py-1">
+                <select
+                  value={rrOptLimit}
+                  onChange={(e) => setRrOptLimit(Number(e.target.value) || 0)}
+                  className="bg-transparent text-[11px] text-gray-300 font-mono focus:outline-none cursor-pointer"
+                  title="تعداد معاملات اخیر صرافی برای بررسی"
+                >
+                  <option value={0} className="bg-[#0d121d]">همه معاملات ({tradeHistory.length})</option>
+                  <option value={200} className="bg-[#0d121d]">۲۰۰ معامله اخیر</option>
+                  <option value={100} className="bg-[#0d121d]">۱۰۰ معامله اخیر</option>
+                  <option value={50} className="bg-[#0d121d]">۵۰ معامله اخیر</option>
+                  <option value={20} className="bg-[#0d121d]">۲۰ معامله اخیر</option>
+                </select>
+                <span className="text-gray-600 text-[10px]">|</span>
+                <select
+                  value={rrOptStep}
+                  onChange={(e) => setRrOptStep(Number(e.target.value) === 0.25 ? 0.25 : 0.1)}
+                  className="bg-transparent text-[11px] text-amber-300 font-mono focus:outline-none cursor-pointer"
+                  title="گام تست نسبت R:R بین ۱ تا ۳"
+                >
+                  <option value={0.1} className="bg-[#0d121d]">گام 0.1</option>
+                  <option value={0.25} className="bg-[#0d121d]">گام 0.25</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={handleAnalyzeOptimalRr}
+                  disabled={isOptimizingRr}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                    isOptimizingRr
+                      ? 'bg-amber-950/60 text-amber-300 border border-amber-500/30 cursor-wait'
+                      : 'bg-gradient-to-l from-amber-500/20 to-cyan-500/20 hover:from-amber-500/30 hover:to-cyan-500/30 text-amber-300 border border-amber-500/40'
+                  }`}
+                  title="بررسی کندل‌به‌کندل تک‌تک معاملات صرافی از نقطه ورود تا حد ضرر یا R:R=3 برای یافتن بهینه‌ترین R:R بین ۱ تا ۳ با احتساب کارمزد واقعی"
+                >
+                  {isOptimizingRr ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-300" />
+                      <span>در حال بررسی کندل‌ها...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                      <span>محاسبه R:R بهینه (۱ تا ۳)</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
               <div className="flex items-center bg-[#0d1017] p-0.5 rounded-lg border border-[#202838] text-[11px]">
                 <button
                   type="button"
@@ -2838,6 +2933,278 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
               </button>
             </div>
           </div>
+
+          {/* پنل تحلیل و شبیه‌سازی R:R بهینه (۱ تا ۳) بر اساس تاریخچه واقعی صرافی */}
+          {rrOptResult && rrOptResult.success && rrOptResult.optimal && rrOptResult.actualStats && (
+            <div className="bg-[#0b101b] border border-amber-500/35 rounded-2xl p-4 space-y-3.5">
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#1c2638]">
+                <div className="flex items-center gap-2">
+                  <Target className="w-4 h-4 text-amber-400" />
+                  <div>
+                    <h4 className="text-xs font-extrabold text-white">
+                      نتیجه شبیه‌سازی کندل‌به‌کندل معاملات واقعی (از ورود تا استاپ یا R:R = 3)
+                    </h4>
+                    <p className="text-[10px] text-gray-400">
+                      {rrOptResult.actualStats.testedTrades} معامله دارای SL معتبر از مجموع {rrOptResult.actualStats.totalTrades} معامله صرافی با کندل‌های دقیق ۱m/۵m و کارمزد واقعی بررسی شدند
+                      {rrOptResult.actualStats.skippedTrades > 0 ? ` (${rrOptResult.actualStats.skippedTrades} معامله بدون SL رد شد)` : ''}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (rrOptResult.optimal) {
+                        setRiskRewardRatio(rrOptResult.optimal.rr);
+                        showToast(`🎯 نسبت R:R ترید زنده روی مقدار بهینه 1:${rrOptResult.optimal.rr} تنظیم شد و با سرور همگام‌سازی می‌گردد.`);
+                      }
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-emerald-600/25 hover:bg-emerald-600/40 text-emerald-300 border border-emerald-500/50 text-[11px] font-bold cursor-pointer transition-all flex items-center gap-1.5"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>اعمال R:R بهینه (1:{rrOptResult.optimal.rr})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRrOptResult(null)}
+                    className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-[#1a2335] transition-colors cursor-pointer"
+                    title="بستن گزارش تحلیل R:R"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              {/* کارت‌های مقایسه عملکرد واقعی در برابر R:R بهینه */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="bg-[#111827] border border-[#243044] rounded-xl p-3 space-y-1.5">
+                  <div className="text-[10px] text-gray-400 font-bold">عملکرد واقعی ثبت‌شده در صرافی</div>
+                  <div className="flex items-baseline justify-between">
+                    <span className={`text-base font-extrabold font-mono ${rrOptResult.actualStats.netPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      {rrOptResult.actualStats.netPnl >= 0 ? `+$${rrOptResult.actualStats.netPnl.toFixed(4)}` : `-$${Math.abs(rrOptResult.actualStats.netPnl).toFixed(4)}`}
+                    </span>
+                    <span className="text-[10px] font-mono text-gray-300">
+                      WR: {rrOptResult.actualStats.winRate}% | PF: {rrOptResult.actualStats.profitFactor}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-gray-400 font-mono flex items-center justify-between">
+                    <span>برد/باخت: {rrOptResult.actualStats.wins}W / {rrOptResult.actualStats.losses}L</span>
+                    <span className="text-amber-400">کارمزد: ${rrOptResult.actualStats.totalFees.toFixed(4)}</span>
+                  </div>
+                </div>
+
+                <div className="bg-gradient-to-br from-emerald-950/50 to-cyan-950/30 border border-emerald-500/45 rounded-xl p-3 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-emerald-300 font-bold">بهترین R:R بهینه بین ۱ تا ۳</span>
+                    <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-mono text-xs font-extrabold">
+                      1:{rrOptResult.optimal.rr}
+                    </span>
+                  </div>
+                  <div className="flex items-baseline justify-between">
+                    <span className={`text-base font-extrabold font-mono ${rrOptResult.optimal.netPnl >= 0 ? 'text-emerald-300' : 'text-rose-400'}`}>
+                      {rrOptResult.optimal.netPnl >= 0 ? `+$${rrOptResult.optimal.netPnl.toFixed(4)}` : `-$${Math.abs(rrOptResult.optimal.netPnl).toFixed(4)}`}
+                    </span>
+                    <span className="text-[10px] font-mono text-cyan-200">
+                      WR: {rrOptResult.optimal.winRate}% | PF: {rrOptResult.optimal.profitFactor}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-gray-300 font-mono flex items-center justify-between">
+                    <span>برد/باخت: {rrOptResult.optimal.wins}W / {rrOptResult.optimal.losses}L{rrOptResult.optimal.openCount > 0 ? ` / ${rrOptResult.optimal.openCount} باز` : ''}</span>
+                    <span className="text-amber-300">کارمزد شبیه‌سازی: ${rrOptResult.optimal.totalFees.toFixed(4)}</span>
+                  </div>
+                </div>
+
+                <div className="bg-[#111827] border border-[#243044] rounded-xl p-3 space-y-1.5">
+                  <div className="text-[10px] text-gray-400 font-bold">اختلاف بازدهی و ریسک بهینه</div>
+                  <div className="flex items-baseline justify-between">
+                    <span className={`text-base font-extrabold font-mono ${rrOptResult.optimal.improvementVsActual >= 0 ? 'text-cyan-300' : 'text-rose-400'}`}>
+                      {rrOptResult.optimal.improvementVsActual >= 0 ? `+$${rrOptResult.optimal.improvementVsActual.toFixed(4)}` : `-$${Math.abs(rrOptResult.optimal.improvementVsActual).toFixed(4)}`}
+                    </span>
+                    <span className="text-[10px] text-gray-400">نسبت به عملکرد واقعی</span>
+                  </div>
+                  <div className="text-[10px] text-gray-400 font-mono flex items-center justify-between">
+                    <span>سود ناخالص: {rrOptResult.optimal.grossProfit >= 0 ? `+$${rrOptResult.optimal.grossProfit.toFixed(4)}` : `-$${Math.abs(rrOptResult.optimal.grossProfit).toFixed(4)}`}</span>
+                    <span className="text-rose-300">Max DD: ${rrOptResult.optimal.maxDrawdown.toFixed(4)}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* نمودار میله‌ای سریع تمام مقادیر R:R از 1.0 تا 3.0 */}
+              {rrOptResult.rrCurve && rrOptResult.rrCurve.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-[11px] text-gray-300">
+                    <span className="font-bold">منحنی مقایسه سود خالص (Net PnL با کسر کارمزد) در R:Rهای ۱ تا ۳:</span>
+                    <button
+                      type="button"
+                      onClick={() => setShowRrTradeDetails((v) => !v)}
+                      className="text-cyan-300 hover:text-cyan-200 underline text-[11px] cursor-pointer"
+                    >
+                      {showRrTradeDetails ? 'مخفی کردن جزئیات تک‌تک معاملات' : `نمایش بررسی تک‌تک معاملات (${rrOptResult.tradeDetails?.length || 0})`}
+                    </button>
+                  </div>
+
+                  <div className="overflow-x-auto pb-1">
+                    <div className="flex items-end gap-1.5 min-w-[620px] h-28 bg-[#0f1523] border border-[#1f293d] rounded-xl px-3 py-2">
+                      {(() => {
+                        const curve = rrOptResult.rrCurve || [];
+                        const maxAbs = Math.max(0.0001, ...curve.map((c) => Math.abs(c.netPnl)));
+                        return curve.map((pt) => {
+                          const isBest = rrOptResult.optimal?.rr === pt.rr;
+                          const heightPct = Math.max(8, Math.round((Math.abs(pt.netPnl) / maxAbs) * 100));
+                          return (
+                            <div
+                              key={pt.rr}
+                              className="flex-1 flex flex-col items-center justify-end h-full group cursor-pointer"
+                              onClick={() => {
+                                setRiskRewardRatio(pt.rr);
+                                showToast(`🎯 R:R روی 1:${pt.rr} تنظیم شد (سود خالص شبیه‌سازی‌شده: $${pt.netPnl.toFixed(4)})`);
+                              }}
+                              title={`R:R 1:${pt.rr} | سود خالص: $${pt.netPnl.toFixed(4)} | WR: ${pt.winRate}% | ${pt.wins}W/${pt.losses}L | کارمزد: $${pt.totalFees.toFixed(4)} (کلیک برای اعمال)`}
+                            >
+                              <div className="text-[9px] font-mono text-gray-400 group-hover:text-white mb-0.5">
+                                {pt.netPnl >= 0 ? `+${pt.netPnl.toFixed(2)}` : pt.netPnl.toFixed(2)}
+                              </div>
+                              <div
+                                style={{ height: `${Math.min(72, Math.max(10, Math.round(heightPct * 0.72)))}%` }}
+                                className={`w-full rounded-t transition-all ${
+                                  isBest
+                                    ? 'bg-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.5)]'
+                                    : pt.netPnl >= 0
+                                      ? 'bg-emerald-500/70 group-hover:bg-emerald-400'
+                                      : 'bg-rose-500/70 group-hover:bg-rose-400'
+                                }`}
+                              />
+                              <div className={`text-[9px] font-mono mt-1 ${isBest ? 'text-amber-300 font-extrabold' : 'text-gray-400'}`}>
+                                {pt.rr}
+                              </div>
+                            </div>
+                          );
+                        });
+                      })()}
+                    </div>
+                  </div>
+
+                  {/* جدول خلاصه مقادیر تست‌شده */}
+                  <div className="max-h-48 overflow-y-auto border border-[#1f293d] rounded-xl">
+                    <table className="w-full text-[11px] text-right font-mono">
+                      <thead className="sticky top-0 bg-[#121a2a] text-gray-400 border-b border-[#1f293d] font-sans">
+                        <tr>
+                          <th className="py-1.5 px-2.5">R:R</th>
+                          <th className="py-1.5 px-2.5 text-center">برد / باخت / باز</th>
+                          <th className="py-1.5 px-2.5 text-center">نرخ برد</th>
+                          <th className="py-1.5 px-2.5 text-center">Profit Factor</th>
+                          <th className="py-1.5 px-2.5 text-center">سود ناخالص</th>
+                          <th className="py-1.5 px-2.5 text-center">کارمزد کل</th>
+                          <th className="py-1.5 px-2.5 text-center">سود خالص</th>
+                          <th className="py-1.5 px-2.5 text-center">Max DD</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#182132]">
+                        {rrOptResult.rrCurve.map((pt) => {
+                          const isBest = rrOptResult.optimal?.rr === pt.rr;
+                          return (
+                            <tr
+                              key={pt.rr}
+                              className={isBest ? 'bg-amber-500/15 text-amber-200 font-bold' : 'hover:bg-[#151e30] text-gray-300'}
+                            >
+                              <td className="py-1.5 px-2.5">
+                                1:{pt.rr} {isBest && <span className="text-[9px] font-sans text-amber-300 mr-1">(بهینه)</span>}
+                              </td>
+                              <td className="py-1.5 px-2.5 text-center">
+                                <span className="text-emerald-400">{pt.wins}</span> / <span className="text-rose-400">{pt.losses}</span>
+                                {pt.openCount > 0 && <span className="text-cyan-400"> / {pt.openCount}</span>}
+                              </td>
+                              <td className="py-1.5 px-2.5 text-center">{pt.winRate}%</td>
+                              <td className="py-1.5 px-2.5 text-center">{pt.profitFactor}</td>
+                              <td className={`py-1.5 px-2.5 text-center ${pt.grossProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {pt.grossProfit >= 0 ? `+$${pt.grossProfit.toFixed(4)}` : `-$${Math.abs(pt.grossProfit).toFixed(4)}`}
+                              </td>
+                              <td className="py-1.5 px-2.5 text-center text-amber-400">${pt.totalFees.toFixed(4)}</td>
+                              <td className={`py-1.5 px-2.5 text-center font-bold ${pt.netPnl >= 0 ? 'text-emerald-300' : 'text-rose-400'}`}>
+                                {pt.netPnl >= 0 ? `+$${pt.netPnl.toFixed(4)}` : `-$${Math.abs(pt.netPnl).toFixed(4)}`}
+                              </td>
+                              <td className="py-1.5 px-2.5 text-center text-rose-300">${pt.maxDrawdown.toFixed(4)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* جزئیات بررسی کندل‌به‌کندل تک‌تک معاملات */}
+              {showRrTradeDetails && rrOptResult.tradeDetails && rrOptResult.tradeDetails.length > 0 && (
+                <div className="max-h-60 overflow-y-auto border border-[#1f293d] rounded-xl">
+                  <table className="w-full text-[11px] text-right font-mono">
+                    <thead className="sticky top-0 bg-[#121a2a] text-gray-400 border-b border-[#1f293d] font-sans">
+                      <tr>
+                        <th className="py-1.5 px-2">جفت‌ارز</th>
+                        <th className="py-1.5 px-2 text-center">جهت</th>
+                        <th className="py-1.5 px-2">ورود / SL</th>
+                        <th className="py-1.5 px-2 text-center">خروج واقعی</th>
+                        <th className="py-1.5 px-2 text-center">سقف R قبل از استاپ</th>
+                        <th className="py-1.5 px-2 text-center">نتیجه در R:R {rrOptResult.optimal.rr}</th>
+                        <th className="py-1.5 px-2 text-center">سود خالص شبیه‌سازی</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#182132]">
+                      {rrOptResult.tradeDetails.map((td) => (
+                        <tr key={td.id} className="hover:bg-[#151e30] text-gray-300">
+                          <td className="py-1.5 px-2 font-bold text-white">{fromXtSymbol(td.symbol)}</td>
+                          <td className="py-1.5 px-2 text-center">
+                            <span className={td.positionSide === 'LONG' ? 'text-emerald-400' : 'text-rose-400'}>
+                              {td.positionSide}
+                            </span>
+                          </td>
+                          <td className="py-1.5 px-2 text-[10px]">
+                            <div>${formatPrice(td.entryPrice)}</div>
+                            <div className="text-rose-400">SL: ${formatPrice(td.stopLossPrice)}</div>
+                          </td>
+                          <td className="py-1.5 px-2 text-center text-[10px]">
+                            <div className={td.actualNetPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                              {td.actualNetPnl >= 0 ? `+$${td.actualNetPnl.toFixed(4)}` : `-$${Math.abs(td.actualNetPnl).toFixed(4)}`}
+                            </div>
+                            <div className="text-gray-400">({td.actualRealizedR >= 0 ? `+${td.actualRealizedR}R` : `${td.actualRealizedR}R`})</div>
+                          </td>
+                          <td className="py-1.5 px-2 text-center">
+                            <span className="px-1.5 py-0.5 rounded bg-cyan-950/70 text-cyan-300 border border-cyan-500/30 font-bold">
+                              +{td.maxFavorableR}R
+                            </span>
+                            <div className="text-[9px] text-gray-500 mt-0.5">
+                              {td.candleResolutionUsed} • {td.candlesScanned} کندل
+                            </div>
+                          </td>
+                          <td className="py-1.5 px-2 text-center">
+                            {td.simAtOptimal && (
+                              <span
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-bold font-sans ${
+                                  td.simAtOptimal.status === 'WIN'
+                                    ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-500/40'
+                                    : td.simAtOptimal.status === 'LOSS'
+                                      ? 'bg-rose-950/80 text-rose-300 border border-rose-500/40'
+                                      : 'bg-cyan-950/80 text-cyan-300 border border-cyan-500/40'
+                                }`}
+                              >
+                                {td.simAtOptimal.status === 'WIN' ? 'تارگت خورد' : td.simAtOptimal.status === 'LOSS' ? 'استاپ خورد' : 'هنوز باز'}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-1.5 px-2 text-center font-bold">
+                            {td.simAtOptimal && (
+                              <span className={td.simAtOptimal.netPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                                {td.simAtOptimal.netPnl >= 0 ? `+$${td.simAtOptimal.netPnl.toFixed(4)}` : `-$${Math.abs(td.simAtOptimal.netPnl).toFixed(4)}`}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
 
           {filteredHistory.length === 0 ? (
             <div className="text-center py-8 text-gray-500 text-xs">

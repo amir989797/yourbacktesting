@@ -1225,103 +1225,348 @@ app.get('/api/xt/orders/history', async (req, res) => {
   }
 });
 
+const xtHistoryResponseCache = new Map<string, { data: any[]; timestamp: number }>();
+const xtAuxHistoryCache = new Map<string, { orders: any[]; profits: any[]; timestamp: number }>();
+
+async function fetchAllXtPositionHistoryItems(
+  apiKey: string,
+  secretKey: string,
+  maxItems: number = 2000,
+  symbolFilter?: string
+): Promise<any[]> {
+  const seenIds = new Set<string>();
+  const allItems: any[] = [];
+  let curEndTime: number | undefined = undefined;
+  const maxPages = Math.max(1, Math.min(20, Math.ceil(maxItems / 500) + 2));
+
+  for (let page = 0; page < maxPages; page++) {
+    const pageSize = Math.min(500, Math.max(1, maxItems - allItems.length));
+    const params: any = { limit: String(pageSize) };
+    if (symbolFilter) params.symbol = toXtSymbol(symbolFilter);
+    if (curEndTime !== undefined && curEndTime > 0) {
+      params.endTime = String(curEndTime);
+    }
+
+    const res = await requestXtApi(
+      'GET',
+      '/future/user/v1/position/list-history',
+      'application/x-www-form-urlencoded',
+      params,
+      apiKey,
+      secretKey
+    ).catch(() => null);
+
+    const items: any[] = res?.result?.items || [];
+    if (!Array.isArray(items) || items.length === 0) break;
+
+    let addedCount = 0;
+    let oldestTimeInBatch = Infinity;
+    for (const item of items) {
+      const id = String(item.id || `${item.symbol}_${item.closeTime || item.openTime}`);
+      const tMs = Number(item.closeTime || item.mtime || item.openTime || item.ctime || 0);
+      if (tMs > 0 && tMs < oldestTimeInBatch) oldestTimeInBatch = tMs;
+      if (!seenIds.has(id)) {
+        seenIds.add(id);
+        allItems.push(item);
+        addedCount++;
+      }
+    }
+
+    if (allItems.length >= maxItems) break;
+    if (!res?.result?.hasNext && items.length < 100) break;
+    if (addedCount === 0 || !isFinite(oldestTimeInBatch)) break;
+
+    const nextEnd = oldestTimeInBatch - 1;
+    if (curEndTime !== undefined && nextEnd >= curEndTime) break;
+    curEndTime = nextEnd;
+  }
+
+  allItems.sort((a, b) => {
+    const ta = Number(a.closeTime || a.mtime || a.openTime || a.ctime || 0);
+    const tb = Number(b.closeTime || b.mtime || b.openTime || b.ctime || 0);
+    return tb - ta;
+  });
+
+  return maxItems > 0 ? allItems.slice(0, maxItems) : allItems;
+}
+
+async function fetchXtAuxOrderAndProfitHistory(
+  apiKey: string,
+  secretKey: string,
+  symbolFilter?: string
+): Promise<{ orders: any[]; profits: any[] }> {
+  const cacheKey = `${apiKey.slice(0, 8)}_${symbolFilter || 'all'}`;
+  const cached = xtAuxHistoryCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < 15000) {
+    return { orders: cached.orders, profits: cached.profits };
+  }
+
+  const allOrders: any[] = [];
+  const seenOrderIds = new Set<string>();
+  let curEndTime: number | undefined = undefined;
+
+  for (let page = 0; page < 8; page++) {
+    const params: any = { limit: '200' };
+    if (symbolFilter) params.symbol = toXtSymbol(symbolFilter);
+    if (curEndTime !== undefined && curEndTime > 0) params.endTime = String(curEndTime);
+
+    const ordRes = await requestXtApi(
+      'GET',
+      '/future/trade/v1/order/list-history',
+      'application/x-www-form-urlencoded',
+      params,
+      apiKey,
+      secretKey
+    ).catch(() => null);
+
+    const items: any[] = ordRes?.result?.items || [];
+    if (!Array.isArray(items) || items.length === 0) break;
+
+    let added = 0;
+    let oldestTime = Infinity;
+    for (const o of items) {
+      const oid = String(o.orderId || o.id || '');
+      const tMs = Number(o.createdTime || o.updatedTime || 0);
+      if (tMs > 0 && tMs < oldestTime) oldestTime = tMs;
+      if (oid && !seenOrderIds.has(oid)) {
+        seenOrderIds.add(oid);
+        allOrders.push(o);
+        added++;
+      }
+    }
+
+    if (!ordRes?.result?.hasNext && items.length < 200) break;
+    if (added === 0 || !isFinite(oldestTime)) break;
+    const nextEnd = oldestTime - 1;
+    if (curEndTime !== undefined && nextEnd >= curEndTime) break;
+    curEndTime = nextEnd;
+  }
+
+  const profRes = await requestXtApi(
+    'GET',
+    '/future/trade/v1/entrust/profit-list',
+    'application/x-www-form-urlencoded',
+    { limit: '500', ...(symbolFilter ? { symbol: toXtSymbol(symbolFilter) } : {}) },
+    apiKey,
+    secretKey
+  ).catch(() => null);
+
+  const profits: any[] = profRes?.result?.items || [];
+  xtAuxHistoryCache.set(cacheKey, { orders: allOrders, profits, timestamp: Date.now() });
+  return { orders: allOrders, profits };
+}
+
+async function getEnrichedXtPositionHistory(
+  apiKey: string,
+  secretKey: string,
+  limit: number = 2000,
+  symbolFilter?: string,
+  forceRefresh: boolean = false
+) {
+  const effectiveLimit = (!limit || limit <= 0) ? 2000 : Math.min(2000, limit);
+  const cacheKey = `${apiKey.slice(0, 8)}_${effectiveLimit}_${symbolFilter || 'all'}`;
+  const cached = xtHistoryResponseCache.get(cacheKey);
+  if (!forceRefresh && cached && Date.now() - cached.timestamp < 4000) {
+    return cached.data;
+  }
+
+  const [items, allDbTrades, aux] = await Promise.all([
+    fetchAllXtPositionHistoryItems(apiKey, secretKey, effectiveLimit, symbolFilter),
+    getAllLiveTradesFromDb(2000).catch(() => []),
+    fetchXtAuxOrderAndProfitHistory(apiKey, secretKey, symbolFilter),
+  ]);
+  const execLogs: any[] = serverScannerState.executionLogs || [];
+  const xtOrders = aux.orders || [];
+  const xtProfits = aux.profits || [];
+
+  const formatted = items.map((item: any) => {
+    const sym = item.symbol || '';
+    const cleanSym = sym.toLowerCase().replace(/[-_]/g, '');
+    const posSide = (item.positionSide || 'LONG').toUpperCase() as 'LONG' | 'SHORT';
+    const exitSide = posSide === 'LONG' ? 'SELL' : 'BUY';
+    const entryOrderSide = posSide === 'LONG' ? 'BUY' : 'SELL';
+    const entryPrice = parseFloat(item.closeOpenPrice || item.entryPrice || '0');
+    const exitPrice = parseFloat(item.closePrice || '0');
+    const grossProfit = parseFloat(item.closeProfit || '0');
+    const fee = parseFloat(item.totalFee || '0');
+    const fundFee = parseFloat(item.totalFundFee || '0');
+    const netProfit = parseFloat((grossProfit + fee + fundFee).toFixed(6));
+    const amount = parseFloat(item.closePositionSize || item.maxPositionSize || '0');
+
+    const entryTimeMs = Number(item.openTime || item.ctime || item.closeTime || Date.now());
+    const exitTimeMs = Number(item.closeTime || item.mtime || item.ctime || Date.now());
+
+    // 1. Match closest execution log (within 30 min of entryTimeMs)
+    const candidateExecs = execLogs.filter(
+      (ex: any) =>
+        (ex.symbol === sym || toXtSymbol(ex.symbol) === sym || (ex.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym) &&
+        (!ex.posSide || String(ex.posSide).toUpperCase() === posSide)
+    );
+    let matchExec: any = null;
+    let bestExecDiff = 30 * 60 * 1000;
+    for (const ex of candidateExecs) {
+      const exTs = ex.timestamp ? new Date(ex.timestamp).getTime() : 0;
+      const diff = exTs > 0 ? Math.abs(exTs - entryTimeMs) : Infinity;
+      if (diff < bestExecDiff) {
+        bestExecDiff = diff;
+        matchExec = ex;
+      }
+    }
+
+    // 2. Match closest PostgreSQL live_trades record by symbol + side + closest entry time & entry price (within 30 min)
+    const candidateDbs = Array.isArray(allDbTrades)
+      ? allDbTrades.filter(
+          (t: any) =>
+            (t.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym &&
+            (!t.pos_side || String(t.pos_side).toUpperCase() === posSide)
+        )
+      : [];
+    let matchDb: any = null;
+    let bestDbScore = 30 * 60 * 1000;
+    for (const t of candidateDbs) {
+      const dbTs = t.created_at ? new Date(t.created_at).getTime() : 0;
+      const timeDiff = dbTs > 0 ? Math.abs(dbTs - entryTimeMs) : Infinity;
+      if (timeDiff > 30 * 60 * 1000) continue;
+      const dbPrice = Number(t.price) || 0;
+      const priceRelDiff = (entryPrice > 0 && dbPrice > 0) ? Math.abs(dbPrice - entryPrice) / entryPrice : 0;
+      const score = timeDiff + priceRelDiff * 600000;
+      if (score < bestDbScore) {
+        bestDbScore = score;
+        matchDb = t;
+      }
+    }
+
+    // 3. Match closest XT historical entry order containing triggerStopPrice/triggerProfitPrice
+    const candidateOrders = xtOrders.filter(
+      (o: any) =>
+        (o.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym &&
+        (!o.positionSide || String(o.positionSide).toUpperCase() === posSide) &&
+        (Number(o.triggerStopPrice) > 0 || Number(o.triggerProfitPrice) > 0)
+    );
+    let matchOrder: any = null;
+    let bestOrderDiff = 15 * 60 * 1000;
+    for (const o of candidateOrders) {
+      const oTs = Number(o.createdTime || o.updatedTime || 0);
+      if (!oTs) continue;
+      const diff = Math.abs(oTs - entryTimeMs);
+      const isEntryOrder = String(o.orderSide || '').toUpperCase() === entryOrderSide;
+      const effectiveScore = diff + (isEntryOrder ? 0 : 120000);
+      if (effectiveScore < bestOrderDiff) {
+        bestOrderDiff = effectiveScore;
+        matchOrder = o;
+      }
+    }
+
+    // 4. Match closest XT profit/stop entrust within trade window [entryTimeMs - 2m, exitTimeMs + 2m]
+    const candidateProfits = xtProfits.filter(
+      (p: any) =>
+        (p.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym &&
+        (!p.positionSide || String(p.positionSide).toUpperCase() === posSide) &&
+        (Number(p.triggerStopPrice) > 0 || Number(p.triggerProfitPrice) > 0)
+    );
+    let matchProfit: any = null;
+    let bestProfitDiff = 30 * 60 * 1000;
+    for (const p of candidateProfits) {
+      const pTs = Number(p.createdTime || p.updatedTime || 0);
+      if (!pTs) continue;
+      const diff = Math.abs(pTs - entryTimeMs);
+      if (pTs >= entryTimeMs - 120000 && pTs <= exitTimeMs + 120000 && diff < bestProfitDiff) {
+        bestProfitDiff = diff;
+        matchProfit = p;
+      }
+    }
+
+    const historyTimeframe = matchExec?.timeframe || matchDb?.timeframe || '5m';
+
+    const rawTriggerTp = item.triggerProfitPrice ? parseFloat(item.triggerProfitPrice) : 0;
+    const rawTriggerSl = item.triggerStopPrice ? parseFloat(item.triggerStopPrice) : 0;
+    const orderTp = matchOrder?.triggerProfitPrice ? parseFloat(matchOrder.triggerProfitPrice) : 0;
+    const orderSl = matchOrder?.triggerStopPrice ? parseFloat(matchOrder.triggerStopPrice) : 0;
+    const profitTp = matchProfit?.triggerProfitPrice ? parseFloat(matchProfit.triggerProfitPrice) : 0;
+    const profitSl = matchProfit?.triggerStopPrice ? parseFloat(matchProfit.triggerStopPrice) : 0;
+
+    const takeProfitPrice =
+      (matchExec?.takeProfit && Number(matchExec.takeProfit) > 0 ? Number(matchExec.takeProfit) : undefined) ??
+      (rawTriggerTp > 0 ? rawTriggerTp : undefined) ??
+      (matchDb?.take_profit && Number(matchDb.take_profit) > 0 ? Number(matchDb.take_profit) : undefined) ??
+      (orderTp > 0 ? orderTp : undefined) ??
+      (profitTp > 0 ? profitTp : undefined);
+    const stopLossPrice =
+      (matchExec?.stopLoss && Number(matchExec.stopLoss) > 0 ? Number(matchExec.stopLoss) : undefined) ??
+      (rawTriggerSl > 0 ? rawTriggerSl : undefined) ??
+      (matchDb?.stop_loss && Number(matchDb.stop_loss) > 0 ? Number(matchDb.stop_loss) : undefined) ??
+      (orderSl > 0 ? orderSl : undefined) ??
+      (profitSl > 0 ? profitSl : undefined);
+
+    let pnlPercent = 0;
+    if (entryPrice > 0 && exitPrice > 0) {
+      const dir = posSide === 'LONG' ? 1 : -1;
+      const leverage = item.endLeverage || item.startLeverage || 20;
+      pnlPercent = ((exitPrice - entryPrice) / entryPrice) * dir * leverage * 100;
+    }
+
+    const dateObj = new Date(exitTimeMs);
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const timeEn = `${dateObj.getFullYear()}-${pad(dateObj.getMonth() + 1)}-${pad(dateObj.getDate())} ${pad(dateObj.getHours())}:${pad(dateObj.getMinutes())}:${pad(dateObj.getSeconds())}`;
+    const timeFa = dateObj.toLocaleTimeString('fa-IR');
+
+    const slDist = (entryPrice > 0 && stopLossPrice) ? Math.abs(entryPrice - stopLossPrice) : 0;
+    const tpDist = (entryPrice > 0 && takeProfitPrice) ? Math.abs(takeProfitPrice - entryPrice) : 0;
+    const riskReward = slDist > 0 && tpDist > 0
+      ? parseFloat((tpDist / slDist).toFixed(2))
+      : (matchExec?.riskReward || (matchDb?.risk_reward ? Number(matchDb.risk_reward) : undefined));
+    const realizedR = slDist > 0 && exitPrice > 0
+      ? parseFloat(((exitPrice - entryPrice) * (posSide === 'LONG' ? 1 : -1) / slDist).toFixed(2))
+      : undefined;
+
+    return {
+      id: String(item.id || `xt_pos_${exitTimeMs}`),
+      positionId: String(item.id || ''),
+      exchange: 'xt',
+      symbol: sym,
+      timeframe: historyTimeframe,
+      side: exitSide,
+      positionSide: posSide,
+      orderType: 'MARKET',
+      price: entryPrice,
+      exitPrice,
+      amount,
+      status: 'FILLED',
+      strategyName: matchExec?.strategyName || matchDb?.strategy_name || 'Next Pivot Strategy',
+      takeProfitPrice,
+      stopLossPrice,
+      riskReward,
+      realizedR,
+      realizedPnl: netProfit,
+      grossProfit,
+      fee,
+      fundFee,
+      realizedPnlPercent: parseFloat(pnlPercent.toFixed(2)),
+      exitTime: timeEn,
+      timestamp: timeEn,
+      timeEn,
+      timeFa,
+      rawTimeMs: entryTimeMs,
+      entryTimeMs,
+      exitTimeMs,
+      timestampMs: entryTimeMs,
+      time: entryTimeMs,
+      closeType: item.force ? 'LIQUIDATION' : 'CLOSED',
+    };
+  });
+
+  xtHistoryResponseCache.set(cacheKey, { data: formatted, timestamp: Date.now() });
+  return formatted;
+}
+
 // XT Closed Position History (With exact realized profit, fees, entry/exit prices directly from exchange engine)
 app.get('/api/xt/positions/history', async (req, res) => {
   try {
     const apiKey = (req.headers['x-api-key'] as string) || DEFAULT_XT_API_KEY;
     const secretKey = (req.headers['x-secret-key'] as string) || DEFAULT_XT_SECRET_KEY;
-    const limit = (req.query.limit as string) || '50';
-    const params: any = { ps: limit };
-    if (req.query.symbol) params.symbol = toXtSymbol(req.query.symbol as string);
-
-    const [historyRes, allDbTrades] = await Promise.all([
-      requestXtApi('GET', '/future/user/v1/position/list-history', 'application/x-www-form-urlencoded', params, apiKey, secretKey),
-      getAllLiveTradesFromDb(100).catch(() => []),
-    ]);
-    const execLogs: any[] = serverScannerState.executionLogs || [];
-    const items = historyRes?.result?.items || [];
-
-    const formatted = items.map((item: any) => {
-      const sym = item.symbol || '';
-      const matchExec = execLogs.find((ex: any) => ex.symbol === sym || toXtSymbol(ex.symbol) === sym);
-
-      const cleanSym = sym.toLowerCase().replace(/[-_]/g, '');
-      const matchDb = Array.isArray(allDbTrades) ? allDbTrades.find(
-        (t: any) => (t.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym
-      ) : null;
-      const historyTimeframe = matchExec?.timeframe || matchDb?.timeframe || '5m';
-
-      const posSide = (item.positionSide || 'LONG').toUpperCase() as 'LONG' | 'SHORT';
-      const exitSide = posSide === 'LONG' ? 'SELL' : 'BUY';
-      const entryPrice = parseFloat(item.closeOpenPrice || item.entryPrice || '0');
-      const exitPrice = parseFloat(item.closePrice || '0');
-      const grossProfit = parseFloat(item.closeProfit || '0');
-      const fee = parseFloat(item.totalFee || '0');
-      const fundFee = parseFloat(item.totalFundFee || '0');
-      const netProfit = parseFloat((grossProfit + fee + fundFee).toFixed(6));
-      const amount = parseFloat(item.closePositionSize || item.maxPositionSize || '0');
-
-      let pnlPercent = 0;
-      if (entryPrice > 0 && exitPrice > 0) {
-        const dir = posSide === 'LONG' ? 1 : -1;
-        const leverage = item.endLeverage || item.startLeverage || 20;
-        pnlPercent = ((exitPrice - entryPrice) / entryPrice) * dir * leverage * 100;
-      }
-
-      const entryTimeMs = Number(item.ctime || item.openTime || item.closeTime || Date.now());
-      const exitTimeMs = Number(item.closeTime || item.mtime || item.ctime || Date.now());
-      const dateObj = new Date(exitTimeMs);
-      const pad = (n: number) => n.toString().padStart(2, '0');
-      const timeEn = `${dateObj.getFullYear()}-${pad(dateObj.getMonth() + 1)}-${pad(dateObj.getDate())} ${pad(dateObj.getHours())}:${pad(dateObj.getMinutes())}:${pad(dateObj.getSeconds())}`;
-      const timeFa = dateObj.toLocaleTimeString('fa-IR');
-
-      return {
-        id: String(item.id || `xt_pos_${exitTimeMs}`),
-        positionId: String(item.id || ''),
-        exchange: 'xt',
-        symbol: sym,
-        timeframe: historyTimeframe,
-        side: exitSide,
-        positionSide: posSide,
-        orderType: 'MARKET',
-        price: entryPrice,
-        exitPrice,
-        amount,
-        status: 'FILLED',
-        strategyName: matchExec?.strategyName || 'Next Pivot Strategy',
-        takeProfitPrice: matchExec?.takeProfit || (item.triggerProfitPrice ? parseFloat(item.triggerProfitPrice) : undefined),
-        stopLossPrice: matchExec?.stopLoss || (item.triggerStopPrice ? parseFloat(item.triggerStopPrice) : undefined),
-        riskReward: (function() {
-          const tp = matchExec?.takeProfit || (item.triggerProfitPrice ? parseFloat(item.triggerProfitPrice) : undefined);
-          const sl = matchExec?.stopLoss || (item.triggerStopPrice ? parseFloat(item.triggerStopPrice) : undefined);
-          const slDist = (entryPrice > 0 && sl) ? Math.abs(entryPrice - sl) : 0;
-          const tpDist = (entryPrice > 0 && tp) ? Math.abs(tp - entryPrice) : 0;
-          return slDist > 0 ? parseFloat((tpDist / slDist).toFixed(2)) : (matchExec?.riskReward || undefined);
-        })(),
-        realizedR: (function() {
-          const sl = matchExec?.stopLoss || (item.triggerStopPrice ? parseFloat(item.triggerStopPrice) : undefined);
-          const slDist = (entryPrice > 0 && sl) ? Math.abs(entryPrice - sl) : 0;
-          if (slDist > 0 && exitPrice > 0) {
-            return parseFloat(((exitPrice - entryPrice) * (posSide === 'LONG' ? 1 : -1) / slDist).toFixed(2));
-          }
-          return undefined;
-        })(),
-        realizedPnl: netProfit,
-        grossProfit,
-        fee,
-        realizedPnlPercent: parseFloat(pnlPercent.toFixed(2)),
-        exitTime: timeEn,
-        timestamp: timeEn,
-        timeEn,
-        timeFa,
-        rawTimeMs: entryTimeMs,
-        entryTimeMs,
-        exitTimeMs,
-        timestampMs: entryTimeMs,
-        time: entryTimeMs,
-        closeType: item.force ? 'LIQUIDATION' : 'CLOSED',
-      };
-    });
+    const rawLimit = String(req.query.limit || '0').toLowerCase();
+    const limit = rawLimit === 'all' || rawLimit === '0' ? 2000 : (parseInt(rawLimit, 10) || 2000);
+    const formatted = await getEnrichedXtPositionHistory(apiKey, secretKey, limit, req.query.symbol as string | undefined);
 
     res.json({
       success: true,
@@ -1331,6 +1576,463 @@ app.get('/api/xt/positions/history', async (req, res) => {
     });
   } catch (error: any) {
     res.status(500).json({ success: false, returnCode: -1, error: error.message, result: [] });
+  }
+});
+
+// XT Live Trade History Optimal Risk:Reward Analyzer (Tests R:R 1.0 to 3.0 candle-by-candle from entry to SL or 3.0R)
+app.post('/api/xt/positions/optimize-rr', async (req, res) => {
+  try {
+    const apiKey = (req.headers['x-api-key'] as string) || DEFAULT_XT_API_KEY;
+    const secretKey = (req.headers['x-secret-key'] as string) || DEFAULT_XT_SECRET_KEY;
+    const rawLimit = req.body?.limit;
+    const limit = (!rawLimit || Number(rawLimit) <= 0) ? 2000 : Math.min(2000, Math.max(1, parseInt(String(rawLimit), 10) || 2000));
+    const step = Number(req.body?.step) === 0.25 ? 0.25 : 0.1;
+    const minRR = 1.0;
+    const maxRR = 3.0;
+
+    // 1. Fetch ALL real closed trades from XT + DB/Order enrichment
+    const trades = await getEnrichedXtPositionHistory(apiKey, secretKey, limit, undefined, true);
+    if (!trades || trades.length === 0) {
+      return res.json({
+        success: true,
+        message: 'هیچ معامله بسته‌شده‌ای در تاریخچه صرافی XT یافت نشد.',
+        actualStats: {
+          totalTrades: 0,
+          testedTrades: 0,
+          skippedTrades: 0,
+          wins: 0,
+          losses: 0,
+          winRate: 0,
+          grossProfit: 0,
+          totalFees: 0,
+          fundFees: 0,
+          netPnl: 0,
+          profitFactor: 0,
+        },
+        optimal: null,
+        rrCurve: [],
+        tradeDetails: [],
+      });
+    }
+
+    // Build R:R grid [1.0, ..., 3.0]
+    const rrValues: number[] = [];
+    for (let r = minRR; r <= maxRR + 1e-6; r += step) {
+      rrValues.push(parseFloat(r.toFixed(2)));
+    }
+
+    // Load XT symbol contract sizes for fallback sizing if grossProfit == 0
+    await getXtSymbolsOpenApiMap().catch(() => {});
+
+    // Separate valid trades (must have entryPrice, stopLossPrice, entryTimeMs) vs skipped
+    const validTrades: any[] = [];
+    const skippedTrades: any[] = [];
+    for (const t of trades) {
+      const entryP = Number(t.price) || 0;
+      const slP = Number(t.stopLossPrice) || 0;
+      const entryMs = Number(t.entryTimeMs) || 0;
+      if (entryP > 0 && slP > 0 && Math.abs(entryP - slP) > 0 && entryMs > 0) {
+        validTrades.push(t);
+      } else {
+        skippedTrades.push({
+          id: t.id,
+          symbol: t.symbol,
+          reason: slP <= 0 ? 'فاقد قیمت حد ضرر (SL)' : 'اطلاعات ورود ناقص',
+        });
+      }
+    }
+
+    // Group valid trades by symbol to batch kline downloads cleanly
+    const bySymbol = new Map<string, any[]>();
+    for (const t of validTrades) {
+      const xtSym = toXtSymbol(t.symbol);
+      if (!bySymbol.has(xtSym)) bySymbol.set(xtSym, []);
+      bySymbol.get(xtSym)!.push(t);
+    }
+
+    const nowMs = Date.now();
+    const symbolCandlesMap = new Map<string, { resolution: string; candles: CandleData[] }>();
+    const symbolEntries = Array.from(bySymbol.entries());
+
+    // Fetch candles with concurrency = 6 using smart resolution based on trade age
+    for (let i = 0; i < symbolEntries.length; i += 6) {
+      const batch = symbolEntries.slice(i, i + 6);
+      await Promise.all(
+        batch.map(async ([xtSym, symTrades]) => {
+          const minEntryMs = Math.min(...symTrades.map((t) => Number(t.entryTimeMs) || nowMs));
+          const ageMinutes = Math.ceil((nowMs - minEntryMs) / 60000);
+          let resolution = '1m';
+          if (ageMinutes > 30000) {
+            resolution = '15m';
+          } else if (ageMinutes > 2880) {
+            resolution = '5m';
+          }
+          const startFetchMs = Math.max(0, minEntryMs - 300000);
+          const spanBars = Math.ceil((nowMs - startFetchMs) / timeframeToMs(resolution));
+          let candles = await fetchXtServerKlines(xtSym, resolution, Math.max(500, spanBars + 100), startFetchMs, nowMs).catch(() => []);
+
+          // Fallback to coarser timeframe if needed
+          if ((!candles || candles.length === 0 || (candles[0].time * 1000 > minEntryMs + 300000)) && resolution === '1m') {
+            resolution = '5m';
+            const bars5m = Math.ceil((nowMs - startFetchMs) / timeframeToMs('5m'));
+            const fallbackCandles = await fetchXtServerKlines(xtSym, '5m', Math.max(500, bars5m + 100), startFetchMs, nowMs).catch(() => []);
+            if (fallbackCandles && fallbackCandles.length > 0) {
+              candles = fallbackCandles;
+            }
+          }
+
+          symbolCandlesMap.set(xtSym, { resolution, candles: candles || [] });
+        })
+      );
+    }
+
+    // Trace each trade candle-by-candle from entry until SL or R:R = 3.0
+    interface TracedTrade {
+      trade: any;
+      maxFavorableR: number;
+      hitSl: boolean;
+      slHitTimeMs: number | null;
+      reachedMaxRR: boolean;
+      unfinishedAtNow: boolean;
+      oneRUsd: number;
+      effectiveCoinQty: number;
+      actualFeeRate: number;
+      actualAbsFee: number;
+      actualFundFee: number;
+      actualNetPnl: number;
+      actualGrossPnl: number;
+      actualRealizedR: number;
+      candleResolutionUsed: string;
+      candlesScanned: number;
+      latestClosePrice: number;
+    }
+
+    const tracedTrades: TracedTrade[] = [];
+
+    for (const t of validTrades) {
+      const xtSym = toXtSymbol(t.symbol);
+      const posSide = (t.positionSide || 'LONG').toUpperCase() === 'SHORT' ? 'SHORT' : 'LONG';
+      const dir = posSide === 'LONG' ? 1 : -1;
+      const entryPrice = Number(t.price);
+      const exitPrice = Number(t.exitPrice) || entryPrice;
+      const slPrice = Number(t.stopLossPrice);
+      const riskDist = Math.abs(entryPrice - slPrice);
+      const entryMs = Number(t.entryTimeMs);
+      const exitMs = Number(t.exitTimeMs) || entryMs;
+      const entrySec = Math.floor(entryMs / 1000);
+      const exitSec = Math.floor(exitMs / 1000);
+
+      const actualGrossPnl = Number(t.grossProfit) || 0;
+      const actualAbsFee = Math.abs(Number(t.fee) || 0);
+      const actualFundFee = Number(t.fundFee) || 0;
+      const actualNetPnl = Number(t.realizedPnl) || (actualGrossPnl - actualAbsFee + actualFundFee);
+      const actualRealizedR = exitPrice > 0 && riskDist > 0 ? ((exitPrice - entryPrice) * dir) / riskDist : 0;
+
+      // Derive exact coin qty & 1R USDT value from actual exchange grossProfit when available
+      let effectiveCoinQty = 0;
+      if (Math.abs(exitPrice - entryPrice) > 1e-12 && Math.abs(actualGrossPnl) > 1e-9) {
+        effectiveCoinQty = Math.abs(actualGrossPnl / (exitPrice - entryPrice));
+      } else {
+        const meta = getXtSymbolMeta(xtSym);
+        const contractSize = meta?.contractSize || 1;
+        effectiveCoinQty = (Number(t.amount) || 0) * contractSize;
+      }
+      const oneRUsd = riskDist * effectiveCoinQty;
+
+      // Exact round-trip fee rate on this real trade
+      const actualTotalNotional = effectiveCoinQty * (entryPrice + (exitPrice > 0 ? exitPrice : entryPrice));
+      const actualFeeRate = actualTotalNotional > 0 && actualAbsFee > 0 ? actualAbsFee / actualTotalNotional : 0.0006;
+
+      const candleBundle = symbolCandlesMap.get(xtSym) || { resolution: '1m', candles: [] };
+      const allCandles = candleBundle.candles;
+      const tfSec = Math.max(60, Math.floor(timeframeToMs(candleBundle.resolution) / 1000));
+
+      // Ground truth from exchange:
+      // Did the trade actually close in profit/breakeven before hitting SL in reality?
+      const wasRealProfitExit = actualGrossPnl > 0 && actualRealizedR > 0.05;
+      // Did the trade actually hit SL (or close in loss near/beyond SL)?
+      const wasRealStopLoss = actualGrossPnl < 0 && actualRealizedR <= -0.85;
+
+      let maxFavorableR = wasRealProfitExit ? Math.min(maxRR, Math.max(0, actualRealizedR)) : 0;
+      let hitSl = false;
+      let slHitTimeMs: number | null = null;
+      let reachedMaxRR = maxFavorableR >= maxRR;
+      let candlesScanned = 0;
+      let latestClosePrice = exitPrice;
+
+      // Filter candles starting strictly from the first candle opening at or after entryTimeMs
+      const relevantCandles = allCandles.filter((c) => c.time >= entrySec);
+      if (relevantCandles.length > 0) {
+        latestClosePrice = relevantCandles[relevantCandles.length - 1].close;
+      }
+
+      if (!reachedMaxRR) {
+        for (const c of relevantCandles) {
+          candlesScanned++;
+          const isBeforeRealExit = c.time + tfSec <= exitSec;
+
+          // If this trade ACTUALLY stopped out in real life, do not scan past real exitTime
+          if (wasRealStopLoss && c.time > exitSec) {
+            break;
+          }
+
+          const favPrice = dir === 1 ? c.high : c.low;
+          const advPrice = dir === 1 ? c.low : c.high;
+          const candleFavR = ((favPrice - entryPrice) * dir) / riskDist;
+          const slTouchedInCandle = dir === 1 ? advPrice <= slPrice : advPrice >= slPrice;
+
+          // Conservative SL check (do not falsely stop out a real winning trade before its real exchange exit time)
+          const canTriggerSl = !wasRealProfitExit || !isBeforeRealExit;
+
+          if (canTriggerSl && slTouchedInCandle) {
+            hitSl = true;
+            slHitTimeMs = c.time * 1000;
+            break;
+          }
+
+          if (candleFavR > maxFavorableR) {
+            maxFavorableR = Math.min(maxRR, candleFavR);
+          }
+
+          if (maxFavorableR >= maxRR) {
+            maxFavorableR = maxRR;
+            reachedMaxRR = true;
+            break;
+          }
+        }
+      }
+
+      // If the real trade hit SL in exchange history, ensure simulation honors SL hit
+      if (wasRealStopLoss && !reachedMaxRR) {
+        hitSl = true;
+        if (!slHitTimeMs) slHitTimeMs = exitMs;
+      }
+
+      const unfinishedAtNow = !hitSl && !reachedMaxRR;
+
+      tracedTrades.push({
+        trade: t,
+        maxFavorableR: parseFloat(maxFavorableR.toFixed(3)),
+        hitSl,
+        slHitTimeMs,
+        reachedMaxRR,
+        unfinishedAtNow,
+        oneRUsd,
+        effectiveCoinQty,
+        actualFeeRate,
+        actualAbsFee,
+        actualFundFee,
+        actualNetPnl,
+        actualGrossPnl,
+        actualRealizedR: parseFloat(actualRealizedR.toFixed(2)),
+        candleResolutionUsed: candleBundle.resolution,
+        candlesScanned,
+        latestClosePrice,
+      });
+    }
+
+    // Actual baseline stats across valid tested trades
+    let actWins = 0;
+    let actLosses = 0;
+    let actGross = 0;
+    let actFees = 0;
+    let actFundFees = 0;
+    let actNet = 0;
+    let actWinGross = 0;
+    let actLossGross = 0;
+
+    for (const tr of tracedTrades) {
+      if (tr.actualNetPnl >= 0) {
+        actWins++;
+        actWinGross += tr.actualNetPnl;
+      } else {
+        actLosses++;
+        actLossGross += Math.abs(tr.actualNetPnl);
+      }
+      actGross += tr.actualGrossPnl;
+      actFees += tr.actualAbsFee;
+      actFundFees += tr.actualFundFee;
+      actNet += tr.actualNetPnl;
+    }
+
+    const actualStats = {
+      totalTrades: trades.length,
+      testedTrades: tracedTrades.length,
+      skippedTrades: skippedTrades.length,
+      skippedDetails: skippedTrades,
+      wins: actWins,
+      losses: actLosses,
+      winRate: tracedTrades.length > 0 ? parseFloat(((actWins / tracedTrades.length) * 100).toFixed(2)) : 0,
+      grossProfit: parseFloat(actGross.toFixed(4)),
+      totalFees: parseFloat(actFees.toFixed(4)),
+      fundFees: parseFloat(actFundFees.toFixed(4)),
+      netPnl: parseFloat(actNet.toFixed(4)),
+      profitFactor: actLossGross > 0 ? parseFloat((actWinGross / actLossGross).toFixed(2)) : (actWinGross > 0 ? 99 : 0),
+    };
+
+    const simulateTradeAtRR = (tr: TracedTrade, rr: number) => {
+      const entryPrice = Number(tr.trade.price);
+      const slPrice = Number(tr.trade.stopLossPrice);
+      const posSide = (tr.trade.positionSide || 'LONG').toUpperCase() === 'SHORT' ? 'SHORT' : 'LONG';
+      const dir = posSide === 'LONG' ? 1 : -1;
+      const riskDist = Math.abs(entryPrice - slPrice);
+      const tpPrice = entryPrice + dir * rr * riskDist;
+
+      // Case 1: Price reached this R:R target BEFORE hitting SL!
+      if (tr.maxFavorableR >= rr - 1e-6) {
+        const gross = rr * tr.oneRUsd;
+        const simFee = tr.effectiveCoinQty * (entryPrice + tpPrice) * tr.actualFeeRate;
+        const net = gross - simFee + tr.actualFundFee;
+        return {
+          status: 'WIN' as const,
+          exitPrice: tpPrice,
+          grossPnl: parseFloat(gross.toFixed(6)),
+          fee: parseFloat(simFee.toFixed(6)),
+          netPnl: parseFloat(net.toFixed(6)),
+        };
+      }
+
+      // Case 2: Hit SL before reaching target R:R
+      if (tr.hitSl) {
+        // If trade actually exited at SL in reality, keep exact real SL slippage & exact fee
+        if (tr.actualGrossPnl < 0 && tr.actualRealizedR <= -0.85) {
+          return {
+            status: 'LOSS' as const,
+            exitPrice: Number(tr.trade.exitPrice) || slPrice,
+            grossPnl: parseFloat(tr.actualGrossPnl.toFixed(6)),
+            fee: parseFloat(tr.actualAbsFee.toFixed(6)),
+            netPnl: parseFloat(tr.actualNetPnl.toFixed(6)),
+          };
+        }
+        const gross = -tr.oneRUsd;
+        const simFee = tr.effectiveCoinQty * (entryPrice + slPrice) * tr.actualFeeRate;
+        const net = gross - simFee + tr.actualFundFee;
+        return {
+          status: 'LOSS' as const,
+          exitPrice: slPrice,
+          grossPnl: parseFloat(gross.toFixed(6)),
+          fee: parseFloat(simFee.toFixed(6)),
+          netPnl: parseFloat(net.toFixed(6)),
+        };
+      }
+
+      // Case 3: Neither target nor SL reached up to current time (still running if target were extended)
+      const markPrice = tr.latestClosePrice > 0 ? tr.latestClosePrice : Number(tr.trade.exitPrice) || entryPrice;
+      const gross = (markPrice - entryPrice) * dir * tr.effectiveCoinQty;
+      const simFee = tr.effectiveCoinQty * (entryPrice + markPrice) * tr.actualFeeRate;
+      const net = gross - simFee + tr.actualFundFee;
+      return {
+        status: 'OPEN' as const,
+        exitPrice: markPrice,
+        grossPnl: parseFloat(gross.toFixed(6)),
+        fee: parseFloat(simFee.toFixed(6)),
+        netPnl: parseFloat(net.toFixed(6)),
+      };
+    };
+
+    const rrCurve = rrValues.map((rr) => {
+      let wins = 0;
+      let losses = 0;
+      let openCount = 0;
+      let grossProfit = 0;
+      let totalFees = 0;
+      let netPnl = 0;
+      let winNetSum = 0;
+      let lossNetSum = 0;
+      let peak = 0;
+      let curEquity = 0;
+      let maxDrawdown = 0;
+
+      // Chronological equity order for drawdown calculation
+      const chronoTrades = [...tracedTrades].sort(
+        (a, b) => Number(a.trade.entryTimeMs) - Number(b.trade.entryTimeMs)
+      );
+
+      for (const tr of chronoTrades) {
+        const sim = simulateTradeAtRR(tr, rr);
+        if (sim.status === 'WIN') wins++;
+        else if (sim.status === 'LOSS') losses++;
+        else openCount++;
+
+        if (sim.netPnl >= 0) winNetSum += sim.netPnl;
+        else lossNetSum += Math.abs(sim.netPnl);
+
+        grossProfit += sim.grossPnl;
+        totalFees += sim.fee;
+        netPnl += sim.netPnl;
+
+        curEquity += sim.netPnl;
+        if (curEquity > peak) peak = curEquity;
+        const dd = peak - curEquity;
+        if (dd > maxDrawdown) maxDrawdown = dd;
+      }
+
+      const closedCount = wins + losses;
+      const winRate = closedCount > 0 ? parseFloat(((wins / closedCount) * 100).toFixed(2)) : 0;
+      const profitFactor = lossNetSum > 0 ? parseFloat((winNetSum / lossNetSum).toFixed(2)) : (winNetSum > 0 ? 99 : 0);
+      const improvementVsActual = parseFloat((netPnl - actualStats.netPnl).toFixed(4));
+
+      return {
+        rr,
+        wins,
+        losses,
+        openCount,
+        winRate,
+        grossProfit: parseFloat(grossProfit.toFixed(4)),
+        totalFees: parseFloat(totalFees.toFixed(4)),
+        netPnl: parseFloat(netPnl.toFixed(4)),
+        profitFactor,
+        maxDrawdown: parseFloat(maxDrawdown.toFixed(4)),
+        improvementVsActual,
+      };
+    });
+
+    // Pick optimal R:R with highest Net PnL (tie-breaker: higher Profit Factor, higher Win Rate)
+    const sortedCurve = [...rrCurve].sort((a, b) => {
+      if (Math.abs(b.netPnl - a.netPnl) > 0.0001) return b.netPnl - a.netPnl;
+      if (Math.abs(b.profitFactor - a.profitFactor) > 0.01) return b.profitFactor - a.profitFactor;
+      return b.winRate - a.winRate;
+    });
+    const optimal = sortedCurve[0] || null;
+
+    const tradeDetails = tracedTrades.map((tr) => {
+      const simAtOptimal = optimal ? simulateTradeAtRR(tr, optimal.rr) : null;
+      return {
+        id: tr.trade.id,
+        symbol: tr.trade.symbol,
+        timeframe: tr.trade.timeframe,
+        positionSide: tr.trade.positionSide,
+        entryTimeMs: tr.trade.entryTimeMs,
+        exitTimeMs: tr.trade.exitTimeMs,
+        timeEn: tr.trade.timeEn,
+        entryPrice: Number(tr.trade.price),
+        stopLossPrice: Number(tr.trade.stopLossPrice),
+        actualTakeProfit: tr.trade.takeProfitPrice ? Number(tr.trade.takeProfitPrice) : undefined,
+        actualExitPrice: Number(tr.trade.exitPrice),
+        actualRealizedR: tr.actualRealizedR,
+        actualNetPnl: parseFloat(tr.actualNetPnl.toFixed(4)),
+        actualFee: parseFloat(tr.actualAbsFee.toFixed(4)),
+        maxFavorableR: tr.maxFavorableR,
+        hitSl: tr.hitSl,
+        slHitTimeMs: tr.slHitTimeMs,
+        unfinishedAtNow: tr.unfinishedAtNow,
+        oneRUsd: parseFloat(tr.oneRUsd.toFixed(4)),
+        candleResolutionUsed: tr.candleResolutionUsed,
+        candlesScanned: tr.candlesScanned,
+        simAtOptimal,
+      };
+    });
+
+    res.json({
+      success: true,
+      actualStats,
+      optimal,
+      rrCurve,
+      tradeDetails,
+    });
+  } catch (error: any) {
+    console.error('[Optimize Live R:R Error]:', error);
+    res.status(500).json({ success: false, error: error.message || 'خطا در تحلیل بهینه R:R تاریخچه معاملات' });
   }
 });
 
@@ -2241,6 +2943,152 @@ function getRangeDatasetId(exchange: string, timeframe: string, startTime?: numb
   return `range_${ex}_${tf}_${s}_${e}`;
 }
 
+const ENGINE_PARITY_VERSION = 'xt_parity_v3';
+
+const MEME_ALIAS_NORM_MAP: Record<string, string> = {
+  'PEPEUSDT': '1000PEPEUSDT',
+  'SHIBUSDT': '1000SHIBUSDT',
+  'BONKUSDT': '1000BONKUSDT',
+  'FLOKIUSDT': '1000FLOKIUSDT',
+  'LUNCUSDT': '1000LUNCUSDT',
+  'RATSUSDT': '1000RATSUSDT',
+  'SATSUSDT': '1000SATSUSDT',
+  'XECUSDT': '1000XECUSDT',
+  'CATUSDT': '1000CATUSDT',
+  'CHEEMSUSDT': '1000CHEEMSUSDT',
+  'BTTUSDT': '1000BTTUSDT',
+};
+
+function toMsSafe(ts?: number | null): number {
+  if (!ts || isNaN(Number(ts)) || Number(ts) <= 0) return 0;
+  const n = Number(ts);
+  return n < 1e11 ? n * 1000 : n;
+}
+
+function filterCandlesByMsRange(candles: CandleData[], startTime?: number | null, endTime?: number | null): CandleData[] {
+  const sMs = toMsSafe(startTime);
+  const eMs = toMsSafe(endTime);
+  if (sMs <= 0 && eMs <= 0) return candles;
+  let allInside = true;
+  for (let i = 0; i < candles.length; i++) {
+    const t = candles[i].time;
+    const cMs = t < 1e11 ? t * 1000 : t;
+    if ((sMs > 0 && cMs < sMs) || (eMs > 0 && cMs > eMs)) {
+      allInside = false;
+      break;
+    }
+  }
+  if (allInside) return candles;
+  return candles.filter((c) => {
+    const cMs = c.time < 1e11 ? c.time * 1000 : c.time;
+    if (sMs > 0 && cMs < sMs) return false;
+    if (eMs > 0 && cMs > eMs) return false;
+    return true;
+  });
+}
+
+function buildSymbolFilterSet(symbols?: string[] | null): Set<string> | null {
+  if (!Array.isArray(symbols) || symbols.length === 0) return null;
+  return new Set(
+    symbols.flatMap((s: string) => {
+      const c = (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const mapped = MEME_ALIAS_NORM_MAP[c];
+      const stripped = c.startsWith('1000') ? c.slice(4) : null;
+      return [c, mapped, stripped].filter(Boolean) as string[];
+    })
+  );
+}
+
+function isSymbolAllowedBySet(symbol: string, filterSet: Set<string> | null): boolean {
+  if (!filterSet) return true;
+  const cleanSym = (symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const mappedClean = MEME_ALIAS_NORM_MAP[cleanSym] || (cleanSym.startsWith('1000') ? cleanSym.slice(4) : null);
+  return filterSet.has(cleanSym) || Boolean(mappedClean && filterSet.has(mappedClean));
+}
+
+function computeSymbolsSignature(symbols?: string[] | null): string {
+  if (!Array.isArray(symbols) || symbols.length === 0) return 'ALL';
+  const normalized = Array.from(new Set(symbols.map((s) => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '')).filter(Boolean))).sort();
+  if (normalized.length === 0) return 'ALL';
+  return `${normalized.length}:${normalized.slice(0, 5).join(',')}:${normalized[normalized.length - 1]}`;
+}
+
+function invalidateDatasetCaches(datasetId: string) {
+  serverDatasetCandleCache.delete(datasetId);
+  const diskCacheDir = path.join('/tmp', 'candle_chunks', datasetId);
+  try {
+    if (fs.existsSync(diskCacheDir)) {
+      fs.rmSync(diskCacheDir, { recursive: true, force: true });
+    }
+  } catch {}
+}
+
+function isExactStoredConfigMatch(
+  storedCfg: any,
+  storedStrategyId: string | null | undefined,
+  reqStrategyId: string,
+  baseConfig: any,
+  candidate: any
+): boolean {
+  if (!storedCfg || storedCfg.engineVersion !== ENGINE_PARITY_VERSION) return false;
+  if ((storedStrategyId || 'strategy_1_e_breakout') !== reqStrategyId) return false;
+
+  const numEq = (a: any, b: any, tol = 0.0005) => Math.abs(Number(a) - Number(b)) < tol;
+  const isAtrMatch = Number(candidate.atrPeriod) === Number(storedCfg.optAtrPeriod ?? storedCfg.atrPeriod);
+  const isAtrMultMatch = numEq(candidate.atrMultiplier, storedCfg.optAtrMultiplier ?? storedCfg.atrMultiplier);
+  const isMinCandlesMatch = Number(candidate.minCandles) === Number(storedCfg.optMinCandles ?? storedCfg.minCandles);
+  const isMinLongMatch = Number(candidate.minCandlesForLongLeg) === Number(storedCfg.optMinCandlesLong ?? storedCfg.minCandlesForLongLeg);
+  const isMinBlueMatch = Number(candidate.minCandlesForBlueLeg ?? 1) === Number(storedCfg.optMinCandlesBlue ?? storedCfg.minCandlesForBlueLeg ?? 1);
+  const isLongMultMatch = numEq(candidate.longLegAtrMultiplier, storedCfg.optLongLegAtrMult ?? storedCfg.longLegAtrMultiplier);
+  const isBlueMultMatch = numEq(candidate.blueLegAtrMultiplier ?? 0.1, storedCfg.optBlueLegAtrMult ?? storedCfg.blueLegAtrMultiplier ?? 0.1);
+  const isBlueMatch = numEq(candidate.maxBlueLegPercent, storedCfg.optMaxBlueLegPercent ?? storedCfg.maxBlueLegPercent);
+  const isBreakoutMatch = numEq(candidate.maxBreakoutAtrMultiplier, storedCfg.optMaxBreakoutAtr ?? storedCfg.maxBreakoutAtrMultiplier);
+  const isRrMatch = numEq(candidate.maxRiskReward, storedCfg.optMaxRiskReward ?? storedCfg.maxRiskReward);
+  const isTimeStopCandlesMatch = Number(candidate.timeStopCandles || 80) === Number(storedCfg.optTimeStopCandles ?? storedCfg.timeStopCandles ?? 80);
+  const isPosRatioMatch = Number(candidate.maxPositionToRiskRatio ?? 300) === Number(storedCfg.optMaxPositionToRiskRatio ?? storedCfg.maxPositionToRiskRatio ?? 300);
+
+  if (
+    !isAtrMatch || !isAtrMultMatch || !isMinCandlesMatch || !isMinLongMatch || !isMinBlueMatch ||
+    !isLongMultMatch || !isBlueMultMatch || !isBlueMatch || !isBreakoutMatch || !isRrMatch ||
+    !isTimeStopCandlesMatch || !isPosRatioMatch
+  ) {
+    return false;
+  }
+
+  if ((storedCfg.riskMode || 'percent') !== (baseConfig.riskMode || 'percent')) return false;
+  if (Number(storedCfg.capital || 10000) !== Number(baseConfig.capital || 10000)) return false;
+  if ((baseConfig.riskMode || 'percent') === 'fixed') {
+    if (!numEq(storedCfg.riskAmountFixed ?? 10, baseConfig.riskAmountFixed ?? 10, 0.01)) return false;
+  } else {
+    if (!numEq(storedCfg.riskPercent ?? 1, baseConfig.riskPercent ?? 1, 0.001)) return false;
+  }
+
+  const sExch = (storedCfg.exchange || 'xt').toLowerCase();
+  const bExch = (baseConfig.exchange || 'xt').toLowerCase();
+  if (sExch !== bExch) return false;
+
+  if (!numEq(storedCfg.entryCommissionPercent ?? 0.06, baseConfig.entryCommissionPercent ?? 0.06)) return false;
+  if (!numEq(storedCfg.exitCommissionPercent ?? 0.06, baseConfig.exitCommissionPercent ?? 0.06)) return false;
+  const sSlip = storedCfg.slSlippagePercent ?? (sExch === 'xt' ? 0.04 : 0);
+  const bSlip = baseConfig.slSlippagePercent ?? (bExch === 'xt' ? 0.04 : 0);
+  if (!numEq(sSlip, bSlip)) return false;
+  if (Number(storedCfg.maxCandlesToEnter || 100) !== Number(baseConfig.maxCandlesToEnter || 100)) return false;
+  if ((storedCfg.timeStopEnabled !== false && storedCfg.optTimeStopEnabled !== false) !== (baseConfig.timeStopEnabled !== false)) return false;
+  if ((storedCfg.noConcurrentPositions !== false) !== (baseConfig.noConcurrentPositions !== false)) return false;
+
+  const sSymSig = storedCfg.symbolsSignature || 'ALL';
+  const bSymSig = computeSymbolsSignature(baseConfig.symbols);
+  if (sSymSig !== bSymSig) return false;
+
+  const sStart = toMsSafe(storedCfg.startTime);
+  const bStart = toMsSafe(baseConfig.startTime);
+  const sEnd = toMsSafe(storedCfg.endTime);
+  const bEnd = toMsSafe(baseConfig.endTime);
+  if (sStart !== bStart || sEnd !== bEnd) return false;
+
+  return true;
+}
+
 const serverDatasetCandleCache = new Map<string, ServerCandleEntry[]>();
 
 async function loadDatasetEntriesFromPostgres(datasetId: string, symbolsFilter?: string[]): Promise<ServerCandleEntry[]> {
@@ -2471,26 +3319,36 @@ async function runServerBacktestCycle(params: {
   const atrMultiplier = Number(cfg.optAtrMultiplier ?? cfg.atrMultiplier) || 2.4;
   const minCandles = Number(cfg.optMinCandles ?? cfg.minCandles) || 2;
   const minCandlesForLongLeg = Number(cfg.optMinCandlesLong ?? cfg.minCandlesForLongLeg) || 10;
+  const minCandlesForBlueLeg = Number(cfg.optMinCandlesBlue ?? cfg.minCandlesForBlueLeg) || 1;
   const longLegAtrMultiplier = Number(cfg.optLongLegAtrMult ?? cfg.longLegAtrMultiplier) || 8.0;
+  const blueLegAtrMultiplier = Number(cfg.optBlueLegAtrMult ?? cfg.blueLegAtrMultiplier) || 0.1;
   const maxBlueLegPercent = Number(cfg.optMaxBlueLegPercent ?? cfg.maxBlueLegPercent) || 50;
   const maxBreakoutAtrMultiplier = Number(cfg.optMaxBreakoutAtr ?? cfg.maxBreakoutAtrMultiplier) || 3.0;
-  const minVolumeGrowthPercent = Number(cfg.optMinVolumeGrowthPercent ?? cfg.minVolumeGrowthPercent) || 0;
   const maxRiskReward = Number(cfg.optMaxRiskReward ?? cfg.maxRiskReward) || 3.0;
   const maxCandlesToEnter = Number(cfg.maxCandlesToEnter) || 100;
-  const entryCommission = Number(cfg.entryCommissionPercent) || 0.06;
-  const exitCommission = Number(cfg.exitCommissionPercent) || 0.06;
+  const entryCommission = cfg.entryCommissionPercent !== undefined && cfg.entryCommissionPercent !== null ? Number(cfg.entryCommissionPercent) : 0.06;
+  const exitCommission = cfg.exitCommissionPercent !== undefined && cfg.exitCommissionPercent !== null ? Number(cfg.exitCommissionPercent) : 0.06;
+  const effectiveExchange: 'xt' | 'binance' = (cfg.exchange || exchange) === 'binance' ? 'binance' : 'xt';
+  const slSlippagePercent = cfg.slSlippagePercent !== undefined && cfg.slSlippagePercent !== null
+    ? Number(cfg.slSlippagePercent)
+    : (effectiveExchange === 'xt' ? 0.04 : 0);
   const timeStopEnabled = cfg.timeStopEnabled !== false && cfg.optTimeStopEnabled !== false;
   const timeStopCandles = Number(cfg.optTimeStopCandles ?? cfg.timeStopCandles) || 80;
   const maxPositionToRiskRatio = Number(cfg.optMaxPositionToRiskRatio ?? cfg.maxPositionToRiskRatio) || 300;
 
-  console.log(`[Server Backtest] 🚀 Starting cycle: Dataset=${datasetId}, Mode=${incrementalSync ? 'INCREMENTAL_SYNC' : (forceRedownload ? 'FORCE_REDOWNLOAD' : 'SMART_DB')}, Strategy=${strategyId}, ATR=${atrPeriod}, Mult=${atrMultiplier}, minCandles=${minCandles}, minLong=${minCandlesForLongLeg}, longMult=${longLegAtrMultiplier}, blue%=${maxBlueLegPercent}, breakoutMult=${maxBreakoutAtrMultiplier}, volGrowth%=${minVolumeGrowthPercent}, RR=${maxRiskReward}, timeStop=${timeStopCandles}, maxPosRatio=${maxPositionToRiskRatio}, capital=${capital}, risk=${riskPercent}%`);
+  if (effectiveExchange === 'xt') {
+    await getXtSymbolsOpenApiMap().catch(() => {});
+  }
+
+  console.log(`[Server Backtest] 🚀 Starting cycle: Dataset=${datasetId}, Exchange=${effectiveExchange}, Mode=${incrementalSync ? 'INCREMENTAL_SYNC' : (forceRedownload ? 'FORCE_REDOWNLOAD' : 'SMART_DB')}, Strategy=${strategyId}, ATR=${atrPeriod}, Mult=${atrMultiplier}, minCandles=${minCandles}, minLong=${minCandlesForLongLeg}, minBlue=${minCandlesForBlueLeg}, longMult=${longLegAtrMultiplier}, blueMult=${blueLegAtrMultiplier}, blue%=${maxBlueLegPercent}, breakoutMult=${maxBreakoutAtrMultiplier}, RR=${maxRiskReward}, slSlip=${slSlippagePercent}%, timeStop=${timeStopCandles}, maxPosRatio=${maxPositionToRiskRatio}, capital=${capital}, risk=${riskPercent}%`);
 
   const processSymbolStrategy = (pair: { symbol: string; baseAsset: string; quoteAsset: string }, candles: CandleData[]) => {
     if (!candles || candles.length < 50) return null;
 
     const atrResult = calculateATR(candles, atrPeriod);
     const zzResult = calculateAtrZigZag(candles, atrResult.atrValues, atrMultiplier, minCandles);
-    const legs = analyzeZigZagLegs(zzResult.points, minCandlesForLongLeg, longLegAtrMultiplier, maxBlueLegPercent, maxBreakoutAtrMultiplier, candles, minVolumeGrowthPercent);
+    const legs = analyzeZigZagLegs(zzResult.points, minCandlesForLongLeg, longLegAtrMultiplier, maxBlueLegPercent, maxBreakoutAtrMultiplier, candles, minCandlesForBlueLeg, blueLegAtrMultiplier);
+    const xtMeta = effectiveExchange === 'xt' ? getXtSymbolMeta(toXtSymbol(pair.symbol)) : undefined;
 
     const stratConfig: any = {
       capital,
@@ -2501,18 +3359,20 @@ async function runServerBacktestCycle(params: {
       entryCommissionPercent: entryCommission,
       exitCommissionPercent: exitCommission,
       commissionPercent: parseFloat((entryCommission + exitCommission).toFixed(4)),
+      slSlippagePercent,
+      exchange: effectiveExchange,
+      xtContractSize: xtMeta?.contractSize,
+      xtMinNotional: xtMeta?.minNotional,
       maxRiskReward,
       maxCandlesToEnter,
       maxTradesPerLeg: 1,
       showOnChart: true,
-      noConcurrentPositions: true,
+      noConcurrentPositions: cfg.noConcurrentPositions !== false,
       symbol: pair.symbol,
       timeStopEnabled,
       timeStopCandles,
       maxPositionToRiskRatio,
       optMaxPositionToRiskRatio: maxPositionToRiskRatio,
-      minVolumeGrowthPercent,
-      optMinVolumeGrowthPercent: minVolumeGrowthPercent,
     };
 
     let backtestRes: any;
@@ -2588,15 +3448,10 @@ async function runServerBacktestCycle(params: {
       serverBacktestState.progress.currentSymbol = 'بررسی داده‌های ذخیره‌شده در دیتابیس PostgreSQL...';
 
       if (incrementalSync) {
-        // When incremental sync is requested, invalidate RAM cache so fresh missing symbols are pulled and saved
-        serverDatasetCandleCache.delete(datasetId);
-      } else if (serverDatasetCandleCache.has(datasetId)) {
-        const cached = serverDatasetCandleCache.get(datasetId);
-        if (cached && cached.length > 0) {
-          entries = cached;
-          console.log(`[Server Backtest] ⚡ Instant cache hit in RAM! Loaded ${entries.length} symbols for ${datasetId}.`);
-        }
+        // When incremental sync is requested, invalidate caches so fresh missing symbols are pulled and saved
+        invalidateDatasetCaches(datasetId);
       }
+      serverDatasetCandleCache.clear(); // Always avoid keeping massive decoded candle arrays in RAM alongside disk chunks
 
       if (entries.length === 0) {
         const matchedRow = await findBestMatchingDataset({
@@ -2727,92 +3582,40 @@ async function runServerBacktestCycle(params: {
             }
           }
 
-          const isFullScan = !symbols || symbols.length === 0;
-          const memeAliasNormMap: Record<string, string> = {
-            'PEPEUSDT': '1000PEPEUSDT',
-            'SHIBUSDT': '1000SHIBUSDT',
-            'BONKUSDT': '1000BONKUSDT',
-            'FLOKIUSDT': '1000FLOKIUSDT',
-            'LUNCUSDT': '1000LUNCUSDT',
-            'RATSUSDT': '1000RATSUSDT',
-            'SATSUSDT': '1000SATSUSDT',
-            'XECUSDT': '1000XECUSDT',
-            'CATUSDT': '1000CATUSDT',
-            'CHEEMSUSDT': '1000CHEEMSUSDT',
-            'BTTUSDT': '1000BTTUSDT',
-          };
-          const symbolsFilterSet = !isFullScan && symbols && symbols.length > 0
-            ? new Set(symbols.flatMap((s: string) => {
-                const c = s.toUpperCase().replace(/[^A-Z0-9]/g, '');
-                const mapped = memeAliasNormMap[c];
-                const stripped = c.startsWith('1000') ? c.slice(4) : null;
-                return [c, mapped, stripped].filter(Boolean) as string[];
-              }))
-            : null;
+          const symbolsFilterSet = buildSymbolFilterSet(symbols);
 
           serverBacktestState.stage = 'analyzing';
-          const estTotalSymbols = symbolsFilterSet ? symbols.length : (dsRes.rows[0].symbol_count || 771);
-          serverBacktestState.progress = { current: 0, total: estTotalSymbols, percent: 0, currentSymbol: 'محاسبه استراتژی روی نمادهای انتخابی...' };
+          const estTotalSymbols = symbolsFilterSet ? symbols!.length : (dsRes.rows[0].symbol_count || 771);
+          serverBacktestState.progress = { current: 0, total: estTotalSymbols, percent: 0, currentSymbol: 'در حال آماده‌سازی سریع داده‌ها از PostgreSQL...' };
 
-          let chunkOffset = 0;
-          const pageSize = 15;
           let processedSymbols = 0;
           let totalCandlesSum = 0;
-          const seenInRun = new Set<string>();
 
-          while (!serverBacktestState.shouldStop) {
-            const chunkRes = await pool.query(
-              `SELECT items_json FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC LIMIT $2 OFFSET $3;`,
-              [datasetId, pageSize, chunkOffset]
-            );
-            if (chunkRes.rows.length === 0) break;
-            chunkOffset += pageSize;
-
-            for (const row of chunkRes.rows) {
-              if (serverBacktestState.shouldStop) break;
-              try {
-                const items = JSON.parse(row.items_json);
-                for (const item of items) {
-                  if (serverBacktestState.shouldStop) break;
-                  const cleanSym = (item.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-                  const mappedClean = memeAliasNormMap[cleanSym] || (cleanSym.startsWith('1000') ? cleanSym.slice(4) : null);
-                  const isSymAllowed = !symbolsFilterSet || symbolsFilterSet.has(cleanSym) || (mappedClean && symbolsFilterSet.has(mappedClean));
-                  if (!isSymAllowed) continue;
-                  if (seenInRun.has(cleanSym)) continue;
-                  seenInRun.add(cleanSym);
-
-                  let candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
-                    time: t[0],
-                    open: t[1],
-                    high: t[2],
-                    low: t[3],
-                    close: t[4],
-                    volume: t[5],
-                  }));
-                  if (startTime && startTime > 0) {
-                    candles = candles.filter((c) => c.time >= startTime);
-                  }
-                  if (endTime && endTime > 0) {
-                    candles = candles.filter((c) => c.time <= endTime);
-                  }
-                  if (candles.length < 50) continue;
-
-                  const calc = processSymbolStrategy({ symbol: item.symbol, baseAsset: item.baseAsset, quoteAsset: item.quoteAsset }, candles);
-                  if (calc) {
-                    serverBacktestState.results.push(calc.resultItem);
-                    serverBacktestState.allTrades.push(...calc.finishedTrades);
-                  }
-                  processedSymbols++;
-                  totalCandlesSum += candles.length;
-                  savedSymbolsList.push(item.symbol);
-                  serverBacktestState.progress.current = processedSymbols;
-                  serverBacktestState.progress.percent = Math.min(100, Math.round((processedSymbols / estTotalSymbols) * 100));
-                  serverBacktestState.progress.currentSymbol = item.symbol;
-                }
-              } catch {}
+          await forEachDatasetChunkSymbol(
+            datasetId,
+            {
+              symbols,
+              startTime,
+              endTime,
+              checkStop: () => serverBacktestState.shouldStop,
+              onProgress: (msg) => {
+                serverBacktestState.progress.currentSymbol = msg;
+              },
+            },
+            (pair, candles) => {
+              const calc = processSymbolStrategy(pair, candles);
+              if (calc) {
+                serverBacktestState.results.push(calc.resultItem);
+                serverBacktestState.allTrades.push(...calc.finishedTrades);
+              }
+              processedSymbols++;
+              totalCandlesSum += candles.length;
+              savedSymbolsList.push(pair.symbol);
+              serverBacktestState.progress.current = processedSymbols;
+              serverBacktestState.progress.percent = Math.min(100, Math.round((processedSymbols / estTotalSymbols) * 100));
+              serverBacktestState.progress.currentSymbol = pair.symbol;
             }
-            await new Promise((resolve) => setImmediate(resolve));
-          }
+          );
 
           savedSymbolsCount = processedSymbols;
           savedTotalCandles = totalCandlesSum;
@@ -2896,6 +3699,7 @@ async function runServerBacktestCycle(params: {
       }
       // 3. Download from exchange with STREAMING DIRECT-TO-POSTGRESQL & ZERO RAM BLOAT
       serverBacktestState.stage = 'downloading';
+      invalidateDatasetCaches(datasetId);
       serverDatasetCandleCache.clear(); // Free old cache immediately to prevent memory leak
 
       let targetSymbols = symbols && symbols.length > 0 ? [...symbols] : [];
@@ -3135,6 +3939,26 @@ async function runServerBacktestCycle(params: {
 
     // 4. Persist final results in PostgreSQL safely (non-blocking)
     try {
+      const persistedCfg = {
+        ...cfg,
+        engineVersion: ENGINE_PARITY_VERSION,
+        exchange: effectiveExchange,
+        slSlippagePercent,
+        entryCommissionPercent: entryCommission,
+        exitCommissionPercent: exitCommission,
+        capital,
+        riskMode,
+        riskAmountFixed,
+        riskPercent,
+        maxCandlesToEnter,
+        noConcurrentPositions: cfg.noConcurrentPositions !== false,
+        timeStopEnabled,
+        timeStopCandles,
+        maxPositionToRiskRatio,
+        startTime: toMsSafe(startTime),
+        endTime: toMsSafe(endTime),
+        symbolsSignature: computeSymbolsSignature(symbols),
+      };
       const resultsJson = JSON.stringify({
         results: serverBacktestState.results,
         allTrades: serverBacktestState.allTrades,
@@ -3146,7 +3970,7 @@ async function runServerBacktestCycle(params: {
           `UPDATE candle_datasets 
            SET status = 'COMPLETED', results_json = $1, strategy_id = $2, strategy_config_json = $3, updated_at = NOW()
            WHERE id = $4;`,
-          [resultsJson, strategyId, JSON.stringify(cfg), datasetId]
+          [resultsJson, strategyId, JSON.stringify(persistedCfg), datasetId]
         );
       } else {
         await pool.query(
@@ -3154,7 +3978,7 @@ async function runServerBacktestCycle(params: {
            SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
                status = 'COMPLETED', results_json = $6, strategy_id = $7, strategy_config_json = $8, updated_at = NOW()
            WHERE id = $9;`,
-          [savedSymbolsCount, totalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, resultsJson, strategyId, JSON.stringify(cfg), datasetId]
+          [savedSymbolsCount, totalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, resultsJson, strategyId, JSON.stringify(persistedCfg), datasetId]
         );
       }
       console.log(`[Server Backtest] ✅ Completed backtest for ${datasetId} on ${serverBacktestState.results.length} pairs in PostgreSQL.`);
@@ -3750,11 +4574,12 @@ interface ServerOptimizerTrial {
   atrPeriod: number;
   minCandles: number;
   minCandlesForLongLeg: number;
+  minCandlesForBlueLeg?: number;
   atrMultiplier: number;
   longLegAtrMultiplier: number;
+  blueLegAtrMultiplier?: number;
   maxBlueLegPercent: number;
   maxBreakoutAtrMultiplier: number;
-  minVolumeGrowthPercent?: number;
   maxRiskReward: number;
   timeStopCandles: number;
   maxPositionToRiskRatio?: number;
@@ -3780,6 +4605,8 @@ const serverOptimizerState = {
   totalEvaluatedCount: 0,
   sessionSecondsLeft: 900,
   top10Trials: [] as ServerOptimizerTrial[],
+  sortColumn: 'netProfit' as string,
+  sortDirection: 'desc' as 'asc' | 'desc',
   adaptiveRanges: null as any,
   autoAdaptiveEnabled: true,
   lastStartedAt: 0,
@@ -3788,20 +4615,77 @@ const serverOptimizerState = {
   statusText: 'آماده برای بهینه‌سازی در سرور با اتصال مستقیم به PostgreSQL',
 };
 
+const ALLOWED_OPTIMIZER_SORT_COLUMNS = new Set([
+  'netProfit',
+  'profitFactor',
+  'winRate',
+  'maxDrawdown',
+  'totalTrades',
+  'atrPeriod',
+  'minCandles',
+  'minCandlesForLongLeg',
+  'minCandlesForBlueLeg',
+  'atrMultiplier',
+  'longLegAtrMultiplier',
+  'blueLegAtrMultiplier',
+  'maxBlueLegPercent',
+  'maxBreakoutAtrMultiplier',
+  'maxRiskReward',
+  'timeStopCandles',
+  'maxPositionToRiskRatio',
+  'totalFees',
+  'qualityScore',
+]);
+
+function normalizeOptimizerSortColumn(col: unknown): string {
+  const s = typeof col === 'string' ? col.trim() : '';
+  return ALLOWED_OPTIMIZER_SORT_COLUMNS.has(s) ? s : 'netProfit';
+}
+
+function normalizeOptimizerSortDirection(dir: unknown): 'asc' | 'desc' {
+  return dir === 'asc' ? 'asc' : 'desc';
+}
+
+function sortOptimizerTop10Trials<T extends Record<string, any>>(
+  trials: T[],
+  sortColumn: string = 'netProfit',
+  sortDirection: 'asc' | 'desc' = 'desc'
+): T[] {
+  const col = normalizeOptimizerSortColumn(sortColumn);
+  const dir = normalizeOptimizerSortDirection(sortDirection);
+  return [...trials].sort((a, b) => {
+    // حفظ و اولویت‌دهی قطعی ردیف‌های قبول‌شده (طلایی)
+    if (a.isValid && !b.isValid) return -1;
+    if (!a.isValid && b.isValid) return 1;
+
+    // مرتب‌سازی و نگهداری/حذف ردیف‌ها بر اساس ستون و جهت انتخاب‌شده در جدول
+    const valA = Number(a[col]) || 0;
+    const valB = Number(b[col]) || 0;
+    const primaryDiff = dir === 'desc' ? valB - valA : valA - valB;
+    if (Math.abs(primaryDiff) > 1e-6) return primaryDiff;
+
+    // معیارهای کمکی در صورت برابری کامل
+    const scoreDiff = (Number(b.qualityScore) || 0) - (Number(a.qualityScore) || 0);
+    if (Math.abs(scoreDiff) > 0.01) return scoreDiff;
+    return (Number(b.netProfit) || 0) - (Number(a.netProfit) || 0);
+  });
+}
+
 function generateConfigHash(p: {
   atrPeriod: number;
   minCandles: number;
   minCandlesForLongLeg: number;
+  minCandlesForBlueLeg?: number;
   atrMultiplier: number;
   longLegAtrMultiplier: number;
+  blueLegAtrMultiplier?: number;
   maxBlueLegPercent: number;
   maxBreakoutAtrMultiplier: number;
-  minVolumeGrowthPercent?: number;
   maxRiskReward: number;
   timeStopCandles?: number;
   maxPositionToRiskRatio?: number;
 }): string {
-  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.minVolumeGrowthPercent || 0}_${p.maxRiskReward}_${p.timeStopCandles || 80}_${p.maxPositionToRiskRatio ?? 300}`;
+  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.minCandlesForBlueLeg ?? 3}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.blueLegAtrMultiplier ?? 3}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxRiskReward}_${p.timeStopCandles || 80}_${p.maxPositionToRiskRatio ?? 300}`;
 }
 
 function calculateQualityScore(trial: {
@@ -3853,11 +4737,12 @@ function refineAdaptiveRangesSmart(
     'atrPeriod',
     'minCandles',
     'minCandlesForLongLeg',
+    'minCandlesForBlueLeg',
     'atrMultiplier',
     'longLegAtrMultiplier',
+    'blueLegAtrMultiplier',
     'maxBlueLegPercent',
     'maxBreakoutAtrMultiplier',
-    'minVolumeGrowthPercent',
     'maxRiskReward',
     'timeStopCandles',
     'maxPositionToRiskRatio',
@@ -3867,11 +4752,12 @@ function refineAdaptiveRangesSmart(
     atrPeriod: { lockProp: 'lockAtrPeriod', valProp: 'optAtrPeriod' },
     minCandles: { lockProp: 'lockMinCandles', valProp: 'optMinCandles' },
     minCandlesForLongLeg: { lockProp: 'lockMinCandlesLong', valProp: 'optMinCandlesLong' },
+    minCandlesForBlueLeg: { lockProp: 'lockMinCandlesBlue', valProp: 'optMinCandlesBlue' },
     atrMultiplier: { lockProp: 'lockAtrMultiplier', valProp: 'optAtrMultiplier' },
     longLegAtrMultiplier: { lockProp: 'lockLongLegAtrMult', valProp: 'optLongLegAtrMult' },
+    blueLegAtrMultiplier: { lockProp: 'lockBlueLegAtrMult', valProp: 'optBlueLegAtrMult' },
     maxBlueLegPercent: { lockProp: 'lockMaxBlueLegPercent', valProp: 'optMaxBlueLegPercent' },
     maxBreakoutAtrMultiplier: { lockProp: 'lockMaxBreakoutAtr', valProp: 'optMaxBreakoutAtr' },
-    minVolumeGrowthPercent: { lockProp: 'lockMinVolumeGrowthPercent', valProp: 'optMinVolumeGrowthPercent' },
     maxRiskReward: { lockProp: 'lockMaxRiskReward', valProp: 'optMaxRiskReward' },
     timeStopCandles: { lockProp: 'lockTimeStopCandles', valProp: 'optTimeStopCandles' },
     maxPositionToRiskRatio: { lockProp: 'lockMaxPositionToRiskRatio', valProp: 'optMaxPositionToRiskRatio' },
@@ -3994,11 +4880,12 @@ function getDefaultRangesForTimeframe(timeframe: string): any {
       atrPeriod: makeRange(20, 65, 12, 100, 45, 5),
       minCandles: makeRange(2, 5, 1, 8, 3, 1),
       minCandlesForLongLeg: makeRange(8, 22, 5, 36, 14, 2),
+      minCandlesForBlueLeg: makeRange(2, 10, 1, 20, 3, 1),
       atrMultiplier: makeRange(2.0, 4.25, 1.5, 6.0, 3.0, 0.25),
       longLegAtrMultiplier: makeRange(6.0, 14.5, 4.0, 22.0, 9.5, 0.5),
+      blueLegAtrMultiplier: makeRange(2.0, 6.0, 1.0, 12.0, 3.0, 0.25),
       maxBlueLegPercent: makeRange(35, 75, 20, 90, 55, 5),
       maxBreakoutAtrMultiplier: makeRange(2.0, 5.5, 1.0, 8.0, 3.5, 0.5),
-      minVolumeGrowthPercent: makeRange(0, 30, 0, 80, 0, 5),
       maxRiskReward: makeRange(1.5, 4.5, 1.0, 10.0, 2.5, 0.25),
       timeStopCandles: makeRange(20, 120, 5, 200, 80, 5),
       maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
@@ -4010,11 +4897,12 @@ function getDefaultRangesForTimeframe(timeframe: string): any {
       atrPeriod: makeRange(14, 45, 8, 80, 24, 2),
       minCandles: makeRange(1, 4, 1, 6, 2, 1),
       minCandlesForLongLeg: makeRange(5, 16, 4, 24, 10, 1),
+      minCandlesForBlueLeg: makeRange(1, 8, 1, 16, 2, 1),
       atrMultiplier: makeRange(1.5, 3.5, 1.0, 5.0, 2.4, 0.2),
       longLegAtrMultiplier: makeRange(4.5, 12.0, 3.0, 18.0, 8.0, 0.5),
+      blueLegAtrMultiplier: makeRange(1.5, 5.5, 1.0, 10.0, 2.5, 0.25),
       maxBlueLegPercent: makeRange(30, 70, 20, 85, 50, 5),
       maxBreakoutAtrMultiplier: makeRange(1.5, 5.0, 1.0, 7.0, 3.0, 0.5),
-      minVolumeGrowthPercent: makeRange(0, 30, 0, 80, 0, 5),
       maxRiskReward: makeRange(1.5, 7.0, 1.0, 12.0, 3.5, 0.5),
       timeStopCandles: makeRange(20, 120, 5, 200, 60, 5),
       maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
@@ -4025,11 +4913,12 @@ function getDefaultRangesForTimeframe(timeframe: string): any {
     atrPeriod: makeRange(18, 55, 10, 90, 32, 4),
     minCandles: makeRange(1, 5, 1, 8, 3, 1),
     minCandlesForLongLeg: makeRange(6, 20, 5, 30, 14, 2),
+    minCandlesForBlueLeg: makeRange(2, 10, 1, 18, 3, 1),
     atrMultiplier: makeRange(1.8, 4.0, 1.2, 5.5, 2.8, 0.25),
     longLegAtrMultiplier: makeRange(5.0, 14.0, 3.5, 20.0, 9.0, 0.5),
+    blueLegAtrMultiplier: makeRange(1.8, 6.0, 1.0, 11.0, 3.0, 0.25),
     maxBlueLegPercent: makeRange(35, 75, 25, 85, 55, 5),
     maxBreakoutAtrMultiplier: makeRange(1.8, 5.5, 1.0, 7.5, 3.5, 0.5),
-    minVolumeGrowthPercent: makeRange(0, 30, 0, 80, 0, 5),
     maxRiskReward: makeRange(1.5, 6.0, 1.0, 10.0, 3.0, 0.5),
     timeStopCandles: makeRange(20, 120, 5, 200, 80, 5),
     maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
@@ -4096,11 +4985,12 @@ function getNextCandidateFromAdaptiveRanges(
       atrPeriod: sampleParam(ranges.atrPeriod, l.lockAtrPeriod, l.optAtrPeriod ?? 45),
       minCandles: sampleParam(ranges.minCandles, l.lockMinCandles, l.optMinCandles ?? 3),
       minCandlesForLongLeg: sampleParam(ranges.minCandlesForLongLeg, l.lockMinCandlesLong, l.optMinCandlesLong ?? 14),
+      minCandlesForBlueLeg: sampleParam(ranges.minCandlesForBlueLeg, l.lockMinCandlesBlue, l.optMinCandlesBlue ?? 3),
       atrMultiplier: sampleParam(ranges.atrMultiplier, l.lockAtrMultiplier, l.optAtrMultiplier ?? 3.0),
       longLegAtrMultiplier: sampleParam(ranges.longLegAtrMultiplier, l.lockLongLegAtrMult, l.optLongLegAtrMult ?? 9.5),
+      blueLegAtrMultiplier: sampleParam(ranges.blueLegAtrMultiplier, l.lockBlueLegAtrMult, l.optBlueLegAtrMult ?? 3.0),
       maxBlueLegPercent: sampleParam(ranges.maxBlueLegPercent, l.lockMaxBlueLegPercent, l.optMaxBlueLegPercent ?? 55),
       maxBreakoutAtrMultiplier: sampleParam(ranges.maxBreakoutAtrMultiplier, l.lockMaxBreakoutAtr, l.optMaxBreakoutAtr ?? 3.5),
-      minVolumeGrowthPercent: sampleParam(ranges.minVolumeGrowthPercent, l.lockMinVolumeGrowthPercent, l.optMinVolumeGrowthPercent ?? 0),
       maxRiskReward: sampleParam(ranges.maxRiskReward, l.lockMaxRiskReward, l.optMaxRiskReward ?? 2.5),
       timeStopCandles: sampleParam(ranges.timeStopCandles, l.lockTimeStopCandles, l.optTimeStopCandles ?? 80),
       maxPositionToRiskRatio: sampleParam(ranges.maxPositionToRiskRatio, l.lockMaxPositionToRiskRatio, l.optMaxPositionToRiskRatio ?? 300),
@@ -4144,6 +5034,36 @@ function processFilteredTrades(
         lastExitTime = Math.max(lastExitTime, xTime);
       }
     }
+  }
+
+  // Re-scale chronological portfolio compounding in percent riskMode (matching BacktestScannerModal)
+  if (baseConfig.riskMode === 'percent' && effectiveTrades.length > 0 && baseConfig.capital > 0) {
+    let runningPortfolioEq = baseConfig.capital;
+    effectiveTrades = effectiveTrades.map((t) => {
+      const baseCap = (t.capitalBeforeTrade && t.capitalBeforeTrade > 0) ? t.capitalBeforeTrade : baseConfig.capital;
+      const scale = runningPortfolioEq / baseCap;
+      if (Math.abs(scale - 1) <= 0.002) {
+        runningPortfolioEq = Math.max(1, runningPortfolioEq + (t.pnl || 0));
+        return t;
+      }
+      const scaledPnl = parseFloat(((t.pnl || 0) * scale).toFixed(4));
+      const scaledFee = t.fee !== undefined ? parseFloat((t.fee * scale).toFixed(4)) : (t.commission !== undefined ? parseFloat((t.commission * scale).toFixed(4)) : 0);
+      const capBefore = parseFloat(runningPortfolioEq.toFixed(4));
+      runningPortfolioEq = Math.max(1, parseFloat((runningPortfolioEq + scaledPnl).toFixed(4)));
+      return {
+        ...t,
+        positionSize: (t.positionSize || 0) * scale,
+        positionValue: parseFloat(((t.positionValue || 0) * scale).toFixed(4)),
+        riskAmount: parseFloat(((t.riskAmount || 0) * scale).toFixed(4)),
+        grossPnl: t.grossPnl !== undefined ? parseFloat((t.grossPnl * scale).toFixed(4)) : undefined,
+        fee: scaledFee,
+        commission: scaledFee,
+        pnl: scaledPnl,
+        pnlPercent: parseFloat(((scaledPnl / capBefore) * 100).toFixed(4)),
+        capitalBeforeTrade: capBefore,
+        capitalAfterTrade: runningPortfolioEq,
+      };
+    });
   }
 
   const totalTrades = effectiveTrades.length;
@@ -4216,49 +5136,64 @@ function processFilteredTrades(
 async function ensureDatasetChunksCachedOnDisk(
   datasetId: string,
   onProgress?: (msg: string) => void,
-  maxChunksToLoad: number = 80
+  maxChunksToLoad: number = Infinity
 ): Promise<boolean> {
   const diskCacheDir = path.join('/tmp', 'candle_chunks', datasetId);
+  const completeFlagPath = path.join(diskCacheDir, '_complete.flag');
   try {
     fs.mkdirSync(diskCacheDir, { recursive: true });
   } catch {}
 
-  let cachedCount = 0;
-  try {
-    cachedCount = fs.readdirSync(diskCacheDir).filter((f) => f.endsWith('.json')).length;
-  } catch {}
-
-  // Check total chunks in PostgreSQL
-  const countRes = await pool.query(`SELECT count(*) FROM candle_chunks WHERE dataset_id = $1;`, [datasetId]);
-  const totalChunks = parseInt(countRes.rows[0]?.count || '0', 10);
-  if (totalChunks === 0) return false;
-
-  const targetLimit = Math.min(totalChunks, maxChunksToLoad);
-  if (cachedCount >= targetLimit && targetLimit > 0) {
+  if (fs.existsSync(completeFlagPath)) {
     return true;
   }
 
-  onProgress?.(`در حال آماده‌سازی و بارگذاری ${targetLimit} نماد برتر دیتابیس (${cachedCount}/${targetLimit})...`);
+  const idxRes = await pool.query(
+    `SELECT chunk_index FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC;`,
+    [datasetId]
+  );
+  const allIndices: number[] = idxRes.rows.map((r: any) => Number(r.chunk_index));
+  const totalChunks = allIndices.length;
+  if (totalChunks === 0) return false;
 
-  const batchSize = 20;
-  const batches: Array<{ startIdx: number; endIdx: number }> = [];
-  for (let idx = 0; idx < targetLimit; idx += batchSize) {
-    batches.push({ startIdx: idx, endIdx: Math.min(targetLimit, idx + batchSize) });
+  const targetIndices = Number.isFinite(maxChunksToLoad) ? allIndices.slice(0, maxChunksToLoad) : allIndices;
+  const missingIndices: number[] = [];
+  for (const idx of targetIndices) {
+    const filePath = path.join(diskCacheDir, `chunk_${String(idx).padStart(5, '0')}.json`);
+    if (!fs.existsSync(filePath)) {
+      missingIndices.push(idx);
+    }
   }
 
-  const concurrency = 5;
+  const alreadyCached = targetIndices.length - missingIndices.length;
+  if (missingIndices.length === 0) {
+    if (!Number.isFinite(maxChunksToLoad) || targetIndices.length >= totalChunks) {
+      try { fs.writeFileSync(completeFlagPath, String(totalChunks)); } catch {}
+    }
+    return true;
+  }
+
+  onProgress?.(`در حال آماده‌سازی و بارگذاری ${targetIndices.length} چانک دیتابیس (${alreadyCached}/${targetIndices.length})...`);
+
+  const batchSize = 15;
+  const batches: number[][] = [];
+  for (let i = 0; i < missingIndices.length; i += batchSize) {
+    batches.push(missingIndices.slice(i, i + batchSize));
+  }
+
+  const concurrency = 4;
   const queue = [...batches];
-  let completedChunks = cachedCount;
+  let completedChunks = alreadyCached;
 
   const worker = async () => {
-    while (queue.length > 0 && !serverOptimizerState.shouldStop) {
-      const b = queue.shift();
-      if (!b) break;
+    while (queue.length > 0 && !serverOptimizerState.shouldStop && !serverBacktestState.shouldStop) {
+      const batchIndices = queue.shift();
+      if (!batchIndices || batchIndices.length === 0) break;
 
       try {
         const res = await pool.query(
-          `SELECT chunk_index, items_json FROM candle_chunks WHERE dataset_id = $1 AND chunk_index >= $2 AND chunk_index < $3 ORDER BY chunk_index ASC;`,
-          [datasetId, b.startIdx, b.endIdx]
+          `SELECT chunk_index, items_json FROM candle_chunks WHERE dataset_id = $1 AND chunk_index = ANY($2::int[]) ORDER BY chunk_index ASC;`,
+          [datasetId, batchIndices]
         );
         for (const row of res.rows) {
           const chunkFileName = `chunk_${String(row.chunk_index || 0).padStart(5, '0')}.json`;
@@ -4268,8 +5203,8 @@ async function ensureDatasetChunksCachedOnDisk(
           }
           completedChunks++;
         }
-        const pct = Math.min(100, Math.round((completedChunks / targetLimit) * 100));
-        onProgress?.(`در حال بارگذاری سریع داده‌ها (${completedChunks}/${targetLimit} چانک - ${pct}٪)...`);
+        const pct = Math.min(100, Math.round((completedChunks / targetIndices.length) * 100));
+        onProgress?.(`در حال بارگذاری سریع داده‌ها (${completedChunks}/${targetIndices.length} چانک - ${pct}٪)...`);
       } catch (err: any) {
         console.warn('[Sync Chunk Warning]:', err.message);
       }
@@ -4277,7 +5212,73 @@ async function ensureDatasetChunksCachedOnDisk(
   };
 
   await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+  const finalCachedCount = fs.readdirSync(diskCacheDir).filter((f) => f.endsWith('.json')).length;
+  if (finalCachedCount >= totalChunks) {
+    try { fs.writeFileSync(completeFlagPath, String(totalChunks)); } catch {}
+  }
   return true;
+}
+
+async function forEachDatasetChunkSymbol(
+  datasetId: string,
+  options: {
+    symbols?: string[] | null;
+    startTime?: number | null;
+    endTime?: number | null;
+    maxSymbols?: number;
+    checkStop?: () => boolean;
+    onProgress?: (msg: string) => void;
+  },
+  onSymbol: (pair: { symbol: string; baseAsset: string; quoteAsset: string }, candles: CandleData[]) => void | Promise<void>
+): Promise<number> {
+  await ensureDatasetChunksCachedOnDisk(datasetId, options.onProgress, Infinity);
+  const diskCacheDir = path.join('/tmp', 'candle_chunks', datasetId);
+  if (!fs.existsSync(diskCacheDir)) return 0;
+
+  const files = fs.readdirSync(diskCacheDir).filter((f) => f.endsWith('.json')).sort();
+  const symbolsFilterSet = buildSymbolFilterSet(options.symbols);
+  const maxSymbols = options.maxSymbols && options.maxSymbols > 0 ? options.maxSymbols : Infinity;
+  const seen = new Set<string>();
+  let processed = 0;
+
+  for (let i = 0; i < files.length; i++) {
+    if (options.checkStop?.()) break;
+    if (processed >= maxSymbols) break;
+    try {
+      const raw = fs.readFileSync(path.join(diskCacheDir, files[i]), 'utf8');
+      const items = JSON.parse(raw);
+      for (const item of items) {
+        if (options.checkStop?.()) break;
+        if (processed >= maxSymbols) break;
+        const cleanSym = (item.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+        if (!cleanSym || seen.has(cleanSym)) continue;
+        if (!isSymbolAllowedBySet(item.symbol, symbolsFilterSet)) continue;
+        seen.add(cleanSym);
+
+        let candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
+          time: t[0],
+          open: t[1],
+          high: t[2],
+          low: t[3],
+          close: t[4],
+          volume: t[5],
+        }));
+        candles = filterCandlesByMsRange(candles, options.startTime, options.endTime);
+        if (candles.length < 50) continue;
+
+        const baseAsset = item.baseAsset || (item.symbol?.includes('_') ? item.symbol.split('_')[0].toUpperCase() : 'CRYPTO');
+        await onSymbol(
+          { symbol: item.symbol, baseAsset, quoteAsset: item.quoteAsset || 'USDT' },
+          candles
+        );
+        processed++;
+      }
+    } catch {}
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  return processed;
 }
 
 async function streamEvaluateDatasetFromPostgres(
@@ -4287,186 +5288,80 @@ async function streamEvaluateDatasetFromPostgres(
   baseConfig: any,
   constraints: any,
   symbolsFilter?: string[],
-  checkStopCondition: boolean = false
+  checkStopCondition: boolean = false,
+  maxSymbols: number = Infinity
 ) {
-  const symbolsFilterSet = symbolsFilter && symbolsFilter.length > 0
-    ? new Set(symbolsFilter.map((s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '')))
-    : null;
-
   const allTrades: any[] = [];
-  const diskCacheDir = path.join('/tmp', 'candle_chunks', datasetId);
-
-  // 1. Check if chunks are already cached locally on fast SSD
-  let localChunkFiles: string[] = [];
-  if (fs.existsSync(diskCacheDir)) {
-    try {
-      localChunkFiles = fs.readdirSync(diskCacheDir).filter((f) => f.endsWith('.json')).sort();
-    } catch {}
+  const effExch: 'xt' | 'binance' = baseConfig.exchange === 'binance' ? 'binance' : 'xt';
+  if (effExch === 'xt') {
+    await getXtSymbolsOpenApiMap().catch(() => {});
   }
 
-  if (localChunkFiles.length > 50) {
-    for (const file of localChunkFiles) {
-      if (checkStopCondition && serverOptimizerState.shouldStop) break;
-      try {
-        const raw = fs.readFileSync(path.join(diskCacheDir, file), 'utf8');
-        const items = JSON.parse(raw);
-        for (const item of items) {
-          const cleanSym = (item.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-          if (symbolsFilterSet && !symbolsFilterSet.has(cleanSym)) continue;
+  await forEachDatasetChunkSymbol(
+    datasetId,
+    {
+      symbols: symbolsFilter,
+      startTime: baseConfig?.startTime,
+      endTime: baseConfig?.endTime,
+      maxSymbols,
+      checkStop: () => Boolean(checkStopCondition && serverOptimizerState.shouldStop),
+    },
+    (pair, candles) => {
+      const atrResult = calculateATR(candles, candidate.atrPeriod);
+      const zzResult = calculateAtrZigZag(candles, atrResult.atrValues, candidate.atrMultiplier, candidate.minCandles);
+      const legs = analyzeZigZagLegs(
+        zzResult.points,
+        candidate.minCandlesForLongLeg,
+        candidate.longLegAtrMultiplier,
+        candidate.maxBlueLegPercent,
+        candidate.maxBreakoutAtrMultiplier,
+        candles,
+        candidate.minCandlesForBlueLeg ?? 1,
+        candidate.blueLegAtrMultiplier ?? 0.1
+      );
+      const xtMeta = effExch === 'xt' ? getXtSymbolMeta(toXtSymbol(pair.symbol)) : undefined;
 
-          const candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
-            time: t[0],
-            open: t[1],
-            high: t[2],
-            low: t[3],
-            close: t[4],
-            volume: t[5],
-          }));
-          if (candles.length < 50) continue;
+      const stratConfig: any = {
+        capital: baseConfig.capital,
+        selectedStrategyId: strategyId,
+        riskMode: baseConfig.riskMode,
+        riskAmountFixed: baseConfig.riskAmountFixed,
+        riskPercent: baseConfig.riskPercent,
+        entryCommissionPercent: baseConfig.entryCommissionPercent,
+        exitCommissionPercent: baseConfig.exitCommissionPercent,
+        commissionPercent: baseConfig.commissionPercent,
+        slSlippagePercent: baseConfig.slSlippagePercent ?? (effExch === 'xt' ? 0.04 : 0),
+        exchange: effExch,
+        xtContractSize: xtMeta?.contractSize,
+        xtMinNotional: xtMeta?.minNotional,
+        maxRiskReward: candidate.maxRiskReward,
+        maxCandlesToEnter: baseConfig.maxCandlesToEnter,
+        maxTradesPerLeg: 1,
+        showOnChart: false,
+        noConcurrentPositions: baseConfig.noConcurrentPositions,
+        symbol: pair.symbol,
+        timeStopEnabled: baseConfig.timeStopEnabled,
+        timeStopCandles: candidate.timeStopCandles || 80,
+        maxPositionToRiskRatio: candidate.maxPositionToRiskRatio || 300,
+      };
 
-          const atrResult = calculateATR(candles, candidate.atrPeriod);
-          const zzResult = calculateAtrZigZag(candles, atrResult.atrValues, candidate.atrMultiplier, candidate.minCandles);
-          const legs = analyzeZigZagLegs(
-            zzResult.points,
-            candidate.minCandlesForLongLeg,
-            candidate.longLegAtrMultiplier,
-            candidate.maxBlueLegPercent,
-            candidate.maxBreakoutAtrMultiplier,
-            candles,
-            candidate.minVolumeGrowthPercent || 0
-          );
+      let backtestRes: any;
+      if (strategyId === 'strategy_2_next_pivot') {
+        backtestRes = runStrategy2Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, candidate.atrMultiplier, candidate.minCandles);
+      } else {
+        backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig);
+      }
 
-          const stratConfig: any = {
-            capital: baseConfig.capital,
-            selectedStrategyId: strategyId,
-            riskMode: baseConfig.riskMode,
-            riskAmountFixed: baseConfig.riskAmountFixed,
-            riskPercent: baseConfig.riskPercent,
-            entryCommissionPercent: baseConfig.entryCommissionPercent,
-            exitCommissionPercent: baseConfig.exitCommissionPercent,
-            commissionPercent: baseConfig.commissionPercent,
-            maxRiskReward: candidate.maxRiskReward,
-            maxCandlesToEnter: baseConfig.maxCandlesToEnter,
-            maxTradesPerLeg: 1,
-            showOnChart: false,
-            noConcurrentPositions: baseConfig.noConcurrentPositions,
-            symbol: item.symbol,
-            timeStopEnabled: baseConfig.timeStopEnabled,
-            timeStopCandles: candidate.timeStopCandles || 80,
-            maxPositionToRiskRatio: candidate.maxPositionToRiskRatio || 300,
-          };
-
-          let backtestRes: any;
-          if (strategyId === 'strategy_2_next_pivot') {
-            backtestRes = runStrategy2Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, candidate.atrMultiplier, candidate.minCandles);
-          } else {
-            backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig);
-          }
-
-          const closed = (backtestRes.trades || [])
-            .filter((t: any) => t.status === 'WIN' || t.status === 'LOSS' || t.status === 'BREAKEVEN')
-            .map((t: any, idx: number) => ({
-              ...t,
-              id: `${item.symbol}-${idx}`,
-              symbol: item.symbol,
-            }));
-          allTrades.push(...closed);
-        }
-      } catch {}
+      const closed = (backtestRes.trades || [])
+        .filter((t: any) => t.status === 'WIN' || t.status === 'LOSS' || t.status === 'BREAKEVEN')
+        .map((t: any, idx: number) => ({
+          ...t,
+          id: `${pair.symbol}-${t.id || idx}`,
+          symbol: pair.symbol,
+        }));
+      allTrades.push(...closed);
     }
-    return processFilteredTrades(allTrades, baseConfig, constraints);
-  }
-
-  // 2. Stream from remote PostgreSQL and save to local SSD cache for subsequent instant runs
-  try {
-    fs.mkdirSync(diskCacheDir, { recursive: true });
-  } catch {}
-
-  let chunkOffset = 0;
-  const pageSize = 20;
-
-  while (!checkStopCondition || !serverOptimizerState.shouldStop) {
-    const res = await pool.query(
-      `SELECT chunk_index, items_json FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC LIMIT $2 OFFSET $3;`,
-      [datasetId, pageSize, chunkOffset]
-    );
-    if (res.rows.length === 0) break;
-    chunkOffset += pageSize;
-
-    for (const row of res.rows) {
-      if (checkStopCondition && serverOptimizerState.shouldStop) break;
-      try {
-        const chunkFileName = `chunk_${String(row.chunk_index || 0).padStart(5, '0')}.json`;
-        fs.writeFile(path.join(diskCacheDir, chunkFileName), row.items_json, () => {});
-
-        const items = JSON.parse(row.items_json);
-        for (const item of items) {
-          const cleanSym = (item.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-          if (symbolsFilterSet && !symbolsFilterSet.has(cleanSym)) continue;
-
-          const candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
-            time: t[0],
-            open: t[1],
-            high: t[2],
-            low: t[3],
-            close: t[4],
-            volume: t[5],
-          }));
-          if (candles.length < 50) continue;
-
-          const atrResult = calculateATR(candles, candidate.atrPeriod);
-          const zzResult = calculateAtrZigZag(candles, atrResult.atrValues, candidate.atrMultiplier, candidate.minCandles);
-          const legs = analyzeZigZagLegs(
-            zzResult.points,
-            candidate.minCandlesForLongLeg,
-            candidate.longLegAtrMultiplier,
-            candidate.maxBlueLegPercent,
-            candidate.maxBreakoutAtrMultiplier,
-            candles,
-            candidate.minVolumeGrowthPercent || 0
-          );
-
-          const stratConfig: any = {
-            capital: baseConfig.capital,
-            selectedStrategyId: strategyId,
-            riskMode: baseConfig.riskMode,
-            riskAmountFixed: baseConfig.riskAmountFixed,
-            riskPercent: baseConfig.riskPercent,
-            entryCommissionPercent: baseConfig.entryCommissionPercent,
-            exitCommissionPercent: baseConfig.exitCommissionPercent,
-            commissionPercent: baseConfig.commissionPercent,
-            maxRiskReward: candidate.maxRiskReward,
-            maxCandlesToEnter: baseConfig.maxCandlesToEnter,
-            maxTradesPerLeg: 1,
-            showOnChart: false,
-            noConcurrentPositions: baseConfig.noConcurrentPositions,
-            symbol: item.symbol,
-            timeStopEnabled: baseConfig.timeStopEnabled,
-            timeStopCandles: candidate.timeStopCandles || 80,
-            maxPositionToRiskRatio: candidate.maxPositionToRiskRatio || 300,
-          };
-
-          let backtestRes: any;
-          if (strategyId === 'strategy_2_next_pivot') {
-            backtestRes = runStrategy2Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, candidate.atrMultiplier, candidate.minCandles);
-          } else {
-            backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig);
-          }
-
-          const closed = (backtestRes.trades || [])
-            .filter((t: any) => t.status === 'WIN' || t.status === 'LOSS' || t.status === 'BREAKEVEN')
-            .map((t: any, idx: number) => ({
-              ...t,
-              id: `${item.symbol}-${idx}`,
-              symbol: item.symbol,
-            }));
-          allTrades.push(...closed);
-        }
-      } catch {}
-    }
-
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  );
 
   return processFilteredTrades(allTrades, baseConfig, constraints);
 }
@@ -4476,11 +5371,12 @@ async function evaluateCombinationOnServer(
     atrPeriod: number;
     minCandles: number;
     minCandlesForLongLeg: number;
+    minCandlesForBlueLeg?: number;
     atrMultiplier: number;
     longLegAtrMultiplier: number;
+    blueLegAtrMultiplier?: number;
     maxBlueLegPercent: number;
     maxBreakoutAtrMultiplier: number;
-    minVolumeGrowthPercent?: number;
     maxRiskReward: number;
     timeStopCandles?: number;
     maxPositionToRiskRatio?: number;
@@ -4495,6 +5391,8 @@ async function evaluateCombinationOnServer(
     entryCommissionPercent: number;
     exitCommissionPercent: number;
     commissionPercent: number;
+    slSlippagePercent?: number;
+    exchange?: 'xt' | 'binance';
     maxCandlesToEnter: number;
     noConcurrentPositions: boolean;
     timeStopEnabled: boolean;
@@ -4506,6 +5404,10 @@ async function evaluateCombinationOnServer(
   }
 ) {
   const allTrades: any[] = [];
+  const effExch: 'xt' | 'binance' = baseConfig.exchange === 'binance' ? 'binance' : 'xt';
+  if (effExch === 'xt') {
+    await getXtSymbolsOpenApiMap().catch(() => {});
+  }
 
   for (let i = 0; i < entries.length; i++) {
     if (serverOptimizerState.shouldStop) break;
@@ -4526,8 +5428,10 @@ async function evaluateCombinationOnServer(
       params.maxBlueLegPercent,
       params.maxBreakoutAtrMultiplier,
       candles,
-      params.minVolumeGrowthPercent || 0
+      params.minCandlesForBlueLeg ?? 1,
+      params.blueLegAtrMultiplier ?? 0.1
     );
+    const xtMeta = effExch === 'xt' ? getXtSymbolMeta(toXtSymbol(item.pair.symbol)) : undefined;
 
     const stratConfig: any = {
       capital: baseConfig.capital,
@@ -4538,6 +5442,10 @@ async function evaluateCombinationOnServer(
       entryCommissionPercent: baseConfig.entryCommissionPercent,
       exitCommissionPercent: baseConfig.exitCommissionPercent,
       commissionPercent: baseConfig.commissionPercent,
+      slSlippagePercent: baseConfig.slSlippagePercent ?? (effExch === 'xt' ? 0.04 : 0),
+      exchange: effExch,
+      xtContractSize: xtMeta?.contractSize,
+      xtMinNotional: xtMeta?.minNotional,
       maxRiskReward: params.maxRiskReward,
       maxCandlesToEnter: baseConfig.maxCandlesToEnter,
       maxTradesPerLeg: 1,
@@ -4584,107 +5492,92 @@ async function runServerOptimizerLoop(
   serverOptimizerState.shouldStop = false;
   serverOptimizerState.datasetId = datasetId;
   serverOptimizerState.strategyId = strategyId;
+  serverDatasetCandleCache.clear();
 
-  // 1. Immediately inject the current manual configuration into row #1 of Top 10 from stored results!
+  const maxSymbolsLimit = processingDepth === 'fast' ? 120 : Infinity;
+
+  // 1. Ensure complete disk chunks exist once (~2-3s per trial streaming with <200MB RAM)
+  serverOptimizerState.statusText = 'در حال آماده‌سازی کامل داده‌های کندل از PostgreSQL...';
+  await ensureDatasetChunksCachedOnDisk(datasetId, (statusMsg) => {
+    serverOptimizerState.statusText = statusMsg;
+  }, Infinity);
+
+  if (serverOptimizerState.shouldStop) {
+    serverOptimizerState.isOptimizing = false;
+    return;
+  }
+
+  // 2. Inject Row #1 using current manual/UI candidate — reuse results_json ONLY if FULL depth AND 100% config+engine parity!
   try {
-    const dsMeta = await pool.query(`SELECT strategy_config_json, results_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
-    if (dsMeta.rows.length > 0 && dsMeta.rows[0].results_json) {
-      const parsedRes = JSON.parse(dsMeta.rows[0].results_json);
-      if (parsedRes.allTrades && parsedRes.allTrades.length > 0) {
-        let storedCfg: any = {};
+    const manualCandidate = {
+      atrPeriod: Number(locks?.optAtrPeriod ?? 45),
+      minCandles: Number(locks?.optMinCandles ?? 3),
+      minCandlesForLongLeg: Number(locks?.optMinCandlesLong ?? 14),
+      minCandlesForBlueLeg: Number(locks?.optMinCandlesBlue ?? 3),
+      atrMultiplier: Number(locks?.optAtrMultiplier ?? 3.0),
+      longLegAtrMultiplier: Number(locks?.optLongLegAtrMult ?? 9.5),
+      blueLegAtrMultiplier: Number(locks?.optBlueLegAtrMult ?? 3.0),
+      maxBlueLegPercent: Number(locks?.optMaxBlueLegPercent ?? 55),
+      maxBreakoutAtrMultiplier: Number(locks?.optMaxBreakoutAtr ?? 3.5),
+      maxRiskReward: Number(locks?.optMaxRiskReward ?? 2.5),
+      timeStopCandles: Number(locks?.optTimeStopCandles ?? 80),
+      maxPositionToRiskRatio: Number(locks?.optMaxPositionToRiskRatio ?? 300),
+    };
+
+    let manualEval: any = null;
+    if (processingDepth !== 'fast') {
+      const dsMeta = await pool.query(`SELECT strategy_id, strategy_config_json, results_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
+      if (dsMeta.rows.length > 0 && dsMeta.rows[0].results_json) {
+        let storedCfg: any = null;
         try { storedCfg = JSON.parse(dsMeta.rows[0].strategy_config_json); } catch {}
-        const manualCandidate = {
-          atrPeriod: Number(storedCfg.optAtrPeriod ?? storedCfg.atrPeriod ?? 17),
-          minCandles: Number(storedCfg.optMinCandles ?? storedCfg.minCandles ?? 9),
-          minCandlesForLongLeg: Number(storedCfg.optMinCandlesLong ?? storedCfg.minCandlesForLongLeg ?? 12),
-          atrMultiplier: Number(storedCfg.optAtrMultiplier ?? storedCfg.atrMultiplier ?? 1.0),
-          longLegAtrMultiplier: Number(storedCfg.optLongLegAtrMult ?? storedCfg.longLegAtrMultiplier ?? 7.0),
-          maxBlueLegPercent: Number(storedCfg.optMaxBlueLegPercent ?? storedCfg.maxBlueLegPercent ?? 95),
-          maxBreakoutAtrMultiplier: Number(storedCfg.optMaxBreakoutAtr ?? storedCfg.maxBreakoutAtrMultiplier ?? 4.0),
-          maxRiskReward: Number(storedCfg.optMaxRiskReward ?? storedCfg.maxRiskReward ?? 2.25),
-          timeStopCandles: Number(storedCfg.optTimeStopCandles ?? storedCfg.timeStopCandles ?? 90),
-          maxPositionToRiskRatio: Number(storedCfg.optMaxPositionToRiskRatio ?? storedCfg.maxPositionToRiskRatio ?? 300),
-        };
-        const manualEval = processFilteredTrades(parsedRes.allTrades, baseConfig, constraints);
-        const qualityScore = calculateQualityScore({
-          netProfit: manualEval.netProfit,
-          profitFactor: manualEval.profitFactor,
-          winRate: manualEval.winRate,
-          maxDrawdown: manualEval.maxDrawdown,
-          totalTrades: manualEval.totalTrades,
-          targetMaxDrawdown: constraints.targetMaxDrawdown,
-          targetMinWinRate: constraints.targetMinWinRate,
-          targetMinTrades: constraints.targetMinTrades,
-        });
-        const { effectiveTrades, ...cleanManualEval }: any = manualEval;
-        const initialTrial: ServerOptimizerTrial = {
-          id: 1,
-          hash: generateConfigHash(manualCandidate),
-          timestamp: new Date().toLocaleTimeString('fa-IR'),
-          qualityScore,
-          ...manualCandidate,
-          ...cleanManualEval,
-          equityPoints: (cleanManualEval.equityPoints || []).slice(0, 50),
-        };
-        serverOptimizerState.top10Trials = [initialTrial];
-        serverOptimizerState.totalEvaluatedCount = 1;
+        if (isExactStoredConfigMatch(storedCfg, dsMeta.rows[0].strategy_id, strategyId, baseConfig, manualCandidate)) {
+          const parsedRes = JSON.parse(dsMeta.rows[0].results_json);
+          if (parsedRes.allTrades && parsedRes.allTrades.length > 0) {
+            manualEval = processFilteredTrades(parsedRes.allTrades, baseConfig, constraints);
+          }
+        }
       }
+    }
+
+    if (!manualEval) {
+      manualEval = await streamEvaluateDatasetFromPostgres(
+        datasetId,
+        manualCandidate,
+        strategyId,
+        baseConfig,
+        constraints,
+        baseConfig.symbols,
+        true,
+        maxSymbolsLimit
+      );
+    }
+
+    if (manualEval && !serverOptimizerState.shouldStop) {
+      const qualityScore = calculateQualityScore({
+        netProfit: manualEval.netProfit,
+        profitFactor: manualEval.profitFactor,
+        winRate: manualEval.winRate,
+        maxDrawdown: manualEval.maxDrawdown,
+        totalTrades: manualEval.totalTrades,
+        targetMaxDrawdown: constraints.targetMaxDrawdown,
+        targetMinWinRate: constraints.targetMinWinRate,
+        targetMinTrades: constraints.targetMinTrades,
+      });
+      const { effectiveTrades, ...cleanManualEval }: any = manualEval;
+      const initialTrial: ServerOptimizerTrial = {
+        id: 1,
+        hash: generateConfigHash(manualCandidate),
+        timestamp: new Date().toLocaleTimeString('fa-IR'),
+        qualityScore,
+        ...manualCandidate,
+        ...cleanManualEval,
+        equityPoints: (cleanManualEval.equityPoints || []).slice(0, 50),
+      };
+      serverOptimizerState.top10Trials = [initialTrial];
+      serverOptimizerState.totalEvaluatedCount = 1;
     }
   } catch (err: any) {
     console.warn('[Initial trial injection error]:', err.message);
-  }
-
-  // 2. Load dataset into memory cache for instant microsecond evaluation
-  let entries: ServerCandleEntry[] = [];
-  if (serverDatasetCandleCache.has(datasetId)) {
-    entries = serverDatasetCandleCache.get(datasetId) || [];
-  }
-
-  const maxPairsNeeded = processingDepth === 'fast' ? 50 : 80;
-
-  if (entries.length === 0) {
-    serverOptimizerState.statusText = 'در حال بارگذاری سریع داده‌های کندل در رم سرور...';
-    await ensureDatasetChunksCachedOnDisk(datasetId, (statusMsg) => {
-      serverOptimizerState.statusText = statusMsg;
-    }, maxPairsNeeded);
-
-    const diskCacheDir = path.join('/tmp', 'candle_chunks', datasetId);
-    if (fs.existsSync(diskCacheDir)) {
-      const files = fs.readdirSync(diskCacheDir).filter((f) => f.endsWith('.json')).sort();
-      const targetFiles = files.slice(0, maxPairsNeeded);
-      for (let i = 0; i < targetFiles.length; i++) {
-        if (i > 0 && i % 8 === 0) {
-          await new Promise((r) => setImmediate(r));
-        }
-        const f = targetFiles[i];
-        try {
-          const raw = fs.readFileSync(path.join(diskCacheDir, f), 'utf8');
-          const items = JSON.parse(raw);
-          for (const item of items) {
-            const candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
-              time: t[0],
-              open: t[1],
-              high: t[2],
-              low: t[3],
-              close: t[4],
-              volume: t[5],
-            }));
-            if (candles.length >= 50) {
-              const baseAsset = item.baseAsset || (item.symbol?.includes('_') ? item.symbol.split('_')[0] : 'CRYPTO');
-              entries.push({
-                pair: { symbol: item.symbol, baseAsset, quoteAsset: item.quoteAsset || 'USDT' },
-                candles,
-                timeframe: item.timeframe || '5m',
-              });
-            }
-          }
-        } catch {}
-      }
-      if (entries.length > 0) {
-        serverDatasetCandleCache.set(datasetId, entries);
-        console.log(`[Optimizer In-Memory] ⚡ Loaded and cached ${entries.length} pairs in RAM for instant trials!`);
-      }
-    }
   }
 
   if (serverOptimizerState.shouldStop) {
@@ -4704,11 +5597,7 @@ async function runServerOptimizerLoop(
   const maxSessionDurationMs = durationMin * 60 * 1000;
   const startTime = Date.now();
   serverOptimizerState.sessionSecondsLeft = Math.round(maxSessionDurationMs / 1000);
-  serverOptimizerState.statusText = 'بهینه‌سازی هوشمند در حال اجرا است...';
-
-  const evaluationEntries = (processingDepth === 'fast' && entries.length > 120)
-    ? [...entries].sort((a, b) => b.candles.length - a.candles.length).slice(0, 120)
-    : entries;
+  serverOptimizerState.statusText = `بهینه‌سازی هوشمند (${processingDepth === 'fast' ? '۱۲۰ نماد' : 'تمام نمادها'}) در حال اجرا است...`;
 
   while (!serverOptimizerState.shouldStop && (Date.now() - startTime) < maxSessionDurationMs) {
     serverOptimizerState.sessionSecondsLeft = Math.max(0, Math.round((maxSessionDurationMs - (Date.now() - startTime)) / 1000));
@@ -4724,26 +5613,16 @@ async function runServerOptimizerLoop(
 
     serverOptimizerState.statusText = `در حال آزمایش ترکیب #${serverOptimizerState.totalEvaluatedCount + 1}: ATR=${candidate.atrPeriod}, Mult=${candidate.atrMultiplier}, RR=${candidate.maxRiskReward}...`;
 
-    let evalRes: any = null;
-    if (evaluationEntries.length > 0) {
-      evalRes = await evaluateCombinationOnServer(
-        candidate,
-        evaluationEntries,
-        strategyId,
-        baseConfig,
-        constraints
-      );
-    } else {
-      evalRes = await streamEvaluateDatasetFromPostgres(
-        datasetId,
-        candidate,
-        strategyId,
-        baseConfig,
-        constraints,
-        undefined,
-        true
-      );
-    }
+    const evalRes = await streamEvaluateDatasetFromPostgres(
+      datasetId,
+      candidate,
+      strategyId,
+      baseConfig,
+      constraints,
+      baseConfig.symbols,
+      true,
+      maxSymbolsLimit
+    );
 
     if (serverOptimizerState.shouldStop) break;
     serverOptimizerState.totalEvaluatedCount++;
@@ -4771,17 +5650,14 @@ async function runServerOptimizerLoop(
         equityPoints: (cleanEvalRes.equityPoints || []).slice(0, 50),
       };
 
-      // Deduplicate by hash and update top 10
+      // Deduplicate by hash and update top 10 using active table sort column & direction (preserving isValid rows first)
       const filtered = localTop10.filter((t) => t.hash !== trial.hash);
       const merged = [...filtered, trial];
-      merged.sort((a, b) => {
-        if (a.isValid && !b.isValid) return -1;
-        if (!a.isValid && b.isValid) return 1;
-        const scoreDiff = (b.qualityScore || 0) - (a.qualityScore || 0);
-        if (Math.abs(scoreDiff) > 0.01) return scoreDiff;
-        return b.netProfit - a.netProfit;
-      });
-      localTop10 = merged.slice(0, 10);
+      localTop10 = sortOptimizerTop10Trials(
+        merged,
+        serverOptimizerState.sortColumn,
+        serverOptimizerState.sortDirection
+      ).slice(0, 10);
       serverOptimizerState.top10Trials = localTop10;
 
       // Refine adaptive ranges
@@ -4819,6 +5695,8 @@ app.post('/api/optimizer/start', async (req, res) => {
       autoAdaptiveEnabled = true,
       sessionDurationMinutes = 5,
       processingDepth = 'full',
+      sortColumn,
+      sortDirection,
     } = req.body || {};
 
     const explicitDatasetId = req.body?.datasetId;
@@ -4905,9 +5783,13 @@ app.post('/api/optimizer/start', async (req, res) => {
     const riskMode = cfg.riskMode || 'percent';
     const riskAmountFixed = Number(cfg.riskAmountFixed) > 0 ? Number(cfg.riskAmountFixed) : (riskMode === 'fixed' ? 100 : 10);
     const riskPercent = Number(cfg.riskPercent) || 1.0;
-    const entryCommission = Number(cfg.entryCommissionPercent) || 0.06;
-    const exitCommission = Number(cfg.exitCommissionPercent) || 0.06;
+    const entryCommission = cfg.entryCommissionPercent !== undefined && cfg.entryCommissionPercent !== null ? Number(cfg.entryCommissionPercent) : 0.06;
+    const exitCommission = cfg.exitCommissionPercent !== undefined && cfg.exitCommissionPercent !== null ? Number(cfg.exitCommissionPercent) : 0.06;
     const commissionPercent = parseFloat((entryCommission + exitCommission).toFixed(4));
+    const optExchange: 'xt' | 'binance' = (cfg.exchange || req.body?.exchange) === 'binance' ? 'binance' : 'xt';
+    const slSlippagePercent = cfg.slSlippagePercent !== undefined && cfg.slSlippagePercent !== null
+      ? Number(cfg.slSlippagePercent)
+      : (optExchange === 'xt' ? 0.04 : 0);
     const maxCandlesToEnter = Number(cfg.maxCandlesToEnter) || 100;
     const noConcurrentPositions = Boolean(cfg.noConcurrentPositions !== false);
     const timeStopEnabled = cfg.timeStopEnabled !== false;
@@ -4920,9 +5802,14 @@ app.post('/api/optimizer/start', async (req, res) => {
       entryCommissionPercent: entryCommission,
       exitCommissionPercent: exitCommission,
       commissionPercent,
+      slSlippagePercent,
+      exchange: optExchange,
       maxCandlesToEnter,
       noConcurrentPositions,
       timeStopEnabled,
+      symbols: Array.isArray(symbols) ? symbols : [],
+      startTime: startTime ? Number(startTime) : null,
+      endTime: endTime ? Number(endTime) : null,
     };
 
     const targetConstraints = {
@@ -4935,8 +5822,10 @@ app.post('/api/optimizer/start', async (req, res) => {
       lockAtrPeriod: Boolean(locks?.lockAtrPeriod),
       lockMinCandles: Boolean(locks?.lockMinCandles),
       lockMinCandlesLong: Boolean(locks?.lockMinCandlesLong),
+      lockMinCandlesBlue: Boolean(locks?.lockMinCandlesBlue),
       lockAtrMultiplier: Boolean(locks?.lockAtrMultiplier),
       lockLongLegAtrMult: Boolean(locks?.lockLongLegAtrMult),
+      lockBlueLegAtrMult: Boolean(locks?.lockBlueLegAtrMult),
       lockMaxBlueLegPercent: Boolean(locks?.lockMaxBlueLegPercent),
       lockMaxBreakoutAtr: Boolean(locks?.lockMaxBreakoutAtr),
       lockMaxRiskReward: Boolean(locks?.lockMaxRiskReward),
@@ -4945,28 +5834,33 @@ app.post('/api/optimizer/start', async (req, res) => {
       optAtrPeriod: Number(locks?.optAtrPeriod ?? cfg?.atrPeriod ?? cfg?.optAtrPeriod ?? 45),
       optMinCandles: Number(locks?.optMinCandles ?? cfg?.minCandles ?? cfg?.optMinCandles ?? 3),
       optMinCandlesLong: Number(locks?.optMinCandlesLong ?? cfg?.minCandlesForLongLeg ?? cfg?.optMinCandlesLong ?? 14),
+      optMinCandlesBlue: Number(locks?.optMinCandlesBlue ?? cfg?.minCandlesForBlueLeg ?? cfg?.optMinCandlesBlue ?? 3),
       optAtrMultiplier: Number(locks?.optAtrMultiplier ?? cfg?.atrMultiplier ?? cfg?.optAtrMultiplier ?? 3.0),
       optLongLegAtrMult: Number(locks?.optLongLegAtrMult ?? cfg?.longLegAtrMultiplier ?? cfg?.optLongLegAtrMult ?? 9.5),
+      optBlueLegAtrMult: Number(locks?.optBlueLegAtrMult ?? cfg?.blueLegAtrMultiplier ?? cfg?.optBlueLegAtrMult ?? 3.0),
       optMaxBlueLegPercent: Number(locks?.optMaxBlueLegPercent ?? cfg?.maxBlueLegPercent ?? cfg?.optMaxBlueLegPercent ?? 55),
       optMaxBreakoutAtr: Number(locks?.optMaxBreakoutAtr ?? cfg?.maxBreakoutAtrMultiplier ?? cfg?.optMaxBreakoutAtr ?? 3.5),
-      optMinVolumeGrowthPercent: Number(locks?.optMinVolumeGrowthPercent ?? cfg?.minVolumeGrowthPercent ?? cfg?.optMinVolumeGrowthPercent ?? 0),
       optMaxRiskReward: Number(locks?.optMaxRiskReward ?? cfg?.maxRiskReward ?? cfg?.optMaxRiskReward ?? 2.5),
       optTimeStopCandles: Number(locks?.optTimeStopCandles ?? cfg?.timeStopCandles ?? cfg?.optTimeStopCandles ?? 80),
       optMaxPositionToRiskRatio: Number(locks?.optMaxPositionToRiskRatio ?? cfg?.maxPositionToRiskRatio ?? cfg?.optMaxPositionToRiskRatio ?? 300),
     };
 
-    const initialRanges = ranges || serverOptimizerState.adaptiveRanges || getDefaultRangesForTimeframe(timeframe);
+    const initialRanges = {
+      ...getDefaultRangesForTimeframe(timeframe),
+      ...(ranges || serverOptimizerState.adaptiveRanges || {}),
+    };
 
     // Initialize and enforce immutable user boundaries on all parameters
     const paramKeys = [
       'atrPeriod',
       'minCandles',
       'minCandlesForLongLeg',
+      'minCandlesForBlueLeg',
       'atrMultiplier',
       'longLegAtrMultiplier',
+      'blueLegAtrMultiplier',
       'maxBlueLegPercent',
       'maxBreakoutAtrMultiplier',
-      'minVolumeGrowthPercent',
       'maxRiskReward',
       'timeStopCandles',
       'maxPositionToRiskRatio',
@@ -4995,11 +5889,12 @@ app.post('/api/optimizer/start', async (req, res) => {
       atrPeriod: { lockProp: 'lockAtrPeriod', valProp: 'optAtrPeriod' },
       minCandles: { lockProp: 'lockMinCandles', valProp: 'optMinCandles' },
       minCandlesForLongLeg: { lockProp: 'lockMinCandlesLong', valProp: 'optMinCandlesLong' },
+      minCandlesForBlueLeg: { lockProp: 'lockMinCandlesBlue', valProp: 'optMinCandlesBlue' },
       atrMultiplier: { lockProp: 'lockAtrMultiplier', valProp: 'optAtrMultiplier' },
       longLegAtrMultiplier: { lockProp: 'lockLongLegAtrMult', valProp: 'optLongLegAtrMult' },
+      blueLegAtrMultiplier: { lockProp: 'lockBlueLegAtrMult', valProp: 'optBlueLegAtrMult' },
       maxBlueLegPercent: { lockProp: 'lockMaxBlueLegPercent', valProp: 'optMaxBlueLegPercent' },
       maxBreakoutAtrMultiplier: { lockProp: 'lockMaxBreakoutAtr', valProp: 'optMaxBreakoutAtr' },
-      minVolumeGrowthPercent: { lockProp: 'lockMinVolumeGrowthPercent' as any, valProp: 'optMinVolumeGrowthPercent' },
       maxRiskReward: { lockProp: 'lockMaxRiskReward', valProp: 'optMaxRiskReward' },
       timeStopCandles: { lockProp: 'lockTimeStopCandles', valProp: 'optTimeStopCandles' },
       maxPositionToRiskRatio: { lockProp: 'lockMaxPositionToRiskRatio', valProp: 'optMaxPositionToRiskRatio' },
@@ -5034,6 +5929,12 @@ app.post('/api/optimizer/start', async (req, res) => {
     serverOptimizerState.totalEvaluatedCount = 0;
     const sessionSec = Math.round((Number(sessionDurationMinutes) || 5) * 60);
     serverOptimizerState.sessionSecondsLeft = sessionSec;
+    if (sortColumn !== undefined) {
+      serverOptimizerState.sortColumn = normalizeOptimizerSortColumn(sortColumn);
+    }
+    if (sortDirection !== undefined) {
+      serverOptimizerState.sortDirection = normalizeOptimizerSortDirection(sortDirection);
+    }
     serverOptimizerState.top10Trials = [];
     serverOptimizerState.errorMsg = null;
     serverOptimizerState.statusText = 'در حال بارگذاری سریع داده‌های کندل از دیتابیس PostgreSQL...';
@@ -5087,6 +5988,28 @@ app.post('/api/optimizer/stop', (_req, res) => {
   res.json({ success: true, message: 'دستور توقف بهینه‌سازی سرور ثبت شد.' });
 });
 
+// 6.5.6.3.1 Update Server Optimizer Active Table Sort Criterion (Live Retention/Eviction Order)
+app.post('/api/optimizer/sort', (req, res) => {
+  const { sortColumn, sortDirection } = req.body || {};
+  if (sortColumn !== undefined) {
+    serverOptimizerState.sortColumn = normalizeOptimizerSortColumn(sortColumn);
+  }
+  if (sortDirection !== undefined) {
+    serverOptimizerState.sortDirection = normalizeOptimizerSortDirection(sortDirection);
+  }
+  serverOptimizerState.top10Trials = sortOptimizerTop10Trials(
+    serverOptimizerState.top10Trials,
+    serverOptimizerState.sortColumn,
+    serverOptimizerState.sortDirection
+  ).slice(0, 10);
+  res.json({
+    success: true,
+    sortColumn: serverOptimizerState.sortColumn,
+    sortDirection: serverOptimizerState.sortDirection,
+    top10Trials: serverOptimizerState.top10Trials,
+  });
+});
+
 // 6.5.6.4 Reset Server Optimizer Trials & Ranges
 app.post('/api/optimizer/reset', (req, res) => {
   serverOptimizerState.shouldStop = true;
@@ -5116,6 +6039,8 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
       candidate,
       strategyConfig = {},
       constraints = {},
+      sortColumn,
+      sortDirection,
     } = req.body || {};
 
     const explicitDatasetId = req.body?.datasetId;
@@ -5178,17 +6103,28 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
       }
     } catch {}
 
+    const manualEntryFee = cfg.entryCommissionPercent !== undefined && cfg.entryCommissionPercent !== null ? Number(cfg.entryCommissionPercent) : 0.06;
+    const manualExitFee = cfg.exitCommissionPercent !== undefined && cfg.exitCommissionPercent !== null ? Number(cfg.exitCommissionPercent) : 0.06;
+    const manualExchange: 'xt' | 'binance' = (cfg.exchange || exchange) === 'binance' ? 'binance' : 'xt';
+    const manualSlSlip = cfg.slSlippagePercent !== undefined && cfg.slSlippagePercent !== null
+      ? Number(cfg.slSlippagePercent)
+      : (manualExchange === 'xt' ? 0.04 : 0);
     const baseConfig = {
       capital: Number(cfg.capital) || 10000,
       riskMode: cfg.riskMode || 'percent',
       riskAmountFixed: Number(cfg.riskAmountFixed) > 0 ? Number(cfg.riskAmountFixed) : (cfg.riskMode === 'fixed' ? 100 : 10),
       riskPercent: Number(cfg.riskPercent) || 1.0,
-      entryCommissionPercent: Number(cfg.entryCommissionPercent) || 0.06,
-      exitCommissionPercent: Number(cfg.exitCommissionPercent) || 0.06,
-      commissionPercent: Number(cfg.commissionPercent) || 0.12,
+      entryCommissionPercent: manualEntryFee,
+      exitCommissionPercent: manualExitFee,
+      commissionPercent: parseFloat((manualEntryFee + manualExitFee).toFixed(4)),
+      slSlippagePercent: manualSlSlip,
+      exchange: manualExchange,
       maxCandlesToEnter: Number(cfg.maxCandlesToEnter) || 100,
       noConcurrentPositions: Boolean(cfg.noConcurrentPositions !== false),
       timeStopEnabled: cfg.timeStopEnabled !== false,
+      symbols: Array.isArray(symbols) ? symbols : [],
+      startTime: startTime ? Number(startTime) : null,
+      endTime: endTime ? Number(endTime) : null,
     };
 
     const targetConstraints = {
@@ -5197,7 +6133,7 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
       targetMinTrades: Number(constraints.targetMinTrades) || 100,
     };
 
-    // 2. Instant Exact Match with Manual Scan results if parameters match:
+    // 2. Instant Exact Match ONLY when ALL strategy, financial, slippage, ratio, symbol, range, and engineVersion match!
     let evalRes: any = null;
     try {
       const dsMeta = await pool.query(`SELECT strategy_id, strategy_config_json, results_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
@@ -5208,23 +6144,11 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
           try { storedCfg = JSON.parse(row.strategy_config_json); } catch {}
         }
 
-        if (storedCfg && row.results_json) {
-          const isAtrMatch = Number(candidate.atrPeriod) === Number(storedCfg.optAtrPeriod ?? storedCfg.atrPeriod);
-          const isAtrMultMatch = Math.abs(Number(candidate.atrMultiplier) - Number(storedCfg.optAtrMultiplier ?? storedCfg.atrMultiplier)) < 0.001;
-          const isMinCandlesMatch = Number(candidate.minCandles) === Number(storedCfg.optMinCandles ?? storedCfg.minCandles);
-          const isMinLongMatch = Number(candidate.minCandlesForLongLeg) === Number(storedCfg.optMinCandlesLong ?? storedCfg.minCandlesForLongLeg);
-          const isLongMultMatch = Math.abs(Number(candidate.longLegAtrMultiplier) - Number(storedCfg.optLongLegAtrMult ?? storedCfg.longLegAtrMultiplier)) < 0.001;
-          const isBlueMatch = Math.abs(Number(candidate.maxBlueLegPercent) - Number(storedCfg.optMaxBlueLegPercent ?? storedCfg.maxBlueLegPercent)) < 0.001;
-          const isBreakoutMatch = Math.abs(Number(candidate.maxBreakoutAtrMultiplier) - Number(storedCfg.optMaxBreakoutAtr ?? storedCfg.maxBreakoutAtrMultiplier)) < 0.001;
-          const isRrMatch = Math.abs(Number(candidate.maxRiskReward) - Number(storedCfg.optMaxRiskReward ?? storedCfg.maxRiskReward)) < 0.001;
-          const isTimeStopMatch = Number(candidate.timeStopCandles || 80) === Number(storedCfg.optTimeStopCandles ?? storedCfg.timeStopCandles ?? 80);
-
-          if (isAtrMatch && isAtrMultMatch && isMinCandlesMatch && isMinLongMatch && isLongMultMatch && isBlueMatch && isBreakoutMatch && isRrMatch && isTimeStopMatch) {
-            const parsedRes = JSON.parse(row.results_json);
-            if (parsedRes.allTrades && parsedRes.allTrades.length > 0) {
-              evalRes = processFilteredTrades(parsedRes.allTrades, baseConfig, targetConstraints);
-              console.log(`[Optimizer] ⚡ Instant exact match with stored manual scan results! Trades=${evalRes.totalTrades}, NetProfit=${evalRes.netProfit}`);
-            }
+        if (storedCfg && row.results_json && isExactStoredConfigMatch(storedCfg, row.strategy_id, effectiveStrategyId, baseConfig, candidate)) {
+          const parsedRes = JSON.parse(row.results_json);
+          if (parsedRes.allTrades && parsedRes.allTrades.length > 0) {
+            evalRes = processFilteredTrades(parsedRes.allTrades, baseConfig, targetConstraints);
+            console.log(`[Optimizer] ⚡ Instant exact match with stored manual scan results! Trades=${evalRes.totalTrades}, NetProfit=${evalRes.netProfit}`);
           }
         }
       }
@@ -5233,20 +6157,15 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
     }
 
     if (!evalRes) {
-      const cachedEntries = serverDatasetCandleCache.get(datasetId);
-      if (cachedEntries && cachedEntries.length > 0 && cachedEntries.length <= 100) {
-        evalRes = await evaluateCombinationOnServer(candidate, cachedEntries, effectiveStrategyId, baseConfig, targetConstraints);
-      } else {
-        evalRes = await streamEvaluateDatasetFromPostgres(
-          datasetId,
-          candidate,
-          effectiveStrategyId,
-          baseConfig,
-          targetConstraints,
-          symbols,
-          false
-        );
-      }
+      evalRes = await streamEvaluateDatasetFromPostgres(
+        datasetId,
+        candidate,
+        effectiveStrategyId,
+        baseConfig,
+        targetConstraints,
+        symbols,
+        false
+      );
     }
 
     if (!evalRes) {
@@ -5274,20 +6193,24 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
       ...evalRes,
     };
 
-    // Add to top 10 on server
+    if (sortColumn !== undefined) {
+      serverOptimizerState.sortColumn = normalizeOptimizerSortColumn(sortColumn);
+    }
+    if (sortDirection !== undefined) {
+      serverOptimizerState.sortDirection = normalizeOptimizerSortDirection(sortDirection);
+    }
+
+    // Add to top 10 on server using active table sort column & direction (preserving isValid rows first)
     const filtered = serverOptimizerState.top10Trials.filter((t) => t.hash !== trial.hash);
     const merged = [...filtered, trial];
-    merged.sort((a, b) => {
-      if (a.isValid && !b.isValid) return -1;
-      if (!a.isValid && b.isValid) return 1;
-      const scoreDiff = (b.qualityScore || 0) - (a.qualityScore || 0);
-      if (Math.abs(scoreDiff) > 0.01) return scoreDiff;
-      return b.netProfit - a.netProfit;
-    });
-    serverOptimizerState.top10Trials = merged.slice(0, 10);
+    serverOptimizerState.top10Trials = sortOptimizerTop10Trials(
+      merged,
+      serverOptimizerState.sortColumn,
+      serverOptimizerState.sortDirection
+    ).slice(0, 10);
     serverOptimizerState.totalEvaluatedCount++;
 
-    res.json({ success: true, trial });
+    res.json({ success: true, trial, top10Trials: serverOptimizerState.top10Trials });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -5479,10 +6402,11 @@ interface ServerLiveScannerConfig {
   atrMultiplier: number;
   minCandles: number;
   minCandlesForLongLeg: number;
+  minCandlesForBlueLeg?: number;
   longLegAtrMultiplier: number;
+  blueLegAtrMultiplier?: number;
   maxBlueLegPercent: number;
   maxBreakoutAtrMultiplier: number;
-  minVolumeGrowthPercent?: number;
   riskRewardRatio: number;
   riskMode?: 'percent' | 'fixed';
   riskAmountFixed?: number;
@@ -5490,6 +6414,9 @@ interface ServerLiveScannerConfig {
   capital: number;
   noConcurrentPositions: boolean;
   maxPositionToRiskRatio?: number;
+  entryCommissionPercent?: number;
+  exitCommissionPercent?: number;
+  slSlippagePercent?: number;
   timeStopEnabled?: boolean;
   timeStopCandles?: number;
   isLiveExecution?: boolean;
@@ -5560,10 +6487,11 @@ const serverScannerState = {
     atrMultiplier: 2.0,
     minCandles: 5,
     minCandlesForLongLeg: 5,
+    minCandlesForBlueLeg: 2,
     longLegAtrMultiplier: 3.0,
+    blueLegAtrMultiplier: 2.0,
     maxBlueLegPercent: 70,
     maxBreakoutAtrMultiplier: 3.0,
-    minVolumeGrowthPercent: 0,
     riskRewardRatio: 2.0,
     riskMode: 'percent',
     riskAmountFixed: 50,
@@ -6032,7 +6960,8 @@ async function runServerScannerCycle() {
 
             if (!candles || candles.length < 50) continue;
 
-            // Evaluate using backend strategy engine
+            // Evaluate using backend strategy engine with real XT contract & fee parity
+            const symXtMeta = cfg.exchange === 'xt' ? getXtSymbolMeta(toXtSymbol(sym)) : undefined;
             const signal = evaluateSymbolForLiveSignal({
               symbol: sym,
               candles,
@@ -6043,14 +6972,20 @@ async function runServerScannerCycle() {
                 atrMultiplier: cfg.atrMultiplier || 2.0,
                 minCandles: cfg.minCandles || 5,
                 minCandlesForLongLeg: cfg.minCandlesForLongLeg || 5,
+                minCandlesForBlueLeg: cfg.minCandlesForBlueLeg ?? 2,
                 longLegAtrMultiplier: cfg.longLegAtrMultiplier || 3.0,
+                blueLegAtrMultiplier: cfg.blueLegAtrMultiplier ?? 2.0,
                 maxBlueLegPercent: cfg.maxBlueLegPercent || 70,
                 maxBreakoutAtrMultiplier: cfg.maxBreakoutAtrMultiplier || 3.0,
-                minVolumeGrowthPercent: cfg.minVolumeGrowthPercent || 0,
                 riskRewardRatio: cfg.riskRewardRatio || 2.0,
                 riskMode: cfg.riskMode || 'percent',
                 riskAmountFixed: cfg.riskAmountFixed || 50,
                 riskPercent: cfg.riskPercent || 1.0,
+                entryCommissionPercent: cfg.entryCommissionPercent ?? 0.06,
+                exitCommissionPercent: cfg.exitCommissionPercent ?? 0.06,
+                exchange: cfg.exchange === 'binance' ? 'binance' : 'xt',
+                xtContractSize: symXtMeta?.contractSize,
+                xtMinNotional: symXtMeta?.minNotional,
                 maxCandlesToEnter: 35,
                 noConcurrentPositions: false, // Per-timeframe isolation enforced by database reconciliation
                 maxPositionToRiskRatio: cfg.maxPositionToRiskRatio ?? 300,
@@ -6195,6 +7130,8 @@ async function runServerScannerCycle() {
               symbol: xtSymbol,
               contractSize: symMeta.contractSize,
               minNotional: symMeta.minNotional,
+              entryFeeRate: (cfg.entryCommissionPercent ?? 0.06) / 100,
+              exitFeeRate: (cfg.exitCommissionPercent ?? 0.06) / 100,
               pricePrecision: symMeta.pricePrecision,
             });
 
@@ -6202,6 +7139,19 @@ async function runServerScannerCycle() {
               addServerScannerLog(
                 'warning',
                 `⛔ رد سیگنال ${chosen.symbol.toUpperCase()} [${currentTf}]: زیان استاپ ۱ قرارداد (${xtSizing.lossPerContract}$) از سقف ریسک (${targetRiskUsdt}$) بیشتر است. سفارش ارسال نشد.`,
+                chosen.symbol,
+                currentTf
+              );
+              continue;
+            }
+
+            // Re-verify maxPositionToRiskRatio at live execution price (prevents tight-stop outlier fills like 1500x ratio)
+            const liveMaxRatio = cfg.maxPositionToRiskRatio ?? 300;
+            const livePosToRisk = targetRiskUsdt > 0 ? xtSizing.nominalUsdt / targetRiskUsdt : 0;
+            if (liveMaxRatio > 0 && livePosToRisk > liveMaxRatio) {
+              addServerScannerLog(
+                'warning',
+                `⛔ رد سیگنال ${chosen.symbol.toUpperCase()} [${currentTf}] در قیمت لحظه‌ای: نسبت حجم/ریسک (${livePosToRisk.toFixed(1)}×) از سقف مجاز (${liveMaxRatio}×) عبور کرد.`,
                 chosen.symbol,
                 currentTf
               );

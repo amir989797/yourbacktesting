@@ -27,22 +27,26 @@ export interface StrategyParams {
   optMinCandles?: number;
   minCandlesForLongLeg?: number;
   optMinCandlesLong?: number;
+  minCandlesForBlueLeg?: number;
+  optMinCandlesBlue?: number;
   longLegAtrMultiplier?: number;
   optLongLegAtrMult?: number;
+  blueLegAtrMultiplier?: number;
+  optBlueLegAtrMult?: number;
   maxBlueLegPercent?: number;
   optMaxBlueLegPercent?: number;
   maxBreakoutAtrMultiplier?: number;
   optMaxBreakoutAtr?: number;
-  minVolumeGrowthPercent?: number; // حداقل درصد رشد حجم لگ‌ها (AB, CD, EF)
-  optMinVolumeGrowthPercent?: number;
-  minEntryPivotDistanceAtr?: number; // حداقل فاصله قیمت ورود تا پیوت قبل بر حسب ATR (مثلاً 1.0)
-  optMinEntryPivotDistanceAtr?: number;
   optMaxCandlesToEnter?: number;
   optMaxRiskReward?: number;
   optTimeStopEnabled?: boolean;
   optTimeStopCandles?: number;
   maxPositionToRiskRatio?: number; // حداکثر نسبت ارزش پوزیشن به ریسک (پیش‌فرض 300)
   optMaxPositionToRiskRatio?: number;
+  exchange?: 'xt' | 'binance';
+  xtContractSize?: number;
+  xtMinNotional?: number;
+  slSlippagePercent?: number; // درصد اسلیپیج احتمالی استاپ مارکت در صرافی (پیش‌فرض ۰.۰۴٪ برای XT)
 }
 
 export type StrategyConfig = StrategyParams;
@@ -54,7 +58,6 @@ export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
   riskAmountFixed: 10,
   riskPercent: 1.0,
   maxCandlesToEnter: 35,
-  minEntryPivotDistanceAtr: 1.0,
   maxRiskReward: 2,
   maxTradesPerLeg: 3,
   showOnChart: true,
@@ -65,7 +68,8 @@ export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
   timeStopEnabled: true,
   timeStopCandles: 80,
   maxPositionToRiskRatio: 300,
-  minVolumeGrowthPercent: 0,
+  exchange: 'xt',
+  slSlippagePercent: 0.04,
 };
 
 export type TradeStatus = 'PENDING' | 'ACTIVE' | 'WIN' | 'LOSS' | 'BREAKEVEN' | 'EXPIRED' | 'OPEN';
@@ -118,6 +122,9 @@ export interface Trade {
   realizedRisk?: number;
   stepSize?: number;
   qtyPrecision?: number;
+  capitalBeforeTrade?: number;
+  capitalAfterTrade?: number;
+  slSlippageApplied?: number;
 }
 
 export interface StrategyTrade {
@@ -170,7 +177,9 @@ export interface StrategyTrade {
   pnl: number; // سود/زیان خالص پس از کسر کارمزد
   pnlPercent: number;
   returnR?: number; // بازدهی بر حسب R (نسبت سود/زیان خالص به ریسک)
+  capitalBeforeTrade?: number; // موجودی قبل از ورود به معامله
   capitalAfterTrade?: number; // موجودی شناور حساب پس از این معامله
+  slSlippageApplied?: number;
   entryNotional?: number;
   exitNotional?: number;
   fundingCashFlow?: number;

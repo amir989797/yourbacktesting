@@ -431,6 +431,7 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                   />
                 </div>
               )}
+
             </div>
           </div>
         )}

@@ -19,6 +19,8 @@ export const ZigZagGuideModal: React.FC<ZigZagGuideModalProps> = ({
   const minC = settings?.minCandles ?? 3;
   const minLongC = settings?.minCandlesForLongLeg ?? 20;
   const longLegAtrMult = settings?.longLegAtrMultiplier ?? 10;
+  const minBlueC = settings?.minCandlesForBlueLeg ?? 3;
+  const blueLegAtrMult = settings?.blueLegAtrMultiplier ?? 3;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-xs animate-in fade-in duration-200">
@@ -67,10 +69,10 @@ export const ZigZagGuideModal: React.FC<ZigZagGuideModalProps> = ({
                 <span className="text-rose-400 font-bold">red leg (bearish giant):</span> direction = DOWN , length &gt;= {longLegAtrMult}ATR ({Math.round(longLegAtrMult * 100)}%) , count &gt;= {minLongC} candle <span className="text-amber-300 font-bold ml-1">[Start: A , End: B]</span>
               </div>
               <div className="text-[#00E5FF]">
-                <span className="text-cyan-400 font-bold">light blue leg:</span> 2nd or 4th leg after green/red , breaks green/red end price , breakout &lt;= 5ATR , pts &lt; 60% of green/red <span className="text-amber-300 font-bold ml-1">[Start: C , End: D]</span>
+                <span className="text-cyan-400 font-bold">light blue leg:</span> 2nd or 4th leg after green/red , length &gt;= {blueLegAtrMult}ATR , count &gt;= {minBlueC} candle , breaks green/red end price , breakout &lt;= 5ATR , pts &lt; 60% of green/red <span className="text-amber-300 font-bold ml-1">[Start: C , End: D]</span>
               </div>
               <div className="text-[#60A5FA]">
-                <span className="text-blue-500 font-bold">dark blue leg:</span> 2nd or 4th leg after light blue , breaks light blue end price , breakout &lt;= 5ATR , pts &lt; 60% of green/red <span className="text-amber-300 font-bold ml-1">[Start: E , End: F]</span>
+                <span className="text-blue-500 font-bold">dark blue leg:</span> 2nd leg after light blue , length &gt;= {blueLegAtrMult}ATR , count &gt;= {minBlueC} candle , breaks light blue end price , breakout &lt;= 5ATR , pts &lt; 60% of green/red <span className="text-amber-300 font-bold ml-1">[Start: E , End: F]</span>
               </div>
             </div>
           </div>

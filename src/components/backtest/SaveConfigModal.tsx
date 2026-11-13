@@ -19,7 +19,9 @@ export interface SaveConfigModalProps {
   optAtrMultiplier: number;
   optMinCandles: number;
   optMinCandlesLong: number;
+  optMinCandlesBlue?: number;
   optLongLegAtrMult: number;
+  optBlueLegAtrMult?: number;
   optMaxBlueLegPercent: number;
 }
 
@@ -41,7 +43,9 @@ export const SaveConfigModal: React.FC<SaveConfigModalProps> = ({
   optAtrMultiplier,
   optMinCandles,
   optMinCandlesLong,
+  optMinCandlesBlue = 3,
   optLongLegAtrMult,
+  optBlueLegAtrMult = 3,
   optMaxBlueLegPercent,
 }) => {
   if (!isOpen) return null;
@@ -113,6 +117,8 @@ export const SaveConfigModal: React.FC<SaveConfigModalProps> = ({
               <div>حداقل کندل‌ها: <strong className="text-white">{optMinCandles}</strong></div>
               <div>کندل لگ بلند: <strong className="text-white">{optMinCandlesLong}</strong></div>
               <div>ضریب لگ بلند: <strong className="text-white">{optLongLegAtrMult}</strong></div>
+              <div>کندل لگ CD,EF: <strong className="text-cyan-300">{optMinCandlesBlue}</strong></div>
+              <div>ضریب لگ CD,EF: <strong className="text-blue-300">{optBlueLegAtrMult}×</strong></div>
               <div>سقف لگ آبی: <strong className="text-white">{optMaxBlueLegPercent}%</strong></div>
             </div>
             <div className="text-[10px] text-gray-400 border-t border-[#1e2838] pt-2 font-sans flex items-center gap-1">

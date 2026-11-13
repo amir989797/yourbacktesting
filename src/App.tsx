@@ -137,7 +137,7 @@ export default function App() {
   const [zigzagSettings, setZigzagSettings] = useState<ZigZagSettings>(() => {
     try {
       const saved = localStorage.getItem('strategy_zigzag_settings');
-      if (saved) return JSON.parse(saved);
+      if (saved) return { ...DEFAULT_ZIGZAG_SETTINGS, ...JSON.parse(saved) };
     } catch {}
     return DEFAULT_ZIGZAG_SETTINGS;
   });
@@ -275,7 +275,8 @@ export default function App() {
       zigzagSettings.maxBlueLegPercent ?? 60,
       zigzagSettings.maxBreakoutAtrMultiplier ?? 5,
       candles,
-      zigzagSettings.minVolumeGrowthPercent ?? 0
+      zigzagSettings.minCandlesForBlueLeg ?? 3,
+      zigzagSettings.blueLegAtrMultiplier ?? 3
     );
     return { points, legs };
   }, [
@@ -285,9 +286,10 @@ export default function App() {
     zigzagSettings.minCandles,
     zigzagSettings.minCandlesForLongLeg,
     zigzagSettings.longLegAtrMultiplier,
+    zigzagSettings.minCandlesForBlueLeg,
+    zigzagSettings.blueLegAtrMultiplier,
     zigzagSettings.maxBlueLegPercent,
     zigzagSettings.maxBreakoutAtrMultiplier,
-    zigzagSettings.minVolumeGrowthPercent,
   ]);
 
   // Run Strategy Backtest (Strategy 1 or Strategy 2)

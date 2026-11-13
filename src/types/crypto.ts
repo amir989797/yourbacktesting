@@ -81,12 +81,12 @@ export interface ZigZagSettings {
   atrPeriod: number; // Period ATR (پیش‌فرض 55)
   minCandles: number; // Min candle (پیش‌فرض 3)
   minCandlesForLongLeg: number; // Min candle for long leg (پیش‌فرض 20)
+  minCandlesForBlueLeg?: number; // Min candle for CD & EF blue legs (پیش‌فرض 3)
   atrMultiplier: number; // ضریب ATR لگ‌های عادی (پیش‌فرض 3)
   longLegAtrMultiplier: number; // ضریب ATR نوسان لگ‌های بزرگ (پیش‌فرض 10)
+  blueLegAtrMultiplier?: number; // ضریب ATR لگ‌های CD و EF (پیش‌فرض 3)
   maxBlueLegPercent?: number; // سقف درصدی اندازه لگ‌های آبی نسبت به قرمز/سبز (پیش‌فرض 60)
   maxBreakoutAtrMultiplier?: number; // سقف نفوذ شکست انتهای لگ بر مبنای ATR (پیش‌فرض 5)
-  minVolumeGrowthPercent?: number; // حداقل درصد رشد حجم در طول لگ‌های AB، CD و EF (پیش‌فرض 0)
-  minEntryPivotDistanceAtr?: number; // حداقل فاصله قیمت ورود تا پیوت قبل بر حسب ATR (مثلاً 1.0)
   maxCandlesToEnter?: number; // سقف کندل ورود (استراتژی ۱: مهلت ورود پس از الگو | استراتژی ۲: سقف کندل از نقطه پیوت تا ورود)
   maxRiskReward?: number;
   maxPositionToRiskRatio?: number; // حداکثر نسبت ارزش پوزیشن به ریسک (پیش‌فرض 300)
@@ -210,6 +210,8 @@ export interface LiveTradeSettings {
   atrPeriod: number;
   atrMultiplier: number;
   longLegAtrMultiplier: number;
+  minCandlesForBlueLeg?: number;
+  blueLegAtrMultiplier?: number;
   maxBlueLegPercent: number;
   maxBreakoutAtrMultiplier: number;
   autoScanIntervalMinutes: number;

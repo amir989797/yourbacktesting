@@ -248,6 +248,13 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     } catch {}
     return 0.06; // کارمزد خروج 0.06% پیش‌فرض
   });
+  const [slSlippagePercent, setSlSlippagePercent] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('backtest_sl_slippage_percent');
+      if (saved !== null) return parseFloat(saved);
+    } catch {}
+    return 0.04; // میانگین اسلیپیج واقعی استاپ مارکت در صرافی XT
+  });
   const commissionPercent = parseFloat((entryCommissionPercent + exitCommissionPercent).toFixed(4));
   const [maxCandlesToEnter, setMaxCandlesToEnter] = useState<number>(100);
   const [timeframe, setTimeframe] = useState<Timeframe>('5m');
@@ -569,20 +576,23 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const [optMinCandlesLong, setOptMinCandlesLong] = useState<number>(zigzagSettings?.minCandlesForLongLeg || 20);
   const [lockMinCandlesLong, setLockMinCandlesLong] = useState<boolean>(false);
 
+  const [optMinCandlesBlue, setOptMinCandlesBlue] = useState<number>(zigzagSettings?.minCandlesForBlueLeg ?? 3);
+  const [lockMinCandlesBlue, setLockMinCandlesBlue] = useState<boolean>(false);
+
   const [optAtrMultiplier, setOptAtrMultiplier] = useState<number>(zigzagSettings?.atrMultiplier || 3.0);
   const [lockAtrMultiplier, setLockAtrMultiplier] = useState<boolean>(false);
 
   const [optLongLegAtrMult, setOptLongLegAtrMult] = useState<number>(zigzagSettings?.longLegAtrMultiplier || 10.0);
   const [lockLongLegAtrMult, setLockLongLegAtrMult] = useState<boolean>(false);
 
+  const [optBlueLegAtrMult, setOptBlueLegAtrMult] = useState<number>(zigzagSettings?.blueLegAtrMultiplier ?? 3.0);
+  const [lockBlueLegAtrMult, setLockBlueLegAtrMult] = useState<boolean>(false);
+
   const [optMaxBlueLegPercent, setOptMaxBlueLegPercent] = useState<number>(zigzagSettings?.maxBlueLegPercent ?? 60);
   const [lockMaxBlueLegPercent, setLockMaxBlueLegPercent] = useState<boolean>(false);
 
   const [optMaxBreakoutAtr, setOptMaxBreakoutAtr] = useState<number>(zigzagSettings?.maxBreakoutAtrMultiplier ?? 5.0);
   const [lockMaxBreakoutAtr, setLockMaxBreakoutAtr] = useState<boolean>(false);
-
-  const [optMinVolumeGrowthPercent, setOptMinVolumeGrowthPercent] = useState<number>(zigzagSettings?.minVolumeGrowthPercent ?? 0);
-  const [lockMinVolumeGrowthPercent, setLockMinVolumeGrowthPercent] = useState<boolean>(false);
 
   const [optMaxRiskReward, setOptMaxRiskReward] = useState<number>(2.0);
   const [lockMaxRiskReward, setLockMaxRiskReward] = useState<boolean>(false);
@@ -623,11 +633,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       if (zigzagSettings.atrPeriod && zigzagSettings.atrPeriod !== prev?.atrPeriod) setOptAtrPeriod(zigzagSettings.atrPeriod);
       if (zigzagSettings.minCandles && zigzagSettings.minCandles !== prev?.minCandles) setOptMinCandles(zigzagSettings.minCandles);
       if (zigzagSettings.minCandlesForLongLeg && zigzagSettings.minCandlesForLongLeg !== prev?.minCandlesForLongLeg) setOptMinCandlesLong(zigzagSettings.minCandlesForLongLeg);
+      if (zigzagSettings.minCandlesForBlueLeg !== undefined && zigzagSettings.minCandlesForBlueLeg !== prev?.minCandlesForBlueLeg) setOptMinCandlesBlue(zigzagSettings.minCandlesForBlueLeg);
       if (zigzagSettings.atrMultiplier && zigzagSettings.atrMultiplier !== prev?.atrMultiplier) setOptAtrMultiplier(zigzagSettings.atrMultiplier);
       if (zigzagSettings.longLegAtrMultiplier && zigzagSettings.longLegAtrMultiplier !== prev?.longLegAtrMultiplier) setOptLongLegAtrMult(zigzagSettings.longLegAtrMultiplier);
+      if (zigzagSettings.blueLegAtrMultiplier !== undefined && zigzagSettings.blueLegAtrMultiplier !== prev?.blueLegAtrMultiplier) setOptBlueLegAtrMult(zigzagSettings.blueLegAtrMultiplier);
       if (zigzagSettings.maxBlueLegPercent !== undefined && zigzagSettings.maxBlueLegPercent !== prev?.maxBlueLegPercent) setOptMaxBlueLegPercent(zigzagSettings.maxBlueLegPercent);
       if (zigzagSettings.maxBreakoutAtrMultiplier !== undefined && zigzagSettings.maxBreakoutAtrMultiplier !== prev?.maxBreakoutAtrMultiplier) setOptMaxBreakoutAtr(zigzagSettings.maxBreakoutAtrMultiplier);
-      if (zigzagSettings.minVolumeGrowthPercent !== undefined && zigzagSettings.minVolumeGrowthPercent !== prev?.minVolumeGrowthPercent) setOptMinVolumeGrowthPercent(zigzagSettings.minVolumeGrowthPercent);
       prevZigzagSettingsRef.current = zigzagSettings;
     }
   }, [zigzagSettings]);
@@ -649,9 +660,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const [optimizerProcessingDepth, setOptimizerProcessingDepth] = useState<'fast' | 'full'>(() => {
     try {
       const s = localStorage.getItem('opt_processing_depth');
-      return s === 'fast' || s === 'full' ? s : 'fast';
+      return s === 'fast' || s === 'full' ? s : 'full';
     } catch {
-      return 'fast';
+      return 'full';
     }
   });
   const [sessionSecondsLeft, setSessionSecondsLeft] = useState<number>(() => optimizerDurationMinutes * 60);
@@ -714,7 +725,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const [adaptiveRanges, setAdaptiveRanges] = useState<AdaptiveRanges>(() => {
     try {
       const saved = localStorage.getItem('zigzag_opt_ranges_v5');
-      if (saved) return JSON.parse(saved);
+      if (saved) return { ...DEFAULT_RANGES, ...JSON.parse(saved) };
     } catch {}
     return DEFAULT_RANGES;
   });
@@ -780,8 +791,20 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     return [];
   });
 
-  const [optSortColumn, setOptSortColumn] = useState<OptSortCol>('netProfit');
-  const [optSortDirection, setOptSortDirection] = useState<SortDirection>('desc');
+  const [optSortColumn, setOptSortColumn] = useState<OptSortCol>(() => {
+    try {
+      const saved = localStorage.getItem('zigzag_opt_sort_col_v1');
+      if (saved) return saved as OptSortCol;
+    } catch {}
+    return 'netProfit';
+  });
+  const [optSortDirection, setOptSortDirection] = useState<SortDirection>(() => {
+    try {
+      const saved = localStorage.getItem('zigzag_opt_sort_dir_v1');
+      if (saved === 'asc' || saved === 'desc') return saved;
+    } catch {}
+    return 'desc';
+  });
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -803,8 +826,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       localStorage.setItem('zigzag_opt_top10_v5', JSON.stringify(top10Trials));
       localStorage.setItem('zigzag_opt_ranges_v5', JSON.stringify(adaptiveRanges));
       localStorage.setItem('zigzag_opt_total_count_v5', totalEvaluatedCount.toString());
+      localStorage.setItem('zigzag_opt_sort_col_v1', String(optSortColumn));
+      localStorage.setItem('zigzag_opt_sort_dir_v1', optSortDirection);
     } catch {}
-  }, [top10Trials, adaptiveRanges, totalEvaluatedCount]);
+  }, [top10Trials, adaptiveRanges, totalEvaluatedCount, optSortColumn, optSortDirection]);
 
   useEffect(() => {
     if (results.length > 0) {
@@ -831,8 +856,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       localStorage.setItem('backtest_entry_commission_percent', entryCommissionPercent.toString());
       localStorage.setItem('backtest_exit_commission_percent', exitCommissionPercent.toString());
       localStorage.setItem('backtest_commission_percent', commissionPercent.toString());
+      localStorage.setItem('backtest_sl_slippage_percent', slSlippagePercent.toString());
     } catch {}
-  }, [universeOption, riskMode, riskPercent, riskAmountFixed, entryCommissionPercent, exitCommissionPercent, commissionPercent]);
+  }, [universeOption, riskMode, riskPercent, riskAmountFixed, entryCommissionPercent, exitCommissionPercent, commissionPercent, slSlippagePercent]);
 
   // کنترل تایمر ۱۵ دقیقه‌ای پیوسته
   useEffect(() => {
@@ -891,7 +917,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           // بسیار مهم: فقط در صورتی که بهینه‌ساز در سرور در حال اجرا باشد (s.isOptimizing)، رنج‌های تطبیق‌پذیر سرور دریافت می‌شوند
           // تا تغییرات دستی و تایپ کاربر در ورودی‌های رنج با مقادیر سرور بازنویسی و ریست نشوند!
           if (s.isOptimizing && s.adaptiveRanges && typeof s.adaptiveRanges === 'object') {
-            setAdaptiveRanges(s.adaptiveRanges);
+            setAdaptiveRanges((prev) => ({ ...DEFAULT_RANGES, ...prev, ...s.adaptiveRanges }));
           }
         }
       } catch {}
@@ -904,6 +930,11 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       clearInterval(interval);
     };
   }, [isOpen, activeTab, isOptimizing]);
+
+  const allCollectedTradesCountRef = useRef<number>(allCollectedTrades.length);
+  useEffect(() => {
+    allCollectedTradesCountRef.current = allCollectedTrades.length;
+  }, [allCollectedTrades.length]);
 
   // بررسی هوشمند داده‌ها و میزان پوشش نمادها و تاریخچه در دیتابیس PostgreSQL
   const checkCurrentRangeStatus = useCallback(async (overrides?: {
@@ -937,6 +968,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           endTime: targetEnd,
           datasetId: explicitId,
           symbols: targetSymbols,
+          includeTrades: allCollectedTradesCountRef.current === 0,
         }),
       });
       const data = await res.json();
@@ -952,8 +984,31 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
           if (Array.isArray(data.results) && data.results.length > 0) {
             setResults((prev) => (prev.length === 0 ? data.results : prev));
-            if (Array.isArray(data.allTrades)) {
-              setAllCollectedTrades((prev) => (prev.length === 0 ? data.allTrades : prev));
+            const expectedCount = Number(data.allTradesCount || (Array.isArray(data.allTrades) ? data.allTrades.length : 0));
+            if (expectedCount > 0 && Array.isArray(data.allTrades)) {
+              if (data.allTrades.length >= expectedCount) {
+                setAllCollectedTrades((prev) => (prev.length === 0 || prev.length < expectedCount ? data.allTrades : prev));
+              } else if (allCollectedTradesCountRef.current < expectedCount) {
+                try {
+                  const fullRes = await fetch('/api/backtest/range-status', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      exchange: targetExchange,
+                      timeframe: targetTf,
+                      startTime: targetStart,
+                      endTime: targetEnd,
+                      datasetId: matchedId || explicitId,
+                      symbols: targetSymbols,
+                      includeTrades: true,
+                    }),
+                  });
+                  const fullData = await fullRes.json();
+                  if (fullData?.success && Array.isArray(fullData.allTrades) && fullData.allTrades.length > 0) {
+                    setAllCollectedTrades(fullData.allTrades);
+                  }
+                } catch {}
+              }
             }
           }
           if (Array.isArray(data.skippedSymbols) && data.skippedSymbols.length > 0) {
@@ -1148,6 +1203,15 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             if (Array.isArray(st.results) && st.results.length > 0 && results.length === 0) {
               setResults(st.results);
             }
+            if ((st.allTradesCount || 0) > 0 && allCollectedTradesCountRef.current < Number(st.allTradesCount)) {
+              try {
+                const fullTradesRes = await fetch('/api/backtest/status?includeTrades=true');
+                const fullTradesData = await fullTradesRes.json();
+                if (fullTradesData?.state?.allTrades && isMounted) {
+                  setAllCollectedTrades(fullTradesData.state.allTrades);
+                }
+              } catch {}
+            }
             if (st.datasetId) {
               setActiveSessionDatasetId(st.datasetId);
               hasSyncedDatasetIdRef.current = st.datasetId;
@@ -1213,6 +1277,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     setErrorMsg(null);
     setResults([]);
     setAllCollectedTrades([]);
+    setScanMaxDrawdown(0);
     setSkippedSymbols([]);
     const targetSymbols = (selectedAllowedSymbols && selectedAllowedSymbols.length > 0)
       ? selectedAllowedSymbols
@@ -1252,6 +1317,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             riskAmountFixed: overrideConfig?.riskAmountFixed ?? riskAmountFixed,
             entryCommissionPercent: overrideConfig?.entryCommissionPercent ?? entryCommissionPercent,
             exitCommissionPercent: overrideConfig?.exitCommissionPercent ?? exitCommissionPercent,
+            slSlippagePercent: overrideConfig?.slSlippagePercent ?? slSlippagePercent,
+            exchange: selectedExchange,
             maxRiskReward: overrideConfig?.maxRiskReward ?? optMaxRiskReward,
             optMaxRiskReward: overrideConfig?.maxRiskReward ?? optMaxRiskReward,
             maxCandlesToEnter: overrideConfig?.maxCandlesToEnter ?? maxCandlesToEnter,
@@ -1263,14 +1330,16 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             optMinCandles: overrideConfig?.minCandles ?? optMinCandles,
             minCandlesForLongLeg: overrideConfig?.minCandlesForLongLeg ?? optMinCandlesLong,
             optMinCandlesLong: overrideConfig?.minCandlesForLongLeg ?? optMinCandlesLong,
+            minCandlesForBlueLeg: overrideConfig?.minCandlesForBlueLeg ?? optMinCandlesBlue,
+            optMinCandlesBlue: overrideConfig?.minCandlesForBlueLeg ?? optMinCandlesBlue,
             longLegAtrMultiplier: overrideConfig?.longLegAtrMultiplier ?? optLongLegAtrMult,
             optLongLegAtrMult: overrideConfig?.longLegAtrMultiplier ?? optLongLegAtrMult,
+            blueLegAtrMultiplier: overrideConfig?.blueLegAtrMultiplier ?? optBlueLegAtrMult,
+            optBlueLegAtrMult: overrideConfig?.blueLegAtrMultiplier ?? optBlueLegAtrMult,
             maxBlueLegPercent: overrideConfig?.maxBlueLegPercent ?? optMaxBlueLegPercent,
             optMaxBlueLegPercent: overrideConfig?.maxBlueLegPercent ?? optMaxBlueLegPercent,
             maxBreakoutAtrMultiplier: overrideConfig?.maxBreakoutAtrMultiplier ?? optMaxBreakoutAtr,
             optMaxBreakoutAtr: overrideConfig?.maxBreakoutAtrMultiplier ?? optMaxBreakoutAtr,
-            minVolumeGrowthPercent: overrideConfig?.minVolumeGrowthPercent ?? optMinVolumeGrowthPercent,
-            optMinVolumeGrowthPercent: overrideConfig?.minVolumeGrowthPercent ?? optMinVolumeGrowthPercent,
             noConcurrentPositions: overrideConfig?.noConcurrentPositions ?? noConcurrentPositions,
             timeStopEnabled: overrideConfig?.timeStopEnabled ?? optTimeStopEnabled,
             optTimeStopEnabled: overrideConfig?.timeStopEnabled ?? optTimeStopEnabled,
@@ -1462,25 +1531,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       return ((a as any).symbol || '').localeCompare((b as any).symbol || '');
     });
 
-    if (!noConcurrentPositions) {
-      return {
-        effectiveTrades: sorted,
-        rawTradesCount,
-        finalTradesCount: rawTradesCount,
-        rejectedTradesCount: 0,
-        removalPercentage: 0,
-        conflictGroupsCount: 0,
-        maxSimultaneousRawSignals: 1,
-        maxSimultaneousFinalPositions: 1,
-        rejectedTrades: [],
-        acceptedTrades: sorted,
-        rejectionReasonBreakdown: {},
-        acceptanceReasonBreakdown: { 'All signals accepted (concurrency filter disabled)': rawTradesCount },
-        tieBreakerRule: 'Priority 1: Earliest entry timestamp -> Priority 2: Signal score at entry bar -> Priority 3: Alphabetical symbol',
-        lookAheadBiasAssertion: 'PASS - Concurrency filter disabled; all raw trades accepted.',
-      };
-    }
-
     const accepted: StrategyTrade[] = [];
     const rejected: Array<{
       symbol: string;
@@ -1492,30 +1542,35 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       reason: string;
     }> = [];
 
-    let lastExitTime = 0;
-    let currentActiveTrade: StrategyTrade | null = null;
     let conflictGroupsCount = 0;
 
-    for (const t of sorted) {
-      const eTime = t.entryTime || t.timeF || 0;
-      const xTime = t.exitTime || eTime;
+    if (!noConcurrentPositions) {
+      accepted.push(...sorted);
+    } else {
+      let lastExitTime = 0;
+      let currentActiveTrade: StrategyTrade | null = null;
 
-      if (eTime >= lastExitTime) {
-        accepted.push(t);
-        lastExitTime = Math.max(lastExitTime, xTime);
-        currentActiveTrade = t;
-      } else {
-        conflictGroupsCount++;
-        const compSym = (currentActiveTrade as any)?.symbol || 'PORTFOLIO_ACTIVE';
-        rejected.push({
-          symbol: (t as any).symbol || 'USDT',
-          direction: t.direction,
-          entryTime: eTime,
-          exitTime: xTime,
-          score: (t as any).score || 0,
-          competingSymbol: compSym,
-          reason: `تداخل با پوزیشن فعال در پورتفوی (${compSym}) تا زمان خروج`,
-        });
+      for (const t of sorted) {
+        const eTime = t.entryTime || t.timeF || 0;
+        const xTime = t.exitTime || eTime;
+
+        if (eTime >= lastExitTime) {
+          accepted.push(t);
+          lastExitTime = Math.max(lastExitTime, xTime);
+          currentActiveTrade = t;
+        } else {
+          conflictGroupsCount++;
+          const compSym = (currentActiveTrade as any)?.symbol || 'PORTFOLIO_ACTIVE';
+          rejected.push({
+            symbol: (t as any).symbol || 'USDT',
+            direction: t.direction,
+            entryTime: eTime,
+            exitTime: xTime,
+            score: (t as any).score || 0,
+            competingSymbol: compSym,
+            reason: `تداخل با پوزیشن فعال در پورتفوی (${compSym}) تا زمان خروج`,
+          });
+        }
       }
     }
 
@@ -1532,12 +1587,60 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       if (activeCount > maxSimultaneousRaw) maxSimultaneousRaw = activeCount;
     }
 
-    const finalTradesCount = accepted.length;
+    // در حالت درصد از سرمایه، سایز هر معامله با سرمایه واقعی سبد (نه سرمایه ایزوله هر ارز) هماهنگ می‌شود
+    let portfolioAccepted = accepted;
+    if (riskMode === 'percent' && accepted.length > 0 && capital > 0) {
+      let runningPortfolioEq = capital;
+      portfolioAccepted = accepted.map((t) => {
+        const baseCap = (t.capitalBeforeTrade && t.capitalBeforeTrade > 0) ? t.capitalBeforeTrade : capital;
+        const scale = runningPortfolioEq / baseCap;
+        if (Math.abs(scale - 1) <= 0.002) {
+          runningPortfolioEq = Math.max(1, runningPortfolioEq + (t.pnl || 0));
+          return {
+            ...t,
+            capitalBeforeTrade: parseFloat(baseCap.toFixed(4)),
+            capitalAfterTrade: parseFloat(runningPortfolioEq.toFixed(4)),
+          };
+        }
+        const scaledSize = t.positionSize * scale;
+        const scaledVal = t.positionValue * scale;
+        const scaledRisk = t.riskAmount * scale;
+        const scaledRealizedRisk = t.realizedRisk !== undefined ? t.realizedRisk * scale : undefined;
+        const scaledGross = t.grossPnl !== undefined ? t.grossPnl * scale : undefined;
+        const scaledEntryFee = t.entryFee !== undefined ? t.entryFee * scale : undefined;
+        const scaledExitFee = t.exitFee !== undefined ? t.exitFee * scale : undefined;
+        const scaledFee = t.fee !== undefined ? t.fee * scale : undefined;
+        const scaledPnl = parseFloat((t.pnl * scale).toFixed(4));
+        const capBefore = parseFloat(runningPortfolioEq.toFixed(4));
+        runningPortfolioEq = Math.max(1, parseFloat((runningPortfolioEq + scaledPnl).toFixed(4)));
+        return {
+          ...t,
+          positionSize: scaledSize,
+          positionValue: parseFloat(scaledVal.toFixed(4)),
+          riskAmount: parseFloat(scaledRisk.toFixed(4)),
+          targetRiskAmount: parseFloat(scaledRisk.toFixed(4)),
+          realizedRisk: scaledRealizedRisk !== undefined ? parseFloat(scaledRealizedRisk.toFixed(4)) : undefined,
+          grossPnl: scaledGross !== undefined ? parseFloat(scaledGross.toFixed(4)) : undefined,
+          entryFee: scaledEntryFee !== undefined ? parseFloat(scaledEntryFee.toFixed(4)) : undefined,
+          exitFee: scaledExitFee !== undefined ? parseFloat(scaledExitFee.toFixed(4)) : undefined,
+          fee: scaledFee !== undefined ? parseFloat(scaledFee.toFixed(4)) : undefined,
+          commission: scaledFee !== undefined ? parseFloat(scaledFee.toFixed(4)) : undefined,
+          pnl: scaledPnl,
+          pnlPercent: parseFloat(((scaledPnl / capBefore) * 100).toFixed(4)),
+          entryNotional: t.entryNotional !== undefined ? parseFloat((t.entryNotional * scale).toFixed(4)) : undefined,
+          exitNotional: t.exitNotional !== undefined ? parseFloat((t.exitNotional * scale).toFixed(4)) : undefined,
+          capitalBeforeTrade: capBefore,
+          capitalAfterTrade: runningPortfolioEq,
+        };
+      });
+    }
+
+    const finalTradesCount = portfolioAccepted.length;
     const rejectedTradesCount = rejected.length;
     const removalPercentage = rawTradesCount > 0 ? (rejectedTradesCount / rawTradesCount) * 100 : 0;
 
     return {
-      effectiveTrades: accepted,
+      effectiveTrades: portfolioAccepted,
       rawTradesCount,
       finalTradesCount,
       rejectedTradesCount,
@@ -1546,7 +1649,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       maxSimultaneousRawSignals: Math.max(1, maxSimultaneousRaw),
       maxSimultaneousFinalPositions: 1,
       rejectedTrades: rejected,
-      acceptedTrades: accepted,
+      acceptedTrades: portfolioAccepted,
       rejectionReasonBreakdown: {
         'تداخل با پوزیشن فعال در پورتفوی': rejectedTradesCount,
       },
@@ -1556,7 +1659,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       tieBreakerRule: 'Priority 1: Earliest entry timestamp -> Priority 2: Signal score at entry bar -> Priority 3: Alphabetical symbol',
       lookAheadBiasAssertion: 'PASS - انتخاب سیگنال منحصراً بر پایه زمان ورود، نمره کندل ورودی و ترتیب نماد صورت گرفته و هیچ داده‌ای از آینده یا خروج ترید در تصمیم‌گیری فیلتر دخالت ندارد.',
     };
-  }, [allCollectedTrades, noConcurrentPositions]);
+  }, [allCollectedTrades, noConcurrentPositions, riskMode, capital]);
 
   const effectivePortfolioTrades = concurrencyFilterResults.effectiveTrades;
 
@@ -1569,22 +1672,23 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const rawTotalFeeSum = parseFloat(results.reduce((acc, r) => acc + (r.totalFee || 0), 0).toFixed(2));
 
   // در زمان اسکن فعال، همواره مجموع افزایشی تمام ارزهای اسکن‌شده نمایش داده می‌شود تا وین‌ریت هرگز به عقب برنگردد
-  const isPortfolioFilterActive = noConcurrentPositions && !isScanning && effectivePortfolioTrades.length > 0;
+  const hasPortfolioTrades = !isScanning && effectivePortfolioTrades.length > 0;
+  const isPortfolioFilterActive = noConcurrentPositions && hasPortfolioTrades;
 
-  const totalTradesSum = isPortfolioFilterActive ? effectivePortfolioTrades.length : rawTotalTradesSum;
-  const totalWinTradesSum = isPortfolioFilterActive
+  const totalTradesSum = hasPortfolioTrades ? effectivePortfolioTrades.length : rawTotalTradesSum;
+  const totalWinTradesSum = hasPortfolioTrades
     ? effectivePortfolioTrades.filter((t) => t.status === 'WIN').length
     : rawTotalWinTradesSum;
-  const totalNetProfitSum = isPortfolioFilterActive
+  const totalNetProfitSum = hasPortfolioTrades
     ? parseFloat(effectivePortfolioTrades.reduce((acc, t) => acc + t.pnl, 0).toFixed(2))
     : rawTotalNetProfitSum;
-  const totalProfitSum = isPortfolioFilterActive
+  const totalProfitSum = hasPortfolioTrades
     ? parseFloat(effectivePortfolioTrades.filter((t) => t.pnl > 0).reduce((acc, t) => acc + t.pnl, 0).toFixed(2))
     : rawTotalProfitSum;
-  const totalLossSum = isPortfolioFilterActive
+  const totalLossSum = hasPortfolioTrades
     ? parseFloat(effectivePortfolioTrades.filter((t) => t.pnl < 0).reduce((acc, t) => acc + Math.abs(t.pnl), 0).toFixed(2))
     : rawTotalLossSum;
-  const totalFeeSum = isPortfolioFilterActive
+  const totalFeeSum = hasPortfolioTrades
     ? parseFloat(effectivePortfolioTrades.reduce((acc, t) => acc + (t.fee || t.commission || 0), 0).toFixed(2))
     : parseFloat(rawTotalFeeSum.toFixed(2));
 
@@ -1659,14 +1763,19 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     return {
       minEq: Math.min(...eqs, capital),
       maxEq: Math.max(...eqs, capital),
-      maxDd: Math.max(...dds, 0.1),
+      maxDd: Math.max(...dds, 0),
     };
   }, [equityPoints, capital]);
 
-  // به‌روزرسانی حداکثر درودان در حین اسکن: مقدار درودان فقط می‌تواند افزایش یابد و هرگز کم نمی‌شود
+  // به‌روزرسانی حداکثر درودان در حین اسکن: در حین اسکن مقیاس لحظه‌ای را نشان می‌دهد و پس از پایان اسکن دقیقاً منطبق با منحنی سرمایه پرتفوی می‌شود
   useEffect(() => {
     if (results.length === 0) {
       setScanMaxDrawdown((prev) => (prev === 0 ? 0 : 0));
+      return;
+    }
+    if (!isScanning && effectivePortfolioTrades.length > 0) {
+      const portfolioDd = parseFloat((chartStats.maxDd || 0).toFixed(2));
+      setScanMaxDrawdown(portfolioDd);
       return;
     }
     const maxPair = Math.max(...results.map((r) => r.maxDrawdownPercent || 0));
@@ -1676,14 +1785,17 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       const next = parseFloat(Math.max(prev, currentWorst).toFixed(2));
       return next === prev ? prev : next;
     });
-  }, [results, chartStats.maxDd]);
+  }, [results, chartStats.maxDd, isScanning, effectivePortfolioTrades.length]);
 
   const portfolioMaxDrawdown = useMemo(() => {
     if (results.length === 0) return 0;
+    if (!isScanning && effectivePortfolioTrades.length > 0) {
+      return parseFloat((chartStats.maxDd || 0).toFixed(2));
+    }
     const maxPair = Math.max(...results.map((r) => r.maxDrawdownPercent || 0));
     const combined = chartStats.maxDd || 0;
     return parseFloat(Math.max(scanMaxDrawdown, maxPair, combined).toFixed(2));
-  }, [results, scanMaxDrawdown, chartStats.maxDd]);
+  }, [results, scanMaxDrawdown, chartStats.maxDd, isScanning, effectivePortfolioTrades.length]);
 
   const portfolioOptimalRisk = useMemo(() => {
     if (portfolioMaxDrawdown > 0) {
@@ -1736,11 +1848,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         optAtrPeriod,
         optMinCandles,
         optMinCandlesLong,
+        optMinCandlesBlue,
         optAtrMultiplier,
         optLongLegAtrMult,
+        optBlueLegAtrMult,
         optMaxBlueLegPercent,
         optMaxBreakoutAtr,
-        optMinVolumeGrowthPercent,
         optMaxRiskReward,
         optTimeStopCandles,
         optMaxPositionToRiskRatio,
@@ -1792,11 +1905,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     if (config.optAtrPeriod) setOptAtrPeriod(config.optAtrPeriod);
     if (config.optMinCandles) setOptMinCandles(config.optMinCandles);
     if (config.optMinCandlesLong) setOptMinCandlesLong(config.optMinCandlesLong);
+    if (config.optMinCandlesBlue) setOptMinCandlesBlue(config.optMinCandlesBlue);
     if (config.optAtrMultiplier) setOptAtrMultiplier(config.optAtrMultiplier);
     if (config.optLongLegAtrMult) setOptLongLegAtrMult(config.optLongLegAtrMult);
+    if (config.optBlueLegAtrMult) setOptBlueLegAtrMult(config.optBlueLegAtrMult);
     if (config.optMaxBlueLegPercent !== undefined) setOptMaxBlueLegPercent(config.optMaxBlueLegPercent);
     if (config.optMaxBreakoutAtr !== undefined) setOptMaxBreakoutAtr(config.optMaxBreakoutAtr);
-    if ((config as any).optMinVolumeGrowthPercent !== undefined) setOptMinVolumeGrowthPercent((config as any).optMinVolumeGrowthPercent);
     if (config.optMaxRiskReward) setOptMaxRiskReward(config.optMaxRiskReward);
     if (config.optTimeStopCandles) setOptTimeStopCandles(config.optTimeStopCandles);
     if (config.optMaxPositionToRiskRatio) setOptMaxPositionToRiskRatio(config.optMaxPositionToRiskRatio);
@@ -1805,8 +1919,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       atrPeriod: config.optAtrPeriod,
       minCandles: config.optMinCandles,
       minCandlesForLongLeg: config.optMinCandlesLong,
+      minCandlesForBlueLeg: config.optMinCandlesBlue,
       atrMultiplier: config.optAtrMultiplier,
       longLegAtrMultiplier: config.optLongLegAtrMult,
+      blueLegAtrMultiplier: config.optBlueLegAtrMult,
       maxBlueLegPercent: config.optMaxBlueLegPercent,
       maxBreakoutAtrMultiplier: config.optMaxBreakoutAtr,
       maxRiskReward: config.optMaxRiskReward,
@@ -2697,11 +2813,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       atrPeriod: number;
       minCandles: number;
       minCandlesForLongLeg: number;
+      minCandlesForBlueLeg?: number;
       atrMultiplier: number;
       longLegAtrMultiplier: number;
+      blueLegAtrMultiplier?: number;
       maxBlueLegPercent: number;
       maxBreakoutAtrMultiplier: number;
-      minVolumeGrowthPercent?: number;
       maxRiskReward: number;
       timeStopCandles?: number;
     },
@@ -2770,7 +2887,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         params.maxBlueLegPercent,
         params.maxBreakoutAtrMultiplier,
         candles,
-        params.minVolumeGrowthPercent || 0
+        params.minCandlesForBlueLeg ?? 1,
+        params.blueLegAtrMultiplier ?? 0.1
       );
 
       const tempConfig: StrategyConfig = {
@@ -2782,6 +2900,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         entryCommissionPercent,
         exitCommissionPercent,
         commissionPercent,
+        slSlippagePercent,
+        exchange: selectedExchange,
         maxRiskReward: params.maxRiskReward,
         maxCandlesToEnter,
         maxTradesPerLeg: 1,
@@ -2951,11 +3071,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       atrPeriod: optAtrPeriod,
       minCandles: optMinCandles,
       minCandlesForLongLeg: optMinCandlesLong,
+      minCandlesForBlueLeg: optMinCandlesBlue,
       atrMultiplier: optAtrMultiplier,
       longLegAtrMultiplier: optLongLegAtrMult,
+      blueLegAtrMultiplier: optBlueLegAtrMult,
       maxBlueLegPercent: optMaxBlueLegPercent,
       maxBreakoutAtrMultiplier: optMaxBreakoutAtr,
-      minVolumeGrowthPercent: optMinVolumeGrowthPercent,
       maxRiskReward: optMaxRiskReward,
       maxPositionToRiskRatio: optMaxPositionToRiskRatio,
       timeStopCandles: optTimeStopCandles,
@@ -2981,15 +3102,16 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             riskAmountFixed,
             entryCommissionPercent,
             exitCommissionPercent,
-            tradingFeePercent: (entryCommissionPercent || 0.05) + (exitCommissionPercent || 0.05),
+            slSlippagePercent,
+            exchange: selectedExchange,
+            tradingFeePercent: (entryCommissionPercent ?? 0.06) + (exitCommissionPercent ?? 0.06),
             noConcurrentPositions,
             maxRiskReward: optMaxRiskReward,
             optMaxRiskReward,
-            minVolumeGrowthPercent: optMinVolumeGrowthPercent,
-            optMinVolumeGrowthPercent,
             maxPositionToRiskRatio: optMaxPositionToRiskRatio,
             optMaxPositionToRiskRatio,
             maxCandlesToEnter,
+            timeStopEnabled: optTimeStopEnabled,
             timeStopCandles: optTimeStopCandles,
           },
           constraints: {
@@ -2997,6 +3119,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             targetMinWinRate,
             targetMinTrades,
           },
+          sortColumn: optSortColumn,
+          sortDirection: optSortDirection,
         }),
         signal: AbortSignal.timeout(60000),
       });
@@ -3007,7 +3131,11 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       }
       const trial = data.trial;
       if (trial) {
-        setTop10Trials((prev) => updateTop10List(prev, trial));
+        if (Array.isArray(data.top10Trials)) {
+          setTop10Trials(sortTop10TrialsList(data.top10Trials, optSortColumn, optSortDirection).slice(0, 10));
+        } else {
+          setTop10Trials((prev) => updateTop10List(prev, trial, optSortColumn, optSortDirection));
+        }
         setTotalEvaluatedCount((prev) => prev + 1);
         showToast(`🎯 کانفیگ دستی جاری در سرور آزمایش شد: سود ${trial.netProfit >= 0 ? '+' : ''}${trial.netProfit} USDT | وین‌ریت ${trial.winRate}% | درودان ${trial.maxDrawdown}%`);
       }
@@ -3027,11 +3155,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     atrPeriod: number;
     minCandles: number;
     minCandlesForLongLeg: number;
+    minCandlesForBlueLeg: number;
     atrMultiplier: number;
     longLegAtrMultiplier: number;
+    blueLegAtrMultiplier: number;
     maxBlueLegPercent: number;
     maxBreakoutAtrMultiplier: number;
-    minVolumeGrowthPercent: number;
     maxRiskReward: number;
     timeStopCandles: number;
   } | null => {
@@ -3087,11 +3216,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         atrPeriod: sampleParam(ranges.atrPeriod, lockAtrPeriod, optAtrPeriod),
         minCandles: sampleParam(ranges.minCandles, lockMinCandles, optMinCandles),
         minCandlesForLongLeg: sampleParam(ranges.minCandlesForLongLeg, lockMinCandlesLong, optMinCandlesLong),
+        minCandlesForBlueLeg: sampleParam(ranges.minCandlesForBlueLeg, lockMinCandlesBlue, optMinCandlesBlue),
         atrMultiplier: sampleParam(ranges.atrMultiplier, lockAtrMultiplier, optAtrMultiplier),
         longLegAtrMultiplier: sampleParam(ranges.longLegAtrMultiplier, lockLongLegAtrMult, optLongLegAtrMult),
+        blueLegAtrMultiplier: sampleParam(ranges.blueLegAtrMultiplier, lockBlueLegAtrMult, optBlueLegAtrMult),
         maxBlueLegPercent: sampleParam(ranges.maxBlueLegPercent, lockMaxBlueLegPercent, optMaxBlueLegPercent),
         maxBreakoutAtrMultiplier: sampleParam(ranges.maxBreakoutAtrMultiplier, lockMaxBreakoutAtr, optMaxBreakoutAtr),
-        minVolumeGrowthPercent: sampleParam(ranges.minVolumeGrowthPercent, lockMinVolumeGrowthPercent, optMinVolumeGrowthPercent),
         maxRiskReward: sampleParam(ranges.maxRiskReward, lockMaxRiskReward, optMaxRiskReward),
         maxPositionToRiskRatio: sampleParam(ranges.maxPositionToRiskRatio, lockMaxPositionToRiskRatio, optMaxPositionToRiskRatio),
         timeStopCandles: sampleParam(ranges.timeStopCandles, lockTimeStopCandles, optTimeStopCandles),
@@ -3107,27 +3237,45 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   };
 
   /**
-   * ذخیره فقط ۱۰ تست برتر (Top 10) در حافظه بر مبنای نمره کیفیت، شروط و سود
+   * مرتب‌سازی استاندارد لیست ۱۰ برتر:
+   * ۱. حفظ و اولویت‌دهی قطعی ردیف‌های قبولی شروط (طلایی)
+   * ۲. مرتب‌سازی و نگهداری/حذف ردیف‌ها بر اساس ستون و جهت فعال جدول (آیکون Sort)
+   */
+  const sortTop10TrialsList = useCallback(
+    (
+      trials: OptimizationTrial[],
+      sortCol: OptSortCol = optSortColumn,
+      sortDir: SortDirection = optSortDirection
+    ): OptimizationTrial[] => {
+      return [...trials].sort((a, b) => {
+        if (a.isValid && !b.isValid) return -1;
+        if (!a.isValid && b.isValid) return 1;
+        const valA = Number(a[sortCol as keyof OptimizationTrial]) || 0;
+        const valB = Number(b[sortCol as keyof OptimizationTrial]) || 0;
+        const primaryDiff = sortDir === 'desc' ? valB - valA : valA - valB;
+        if (Math.abs(primaryDiff) > 1e-6) return primaryDiff;
+        const scoreDiff = (b.qualityScore || 0) - (a.qualityScore || 0);
+        if (Math.abs(scoreDiff) > 0.01) return scoreDiff;
+        return (b.netProfit || 0) - (a.netProfit || 0);
+      });
+    },
+    [optSortColumn, optSortDirection]
+  );
+
+  /**
+   * ذخیره فقط ۱۰ تست برتر (Top 10) بر اساس اولویت قبولی شروط و مرتب‌سازی فعال جدول
    */
   const updateTop10List = (
     currentTop10: OptimizationTrial[],
-    newTrial: OptimizationTrial
+    newTrial: OptimizationTrial,
+    sortCol: OptSortCol = optSortColumn,
+    sortDir: SortDirection = optSortDirection
   ): OptimizationTrial[] => {
     // جلوگیری قطعی از تکرار هش یکسان در لیست ۱۰ آزمایش برتر
     const filtered = currentTop10.filter((t) => t.hash !== newTrial.hash);
     const merged = [...filtered, newTrial];
-
-    // مرتب‌سازی بر اساس: ۱. قبولی در شروط  ۲. بیشترین نمره کیفیت هوشمند ۳. بیشترین سود خالص
-    merged.sort((a, b) => {
-      if (a.isValid && !b.isValid) return -1;
-      if (!a.isValid && b.isValid) return 1;
-      const scoreDiff = (b.qualityScore || 0) - (a.qualityScore || 0);
-      if (Math.abs(scoreDiff) > 0.01) return scoreDiff;
-      return b.netProfit - a.netProfit;
-    });
-
-    // دقیقاً ۱۰ مورد برتر را نگه می‌داریم
-    return merged.slice(0, 10);
+    // دقیقاً ۱۰ مورد برتر را بر اساس ستون مرتب‌سازی جدول نگه می‌داریم
+    return sortTop10TrialsList(merged, sortCol, sortDir).slice(0, 10);
   };
 
   // حلقه پیوسته بهینه‌سازی در بک‌اند سرور با اتصال مستقیم به پایگاه‌داده PostgreSQL
@@ -3146,7 +3294,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         symbols: (selectedAllowedSymbols && selectedAllowedSymbols.length > 0) ? selectedAllowedSymbols : (universeOption === 'all_market' ? [] : selectedAllowedSymbols),
         strategyId: selectedStrategyId,
         sessionDurationMinutes: optimizerDurationMinutes || 3,
-        processingDepth: optimizerProcessingDepth || 'fast',
+        processingDepth: optimizerProcessingDepth || 'full',
         strategyConfig: {
           capital,
           riskMode,
@@ -3154,20 +3302,25 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           riskAmountFixed,
           entryCommissionPercent,
           exitCommissionPercent,
-          tradingFeePercent: (entryCommissionPercent || 0.05) + (exitCommissionPercent || 0.05),
+          slSlippagePercent,
+          exchange: selectedExchange,
+          tradingFeePercent: (entryCommissionPercent ?? 0.06) + (exitCommissionPercent ?? 0.06),
           noConcurrentPositions,
           maxCandlesToEnter,
           atrPeriod: optAtrPeriod,
           minCandles: optMinCandles,
           minCandlesForLongLeg: optMinCandlesLong,
+          minCandlesForBlueLeg: optMinCandlesBlue,
           atrMultiplier: optAtrMultiplier,
           longLegAtrMultiplier: optLongLegAtrMult,
+          blueLegAtrMultiplier: optBlueLegAtrMult,
           maxBlueLegPercent: optMaxBlueLegPercent,
           maxBreakoutAtrMultiplier: optMaxBreakoutAtr,
           maxRiskReward: optMaxRiskReward,
           optMaxRiskReward,
           maxPositionToRiskRatio: optMaxPositionToRiskRatio,
           optMaxPositionToRiskRatio,
+          timeStopEnabled: optTimeStopEnabled,
           timeStopCandles: optTimeStopCandles,
         },
         constraints: {
@@ -3180,8 +3333,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           lockAtrPeriod,
           lockMinCandles,
           lockMinCandlesLong,
+          lockMinCandlesBlue,
           lockAtrMultiplier,
           lockLongLegAtrMult,
+          lockBlueLegAtrMult,
           lockMaxBlueLegPercent,
           lockMaxBreakoutAtr,
           lockMaxRiskReward,
@@ -3190,8 +3345,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           optAtrPeriod: Number(optAtrPeriod),
           optMinCandles: Number(optMinCandles),
           optMinCandlesLong: Number(optMinCandlesLong),
+          optMinCandlesBlue: Number(optMinCandlesBlue),
           optAtrMultiplier: Number(optAtrMultiplier),
           optLongLegAtrMult: Number(optLongLegAtrMult),
+          optBlueLegAtrMult: Number(optBlueLegAtrMult),
           optMaxBlueLegPercent: Number(optMaxBlueLegPercent),
           optMaxBreakoutAtr: Number(optMaxBreakoutAtr),
           optMaxRiskReward: Number(optMaxRiskReward),
@@ -3200,6 +3357,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         },
         datasetId: activeSessionDatasetId || rangeStatus?.datasetId || `range_${(selectedExchange || 'xt').toLowerCase()}_${timeframe}_${timeRangeStartMs || 0}_${timeRangeEndMs || 0}`,
         autoAdaptiveEnabled,
+        sortColumn: optSortColumn,
+        sortDirection: optSortDirection,
       };
 
       const res = await fetch('/api/optimizer/start', {
@@ -3256,22 +3415,16 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     showToast('🔄 تمام آزمایش‌ها، ترکیب‌ها و رنج‌های بهینه‌ساز با موفقیت در سرور و کلاینت پاک و بازنشانی شدند.');
   };
 
+  // مرتب‌سازی ۱۰ تست برتر بر اساس ستون و جهت انتخابی جدول (با حفظ اولویت ردیف‌های قبول‌شده)
+  const sortedTop10 = useMemo(() => {
+    return sortTop10TrialsList(top10Trials, optSortColumn, optSortDirection);
+  }, [top10Trials, optSortColumn, optSortDirection, sortTop10TrialsList]);
+
   // بهترین ترکیب برنده مستقیماً از ردیف اول ۱۰ تست برتر
   const bestWinningRow = useMemo(() => {
-    if (top10Trials.length === 0) return null;
-    return top10Trials[0];
-  }, [top10Trials]);
-
-  // مرتب‌سازی ۱۰ تست برتر بر اساس ستون انتخابی
-  const sortedTop10 = useMemo(() => {
-    return [...top10Trials].sort((a, b) => {
-      const valA: any = a[optSortColumn as keyof OptimizationTrial];
-      const valB: any = b[optSortColumn as keyof OptimizationTrial];
-      const numA = Number(valA) || 0;
-      const numB = Number(valB) || 0;
-      return optSortDirection === 'desc' ? numB - numA : numA - numB;
-    });
-  }, [top10Trials, optSortColumn, optSortDirection]);
+    if (sortedTop10.length === 0) return null;
+    return sortedTop10[0];
+  }, [sortedTop10]);
 
   // اعمال پارامترهای هر ردیف به ورودی‌های اسکن دستی و اندیکاتور چارت
   const applyTrialToManualInputs = useCallback((trial: OptimizationTrial, andNotify: boolean = true) => {
@@ -3279,11 +3432,16 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     setOptAtrPeriod(trial.atrPeriod);
     setOptMinCandles(trial.minCandles);
     setOptMinCandlesLong(trial.minCandlesForLongLeg);
+    if (trial.minCandlesForBlueLeg !== undefined) {
+      setOptMinCandlesBlue(trial.minCandlesForBlueLeg);
+    }
     setOptAtrMultiplier(trial.atrMultiplier);
     setOptLongLegAtrMult(trial.longLegAtrMultiplier);
+    if (trial.blueLegAtrMultiplier !== undefined) {
+      setOptBlueLegAtrMult(trial.blueLegAtrMultiplier);
+    }
     setOptMaxBlueLegPercent(trial.maxBlueLegPercent);
     setOptMaxBreakoutAtr(trial.maxBreakoutAtrMultiplier);
-    setOptMinVolumeGrowthPercent(trial.minVolumeGrowthPercent || 0);
     setOptMaxRiskReward(trial.maxRiskReward);
     if (trial.maxPositionToRiskRatio) {
       setOptMaxPositionToRiskRatio(trial.maxPositionToRiskRatio);
@@ -3296,11 +3454,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         atrPeriod: trial.atrPeriod,
         minCandles: trial.minCandles,
         minCandlesForLongLeg: trial.minCandlesForLongLeg,
+        ...(trial.minCandlesForBlueLeg !== undefined ? { minCandlesForBlueLeg: trial.minCandlesForBlueLeg } : {}),
         atrMultiplier: trial.atrMultiplier,
         longLegAtrMultiplier: trial.longLegAtrMultiplier,
+        ...(trial.blueLegAtrMultiplier !== undefined ? { blueLegAtrMultiplier: trial.blueLegAtrMultiplier } : {}),
         maxBlueLegPercent: trial.maxBlueLegPercent,
         maxBreakoutAtrMultiplier: trial.maxBreakoutAtrMultiplier,
-        minVolumeGrowthPercent: trial.minVolumeGrowthPercent || 0,
         maxPositionToRiskRatio: trial.maxPositionToRiskRatio || 300,
       });
     }
@@ -3327,13 +3486,16 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         atrPeriod: trial.atrPeriod,
         minCandles: trial.minCandles,
         minCandlesForLongLeg: trial.minCandlesForLongLeg,
+        minCandlesForBlueLeg: trial.minCandlesForBlueLeg ?? optMinCandlesBlue,
         atrMultiplier: trial.atrMultiplier,
         longLegAtrMultiplier: trial.longLegAtrMultiplier,
+        blueLegAtrMultiplier: trial.blueLegAtrMultiplier ?? optBlueLegAtrMult,
         maxBlueLegPercent: trial.maxBlueLegPercent,
         maxBreakoutAtrMultiplier: trial.maxBreakoutAtrMultiplier,
-        minVolumeGrowthPercent: trial.minVolumeGrowthPercent || 0,
         maxRiskReward: trial.maxRiskReward,
+        timeStopEnabled: optTimeStopEnabled,
         timeStopCandles: trial.timeStopCandles,
+        maxPositionToRiskRatio: trial.maxPositionToRiskRatio ?? optMaxPositionToRiskRatio,
       });
     }, 200);
   };
@@ -3389,7 +3551,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         }
 
         if (parsed.adaptiveRanges) {
-          setAdaptiveRanges(parsed.adaptiveRanges);
+          setAdaptiveRanges({ ...DEFAULT_RANGES, ...parsed.adaptiveRanges });
         }
 
         if (Array.isArray(parsed.top10Trials)) {
@@ -3427,12 +3589,17 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   };
 
   const handleOptSort = (col: OptSortCol) => {
-    if (optSortColumn === col) {
-      setOptSortDirection((prev: SortDirection) => (prev === 'desc' ? 'asc' : 'desc'));
-    } else {
-      setOptSortColumn(col);
-      setOptSortDirection('desc');
-    }
+    const nextCol: OptSortCol = col;
+    const nextDir: SortDirection =
+      optSortColumn === col ? (optSortDirection === 'desc' ? 'asc' : 'desc') : 'desc';
+    setOptSortColumn(nextCol);
+    setOptSortDirection(nextDir);
+    setTop10Trials((prev) => sortTop10TrialsList(prev, nextCol, nextDir));
+    fetch('/api/optimizer/sort', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sortColumn: nextCol, sortDirection: nextDir }),
+    }).catch(() => {});
   };
 
   const renderOptSortArrow = (col: OptSortCol) => {
@@ -3690,6 +3857,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             exitCommissionPercent={exitCommissionPercent}
             setExitCommissionPercent={setExitCommissionPercent}
             commissionPercent={commissionPercent}
+            slSlippagePercent={slSlippagePercent}
+            setSlSlippagePercent={setSlSlippagePercent}
             noConcurrentPositions={noConcurrentPositions}
             handleToggleNoConcurrentPositions={handleToggleNoConcurrentPositions}
             optAtrPeriod={optAtrPeriod}
@@ -3700,14 +3869,16 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setOptMinCandles={setOptMinCandles}
             optMinCandlesLong={optMinCandlesLong}
             setOptMinCandlesLong={setOptMinCandlesLong}
+            optMinCandlesBlue={optMinCandlesBlue}
+            setOptMinCandlesBlue={setOptMinCandlesBlue}
             optLongLegAtrMult={optLongLegAtrMult}
             setOptLongLegAtrMult={setOptLongLegAtrMult}
+            optBlueLegAtrMult={optBlueLegAtrMult}
+            setOptBlueLegAtrMult={setOptBlueLegAtrMult}
             optMaxBlueLegPercent={optMaxBlueLegPercent}
             setOptMaxBlueLegPercent={setOptMaxBlueLegPercent}
             optMaxBreakoutAtr={optMaxBreakoutAtr}
             setOptMaxBreakoutAtr={setOptMaxBreakoutAtr}
-            optMinVolumeGrowthPercent={optMinVolumeGrowthPercent}
-            setOptMinVolumeGrowthPercent={setOptMinVolumeGrowthPercent}
             optMaxRiskReward={optMaxRiskReward}
             setOptMaxRiskReward={setOptMaxRiskReward}
             optMaxPositionToRiskRatio={optMaxPositionToRiskRatio}
@@ -3808,10 +3979,14 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setLockMinCandles={setLockMinCandles}
             lockMinCandlesLong={lockMinCandlesLong}
             setLockMinCandlesLong={setLockMinCandlesLong}
+            lockMinCandlesBlue={lockMinCandlesBlue}
+            setLockMinCandlesBlue={setLockMinCandlesBlue}
             lockAtrMultiplier={lockAtrMultiplier}
             setLockAtrMultiplier={setLockAtrMultiplier}
             lockLongLegAtrMult={lockLongLegAtrMult}
             setLockLongLegAtrMult={setLockLongLegAtrMult}
+            lockBlueLegAtrMult={lockBlueLegAtrMult}
+            setLockBlueLegAtrMult={setLockBlueLegAtrMult}
             lockMaxBlueLegPercent={lockMaxBlueLegPercent}
             setLockMaxBlueLegPercent={setLockMaxBlueLegPercent}
             lockMaxBreakoutAtr={lockMaxBreakoutAtr}
@@ -3838,6 +4013,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             bestWinningRow={bestWinningRow}
             handleApplyBestToChart={handleApplyBestToChart}
             sortedTop10={sortedTop10}
+            optSortColumn={optSortColumn}
+            optSortDirection={optSortDirection}
             handleOptSort={handleOptSort}
             renderOptSortArrow={renderOptSortArrow}
             top10Trials={top10Trials}
@@ -3849,18 +4026,18 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setOptMinCandles={setOptMinCandles}
             optMinCandlesLong={optMinCandlesLong}
             setOptMinCandlesLong={setOptMinCandlesLong}
+            optMinCandlesBlue={optMinCandlesBlue}
+            setOptMinCandlesBlue={setOptMinCandlesBlue}
             optAtrMultiplier={optAtrMultiplier}
             setOptAtrMultiplier={setOptAtrMultiplier}
             optLongLegAtrMult={optLongLegAtrMult}
             setOptLongLegAtrMult={setOptLongLegAtrMult}
+            optBlueLegAtrMult={optBlueLegAtrMult}
+            setOptBlueLegAtrMult={setOptBlueLegAtrMult}
             optMaxBlueLegPercent={optMaxBlueLegPercent}
             setOptMaxBlueLegPercent={setOptMaxBlueLegPercent}
             optMaxBreakoutAtr={optMaxBreakoutAtr}
             setOptMaxBreakoutAtr={setOptMaxBreakoutAtr}
-            optMinVolumeGrowthPercent={optMinVolumeGrowthPercent}
-            setOptMinVolumeGrowthPercent={setOptMinVolumeGrowthPercent}
-            lockMinVolumeGrowthPercent={lockMinVolumeGrowthPercent}
-            setLockMinVolumeGrowthPercent={setLockMinVolumeGrowthPercent}
             optMaxRiskReward={optMaxRiskReward}
             setOptMaxRiskReward={setOptMaxRiskReward}
             optMaxPositionToRiskRatio={optMaxPositionToRiskRatio}
@@ -3961,7 +4138,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           optAtrMultiplier={optAtrMultiplier}
           optMinCandles={optMinCandles}
           optMinCandlesLong={optMinCandlesLong}
+          optMinCandlesBlue={optMinCandlesBlue}
           optLongLegAtrMult={optLongLegAtrMult}
+          optBlueLegAtrMult={optBlueLegAtrMult}
           optMaxBlueLegPercent={optMaxBlueLegPercent}
         />
 

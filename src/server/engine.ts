@@ -38,9 +38,10 @@ export interface ServerStrategyConfig {
   minCandles: number;
   minCandlesForLongLeg: number;
   longLegAtrMultiplier: number;
+  minCandlesForBlueLeg?: number;
+  blueLegAtrMultiplier?: number;
   maxBlueLegPercent: number;
   maxBreakoutAtrMultiplier: number;
-  minVolumeGrowthPercent?: number;
   riskRewardRatio: number;
   riskMode: 'percent' | 'fixed';
   riskAmountFixed?: number;
@@ -48,6 +49,12 @@ export interface ServerStrategyConfig {
   maxCandlesToEnter?: number;
   noConcurrentPositions?: boolean;
   maxPositionToRiskRatio?: number;
+  exchange?: 'xt' | 'binance';
+  entryCommissionPercent?: number;
+  exitCommissionPercent?: number;
+  xtContractSize?: number;
+  xtMinNotional?: number;
+  slSlippagePercent?: number;
 }
 
 export interface CandidateSignal {
@@ -151,22 +158,31 @@ export function evaluateSymbolForLiveSignal(params: {
     config.maxBlueLegPercent || 70,
     config.maxBreakoutAtrMultiplier || 3.0,
     candles,
-    config.minVolumeGrowthPercent || 0
+    config.minCandlesForBlueLeg ?? 1,
+    config.blueLegAtrMultiplier ?? 0.1
   );
 
   // 2. Configure strategy parameters
+  const entryFeePct = config.entryCommissionPercent ?? 0.06;
+  const exitFeePct = config.exitCommissionPercent ?? 0.06;
   const stratConfig: StrategyConfig = {
     ...DEFAULT_STRATEGY_CONFIG,
     capital: availableBalance > 0 ? availableBalance : 1000,
     riskMode: config.riskMode || 'percent',
     riskAmountFixed: config.riskAmountFixed || 10,
     riskPercent: config.riskPercent || 1.0,
+    entryCommissionPercent: entryFeePct,
+    exitCommissionPercent: exitFeePct,
+    commissionPercent: parseFloat((entryFeePct + exitFeePct).toFixed(4)),
     maxRiskReward: config.riskRewardRatio || 2.0,
     selectedStrategyId: config.strategyId || 'strategy_2_next_pivot',
     maxCandlesToEnter: config.maxCandlesToEnter || 35,
     noConcurrentPositions: Boolean(config.noConcurrentPositions),
     maxPositionToRiskRatio: config.maxPositionToRiskRatio ?? 300,
-    minVolumeGrowthPercent: config.minVolumeGrowthPercent || 0,
+    exchange: config.exchange ?? 'xt',
+    xtContractSize: config.xtContractSize,
+    xtMinNotional: config.xtMinNotional,
+    slSlippagePercent: config.slSlippagePercent ?? ((config.exchange ?? 'xt') === 'xt' ? 0.04 : 0),
     symbol,
   };
 
@@ -226,25 +242,41 @@ export function evaluateSymbolForLiveSignal(params: {
     ? config.riskAmountFixed
     : availableBalance * ((config.riskPercent || 1) / 100);
 
-  // Exact trade sizing calculation with exchange step size and tick truncation
+  const entryFeeRate = entryFeePct / 100;
+  const exitFeeRate = exitFeePct / 100;
+  const effectiveExchange = config.exchange ?? 'xt';
+  const slSlipRate = (config.slSlippagePercent ?? (effectiveExchange === 'xt' ? 0.04 : 0)) / 100;
+
+  // Exact trade sizing calculation with XT integer contracts / exchange stepSize and tick truncation
   const sizing = calculateExactTradeSizing(
     riskBudgetUsdt,
     curPrice,
     stopLoss,
     takeProfit,
-    0.0006,
-    0.0006,
-    symbol
+    entryFeeRate,
+    exitFeeRate,
+    symbol,
+    {
+      exchange: effectiveExchange,
+      contractSize: config.xtContractSize,
+      minNotional: config.xtMinNotional,
+      riskCushion: effectiveExchange === 'xt' ? 0.92 : 1.0,
+      slSlippageRate: slSlipRate,
+    }
   );
 
-  const contractQty = sizing.quantizedPositionSize;
+  const contractQty = sizing.contractQty ?? sizing.quantizedPositionSize;
   const notionalUsdt = sizing.positionValue;
   const requiredMargin = parseFloat((notionalUsdt / maxLev).toFixed(2));
   const actualRiskUsdt = sizing.actualLossAtSL;
 
+  if (sizing.quantizedPositionSize <= 0 || notionalUsdt <= 0) {
+    return null;
+  }
+
   const maxPosRatio = config.maxPositionToRiskRatio !== undefined ? config.maxPositionToRiskRatio : 300;
-  const posToRiskRatio = (actualRiskUsdt > 0)
-    ? parseFloat((notionalUsdt / actualRiskUsdt).toFixed(2))
+  const posToRiskRatio = (riskBudgetUsdt > 0)
+    ? parseFloat((notionalUsdt / riskBudgetUsdt).toFixed(2))
     : 0;
 
   if (maxPosRatio > 0 && posToRiskRatio > maxPosRatio) {

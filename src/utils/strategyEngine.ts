@@ -139,24 +139,6 @@ export function runStrategy1Backtest(
             break;
           }
 
-          // شرط حداقل فاصله قیمت ورود تا پیوت قبل بر حسب مضرب ATR
-          if (config.minEntryPivotDistanceAtr && config.minEntryPivotDistanceAtr > 0) {
-            const entryCandle = candles[entryCandleIdx];
-            const candleAtr = Math.max(0.00001, entryCandle.high - entryCandle.low);
-            let prevPivotPrice = priceF;
-            for (let pIdx = points.length - 1; pIdx >= 0; pIdx--) {
-              if (points[pIdx].time < entryCandle.time) {
-                prevPivotPrice = points[pIdx].value;
-                break;
-              }
-            }
-            const pivotDistance = Math.abs(entryPrice - prevPivotPrice);
-            if (pivotDistance < config.minEntryPivotDistanceAtr * candleAtr) {
-              scanStartIdx = entryCandleIdx + 1;
-              continue;
-            }
-          }
-
           // عدم ورود به معامله جدید در صورت وجود پوزیشن باز
           if (config.noConcurrentPositions && entryCandleIdx <= lastTradeExitCandleIdx) {
             break;
@@ -183,8 +165,10 @@ export function runStrategy1Backtest(
             (config.exitCommissionPercent ??
               (config.commissionPercent !== undefined ? config.commissionPercent / 2 : 0.06)) / 100;
 
-          // محاسبه حجم دقیق با اعمال قوانین اعشار و حداقل گام حجم صرافی (stepSize / LOT_SIZE) و لحاظ کارمزدها
-          // گرد کردن به سمت پایین (Floor) تضمین می‌کند ضرر واقعی در استاپ هرگز از بودجه ریسک ($100) تجاوز نکند
+          const effectiveExchange = config.exchange ?? 'xt';
+          const slSlipRate = (config.slSlippagePercent ?? (effectiveExchange === 'xt' ? 0.04 : 0)) / 100;
+
+          // محاسبه حجم دقیق با اعمال قوانین اعشار، قراردادهای صحیح صرافی (XT)، حداقل سفارش و کارمزدها
           const sizing = calculateExactTradeSizing(
             riskBudget,
             entryPrice,
@@ -192,7 +176,14 @@ export function runStrategy1Backtest(
             takeProfit,
             entryFeeRate,
             exitFeeRate,
-            config.symbol
+            config.symbol,
+            {
+              exchange: effectiveExchange,
+              contractSize: config.xtContractSize,
+              minNotional: config.xtMinNotional,
+              riskCushion: effectiveExchange === 'xt' ? 0.92 : 1.0,
+              slSlippageRate: slSlipRate,
+            }
           );
           const positionSize = sizing.quantizedPositionSize;
           const positionValue = sizing.positionValue;
@@ -200,8 +191,13 @@ export function runStrategy1Backtest(
           const riskAmount = riskBudget;
           const realizedRisk = sizing.actualLossAtSL;
 
+          // اگر به دلیل حداقل ارزش سفارش (5/10 USDT) یا بزرگی ۱ قرارداد، ریسک از بودجه بیشتر شد، معامله دقیقاً مشابه ترید لایو رد می‌شود
+          if (positionSize <= 0 || positionValue <= 0) {
+            scanStartIdx = scanMaxWindow + 1;
+            break;
+          }
+
           // حداکثر نسبت ارزش پوزیشن به ریسک (پیش‌فرض ۳۰۰)
-          // مثلاً پوزیشن ۱۰۰۰۰ دلار و ریسک ۱۰۰ دلار -> نسبت ۱۰۰ <= ۳۰۰ است و معامله انجام می‌شود
           const effectiveMaxRatio = config.maxPositionToRiskRatio !== undefined
             ? config.maxPositionToRiskRatio
             : (config.optMaxPositionToRiskRatio !== undefined ? config.optMaxPositionToRiskRatio : 300);
@@ -222,9 +218,9 @@ export function runStrategy1Backtest(
               const hitSL = ck.low <= stopLoss;
 
               if (hitTP && hitSL) {
-                // Conservative: assume Stop Loss hit if both in same candle
+                // Conservative: assume Stop Loss hit if both in same candle (with realistic stop-market slippage)
                 status = 'LOSS';
-                exitPrice = stopLoss;
+                exitPrice = stopLoss * (1 - slSlipRate);
                 exitTime = ck.time;
                 exitCandleIdx = k;
                 const exitFee = (positionSize * exitPrice) * exitFeeRate;
@@ -246,7 +242,7 @@ export function runStrategy1Backtest(
                 break;
               } else if (hitSL) {
                 status = 'LOSS';
-                exitPrice = stopLoss;
+                exitPrice = stopLoss * (1 - slSlipRate);
                 exitTime = ck.time;
                 exitCandleIdx = k;
                 const exitFee = (positionSize * exitPrice) * exitFeeRate;
@@ -263,7 +259,7 @@ export function runStrategy1Backtest(
 
               if (hitTP && hitSL) {
                 status = 'LOSS';
-                exitPrice = stopLoss;
+                exitPrice = stopLoss * (1 + slSlipRate);
                 exitTime = ck.time;
                 exitCandleIdx = k;
                 const exitFee = (positionSize * exitPrice) * exitFeeRate;
@@ -285,7 +281,7 @@ export function runStrategy1Backtest(
                 break;
               } else if (hitSL) {
                 status = 'LOSS';
-                exitPrice = stopLoss;
+                exitPrice = stopLoss * (1 + slSlipRate);
                 exitTime = ck.time;
                 exitCandleIdx = k;
                 const exitFee = (positionSize * exitPrice) * exitFeeRate;
@@ -334,11 +330,12 @@ export function runStrategy1Backtest(
           const actualExitPrice = exitPrice ?? entryPrice;
           const tradeExitFee = (positionSize * actualExitPrice) * exitFeeRate;
           const tradeTotalFee = entryFee + tradeExitFee;
-          pnl = parseFloat(pnl.toFixed(2));
-          pnlPercent = parseFloat(pnlPercent.toFixed(2));
+          const capitalBeforeTrade = parseFloat(rollingCapital.toFixed(4));
+          pnl = parseFloat(pnl.toFixed(4));
+          pnlPercent = parseFloat(pnlPercent.toFixed(4));
 
           // ارتقای بالانس پویا برای معامله بعدی
-          rollingCapital = Math.max(10, parseFloat((rollingCapital + pnl).toFixed(2)));
+          rollingCapital = Math.max(1, parseFloat((rollingCapital + pnl).toFixed(4)));
 
           trades.push({
             id: `trade-${trades.length + 1}-${darkBlueLeg.index}-att${attempt}`,
@@ -352,13 +349,13 @@ export function runStrategy1Backtest(
             entryPrice,
             stopLoss,
             takeProfit,
-            riskAmount: parseFloat(riskAmount.toFixed(2)),
-            targetRiskAmount: parseFloat(riskAmount.toFixed(2)),
-            realizedRisk: parseFloat(realizedRisk.toFixed(2)),
+            riskAmount: parseFloat(riskAmount.toFixed(4)),
+            targetRiskAmount: parseFloat(riskAmount.toFixed(4)),
+            realizedRisk: parseFloat(realizedRisk.toFixed(4)),
             stepSize: sizing.stepSize,
             qtyPrecision: sizing.qtyPrecision,
             positionSize,
-            positionValue: parseFloat(positionValue.toFixed(2)),
+            positionValue: parseFloat(positionValue.toFixed(4)),
             positionToRiskRatio: posToRiskRatio,
             riskReward: parseFloat(riskReward.toFixed(2)),
             timeF,
@@ -373,17 +370,19 @@ export function runStrategy1Backtest(
             waitingForPostLeg: false,
             hasPostLeg: true,
             status,
-            grossPnl: parseFloat((pnl + tradeTotalFee).toFixed(2)),
-            entryFee: parseFloat(entryFee.toFixed(2)),
-            exitFee: parseFloat(tradeExitFee.toFixed(2)),
-            fee: parseFloat(tradeTotalFee.toFixed(2)),
-            commission: parseFloat(tradeTotalFee.toFixed(2)),
+            grossPnl: parseFloat((pnl + tradeTotalFee).toFixed(4)),
+            entryFee: parseFloat(entryFee.toFixed(4)),
+            exitFee: parseFloat(tradeExitFee.toFixed(4)),
+            fee: parseFloat(tradeTotalFee.toFixed(4)),
+            commission: parseFloat(tradeTotalFee.toFixed(4)),
             pnl,
             pnlPercent,
-            returnR: riskAmount > 0 ? parseFloat((pnl / riskAmount).toFixed(2)) : 0,
+            returnR: riskAmount > 0 ? parseFloat((pnl / riskAmount).toFixed(3)) : 0,
+            capitalBeforeTrade,
             capitalAfterTrade: rollingCapital,
-            entryNotional: parseFloat((positionSize * entryPrice).toFixed(2)),
-            exitNotional: parseFloat((positionSize * actualExitPrice).toFixed(2)),
+            slSlippageApplied: status === 'LOSS' && reason !== 'TIME_STOP' ? slSlipRate * 100 : 0,
+            entryNotional: parseFloat((positionSize * entryPrice).toFixed(4)),
+            exitNotional: parseFloat((positionSize * actualExitPrice).toFixed(4)),
             reason: reason || (status === 'WIN' ? 'Take Profit' : status === 'LOSS' ? 'Stop Loss' : 'Active'),
           });
 
@@ -528,13 +527,6 @@ export function runStrategy2Backtest(
               break;
             }
 
-            // شرط حداقل فاصله قیمت ورود تا پیوت قبل (بر حسب مضرب ATR)
-            if (config.minEntryPivotDistanceAtr && config.minEntryPivotDistanceAtr > 0) {
-              if (stopDistance < config.minEntryPivotDistanceAtr * atr) {
-                continue;
-              }
-            }
-
             if (stopDistance > 0.000001) {
               const direction: 'BUY' | 'SELL' = 'SELL'; // ریزش از سقف F
               const cycleType: 'bullish' | 'bearish' = giantLeg.isUp ? 'bullish' : 'bearish';
@@ -554,7 +546,10 @@ export function runStrategy2Backtest(
                 (config.exitCommissionPercent ??
                   (config.commissionPercent !== undefined ? config.commissionPercent / 2 : 0.06)) / 100;
 
-              // محاسبه حجم دقیق با اعمال استپ سایز صرافی و لحاظ کارمزدها (رند به پایین تا ضرر هرگز بیش از بودجه نشود)
+              const effectiveExchange = config.exchange ?? 'xt';
+              const slSlipRate = (config.slSlippagePercent ?? (effectiveExchange === 'xt' ? 0.04 : 0)) / 100;
+
+              // محاسبه حجم دقیق با اعمال قراردادهای صحیح XT / استپ سایز صرافی و لحاظ کارمزدها
               const sizing = calculateExactTradeSizing(
                 riskBudget,
                 entryPrice,
@@ -562,13 +557,24 @@ export function runStrategy2Backtest(
                 takeProfit,
                 entryFeeRate,
                 exitFeeRate,
-                config.symbol
+                config.symbol,
+                {
+                  exchange: effectiveExchange,
+                  contractSize: config.xtContractSize,
+                  minNotional: config.xtMinNotional,
+                  riskCushion: effectiveExchange === 'xt' ? 0.92 : 1.0,
+                  slSlippageRate: slSlipRate,
+                }
               );
               const positionSize = sizing.quantizedPositionSize;
               const positionValue = sizing.positionValue;
               const entryFee = sizing.entryFee;
               const riskAmount = riskBudget;
               const realizedRisk = sizing.actualLossAtSL;
+
+              if (positionSize <= 0 || positionValue <= 0) {
+                break;
+              }
 
               // حداکثر نسبت ارزش پوزیشن به ریسک (پیش‌فرض ۳۰۰)
               const effectiveMaxRatio = config.maxPositionToRiskRatio !== undefined
@@ -597,14 +603,14 @@ export function runStrategy2Backtest(
 
                 if (hitTP && hitSL) {
                   status = 'LOSS';
-                  exitPrice = stopLoss;
+                  exitPrice = stopLoss * (1 + slSlipRate);
                   exitTime = ck.time;
                   exitCandleIdx = k;
                   const exitFee = (positionSize * exitPrice) * exitFeeRate;
                   const tradeFee = entryFee + exitFee;
                   const grossTradePnl = positionSize * (entryPrice - exitPrice);
                   pnl = grossTradePnl - tradeFee;
-                  pnlPercent = (pnl / config.capital) * 100;
+                  pnlPercent = (pnl / rollingCapital) * 100;
                   break;
                 } else if (hitTP) {
                   status = 'WIN';
@@ -615,18 +621,18 @@ export function runStrategy2Backtest(
                   const tradeFee = entryFee + exitFee;
                   const grossTradePnl = positionSize * (entryPrice - exitPrice);
                   pnl = grossTradePnl - tradeFee;
-                  pnlPercent = (pnl / config.capital) * 100;
+                  pnlPercent = (pnl / rollingCapital) * 100;
                   break;
                 } else if (hitSL) {
                   status = 'LOSS';
-                  exitPrice = stopLoss;
+                  exitPrice = stopLoss * (1 + slSlipRate);
                   exitTime = ck.time;
                   exitCandleIdx = k;
                   const exitFee = (positionSize * exitPrice) * exitFeeRate;
                   const tradeFee = entryFee + exitFee;
                   const grossTradePnl = positionSize * (entryPrice - exitPrice);
                   pnl = grossTradePnl - tradeFee;
-                  pnlPercent = (pnl / config.capital) * 100;
+                  pnlPercent = (pnl / rollingCapital) * 100;
                   break;
                 }
 
@@ -641,7 +647,7 @@ export function runStrategy2Backtest(
                   const tradeFee = entryFee + exitFee;
                   const grossTradePnl = positionSize * (entryPrice - exitPrice);
                   pnl = grossTradePnl - tradeFee;
-                  pnlPercent = (pnl / config.capital) * 100;
+                  pnlPercent = (pnl / rollingCapital) * 100;
                   status = pnl > 0.0001 ? 'WIN' : (pnl < -0.0001 ? 'LOSS' : 'BREAKEVEN');
                   reason = 'TIME_STOP';
                   break;
@@ -657,12 +663,16 @@ export function runStrategy2Backtest(
                 const exitFee = (positionSize * exitPrice) * exitFeeRate;
                 const tradeFee = entryFee + exitFee;
                 pnl = grossMovePnl - tradeFee;
-                pnlPercent = (pnl / config.capital) * 100;
+                pnlPercent = (pnl / rollingCapital) * 100;
               }
 
               const actualExitPrice = exitPrice ?? entryPrice;
               const tradeExitFee = (positionSize * actualExitPrice) * exitFeeRate;
               const tradeTotalFee = entryFee + tradeExitFee;
+              const grossVal = positionSize * (entryPrice - actualExitPrice);
+              const netVal = grossVal - tradeTotalFee;
+              const capitalBeforeTrade = parseFloat(rollingCapital.toFixed(4));
+              const nextCap = Math.max(1, parseFloat((rollingCapital + netVal).toFixed(4)));
 
               trades.push({
                 id: `trade-s2-${trades.length + 1}-${darkBlueLeg.index}`,
@@ -678,13 +688,13 @@ export function runStrategy2Backtest(
                 entryPrice,
                 stopLoss,
                 takeProfit,
-                riskAmount: parseFloat(riskAmount.toFixed(2)),
-                targetRiskAmount: parseFloat(riskAmount.toFixed(2)),
-                realizedRisk: parseFloat(realizedRisk.toFixed(2)),
+                riskAmount: parseFloat(riskAmount.toFixed(4)),
+                targetRiskAmount: parseFloat(riskAmount.toFixed(4)),
+                realizedRisk: parseFloat(realizedRisk.toFixed(4)),
                 stepSize: sizing.stepSize,
                 qtyPrecision: sizing.qtyPrecision,
                 positionSize,
-                positionValue: parseFloat(positionValue.toFixed(2)),
+                positionValue: parseFloat(positionValue.toFixed(4)),
                 positionToRiskRatio: posToRiskRatio,
                 riskReward: parseFloat(riskReward.toFixed(2)),
                 timeF,
@@ -699,21 +709,23 @@ export function runStrategy2Backtest(
                 waitingForPostLeg: false,
                 hasPostLeg: true,
                 status,
-                grossPnl: parseFloat((positionSize * (entryPrice - actualExitPrice)).toFixed(2)),
-                entryFee: parseFloat(entryFee.toFixed(2)),
-                exitFee: parseFloat(tradeExitFee.toFixed(2)),
-                fee: parseFloat(tradeTotalFee.toFixed(2)),
-                commission: parseFloat(tradeTotalFee.toFixed(2)),
-                pnl: parseFloat((positionSize * (entryPrice - actualExitPrice) - tradeTotalFee).toFixed(2)),
-                pnlPercent: parseFloat((((positionSize * (entryPrice - actualExitPrice) - tradeTotalFee) / rollingCapital) * 100).toFixed(2)),
-                returnR: riskAmount > 0 ? parseFloat(((positionSize * (entryPrice - actualExitPrice) - tradeTotalFee) / riskAmount).toFixed(2)) : 0,
-                capitalAfterTrade: Math.max(10, parseFloat((rollingCapital + (positionSize * (entryPrice - actualExitPrice) - tradeTotalFee)).toFixed(2))),
-                entryNotional: parseFloat((positionSize * entryPrice).toFixed(2)),
-                exitNotional: parseFloat((positionSize * actualExitPrice).toFixed(2)),
+                grossPnl: parseFloat(grossVal.toFixed(4)),
+                entryFee: parseFloat(entryFee.toFixed(4)),
+                exitFee: parseFloat(tradeExitFee.toFixed(4)),
+                fee: parseFloat(tradeTotalFee.toFixed(4)),
+                commission: parseFloat(tradeTotalFee.toFixed(4)),
+                pnl: parseFloat(netVal.toFixed(4)),
+                pnlPercent: parseFloat(((netVal / rollingCapital) * 100).toFixed(4)),
+                returnR: riskAmount > 0 ? parseFloat((netVal / riskAmount).toFixed(3)) : 0,
+                capitalBeforeTrade,
+                capitalAfterTrade: nextCap,
+                slSlippageApplied: status === 'LOSS' && reason !== 'TIME_STOP' ? slSlipRate * 100 : 0,
+                entryNotional: parseFloat((positionSize * entryPrice).toFixed(4)),
+                exitNotional: parseFloat((positionSize * actualExitPrice).toFixed(4)),
                 reason: reason || (status === 'WIN' ? 'Take Profit' : status === 'LOSS' ? 'Stop Loss' : 'Active'),
               });
 
-              rollingCapital = Math.max(10, parseFloat((rollingCapital + (positionSize * (entryPrice - actualExitPrice) - tradeTotalFee)).toFixed(2)));
+              rollingCapital = nextCap;
 
               lastTradeExitCandleIdx = Math.max(
                 lastTradeExitCandleIdx,
@@ -754,13 +766,6 @@ export function runStrategy2Backtest(
               break;
             }
 
-            // شرط حداقل فاصله قیمت ورود تا پیوت قبل (بر حسب مضرب ATR)
-            if (config.minEntryPivotDistanceAtr && config.minEntryPivotDistanceAtr > 0) {
-              if (stopDistance < config.minEntryPivotDistanceAtr * atr) {
-                continue;
-              }
-            }
-
             if (stopDistance > 0.000001) {
               const direction: 'BUY' | 'SELL' = 'BUY'; // صعود از کف F
               const cycleType: 'bullish' | 'bearish' = giantLeg.isUp ? 'bullish' : 'bearish';
@@ -780,7 +785,10 @@ export function runStrategy2Backtest(
                 (config.exitCommissionPercent ??
                   (config.commissionPercent !== undefined ? config.commissionPercent / 2 : 0.06)) / 100;
 
-              // محاسبه حجم دقیق با اعمال استپ سایز صرافی و لحاظ کارمزدها (رند به پایین تا ضرر هرگز بیش از بودجه نشود)
+              const effectiveExchange = config.exchange ?? 'xt';
+              const slSlipRate = (config.slSlippagePercent ?? (effectiveExchange === 'xt' ? 0.04 : 0)) / 100;
+
+              // محاسبه حجم دقیق با اعمال قراردادهای صحیح XT / استپ سایز صرافی و لحاظ کارمزدها
               const sizing = calculateExactTradeSizing(
                 riskBudget,
                 entryPrice,
@@ -788,13 +796,24 @@ export function runStrategy2Backtest(
                 takeProfit,
                 entryFeeRate,
                 exitFeeRate,
-                config.symbol
+                config.symbol,
+                {
+                  exchange: effectiveExchange,
+                  contractSize: config.xtContractSize,
+                  minNotional: config.xtMinNotional,
+                  riskCushion: effectiveExchange === 'xt' ? 0.92 : 1.0,
+                  slSlippageRate: slSlipRate,
+                }
               );
               const positionSize = sizing.quantizedPositionSize;
               const positionValue = sizing.positionValue;
               const entryFee = sizing.entryFee;
               const riskAmount = riskBudget;
               const realizedRisk = sizing.actualLossAtSL;
+
+              if (positionSize <= 0 || positionValue <= 0) {
+                break;
+              }
 
               // حداکثر نسبت ارزش پوزیشن به ریسک (پیش‌فرض ۳۰۰)
               const effectiveMaxRatio = config.maxPositionToRiskRatio !== undefined
@@ -823,7 +842,7 @@ export function runStrategy2Backtest(
 
                 if (hitTP && hitSL) {
                   status = 'LOSS';
-                  exitPrice = stopLoss;
+                  exitPrice = stopLoss * (1 - slSlipRate);
                   exitTime = ck.time;
                   exitCandleIdx = k;
                   const exitFee = (positionSize * exitPrice) * exitFeeRate;
@@ -845,7 +864,7 @@ export function runStrategy2Backtest(
                   break;
                 } else if (hitSL) {
                   status = 'LOSS';
-                  exitPrice = stopLoss;
+                  exitPrice = stopLoss * (1 - slSlipRate);
                   exitTime = ck.time;
                   exitCandleIdx = k;
                   const exitFee = (positionSize * exitPrice) * exitFeeRate;
@@ -889,6 +908,10 @@ export function runStrategy2Backtest(
               const actualExitPrice = exitPrice ?? entryPrice;
               const tradeExitFee = (positionSize * actualExitPrice) * exitFeeRate;
               const tradeTotalFee = entryFee + tradeExitFee;
+              const grossVal = positionSize * (actualExitPrice - entryPrice);
+              const netVal = grossVal - tradeTotalFee;
+              const capitalBeforeTrade = parseFloat(rollingCapital.toFixed(4));
+              const nextCap = Math.max(1, parseFloat((rollingCapital + netVal).toFixed(4)));
 
               trades.push({
                 id: `trade-s2-${trades.length + 1}-${darkBlueLeg.index}`,
@@ -904,13 +927,13 @@ export function runStrategy2Backtest(
                 entryPrice,
                 stopLoss,
                 takeProfit,
-                riskAmount: parseFloat(riskAmount.toFixed(2)),
-                targetRiskAmount: parseFloat(riskAmount.toFixed(2)),
-                realizedRisk: parseFloat(realizedRisk.toFixed(2)),
+                riskAmount: parseFloat(riskAmount.toFixed(4)),
+                targetRiskAmount: parseFloat(riskAmount.toFixed(4)),
+                realizedRisk: parseFloat(realizedRisk.toFixed(4)),
                 stepSize: sizing.stepSize,
                 qtyPrecision: sizing.qtyPrecision,
                 positionSize,
-                positionValue: parseFloat(positionValue.toFixed(2)),
+                positionValue: parseFloat(positionValue.toFixed(4)),
                 positionToRiskRatio: posToRiskRatio,
                 riskReward: parseFloat(riskReward.toFixed(2)),
                 timeF,
@@ -925,21 +948,23 @@ export function runStrategy2Backtest(
                 waitingForPostLeg: false,
                 hasPostLeg: true,
                 status,
-                grossPnl: parseFloat((positionSize * (actualExitPrice - entryPrice)).toFixed(2)),
-                entryFee: parseFloat(entryFee.toFixed(2)),
-                exitFee: parseFloat(tradeExitFee.toFixed(2)),
-                fee: parseFloat(tradeTotalFee.toFixed(2)),
-                commission: parseFloat(tradeTotalFee.toFixed(2)),
-                pnl: parseFloat((positionSize * (actualExitPrice - entryPrice) - tradeTotalFee).toFixed(2)),
-                pnlPercent: parseFloat((((positionSize * (actualExitPrice - entryPrice) - tradeTotalFee) / rollingCapital) * 100).toFixed(2)),
-                returnR: riskAmount > 0 ? parseFloat(((positionSize * (actualExitPrice - entryPrice) - tradeTotalFee) / riskAmount).toFixed(2)) : 0,
-                capitalAfterTrade: Math.max(10, parseFloat((rollingCapital + (positionSize * (actualExitPrice - entryPrice) - tradeTotalFee)).toFixed(2))),
-                entryNotional: parseFloat((positionSize * entryPrice).toFixed(2)),
-                exitNotional: parseFloat((positionSize * actualExitPrice).toFixed(2)),
+                grossPnl: parseFloat(grossVal.toFixed(4)),
+                entryFee: parseFloat(entryFee.toFixed(4)),
+                exitFee: parseFloat(tradeExitFee.toFixed(4)),
+                fee: parseFloat(tradeTotalFee.toFixed(4)),
+                commission: parseFloat(tradeTotalFee.toFixed(4)),
+                pnl: parseFloat(netVal.toFixed(4)),
+                pnlPercent: parseFloat(((netVal / rollingCapital) * 100).toFixed(4)),
+                returnR: riskAmount > 0 ? parseFloat((netVal / riskAmount).toFixed(3)) : 0,
+                capitalBeforeTrade,
+                capitalAfterTrade: nextCap,
+                slSlippageApplied: status === 'LOSS' && reason !== 'TIME_STOP' ? slSlipRate * 100 : 0,
+                entryNotional: parseFloat((positionSize * entryPrice).toFixed(4)),
+                exitNotional: parseFloat((positionSize * actualExitPrice).toFixed(4)),
                 reason: reason || (status === 'WIN' ? 'Take Profit' : status === 'LOSS' ? 'Stop Loss' : 'Active'),
               });
 
-              rollingCapital = Math.max(10, parseFloat((rollingCapital + (positionSize * (actualExitPrice - entryPrice) - tradeTotalFee)).toFixed(2)));
+              rollingCapital = nextCap;
 
               lastTradeExitCandleIdx = Math.max(
                 lastTradeExitCandleIdx,
@@ -1263,23 +1288,43 @@ export function runBreakoutStrategy(
       params.riskMode === 'fixed' && params.riskAmountFixed && params.riskAmountFixed > 0
         ? params.riskAmountFixed
         : (capital * (params.riskPercent || 1)) / 100;
-    const feeRate = ((params.commissionPercent || 0.08) / 2) / 100;
+    const entryFeeRate =
+      (params.entryCommissionPercent ??
+        (params.commissionPercent !== undefined ? params.commissionPercent / 2 : 0.06)) / 100;
+    const exitFeeRate =
+      (params.exitCommissionPercent ??
+        (params.commissionPercent !== undefined ? params.commissionPercent / 2 : 0.06)) / 100;
+    const effectiveExchange = params.exchange ?? 'xt';
+    const slSlipRate = (params.slSlippagePercent ?? (effectiveExchange === 'xt' ? 0.04 : 0)) / 100;
+
+    if (status === 'LOSS') {
+      exitPrice = isLong ? stopLoss * (1 - slSlipRate) : stopLoss * (1 + slSlipRate);
+    }
 
     const sizing = calculateExactTradeSizing(
       riskBudget,
       entryPrice,
       stopLoss,
       takeProfit,
-      feeRate,
-      feeRate,
-      params.symbol
+      entryFeeRate,
+      exitFeeRate,
+      params.symbol,
+      {
+        exchange: effectiveExchange,
+        contractSize: params.xtContractSize,
+        minNotional: params.xtMinNotional,
+        riskCushion: effectiveExchange === 'xt' ? 0.92 : 1.0,
+        slSlippageRate: slSlipRate,
+      }
     );
     const positionSize = sizing.quantizedPositionSize;
+    if (positionSize <= 0) continue;
+
     const riskAmount = riskBudget;
     const pnl = isLong
       ? (exitPrice - entryPrice) * positionSize
       : (entryPrice - exitPrice) * positionSize;
-    const commission = (entryPrice * positionSize + exitPrice * positionSize) * feeRate;
+    const commission = entryPrice * positionSize * entryFeeRate + exitPrice * positionSize * exitFeeRate;
     const netPnl = pnl - commission;
     capital += netPnl;
 
@@ -1306,9 +1351,9 @@ export function runBreakoutStrategy(
       realizedRisk: sizing.actualLossAtSL,
       stepSize: sizing.stepSize,
       qtyPrecision: sizing.qtyPrecision,
-      pnl: netPnl,
-      pnlPercent: (netPnl / riskAmount) * 100,
-      returnR: riskAmount > 0 ? parseFloat((netPnl / riskAmount).toFixed(2)) : 0,
+      pnl: parseFloat(netPnl.toFixed(4)),
+      pnlPercent: parseFloat(((netPnl / riskAmount) * 100).toFixed(2)),
+      returnR: riskAmount > 0 ? parseFloat((netPnl / riskAmount).toFixed(3)) : 0,
       riskReward: targetRR,
     });
   }

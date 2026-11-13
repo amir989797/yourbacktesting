@@ -47,10 +47,14 @@ export interface OptimizerTabProps {
   setLockMinCandles: (val: boolean) => void;
   lockMinCandlesLong: boolean;
   setLockMinCandlesLong: (val: boolean) => void;
+  lockMinCandlesBlue?: boolean;
+  setLockMinCandlesBlue?: (val: boolean) => void;
   lockAtrMultiplier: boolean;
   setLockAtrMultiplier: (val: boolean) => void;
   lockLongLegAtrMult: boolean;
   setLockLongLegAtrMult: (val: boolean) => void;
+  lockBlueLegAtrMult?: boolean;
+  setLockBlueLegAtrMult?: (val: boolean) => void;
   lockMaxBlueLegPercent: boolean;
   setLockMaxBlueLegPercent: (val: boolean) => void;
   lockMaxBreakoutAtr: boolean;
@@ -77,6 +81,8 @@ export interface OptimizerTabProps {
   bestWinningRow: OptimizationTrial | null;
   handleApplyBestToChart: () => void;
   sortedTop10: OptimizationTrial[];
+  optSortColumn?: OptSortCol;
+  optSortDirection?: 'asc' | 'desc';
   handleOptSort: (col: OptSortCol) => void;
   renderOptSortArrow: (col: OptSortCol) => React.ReactNode;
   top10Trials: OptimizationTrial[];
@@ -88,22 +94,18 @@ export interface OptimizerTabProps {
   setOptMinCandles: (val: number) => void;
   optMinCandlesLong: number;
   setOptMinCandlesLong: (val: number) => void;
+  optMinCandlesBlue?: number;
+  setOptMinCandlesBlue?: (val: number) => void;
   optAtrMultiplier: number;
   setOptAtrMultiplier: (val: number) => void;
   optLongLegAtrMult: number;
   setOptLongLegAtrMult: (val: number) => void;
+  optBlueLegAtrMult?: number;
+  setOptBlueLegAtrMult?: (val: number) => void;
   optMaxBlueLegPercent: number;
   setOptMaxBlueLegPercent: (val: number) => void;
   optMaxBreakoutAtr: number;
   setOptMaxBreakoutAtr: (val: number) => void;
-  optMinVolumeGrowthPercent?: number;
-  setOptMinVolumeGrowthPercent?: (val: number) => void;
-  lockMinVolumeGrowthPercent?: boolean;
-  setLockMinVolumeGrowthPercent?: (val: boolean) => void;
-  optMinEntryPivotDistanceAtr?: number;
-  setOptMinEntryPivotDistanceAtr?: (val: number) => void;
-  lockMinEntryPivotDistanceAtr?: boolean;
-  setLockMinEntryPivotDistanceAtr?: (val: boolean) => void;
   optMaxCandlesToEnter?: number;
   setOptMaxCandlesToEnter?: (val: number) => void;
   lockMaxCandlesToEnter?: boolean;
@@ -168,10 +170,14 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
   setLockMinCandles,
   lockMinCandlesLong,
   setLockMinCandlesLong,
+  lockMinCandlesBlue = false,
+  setLockMinCandlesBlue,
   lockAtrMultiplier,
   setLockAtrMultiplier,
   lockLongLegAtrMult,
   setLockLongLegAtrMult,
+  lockBlueLegAtrMult = false,
+  setLockBlueLegAtrMult,
   lockMaxBlueLegPercent,
   setLockMaxBlueLegPercent,
   lockMaxBreakoutAtr,
@@ -198,6 +204,8 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
   bestWinningRow,
   handleApplyBestToChart,
   sortedTop10,
+  optSortColumn = 'netProfit',
+  optSortDirection = 'desc',
   handleOptSort,
   renderOptSortArrow,
   top10Trials,
@@ -209,22 +217,18 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
   setOptMinCandles,
   optMinCandlesLong,
   setOptMinCandlesLong,
+  optMinCandlesBlue = 3,
+  setOptMinCandlesBlue,
   optAtrMultiplier,
   setOptAtrMultiplier,
   optLongLegAtrMult,
   setOptLongLegAtrMult,
+  optBlueLegAtrMult = 3.0,
+  setOptBlueLegAtrMult,
   optMaxBlueLegPercent,
   setOptMaxBlueLegPercent,
   optMaxBreakoutAtr,
   setOptMaxBreakoutAtr,
-  optMinVolumeGrowthPercent = 0,
-  setOptMinVolumeGrowthPercent,
-  lockMinVolumeGrowthPercent = false,
-  setLockMinVolumeGrowthPercent,
-  optMinEntryPivotDistanceAtr = 1.0,
-  setOptMinEntryPivotDistanceAtr,
-  lockMinEntryPivotDistanceAtr = false,
-  setLockMinEntryPivotDistanceAtr,
   optMaxCandlesToEnter = 35,
   setOptMaxCandlesToEnter,
   lockMaxCandlesToEnter = false,
@@ -578,6 +582,100 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   </div>
                 </div>
 
+                {/* 5b. Min Candles Blue Leg (CD, EF) */}
+                {(() => {
+                  const rBlueC = adaptiveRanges.minCandlesForBlueLeg || {
+                    min: 2, max: 10, globalMin: 1, globalMax: 20, bestVal: 3, step: 1, convergence: 50,
+                  };
+                  return (
+                    <div className="bg-[#0e121a] p-2.5 rounded-xl border border-cyan-500/30 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-cyan-300">کندل لگ CD,EF</span>
+                        <span className="text-[10px] font-mono text-cyan-400 bg-cyan-950/60 px-1.5 py-0.5 rounded">
+                          همگرایی {rBlueC.convergence}%
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between gap-1 text-[10px] text-gray-400">
+                        <div className="flex items-center gap-1">
+                          <span>حداقل:</span>
+                          <input
+                            type="number"
+                            step={rBlueC.step}
+                            min={1}
+                            value={rBlueC.min}
+                            disabled={isOptimizing || lockMinCandlesBlue}
+                            onChange={(e) => handleUpdateParamRange('minCandlesForBlueLeg', 'min', parseFloat(e.target.value) || 0)}
+                            className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                          />
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <span>حداکثر:</span>
+                          <input
+                            type="number"
+                            step={rBlueC.step}
+                            min={1}
+                            value={rBlueC.max}
+                            disabled={isOptimizing || lockMinCandlesBlue}
+                            onChange={(e) => handleUpdateParamRange('minCandlesForBlueLeg', 'max', parseFloat(e.target.value) || 0)}
+                            className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5 border-t border-[#1a2230]">
+                        <span>بهترین مقدار: <strong className="text-amber-300 font-mono">{rBlueC.bestVal}</strong></span>
+                        <span className="text-gray-500 font-mono">گام: {rBlueC.step}</span>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* 5c. Blue Leg ATR Mult (CD, EF) */}
+                {(() => {
+                  const rBlueA = adaptiveRanges.blueLegAtrMultiplier || {
+                    min: 1.8, max: 6.0, globalMin: 1.0, globalMax: 12.0, bestVal: 3.0, step: 0.25, convergence: 50,
+                  };
+                  return (
+                    <div className="bg-[#0e121a] p-2.5 rounded-xl border border-blue-500/30 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-blue-300">ضریب لگ CD,EF</span>
+                        <span className="text-[10px] font-mono text-blue-400 bg-blue-950/60 px-1.5 py-0.5 rounded">
+                          همگرایی {rBlueA.convergence}%
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between gap-1 text-[10px] text-gray-400">
+                        <div className="flex items-center gap-1">
+                          <span>حداقل:</span>
+                          <input
+                            type="number"
+                            step={rBlueA.step}
+                            min={0.1}
+                            value={rBlueA.min}
+                            disabled={isOptimizing || lockBlueLegAtrMult}
+                            onChange={(e) => handleUpdateParamRange('blueLegAtrMultiplier', 'min', parseFloat(e.target.value) || 0)}
+                            className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-blue-300 font-mono text-xs text-center focus:outline-none focus:border-blue-400"
+                          />
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <span>حداکثر:</span>
+                          <input
+                            type="number"
+                            step={rBlueA.step}
+                            min={0.1}
+                            value={rBlueA.max}
+                            disabled={isOptimizing || lockBlueLegAtrMult}
+                            onChange={(e) => handleUpdateParamRange('blueLegAtrMultiplier', 'max', parseFloat(e.target.value) || 0)}
+                            className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-blue-300 font-mono text-xs text-center focus:outline-none focus:border-blue-400"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5 border-t border-[#1a2230]">
+                        <span>بهترین مقدار: <strong className="text-amber-300 font-mono">{rBlueA.bestVal}×</strong></span>
+                        <span className="text-gray-500 font-mono">گام: {rBlueA.step}</span>
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* 6. Max Blue Leg Percent */}
                 <div className="bg-[#0e121a] p-2.5 rounded-xl border border-[#232e42] space-y-1.5">
                   <div className="flex items-center justify-between">
@@ -657,90 +755,6 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                     <span className="text-gray-500 font-mono">گام: {adaptiveRanges.maxBreakoutAtrMultiplier.step}</span>
                   </div>
                 </div>
-
-                {/* 8. Min Volume Growth Percent */}
-                {adaptiveRanges.minVolumeGrowthPercent && (
-                  <div className="bg-[#0e121a] p-2.5 rounded-xl border border-[#232e42] space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-bold text-gray-200">۸. رشد حجم لگ (AB/CD/EF)</span>
-                      <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/60 px-1.5 py-0.5 rounded">
-                        همگرایی {adaptiveRanges.minVolumeGrowthPercent.convergence}%
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-1 text-[10px] text-gray-400">
-                      <div className="flex items-center gap-1">
-                        <span>حداقل:</span>
-                        <input
-                          type="number"
-                          step={adaptiveRanges.minVolumeGrowthPercent.step || 5}
-                          min={0}
-                          value={adaptiveRanges.minVolumeGrowthPercent.min}
-                          disabled={isOptimizing || lockMinVolumeGrowthPercent}
-                          onChange={(e) => handleUpdateParamRange('minVolumeGrowthPercent', 'min', parseFloat(e.target.value) || 0)}
-                          className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-emerald-300 font-mono text-xs text-center focus:outline-none focus:border-emerald-400"
-                        />
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <span>حداکثر:</span>
-                        <input
-                          type="number"
-                          step={adaptiveRanges.minVolumeGrowthPercent.step || 5}
-                          min={0}
-                          value={adaptiveRanges.minVolumeGrowthPercent.max}
-                          disabled={isOptimizing || lockMinVolumeGrowthPercent}
-                          onChange={(e) => handleUpdateParamRange('minVolumeGrowthPercent', 'max', parseFloat(e.target.value) || 0)}
-                          className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-emerald-300 font-mono text-xs text-center focus:outline-none focus:border-emerald-400"
-                        />
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5 border-t border-[#1a2230]">
-                      <span>بهترین مقدار: <strong className="text-amber-300 font-mono">{adaptiveRanges.minVolumeGrowthPercent.bestVal}%</strong></span>
-                      <span className="text-gray-500 font-mono">گام: {adaptiveRanges.minVolumeGrowthPercent.step}</span>
-                    </div>
-                  </div>
-                )}
-
-                {/* 8.5. Min Entry Pivot Distance ATR (گام 0.25) */}
-                {adaptiveRanges.minEntryPivotDistanceAtr && (
-                  <div className="bg-[#0e121a] p-2.5 rounded-xl border border-amber-500/30 space-y-1.5 shadow-sm">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-bold text-amber-300">فاصله ورود تا پیوت (ATR)</span>
-                      <span className="text-[10px] font-mono text-amber-400 bg-amber-950/60 px-1.5 py-0.5 rounded">
-                        همگرایی {adaptiveRanges.minEntryPivotDistanceAtr.convergence}%
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-1 text-[10px] text-gray-400">
-                      <div className="flex items-center gap-1">
-                        <span>حداقل:</span>
-                        <input
-                          type="number"
-                          step={0.25}
-                          min={0}
-                          value={adaptiveRanges.minEntryPivotDistanceAtr.min}
-                          disabled={isOptimizing || lockMinEntryPivotDistanceAtr}
-                          onChange={(e) => handleUpdateParamRange('minEntryPivotDistanceAtr', 'min', parseFloat(e.target.value) || 0)}
-                          className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-amber-300 font-mono text-xs text-center focus:outline-none focus:border-amber-400"
-                        />
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <span>حداکثر:</span>
-                        <input
-                          type="number"
-                          step={0.25}
-                          min={0}
-                          value={adaptiveRanges.minEntryPivotDistanceAtr.max}
-                          disabled={isOptimizing || lockMinEntryPivotDistanceAtr}
-                          onChange={(e) => handleUpdateParamRange('minEntryPivotDistanceAtr', 'max', parseFloat(e.target.value) || 0)}
-                          className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-amber-300 font-mono text-xs text-center focus:outline-none focus:border-amber-400"
-                        />
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5 border-t border-[#1a2230]">
-                      <span>بهترین مقدار: <strong className="text-amber-300 font-mono">{adaptiveRanges.minEntryPivotDistanceAtr.bestVal} ATR</strong></span>
-                      <span className="text-amber-400 font-mono font-bold">گام: 0.25</span>
-                    </div>
-                  </div>
-                )}
 
                 {/* 8.6. Max Candles To Enter (سقف کندل ورود) */}
                 {adaptiveRanges.maxCandlesToEnter && (
@@ -1172,6 +1186,53 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   />
                 </div>
 
+                <div className={`p-2 rounded-xl border transition-all ${lockMinCandlesBlue ? 'bg-cyan-950/25 border-cyan-500/70 shadow-sm shadow-cyan-500/10' : 'bg-[#171e2b] border-[#2a364a]'}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] font-semibold text-cyan-300">کندل لگ CD,EF</label>
+                    <label className="flex items-center gap-1 text-[10px] text-cyan-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(lockMinCandlesBlue)}
+                        onChange={(e) => setLockMinCandlesBlue?.(e.target.checked)}
+                        className="rounded bg-[#0d1017] border-gray-600 text-cyan-500 focus:ring-0 cursor-pointer"
+                      />
+                      <span className={lockMinCandlesBlue ? 'font-bold text-cyan-300' : ''}>{lockMinCandlesBlue ? '🔒 قفل' : 'آزاد'}</span>
+                    </label>
+                  </div>
+                  <input
+                    type="number"
+                    min={1}
+                    value={optMinCandlesBlue ?? 3}
+                    disabled={isOptimizing}
+                    onChange={(e) => setOptMinCandlesBlue?.(parseInt(e.target.value, 10) || 1)}
+                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockMinCandlesBlue ? 'border-cyan-500/70 text-cyan-300 font-bold' : 'border-[#2e3a4e] text-cyan-300'} disabled:bg-[#1b202c] disabled:text-gray-500`}
+                  />
+                </div>
+
+                <div className={`p-2 rounded-xl border transition-all ${lockBlueLegAtrMult ? 'bg-blue-950/25 border-blue-500/70 shadow-sm shadow-blue-500/10' : 'bg-[#171e2b] border-[#2a364a]'}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] font-semibold text-blue-300">ضریب لگ CD,EF</label>
+                    <label className="flex items-center gap-1 text-[10px] text-blue-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(lockBlueLegAtrMult)}
+                        onChange={(e) => setLockBlueLegAtrMult?.(e.target.checked)}
+                        className="rounded bg-[#0d1017] border-gray-600 text-blue-500 focus:ring-0 cursor-pointer"
+                      />
+                      <span className={lockBlueLegAtrMult ? 'font-bold text-blue-300' : ''}>{lockBlueLegAtrMult ? '🔒 قفل' : 'آزاد'}</span>
+                    </label>
+                  </div>
+                  <input
+                    type="number"
+                    min={0.1}
+                    step={0.25}
+                    value={optBlueLegAtrMult ?? 3}
+                    disabled={isOptimizing}
+                    onChange={(e) => setOptBlueLegAtrMult?.(parseFloat(e.target.value) || 0.1)}
+                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockBlueLegAtrMult ? 'border-blue-500/70 text-blue-300 font-bold' : 'border-[#2e3a4e] text-blue-300'} disabled:bg-[#1b202c] disabled:text-gray-500`}
+                  />
+                </div>
+
                 <div className={`p-2 rounded-xl border transition-all ${lockMaxBlueLegPercent ? 'bg-amber-950/25 border-amber-500/70 shadow-sm shadow-amber-500/10' : 'bg-[#171e2b] border-[#2a364a]'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-gray-200">۶. سقف لگ آبی %</label>
@@ -1215,56 +1276,6 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                     disabled={isOptimizing}
                     onChange={(e) => setOptMaxBreakoutAtr(parseFloat(e.target.value) || 0)}
                     className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockMaxBreakoutAtr ? 'border-amber-500/70 text-amber-300 font-bold' : 'border-[#2e3a4e] text-white'} disabled:bg-[#1b202c] disabled:text-gray-500`}
-                  />
-                </div>
-
-                <div className={`p-2 rounded-xl border transition-all ${lockMinVolumeGrowthPercent ? 'bg-amber-950/25 border-amber-500/70 shadow-sm shadow-amber-500/10' : 'bg-[#171e2b] border-[#2a364a]'}`}>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="text-[10px] font-semibold text-gray-200">رشد حجم لگ %</label>
-                    <label className="flex items-center gap-1 text-[10px] text-amber-400 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={lockMinVolumeGrowthPercent}
-                        onChange={(e) => setLockMinVolumeGrowthPercent?.(e.target.checked)}
-                        className="rounded bg-[#0d1017] border-gray-600 text-amber-500 focus:ring-0 cursor-pointer"
-                      />
-                      <span className={lockMinVolumeGrowthPercent ? 'font-bold text-amber-300' : ''}>{lockMinVolumeGrowthPercent ? '🔒 قفل' : 'آزاد'}</span>
-                    </label>
-                  </div>
-                  <input
-                    type="number"
-                    step={5}
-                    min={0}
-                    value={optMinVolumeGrowthPercent}
-                    disabled={isOptimizing}
-                    onChange={(e) => setOptMinVolumeGrowthPercent?.(parseFloat(e.target.value) || 0)}
-                    placeholder="0"
-                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockMinVolumeGrowthPercent ? 'border-amber-500/70 text-amber-300 font-bold' : 'border-[#2e3a4e] text-emerald-400'} disabled:bg-[#1b202c] disabled:text-gray-500`}
-                  />
-                </div>
-
-                <div className={`p-2 rounded-xl border transition-all ${lockMinEntryPivotDistanceAtr ? 'bg-amber-950/25 border-amber-500/70 shadow-sm shadow-amber-500/10' : 'bg-[#171e2b] border-[#2a364a]'}`}>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="text-[10px] font-semibold text-gray-200">فاصله ورود تا پیوت (ATR)</label>
-                    <label className="flex items-center gap-1 text-[10px] text-amber-400 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={lockMinEntryPivotDistanceAtr}
-                        onChange={(e) => setLockMinEntryPivotDistanceAtr?.(e.target.checked)}
-                        className="rounded bg-[#0d1017] border-gray-600 text-amber-500 focus:ring-0 cursor-pointer"
-                      />
-                      <span className={lockMinEntryPivotDistanceAtr ? 'font-bold text-amber-300' : ''}>{lockMinEntryPivotDistanceAtr ? '🔒 قفل' : 'آزاد'}</span>
-                    </label>
-                  </div>
-                  <input
-                    type="number"
-                    step={0.25}
-                    min={0}
-                    value={optMinEntryPivotDistanceAtr}
-                    disabled={isOptimizing}
-                    onChange={(e) => setOptMinEntryPivotDistanceAtr?.(parseFloat(e.target.value) || 0)}
-                    placeholder="1.0"
-                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockMinEntryPivotDistanceAtr ? 'border-amber-500/70 text-amber-300 font-bold' : 'border-[#2e3a4e] text-amber-300'} disabled:bg-[#1b202c] disabled:text-gray-500`}
                   />
                 </div>
 
@@ -1566,7 +1577,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   </div>
 
                   <div className="text-[11px] text-gray-400 font-mono bg-[#0d1017] px-3 py-1.5 rounded-xl border border-[#232c3d]">
-                    ATR:{bestWinningRow.atrPeriod} | MinC:{bestWinningRow.minCandles} | MinLong:{bestWinningRow.minCandlesForLongLeg} | Mult:{bestWinningRow.atrMultiplier}x | LongMult:{bestWinningRow.longLegAtrMultiplier}x | Blue%:{bestWinningRow.maxBlueLegPercent}% | Break:{bestWinningRow.maxBreakoutAtrMultiplier}x | R:R:{bestWinningRow.maxRiskReward} | Pos/Risk:{bestWinningRow.maxPositionToRiskRatio ?? 300}x | TimeStop:{bestWinningRow.timeStopCandles || 80}c
+                    ATR:{bestWinningRow.atrPeriod} | MinC:{bestWinningRow.minCandles} | MinLong:{bestWinningRow.minCandlesForLongLeg} | BlueC:{bestWinningRow.minCandlesForBlueLeg ?? 3} | Mult:{bestWinningRow.atrMultiplier}x | LongMult:{bestWinningRow.longLegAtrMultiplier}x | BlueMult:{bestWinningRow.blueLegAtrMultiplier ?? 3}x | Blue%:{bestWinningRow.maxBlueLegPercent}% | Break:{bestWinningRow.maxBreakoutAtrMultiplier}x | R:R:{bestWinningRow.maxRiskReward} | Pos/Risk:{bestWinningRow.maxPositionToRiskRatio ?? 300}x | TimeStop:{bestWinningRow.timeStopCandles || 80}c
                   </div>
                 </div>
 
@@ -1677,7 +1688,24 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   </span>
                 </div>
                 <span className="text-[11px] text-emerald-400 font-mono">
-                  مرتب‌شده بر اساس بیشترین سود خالص
+                  {(() => {
+                    const colLabels: Record<string, string> = {
+                      netProfit: 'سود خالص',
+                      profitFactor: 'Profit Factor',
+                      winRate: 'وین‌ریت',
+                      maxDrawdown: 'درودان',
+                      totalTrades: 'تعداد معاملات',
+                      atrPeriod: 'دوره ATR',
+                      minCandles: 'حداقل کندل',
+                      minCandlesForBlueLeg: 'کندل CD,EF',
+                      atrMultiplier: 'ضریب عادی',
+                      blueLegAtrMultiplier: 'ضریب CD,EF',
+                      maxRiskReward: 'R:R',
+                    };
+                    const colLabel = colLabels[String(optSortColumn)] || String(optSortColumn);
+                    const dirLabel = optSortDirection === 'desc' ? 'بیشترین' : 'کمترین';
+                    return `نگهداری و مرتب‌سازی بر اساس ${dirLabel} ${colLabel}`;
+                  })()}
                 </span>
               </div>
 
@@ -1697,9 +1725,14 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                         ضریب عادی {renderOptSortArrow('atrMultiplier')}
                       </th>
                       <th className="py-2.5 px-2 text-center">ضریب بزرگ</th>
+                      <th className="py-2.5 px-2 text-center text-cyan-300 cursor-pointer" onClick={() => handleOptSort('minCandlesForBlueLeg')}>
+                        کندل CD,EF {renderOptSortArrow('minCandlesForBlueLeg')}
+                      </th>
+                      <th className="py-2.5 px-2 text-center text-blue-300 cursor-pointer" onClick={() => handleOptSort('blueLegAtrMultiplier')}>
+                        ضریب CD,EF {renderOptSortArrow('blueLegAtrMultiplier')}
+                      </th>
                       <th className="py-2.5 px-2 text-center">سقف آبی%</th>
                       <th className="py-2.5 px-2 text-center">نفوذ شکست</th>
-                      <th className="py-2.5 px-2 text-center text-emerald-400">رشد حجم%</th>
                       <th className="py-2.5 px-2 text-center cursor-pointer" onClick={() => handleOptSort('maxRiskReward')}>
                         R:R {renderOptSortArrow('maxRiskReward')}
                       </th>
@@ -1732,7 +1765,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   <tbody className="divide-y divide-[#1e2736] font-mono text-[11px]">
                     {sortedTop10.length === 0 ? (
                       <tr>
-                        <td colSpan={20} className="py-8 text-center text-gray-500 font-sans">
+                        <td colSpan={21} className="py-8 text-center text-gray-500 font-sans">
                           هنوز آزمایشی ثبت نشده است. با زدن «شروع بهینه‌سازی رنج‌محور»، تست‌ها شروع شده و ۱۰ ترکیب برتر اینجا نمایش داده می‌شوند.
                         </td>
                       </tr>
@@ -1757,9 +1790,10 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                             <td className="py-2 px-2 text-center text-gray-300">{row.minCandlesForLongLeg}</td>
                             <td className="py-2 px-2 text-center text-gray-300">{row.atrMultiplier}×</td>
                             <td className="py-2 px-2 text-center text-gray-300">{row.longLegAtrMultiplier}×</td>
+                            <td className="py-2 px-2 text-center text-cyan-300">{row.minCandlesForBlueLeg ?? '—'}</td>
+                            <td className="py-2 px-2 text-center text-blue-300">{row.blueLegAtrMultiplier !== undefined ? `${row.blueLegAtrMultiplier}×` : '—'}</td>
                             <td className="py-2 px-2 text-center text-gray-300">{row.maxBlueLegPercent}%</td>
                             <td className="py-2 px-2 text-center text-gray-300">{row.maxBreakoutAtrMultiplier}×</td>
-                            <td className="py-2 px-2 text-center text-emerald-300 font-bold">{row.minVolumeGrowthPercent ? `${row.minVolumeGrowthPercent}%` : '0%'}</td>
                             <td className="py-2 px-2 text-center font-bold text-cyan-300">{row.maxRiskReward}</td>
                             <td className="py-2 px-2 text-center font-bold text-cyan-400">
                               {row.timeStopCandles ? `${row.timeStopCandles}c` : '80c'}

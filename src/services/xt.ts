@@ -261,7 +261,7 @@ export async function fetchXtOrderHistory(symbol?: string, limit: number = 30): 
 /**
  * Fetch Closed Position History with exact realized PnL & fees from XT Futures API
  */
-export async function fetchXtPositionHistory(symbol?: string, limit: number = 50): Promise<LiveTradeOrder[]> {
+export async function fetchXtPositionHistory(symbol?: string, limit: number = 2000): Promise<LiveTradeOrder[]> {
   try {
     let query = `?limit=${limit}`;
     if (symbol) query += `&symbol=${encodeURIComponent(toXtSymbol(symbol))}`;
@@ -273,6 +273,102 @@ export async function fetchXtPositionHistory(symbol?: string, limit: number = 50
     console.warn('Failed to fetch XT position history', err);
   }
   return [];
+}
+
+export interface LiveRrCurvePoint {
+  rr: number;
+  wins: number;
+  losses: number;
+  openCount: number;
+  winRate: number;
+  grossProfit: number;
+  totalFees: number;
+  netPnl: number;
+  profitFactor: number;
+  maxDrawdown: number;
+  improvementVsActual: number;
+}
+
+export interface LiveRrTradeDetail {
+  id: string;
+  symbol: string;
+  timeframe: string;
+  positionSide: 'LONG' | 'SHORT';
+  entryTimeMs: number;
+  exitTimeMs: number;
+  timeEn: string;
+  entryPrice: number;
+  stopLossPrice: number;
+  actualTakeProfit?: number;
+  actualExitPrice: number;
+  actualRealizedR: number;
+  actualNetPnl: number;
+  actualFee: number;
+  maxFavorableR: number;
+  hitSl: boolean;
+  slHitTimeMs: number | null;
+  unfinishedAtNow: boolean;
+  oneRUsd: number;
+  candleResolutionUsed: string;
+  candlesScanned: number;
+  simAtOptimal: {
+    status: 'WIN' | 'LOSS' | 'OPEN';
+    exitPrice: number;
+    grossPnl: number;
+    fee: number;
+    netPnl: number;
+  } | null;
+}
+
+export interface LiveRrOptimizationResult {
+  success: boolean;
+  message?: string;
+  error?: string;
+  actualStats?: {
+    totalTrades: number;
+    testedTrades: number;
+    skippedTrades: number;
+    skippedDetails?: { id: string; symbol: string; reason: string }[];
+    wins: number;
+    losses: number;
+    winRate: number;
+    grossProfit: number;
+    totalFees: number;
+    fundFees: number;
+    netPnl: number;
+    profitFactor: number;
+  };
+  optimal?: LiveRrCurvePoint | null;
+  rrCurve?: LiveRrCurvePoint[];
+  tradeDetails?: LiveRrTradeDetail[];
+}
+
+/**
+ * Analyze XT live closed trade history candle-by-candle (entry -> SL or R:R=3.0)
+ * to find the optimal Risk:Reward ratio between 1.0 and 3.0.
+ */
+export async function optimizeXtLiveRiskReward(params?: {
+  limit?: number;
+  step?: 0.1 | 0.25;
+}): Promise<LiveRrOptimizationResult> {
+  try {
+    const res = await fetch('/api/xt/positions/optimize-rr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        limit: params?.limit ?? 0,
+        step: params?.step ?? 0.1,
+      }),
+      signal: AbortSignal.timeout(180000),
+    });
+    const data = await res.json();
+    return data;
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err?.message || 'خطا در برقراری ارتباط با سرور برای بهینه‌سازی R:R',
+    };
+  }
 }
 
 /**

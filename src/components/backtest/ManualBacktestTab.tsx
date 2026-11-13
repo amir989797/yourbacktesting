@@ -75,6 +75,8 @@ export interface ManualBacktestTabProps {
   exitCommissionPercent: number;
   setExitCommissionPercent: (val: number) => void;
   commissionPercent: number;
+  slSlippagePercent?: number;
+  setSlSlippagePercent?: (val: number) => void;
   noConcurrentPositions: boolean;
   handleToggleNoConcurrentPositions: (val: boolean) => void;
   optAtrPeriod: number;
@@ -85,14 +87,16 @@ export interface ManualBacktestTabProps {
   setOptMinCandles: (val: number) => void;
   optMinCandlesLong: number;
   setOptMinCandlesLong: (val: number) => void;
+  optMinCandlesBlue?: number;
+  setOptMinCandlesBlue?: (val: number) => void;
   optLongLegAtrMult: number;
   setOptLongLegAtrMult: (val: number) => void;
+  optBlueLegAtrMult?: number;
+  setOptBlueLegAtrMult?: (val: number) => void;
   optMaxBlueLegPercent: number;
   setOptMaxBlueLegPercent: (val: number) => void;
   optMaxBreakoutAtr: number;
   setOptMaxBreakoutAtr: (val: number) => void;
-  optMinVolumeGrowthPercent?: number;
-  setOptMinVolumeGrowthPercent?: (val: number) => void;
   optMaxRiskReward: number;
   setOptMaxRiskReward: (val: number) => void;
   optMaxPositionToRiskRatio?: number;
@@ -201,6 +205,8 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
   exitCommissionPercent,
   setExitCommissionPercent,
   commissionPercent,
+  slSlippagePercent = 0.04,
+  setSlSlippagePercent,
   noConcurrentPositions,
   handleToggleNoConcurrentPositions,
   optAtrPeriod,
@@ -211,14 +217,16 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
   setOptMinCandles,
   optMinCandlesLong,
   setOptMinCandlesLong,
+  optMinCandlesBlue = 3,
+  setOptMinCandlesBlue,
   optLongLegAtrMult,
   setOptLongLegAtrMult,
+  optBlueLegAtrMult = 3,
+  setOptBlueLegAtrMult,
   optMaxBlueLegPercent,
   setOptMaxBlueLegPercent,
   optMaxBreakoutAtr,
   setOptMaxBreakoutAtr,
-  optMinVolumeGrowthPercent = 0,
-  setOptMinVolumeGrowthPercent,
   optMaxRiskReward,
   setOptMaxRiskReward,
   optMaxPositionToRiskRatio = 300,
@@ -466,9 +474,9 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       <div>
                         <input
                           type="number"
-                          min={0.5}
+                          min={0.1}
                           max={100000}
-                          step={1}
+                          step={0.1}
                           value={riskAmountFixed === 0 || riskAmountFixed ? riskAmountFixed : ''}
                           onChange={(e) => {
                             const v = e.target.value;
@@ -525,6 +533,26 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       disabled={isScanning}
                       className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-amber-400 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
                       title="کارمزد خروج از هر پوزیشن (پیش‌فرض ۰.۰۶٪)"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-rose-300 block mb-1" title="میانگین لغزش قیمت در استاپ‌لاس مارکت واقعی (در XT حدود ۰.۰۴٪)">اسلیپیج SL (%):</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={slSlippagePercent === 0 || slSlippagePercent ? slSlippagePercent : ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setSlSlippagePercent?.(v === '' ? ('' as any) : Number(v));
+                      }}
+                      onBlur={() => {
+                        if (isNaN(slSlippagePercent) || slSlippagePercent === null || (slSlippagePercent as any) === '') setSlSlippagePercent?.(0.04);
+                      }}
+                      disabled={isScanning}
+                      className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-rose-300 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
+                      title="میانگین اسلیپیج استاپ‌لاس مارکت بر حسب درصد قیمت (پیش‌فرض ۰.۰۴٪ مطابق تاریخچه XT)"
                     />
                   </div>
                   <div>
@@ -657,7 +685,7 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                     </button>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-9 gap-2">
                   <div>
                     <label className="text-[9px] text-gray-400 block mb-0.5">دوره ATR:</label>
                     <input
@@ -761,6 +789,49 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                     />
                   </div>
                   <div>
+                    <label className="text-[9px] text-cyan-300 block mb-0.5" title="حداقل کندل لگ CD و EF">کندل لگ CD,EF:</label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={optMinCandlesBlue === 0 || optMinCandlesBlue ? optMinCandlesBlue : ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        const num = v === '' ? ('' as any) : parseInt(v, 10);
+                        setOptMinCandlesBlue?.(num);
+                        if (typeof num === 'number' && !isNaN(num)) onUpdateZigZagSettings?.({ ...zigzagSettings, minCandlesForBlueLeg: num });
+                      }}
+                      onBlur={() => {
+                        if (!optMinCandlesBlue || isNaN(optMinCandlesBlue)) {
+                          setOptMinCandlesBlue?.(3);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, minCandlesForBlueLeg: 3 });
+                        }
+                      }}
+                      className="w-full px-1.5 py-1 bg-[#171d28] border border-cyan-500/40 rounded text-cyan-300 text-xs font-mono text-center focus:outline-none focus:border-cyan-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[9px] text-blue-300 block mb-0.5" title="ضریب ATR لگ CD و EF">ضریب لگ CD,EF:</label>
+                    <input
+                      type="number"
+                      min={0.1}
+                      step={0.25}
+                      value={optBlueLegAtrMult === 0 || optBlueLegAtrMult ? optBlueLegAtrMult : ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        const num = v === '' ? ('' as any) : parseFloat(v);
+                        setOptBlueLegAtrMult?.(num);
+                        if (typeof num === 'number' && !isNaN(num)) onUpdateZigZagSettings?.({ ...zigzagSettings, blueLegAtrMultiplier: num });
+                      }}
+                      onBlur={() => {
+                        if (!optBlueLegAtrMult || isNaN(optBlueLegAtrMult)) {
+                          setOptBlueLegAtrMult?.(3.0);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, blueLegAtrMultiplier: 3.0 });
+                        }
+                      }}
+                      className="w-full px-1.5 py-1 bg-[#171d28] border border-blue-500/40 rounded text-blue-300 text-xs font-mono text-center focus:outline-none focus:border-blue-400"
+                    />
+                  </div>
+                  <div>
                     <label className="text-[9px] text-gray-400 block mb-0.5">سقف لگ آبی %:</label>
                     <input
                       type="number"
@@ -800,30 +871,6 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                         }
                       }}
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[9px] text-gray-400 block mb-0.5">رشد حجم لگ %:</label>
-                    <input
-                      type="number"
-                      step={5}
-                      min={0}
-                      value={optMinVolumeGrowthPercent === 0 || optMinVolumeGrowthPercent ? optMinVolumeGrowthPercent : ''}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        const num = v === '' ? ('' as any) : parseFloat(v);
-                        setOptMinVolumeGrowthPercent?.(num);
-                        if (typeof num === 'number' && !isNaN(num)) onUpdateZigZagSettings?.({ ...zigzagSettings, minVolumeGrowthPercent: num });
-                      }}
-                      onBlur={() => {
-                        if (optMinVolumeGrowthPercent === undefined || isNaN(optMinVolumeGrowthPercent)) {
-                          setOptMinVolumeGrowthPercent?.(0);
-                          onUpdateZigZagSettings?.({ ...zigzagSettings, minVolumeGrowthPercent: 0 });
-                        }
-                      }}
-                      placeholder="0"
-                      title="حداقل شیب درصد رشد میانگین حجم در طول لگ‌های AB، CD و EF (0 = بدون محدودیت)"
-                      className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-emerald-400 text-xs font-mono text-center focus:outline-none focus:border-emerald-400"
                     />
                   </div>
                 </div>

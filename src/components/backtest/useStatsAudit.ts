@@ -28,7 +28,6 @@ export interface UseStatsAuditProps {
   optLongLegAtrMult: number;
   optMaxBlueLegPercent: number;
   optMaxBreakoutAtr: number;
-  optMinVolumeGrowthPercent?: number;
   optMaxRiskReward: number;
   targetMaxDrawdown: number;
   targetMinWinRate: number;
@@ -63,7 +62,6 @@ export function useStatsAudit(props: UseStatsAuditProps) {
     optLongLegAtrMult,
     optMaxBlueLegPercent,
     optMaxBreakoutAtr,
-    optMinVolumeGrowthPercent = 0,
     optMaxRiskReward,
     targetMaxDrawdown,
     targetMinWinRate,
@@ -861,9 +859,10 @@ export function useStatsAudit(props: UseStatsAuditProps) {
       totalFees += fee;
       totalVolumeTraded += totalExecNotional;
 
-      const feeRate = (commissionPercent || 0.05) / 100;
-      const entryFee = entryNotional * feeRate;
-      const exitFee = exitNotional * feeRate;
+      const entryRate = (entryCommissionPercent !== undefined && entryCommissionPercent !== null ? entryCommissionPercent : (commissionPercent ? commissionPercent / 2 : 0.06)) / 100;
+      const exitRate = (exitCommissionPercent !== undefined && exitCommissionPercent !== null ? exitCommissionPercent : (commissionPercent ? commissionPercent / 2 : 0.06)) / 100;
+      const entryFee = t.entryFee !== undefined ? t.entryFee : entryNotional * entryRate;
+      const exitFee = t.exitFee !== undefined ? t.exitFee : exitNotional * exitRate;
       const totalTradeFee = t.fee !== undefined ? t.fee : (entryFee + exitFee);
 
       const eTime = t.entryTime || t.timeF || 0;

@@ -13,12 +13,12 @@ export const DEFAULT_ZIGZAG_SETTINGS: ZigZagSettings = {
   atrPeriod: 55,
   minCandles: 3,
   minCandlesForLongLeg: 20,
+  minCandlesForBlueLeg: 3,
   atrMultiplier: 3,
   longLegAtrMultiplier: 10,
+  blueLegAtrMultiplier: 3,
   maxBlueLegPercent: 60,
   maxBreakoutAtrMultiplier: 5,
-  minVolumeGrowthPercent: 0,
-  minEntryPivotDistanceAtr: 1.0,
   maxCandlesToEnter: 35,
   maxPositionToRiskRatio: 300,
 };
@@ -42,21 +42,21 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
   const [minCandlesForLongLeg, setMinCandlesForLongLeg] = useState<number | string>(
     settings.minCandlesForLongLeg
   );
+  const [minCandlesForBlueLeg, setMinCandlesForBlueLeg] = useState<number | string>(
+    settings.minCandlesForBlueLeg ?? 3
+  );
   const [atrMultiplier, setAtrMultiplier] = useState<number | string>(settings.atrMultiplier);
   const [longLegAtrMultiplier, setLongLegAtrMultiplier] = useState<number | string>(
     settings.longLegAtrMultiplier ?? 10
+  );
+  const [blueLegAtrMultiplier, setBlueLegAtrMultiplier] = useState<number | string>(
+    settings.blueLegAtrMultiplier ?? 3
   );
   const [maxBlueLegPercent, setMaxBlueLegPercent] = useState<number | string>(
     settings.maxBlueLegPercent ?? 60
   );
   const [maxBreakoutAtrMultiplier, setMaxBreakoutAtrMultiplier] = useState<number | string>(
     settings.maxBreakoutAtrMultiplier ?? 5
-  );
-  const [minVolumeGrowthPercent, setMinVolumeGrowthPercent] = useState<number | string>(
-    settings.minVolumeGrowthPercent ?? 0
-  );
-  const [minEntryPivotDistanceAtr, setMinEntryPivotDistanceAtr] = useState<number | string>(
-    settings.minEntryPivotDistanceAtr ?? 1.0
   );
   const [maxCandlesToEnter, setMaxCandlesToEnter] = useState<number | string>(
     settings.maxCandlesToEnter ?? 35
@@ -69,12 +69,12 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
       setAtrPeriod(settings.atrPeriod);
       setMinCandles(settings.minCandles);
       setMinCandlesForLongLeg(settings.minCandlesForLongLeg);
+      setMinCandlesForBlueLeg(settings.minCandlesForBlueLeg ?? 3);
       setAtrMultiplier(settings.atrMultiplier);
       setLongLegAtrMultiplier(settings.longLegAtrMultiplier ?? 10);
+      setBlueLegAtrMultiplier(settings.blueLegAtrMultiplier ?? 3);
       setMaxBlueLegPercent(settings.maxBlueLegPercent ?? 60);
       setMaxBreakoutAtrMultiplier(settings.maxBreakoutAtrMultiplier ?? 5);
-      setMinVolumeGrowthPercent(settings.minVolumeGrowthPercent ?? 0);
-      setMinEntryPivotDistanceAtr(settings.minEntryPivotDistanceAtr ?? 1.0);
       setMaxCandlesToEnter(settings.maxCandlesToEnter ?? 35);
     }
   }, [isOpen, settings]);
@@ -86,12 +86,12 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
     setAtrPeriod(DEFAULT_ZIGZAG_SETTINGS.atrPeriod);
     setMinCandles(DEFAULT_ZIGZAG_SETTINGS.minCandles);
     setMinCandlesForLongLeg(DEFAULT_ZIGZAG_SETTINGS.minCandlesForLongLeg);
+    setMinCandlesForBlueLeg(DEFAULT_ZIGZAG_SETTINGS.minCandlesForBlueLeg ?? 3);
     setAtrMultiplier(DEFAULT_ZIGZAG_SETTINGS.atrMultiplier);
     setLongLegAtrMultiplier(DEFAULT_ZIGZAG_SETTINGS.longLegAtrMultiplier);
+    setBlueLegAtrMultiplier(DEFAULT_ZIGZAG_SETTINGS.blueLegAtrMultiplier ?? 3);
     setMaxBlueLegPercent(DEFAULT_ZIGZAG_SETTINGS.maxBlueLegPercent ?? 60);
     setMaxBreakoutAtrMultiplier(DEFAULT_ZIGZAG_SETTINGS.maxBreakoutAtrMultiplier ?? 5);
-    setMinVolumeGrowthPercent(DEFAULT_ZIGZAG_SETTINGS.minVolumeGrowthPercent ?? 0);
-    setMinEntryPivotDistanceAtr(DEFAULT_ZIGZAG_SETTINGS.minEntryPivotDistanceAtr ?? 1.0);
     setMaxCandlesToEnter(DEFAULT_ZIGZAG_SETTINGS.maxCandlesToEnter ?? 35);
   };
 
@@ -101,24 +101,24 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
     const finalAtrPeriod = Math.max(1, parseInt(String(atrPeriod), 10) || 55);
     const finalMinCandles = Math.max(1, parseInt(String(minCandles), 10) || 1);
     const finalMinCandlesLong = Math.max(1, parseInt(String(minCandlesForLongLeg), 10) || 20);
+    const finalMinCandlesBlue = Math.max(1, parseInt(String(minCandlesForBlueLeg), 10) || 1);
     const finalAtrMult = Math.max(0.1, parseFloat(String(atrMultiplier)) || 1);
     const finalLongAtrMult = Math.max(0.1, parseFloat(String(longLegAtrMultiplier)) || 10);
+    const finalBlueAtrMult = Math.max(0.1, parseFloat(String(blueLegAtrMultiplier)) || 0.1);
     const finalMaxBlue = Math.max(1, parseFloat(String(maxBlueLegPercent)) || 60);
     const finalMaxBreakout = Math.max(0.5, parseFloat(String(maxBreakoutAtrMultiplier)) || 5);
-    const finalMinVolGrowth = Math.max(0, parseFloat(String(minVolumeGrowthPercent)) || 0);
-    const finalMinPivotDist = Math.max(0, parseFloat(String(minEntryPivotDistanceAtr)) || 0);
     const finalMaxCandles = Math.max(1, parseInt(String(maxCandlesToEnter), 10) || 35);
 
     onSave({
       atrPeriod: finalAtrPeriod,
       minCandles: finalMinCandles,
       minCandlesForLongLeg: finalMinCandlesLong,
+      minCandlesForBlueLeg: finalMinCandlesBlue,
       atrMultiplier: finalAtrMult,
       longLegAtrMultiplier: finalLongAtrMult,
+      blueLegAtrMultiplier: finalBlueAtrMult,
       maxBlueLegPercent: finalMaxBlue,
       maxBreakoutAtrMultiplier: finalMaxBreakout,
-      minVolumeGrowthPercent: finalMinVolGrowth,
-      minEntryPivotDistanceAtr: finalMinPivotDist,
       maxCandlesToEnter: finalMaxCandles,
       maxPositionToRiskRatio: finalMaxRatio,
     });
@@ -412,6 +412,66 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
                 </div>
               </div>
 
+              {/* 5b. Min Candle for CD & EF Blue Legs */}
+              <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-cyan-500/40 transition-colors">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-cyan-400" />
+                    کندل لگ CD, EF (حداقل تعداد کندل)
+                  </label>
+                  <span className="text-[11px] font-mono text-cyan-400 font-bold">{minCandlesForBlueLeg} کندل</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={1}
+                    max={50}
+                    value={Number(minCandlesForBlueLeg) || 1}
+                    onChange={(e) => setMinCandlesForBlueLeg(Number(e.target.value))}
+                    className="flex-1 accent-cyan-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
+                  />
+                  <input
+                    type="number"
+                    min={1}
+                    max={200}
+                    value={minCandlesForBlueLeg}
+                    onChange={(e) => setMinCandlesForBlueLeg(e.target.value)}
+                    className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-cyan-400 bg-[#10141c] border border-[#323d50] rounded-lg"
+                  />
+                </div>
+              </div>
+
+              {/* 5c. ATR Multiplier for CD & EF Blue Legs */}
+              <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-blue-500/40 transition-colors">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-blue-400" />
+                    ضریب ATR لگ CD, EF
+                  </label>
+                  <span className="text-[11px] font-mono text-blue-400 font-bold">{blueLegAtrMultiplier}× ATR</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={0.5}
+                    max={20}
+                    step={0.25}
+                    value={Number(blueLegAtrMultiplier) || 0.5}
+                    onChange={(e) => setBlueLegAtrMultiplier(Number(e.target.value))}
+                    className="flex-1 accent-blue-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
+                  />
+                  <input
+                    type="number"
+                    min={0.1}
+                    max={50}
+                    step="any"
+                    value={blueLegAtrMultiplier}
+                    onChange={(e) => setBlueLegAtrMultiplier(e.target.value)}
+                    className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-blue-400 bg-[#10141c] border border-[#323d50] rounded-lg"
+                  />
+                </div>
+              </div>
+
               {/* 6. Blue Leg Max % Ratio */}
               <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-cyan-500/40 transition-colors">
                 <div className="flex items-center justify-between mb-1.5">
@@ -469,74 +529,6 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
                     value={maxBreakoutAtrMultiplier}
                     onChange={(e) => setMaxBreakoutAtrMultiplier(e.target.value)}
                     className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-indigo-400 bg-[#10141c] border border-[#323d50] rounded-lg"
-                  />
-                </div>
-              </div>
-
-              {/* 8. Min Volume Growth Percent (AB, CD, EF) */}
-              <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-emerald-500/40 transition-colors">
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                    حداقل رشد حجم در طول لگ (Volume Slope %)
-                  </label>
-                  <span className="text-[11px] font-mono text-emerald-400 font-bold">
-                    {Number(minVolumeGrowthPercent) > 0 ? `${minVolumeGrowthPercent}%+` : '۰٪ (غیرفعال)'}
-                  </span>
-                </div>
-                <p className="text-[10px] text-gray-400 mb-1.5">الزام شیب صعودی میانگین حجم کندل‌ها از ابتدای لگ به انتهای لگ برای AB، CD و EF</p>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={Number(minVolumeGrowthPercent) || 0}
-                    onChange={(e) => setMinVolumeGrowthPercent(Number(e.target.value))}
-                    className="flex-1 accent-emerald-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
-                  />
-                  <input
-                    type="number"
-                    min={0}
-                    max={500}
-                    step={1}
-                    value={minVolumeGrowthPercent}
-                    onChange={(e) => setMinVolumeGrowthPercent(e.target.value)}
-                    className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-emerald-400 bg-[#10141c] border border-[#323d50] rounded-lg"
-                  />
-                </div>
-              </div>
-
-              {/* 9. Min Entry to Prev Pivot Distance (ATR) */}
-              <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-amber-500/40 transition-colors">
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-amber-400" />
-                    فاصله ورود تا پیوت قبل (Pivot Distance)
-                  </label>
-                  <span className="text-[11px] font-mono text-amber-400 font-bold">
-                    {Number(minEntryPivotDistanceAtr) > 0 ? `${minEntryPivotDistanceAtr}× ATR` : '۰ (غیرفعال)'}
-                  </span>
-                </div>
-                <p className="text-[10px] text-gray-400 mb-1.5">حداقل فاصله قیمت ورود نسبت به پیوت قبلی بر حسب مضرب ATR (مثلاً حداقل ۱ ATR)</p>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="range"
-                    min={0}
-                    max={5}
-                    step={0.25}
-                    value={Number(minEntryPivotDistanceAtr) || 0}
-                    onChange={(e) => setMinEntryPivotDistanceAtr(Number(e.target.value))}
-                    className="flex-1 accent-amber-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
-                  />
-                  <input
-                    type="number"
-                    min={0}
-                    max={20}
-                    step={0.25}
-                    value={minEntryPivotDistanceAtr}
-                    onChange={(e) => setMinEntryPivotDistanceAtr(e.target.value)}
-                    className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-amber-400 bg-[#10141c] border border-[#323d50] rounded-lg"
                   />
                 </div>
               </div>

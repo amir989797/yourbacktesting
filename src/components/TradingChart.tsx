@@ -242,6 +242,8 @@ export const TradingChart: React.FC<TradingChartProps> = ({
   const activeMinCandles = zigzagSettings?.minCandles ?? 3;
   const activeMinCandlesForLongLeg = zigzagSettings?.minCandlesForLongLeg ?? 20;
   const activeLongLegAtrMultiplier = zigzagSettings?.longLegAtrMultiplier ?? 10;
+  const activeMinCandlesForBlueLeg = zigzagSettings?.minCandlesForBlueLeg ?? 3;
+  const activeBlueLegAtrMultiplier = zigzagSettings?.blueLegAtrMultiplier ?? 3;
 
   // Tools state
   const [activeTool, setActiveTool] = useState<ActiveTool>('cursor');
@@ -532,7 +534,8 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         zigzagSettings?.maxBlueLegPercent ?? 60,
         zigzagSettings?.maxBreakoutAtrMultiplier ?? 5,
         candles,
-        zigzagSettings?.minVolumeGrowthPercent ?? 0
+        activeMinCandlesForBlueLeg,
+        activeBlueLegAtrMultiplier
       );
       setZigzagPoints(zgPoints);
       setZigzagLegs(analyzedLegs);
@@ -625,6 +628,8 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     activeMinCandles,
     activeMinCandlesForLongLeg,
     activeLongLegAtrMultiplier,
+    activeMinCandlesForBlueLeg,
+    activeBlueLegAtrMultiplier,
     showZigZag,
   ]);
 
@@ -1827,6 +1832,44 @@ export const TradingChart: React.FC<TradingChartProps> = ({
                     }
                   }}
                   className="w-13 px-1.5 py-0.5 rounded bg-[#10131a] border border-rose-500/40 text-rose-400 font-bold font-mono text-center focus:outline-none focus:border-rose-400"
+                />
+                <span className="text-gray-400 text-[10px]">×ATR</span>
+              </div>
+
+              {/* 6. CD, EF Min Candles */}
+              <div className="flex items-center gap-1.5" title="حداقل تعداد کندل لگ CD و EF">
+                <span className="text-gray-300 font-sans text-[11px]">کندل CD,EF:</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={200}
+                  value={zigzagSettings?.minCandlesForBlueLeg ?? 3}
+                  onChange={(e) => {
+                    const val = Math.max(1, parseInt(e.target.value, 10) || 1);
+                    if (onUpdateZigZagSettings && zigzagSettings) {
+                      onUpdateZigZagSettings({ ...zigzagSettings, minCandlesForBlueLeg: val });
+                    }
+                  }}
+                  className="w-12 px-1.5 py-0.5 rounded bg-[#10131a] border border-cyan-500/40 text-cyan-400 font-bold font-mono text-center focus:outline-none focus:border-cyan-400"
+                />
+              </div>
+
+              {/* 7. CD, EF ATR Multiplier */}
+              <div className="flex items-center gap-1.5" title="ضریب ATR لگ CD و EF">
+                <span className="text-gray-300 font-sans text-[11px]">ضریب CD,EF:</span>
+                <input
+                  type="number"
+                  min={0.1}
+                  max={50}
+                  step={0.25}
+                  value={zigzagSettings?.blueLegAtrMultiplier ?? 3}
+                  onChange={(e) => {
+                    const val = Math.max(0.1, parseFloat(e.target.value) || 0.1);
+                    if (onUpdateZigZagSettings && zigzagSettings) {
+                      onUpdateZigZagSettings({ ...zigzagSettings, blueLegAtrMultiplier: val });
+                    }
+                  }}
+                  className="w-13 px-1.5 py-0.5 rounded bg-[#10131a] border border-blue-500/40 text-blue-400 font-bold font-mono text-center focus:outline-none focus:border-blue-400"
                 />
                 <span className="text-gray-400 text-[10px]">×ATR</span>
               </div>

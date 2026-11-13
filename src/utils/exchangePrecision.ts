@@ -131,11 +131,25 @@ export interface TradeSizingResult {
   totalFeesAtSL: number;
   totalFeesAtTP: number;
   positionValue: number;
+  contractQty?: number;
+  contractSize?: number;
+  minNotional?: number;
+  meetsMinNotional?: boolean;
+  exceedsRiskBudget?: boolean;
+}
+
+export interface ExchangeSizingOptions {
+  exchange?: 'xt' | 'binance';
+  contractSize?: number;
+  minNotional?: number;
+  riskCushion?: number; // e.g. 0.92 for XT live parity
+  slSlippageRate?: number; // e.g. 0.0004 for 0.04% SL slippage
 }
 
 /**
  * Calculate realistic trade sizing and exact net PnL at Stop Loss and Take Profit
- * incorporating both exchange stepSize truncation and entry/exit commissions.
+ * incorporating both exchange stepSize / XT integer contract truncation, minNotional checks,
+ * slippage cushion, and entry/exit commissions.
  */
 export function calculateExactTradeSizing(
   riskBudget: number,
@@ -144,7 +158,8 @@ export function calculateExactTradeSizing(
   takeProfit: number,
   entryFeeRate: number,
   exitFeeRate: number,
-  symbol?: string
+  symbol?: string,
+  options?: ExchangeSizingOptions
 ): TradeSizingResult {
   const stopDistance = Math.abs(entryPrice - stopLoss);
   const targetDistance = Math.abs(takeProfit - entryPrice);
@@ -169,6 +184,61 @@ export function calculateExactTradeSizing(
     };
   }
 
+  // XT Futures real contract-integer + minNotional parity mode
+  if (options?.exchange === 'xt') {
+    const clean = (symbol || 'btc_usdt').toLowerCase().replace(/[^a-z0-9_]/g, '');
+    const defaultMinNotional = clean.startsWith('btc') ? 10 : 5;
+    const xtOrder = calculateXtRiskBudgetedOrder({
+      riskBudget,
+      entryPrice,
+      stopLoss,
+      symbol: symbol || 'btc_usdt',
+      contractSize: options.contractSize,
+      minNotional: options.minNotional ?? defaultMinNotional,
+      entryFeeRate,
+      exitFeeRate,
+      riskCushion: options.riskCushion ?? 0.92,
+      slSlippageRate: options.slSlippageRate ?? 0,
+    });
+
+    const quantizedPositionSize = xtOrder.effectiveCoinQty;
+    const positionValue = quantizedPositionSize * entryPrice;
+    const entryFee = positionValue * entryFeeRate;
+    const grossLossAtSL = quantizedPositionSize * stopDistance;
+    const exitFeeAtSL = (quantizedPositionSize * stopLoss) * exitFeeRate;
+    const totalFeesAtSL = entryFee + exitFeeAtSL;
+    const actualLossAtSL = quantizedPositionSize > 0 ? (grossLossAtSL + totalFeesAtSL) : 0;
+
+    const grossProfitAtTP = quantizedPositionSize * targetDistance;
+    const exitFeeAtTP = (quantizedPositionSize * takeProfit) * exitFeeRate;
+    const totalFeesAtTP = entryFee + exitFeeAtTP;
+    const expectedProfitAtTP = quantizedPositionSize > 0 ? (grossProfitAtTP - totalFeesAtTP) : 0;
+
+    return {
+      rawPositionSize: xtOrder.contractSize > 0 ? (riskBudget / (stopDistance + entryPrice * entryFeeRate + stopLoss * exitFeeRate)) : 0,
+      quantizedPositionSize,
+      stepSize: xtOrder.contractSize,
+      qtyPrecision: 0,
+      maxRiskBudget: riskBudget,
+      actualLossAtSL: parseFloat(actualLossAtSL.toFixed(4)),
+      expectedProfitAtTP: parseFloat(expectedProfitAtTP.toFixed(4)),
+      grossLossAtSL: parseFloat(grossLossAtSL.toFixed(4)),
+      grossProfitAtTP: parseFloat(grossProfitAtTP.toFixed(4)),
+      entryFee: parseFloat(entryFee.toFixed(4)),
+      exitFeeAtSL: parseFloat(exitFeeAtSL.toFixed(4)),
+      exitFeeAtTP: parseFloat(exitFeeAtTP.toFixed(4)),
+      totalFeesAtSL: parseFloat(totalFeesAtSL.toFixed(4)),
+      totalFeesAtTP: parseFloat(totalFeesAtTP.toFixed(4)),
+      positionValue: parseFloat(positionValue.toFixed(4)),
+      contractQty: xtOrder.contractQty,
+      contractSize: xtOrder.contractSize,
+      minNotional: xtOrder.minNotional,
+      meetsMinNotional: xtOrder.meetsMinNotional,
+      exceedsRiskBudget: xtOrder.exceedsRiskBudget,
+    };
+  }
+
+  // Binance / Generic lot rule sizing
   // Fee per unit at SL: (Entry Fee + Exit Fee)
   const feePerUnitAtSL = (entryPrice * entryFeeRate) + (stopLoss * exitFeeRate);
   const effectiveStopDistance = stopDistance + feePerUnitAtSL;
@@ -178,7 +248,21 @@ export function calculateExactTradeSizing(
 
   // Get exchange LOT_SIZE rules
   const lotRule = getSymbolLotRule(symbol, entryPrice);
-  const quantizedPositionSize = quantizeOrderQuantity(rawPositionSize, lotRule.stepSize, lotRule.precision);
+  let quantizedPositionSize = quantizeOrderQuantity(rawPositionSize, lotRule.stepSize, lotRule.precision);
+
+  // Enforce minNotional parity on Binance/Generic too: if quantized notional < minNotional,
+  // only bump if minRequired qty does not exceed riskBudget, otherwise reject (qty = 0).
+  const minNotional = options?.minNotional ?? lotRule.minNotional ?? 5;
+  if (quantizedPositionSize > 0 && quantizedPositionSize * entryPrice < minNotional) {
+    const minSteps = Math.ceil((minNotional / entryPrice) / lotRule.stepSize);
+    const minQtyForNotional = parseFloat((minSteps * lotRule.stepSize).toFixed(Math.max(0, lotRule.precision)));
+    const minLoss = minQtyForNotional * effectiveStopDistance;
+    if (minLoss <= riskBudget * 1.05) {
+      quantizedPositionSize = minQtyForNotional;
+    } else {
+      quantizedPositionSize = 0;
+    }
+  }
 
   const positionValue = quantizedPositionSize * entryPrice;
   const entryFee = positionValue * entryFeeRate;
@@ -210,7 +294,10 @@ export function calculateExactTradeSizing(
     exitFeeAtTP: parseFloat(exitFeeAtTP.toFixed(4)),
     totalFeesAtSL: parseFloat(totalFeesAtSL.toFixed(4)),
     totalFeesAtTP: parseFloat(totalFeesAtTP.toFixed(4)),
-    positionValue: parseFloat(positionValue.toFixed(2)),
+    positionValue: parseFloat(positionValue.toFixed(4)),
+    minNotional,
+    meetsMinNotional: positionValue >= minNotional,
+    exceedsRiskBudget: quantizedPositionSize === 0,
   };
 }
 
@@ -218,7 +305,7 @@ export function calculateExactTradeSizing(
 // XT.COM FUTURES CONTRACT SIZING ENGINE
 // In XT.COM Futures, quantity is the number of contracts (integer, precision 0)
 // Each contract represents a fixed amount of the underlying coin (contractSize)
-// Minimum order notional is 10 USDT.
+// Minimum order notional is 5 USDT (10 USDT for BTC).
 // =========================================================================
 
 export const XT_CONTRACT_SIZES: Record<string, number> = {
@@ -227,19 +314,25 @@ export const XT_CONTRACT_SIZES: Record<string, number> = {
   sol_usdt: 0.1,
   bnb_usdt: 0.01,
   xrp_usdt: 10,
-  doge_usdt: 100,
+  doge_usdt: 10,
   ada_usdt: 10,
   sui_usdt: 1,
   near_usdt: 1,
   avax_usdt: 0.1,
   link_usdt: 1,
-  pepe_usdt: 100000,
-  shib_usdt: 100000,
+  pepe_usdt: 1000,
+  '1000pepe_usdt': 1000,
+  shib_usdt: 1000,
+  '1000shib_usdt': 1000,
   dot_usdt: 1,
   inj_usdt: 1,
   ltc_usdt: 0.1,
   apt_usdt: 0.1,
   trx_usdt: 100,
+  bch_usdt: 0.01,
+  etc_usdt: 0.1,
+  atom_usdt: 1,
+  icp_usdt: 1,
 };
 
 export function getXtContractSize(symbol: string, currentPrice?: number): number {
@@ -250,15 +343,15 @@ export function getXtContractSize(symbol: string, currentPrice?: number): number
     return XT_CONTRACT_SIZES[key];
   }
 
-  // Fallback heuristic based on price so 1 contract is worth approximately 5-20 USDT
+  // Fallback heuristic based on price so 1 contract is worth approximately 1-10 USDT
   const p = currentPrice && currentPrice > 0 ? currentPrice : 1.0;
   if (p >= 50000) return 0.0001; // BTC
   if (p >= 2000) return 0.01;   // ETH
-  if (p >= 100) return 0.1;     // SOL, BNB, AVAX
-  if (p >= 5) return 1;         // NEAR, SUI, LINK
-  if (p >= 0.1) return 10;      // XRP, ADA
-  if (p >= 0.01) return 100;    // DOGE
-  return 100000;                // PEPE, SHIB
+  if (p >= 100) return 0.1;     // SOL, BNB, LTC
+  if (p >= 5) return 1;         // NEAR, LINK, DOT
+  if (p >= 0.05) return 10;     // XRP, ADA, DOGE
+  if (p >= 0.005) return 100;   // TRX
+  return 1000;                  // 1000PEPE, 1000SHIB, micro coins
 }
 
 export interface XtContractQuantityResult {
@@ -281,7 +374,7 @@ export function calculateXtContractQuantity(
   // Raw theoretical number of contracts
   const rawContracts = targetCoinQty > 0 ? Math.floor(targetCoinQty / contractSize) : 0;
   
-  // Calculate minimum contracts required to satisfy XT 5 USDT minNotional
+  // Calculate minimum contracts required to satisfy XT minNotional
   const notionalPerContract = contractSize * price;
   const minRequiredContracts = notionalPerContract > 0 ? Math.ceil(minNotional / notionalPerContract) : 1;
 
@@ -331,6 +424,8 @@ export function calculateXtRiskBudgetedOrder(params: {
   entryFeeRate?: number;
   exitFeeRate?: number;
   pricePrecision?: number;
+  riskCushion?: number;
+  slSlippageRate?: number;
 }): XtRiskBudgetedResult {
   const {
     riskBudget,
@@ -342,6 +437,8 @@ export function calculateXtRiskBudgetedOrder(params: {
     entryFeeRate = 0.0006,
     exitFeeRate = 0.0006,
     pricePrecision = 3,
+    riskCushion = 0.92,
+    slSlippageRate = 0,
   } = params;
 
   const contractSize = passedContractSize && passedContractSize > 0
@@ -349,7 +446,7 @@ export function calculateXtRiskBudgetedOrder(params: {
     : getXtContractSize(symbol, entryPrice);
 
   const price = entryPrice > 0 ? entryPrice : 1.0;
-  const stopDistance = Math.abs(price - stopLoss);
+  const stopDistance = Math.abs(price - stopLoss) + (stopLoss * slSlippageRate);
   
   // Realized fees per 1 contract on entry and exit
   const feePerContract = (contractSize * price * entryFeeRate) + (contractSize * stopLoss * exitFeeRate);
@@ -372,12 +469,12 @@ export function calculateXtRiskBudgetedOrder(params: {
     };
   }
 
-  // Apply an 8% safety cushion to the risk budget to absorb stop-market order fill slippage & taker fee variance
-  const safeRiskBudget = riskBudget * 0.92;
+  // Apply safety cushion (default 8% = 0.92) to absorb stop-market order fill slippage & taker fee variance
+  const safeRiskBudget = riskBudget * riskCushion;
   // Maximum integer contracts allowed without exceeding riskBudget even with slippage
   const safeContractsMax = Math.floor(safeRiskBudget / lossPerContract);
 
-  // Minimum contracts needed to satisfy XT minNotional (5 USDT)
+  // Minimum contracts needed to satisfy XT minNotional (5 or 10 USDT)
   const notionalPerContract = contractSize * price;
   const minRequiredContracts = notionalPerContract > 0 ? Math.ceil(minNotional / notionalPerContract) : 1;
 
@@ -386,9 +483,11 @@ export function calculateXtRiskBudgetedOrder(params: {
 
   // If even 1 contract produces a loss higher than the user's budget:
   if (safeContractsMax < 1) {
-    // Check if 1 contract is within raw riskBudget (without slippage buffer)
-    if (lossPerContract <= riskBudget) {
+    // Check if 1 contract (and minRequiredContracts) is within raw riskBudget (without slippage buffer)
+    if (lossPerContract <= riskBudget && minRequiredContracts <= 1) {
       contractQty = 1;
+    } else if (minRequiredContracts * lossPerContract <= riskBudget) {
+      contractQty = minRequiredContracts;
     } else {
       exceedsRiskBudget = true;
       contractQty = 0; // Guard against exceeding risk budget
@@ -405,7 +504,7 @@ export function calculateXtRiskBudgetedOrder(params: {
   }
 
   const effectiveCoinQty = parseFloat((contractQty * contractSize).toFixed(8));
-  const nominalUsdt = parseFloat((effectiveCoinQty * price).toFixed(2));
+  const nominalUsdt = parseFloat((effectiveCoinQty * price).toFixed(4));
   const actualLossAtSL = parseFloat((contractQty * lossPerContract).toFixed(4));
 
   return {
