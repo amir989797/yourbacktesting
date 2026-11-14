@@ -357,8 +357,11 @@ async function fetchServerKlines(
 ): Promise<CandleData[]> {
   const cleanSymbol = symbol.trim().toUpperCase();
   const cacheKey = `${cleanSymbol}_${timeframe}_${targetLimit}_${isFutures}_${startTime || 0}_${endTime || 0}`;
+  const cacheTtlMs = (startTime || endTime)
+    ? (30 * 60 * 1000)
+    : Math.min(timeframeToMs(timeframe) * 0.4, 20000);
   const cached = SERVER_KLINE_CACHE.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < 30 * 60 * 1000 && cached.candles.length >= Math.min(50, targetLimit)) {
+  if (cached && Date.now() - cached.timestamp < cacheTtlMs && cached.candles.length >= Math.min(50, targetLimit)) {
     return cached.candles;
   }
 
@@ -5048,18 +5051,30 @@ function processFilteredTrades(
       }
       const scaledPnl = parseFloat(((t.pnl || 0) * scale).toFixed(4));
       const scaledFee = t.fee !== undefined ? parseFloat((t.fee * scale).toFixed(4)) : (t.commission !== undefined ? parseFloat((t.commission * scale).toFixed(4)) : 0);
+      const scaledEntryFee = t.entryFee !== undefined ? parseFloat((t.entryFee * scale).toFixed(4)) : undefined;
+      const scaledExitFee = t.exitFee !== undefined ? parseFloat((t.exitFee * scale).toFixed(4)) : undefined;
+      const scaledRealizedRisk = t.realizedRisk !== undefined ? parseFloat((t.realizedRisk * scale).toFixed(4)) : undefined;
+      const scaledRisk = parseFloat(((t.riskAmount || 0) * scale).toFixed(4));
+      const scaledEntryNotional = t.entryNotional !== undefined ? parseFloat((t.entryNotional * scale).toFixed(4)) : undefined;
+      const scaledExitNotional = t.exitNotional !== undefined ? parseFloat((t.exitNotional * scale).toFixed(4)) : undefined;
       const capBefore = parseFloat(runningPortfolioEq.toFixed(4));
       runningPortfolioEq = Math.max(1, parseFloat((runningPortfolioEq + scaledPnl).toFixed(4)));
       return {
         ...t,
         positionSize: (t.positionSize || 0) * scale,
         positionValue: parseFloat(((t.positionValue || 0) * scale).toFixed(4)),
-        riskAmount: parseFloat(((t.riskAmount || 0) * scale).toFixed(4)),
+        riskAmount: scaledRisk,
+        targetRiskAmount: scaledRisk,
+        realizedRisk: scaledRealizedRisk,
         grossPnl: t.grossPnl !== undefined ? parseFloat((t.grossPnl * scale).toFixed(4)) : undefined,
+        entryFee: scaledEntryFee,
+        exitFee: scaledExitFee,
         fee: scaledFee,
         commission: scaledFee,
         pnl: scaledPnl,
         pnlPercent: parseFloat(((scaledPnl / capBefore) * 100).toFixed(4)),
+        entryNotional: scaledEntryNotional,
+        exitNotional: scaledExitNotional,
         capitalBeforeTrade: capBefore,
         capitalAfterTrade: runningPortfolioEq,
       };
@@ -5792,7 +5807,7 @@ app.post('/api/optimizer/start', async (req, res) => {
       : (optExchange === 'xt' ? 0.04 : 0);
     const maxCandlesToEnter = Number(cfg.maxCandlesToEnter) || 100;
     const noConcurrentPositions = Boolean(cfg.noConcurrentPositions !== false);
-    const timeStopEnabled = cfg.timeStopEnabled !== false;
+    const timeStopEnabled = cfg.timeStopEnabled !== false && cfg.optTimeStopEnabled !== false;
 
     const baseConfig = {
       capital,
@@ -6121,7 +6136,7 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
       exchange: manualExchange,
       maxCandlesToEnter: Number(cfg.maxCandlesToEnter) || 100,
       noConcurrentPositions: Boolean(cfg.noConcurrentPositions !== false),
-      timeStopEnabled: cfg.timeStopEnabled !== false,
+      timeStopEnabled: cfg.timeStopEnabled !== false && cfg.optTimeStopEnabled !== false,
       symbols: Array.isArray(symbols) ? symbols : [],
       startTime: startTime ? Number(startTime) : null,
       endTime: endTime ? Number(endTime) : null,
@@ -6377,6 +6392,11 @@ interface ServerActiveSignal {
   curPrice: number;
   stopLoss: number;
   takeProfit: number;
+  signalEntryPrice?: number;
+  signalTakeProfit?: number;
+  signalStopDist?: number;
+  entryCandleTime?: number;
+  feeToRiskRatio?: number;
   requiredMargin: number;
   maxLeverage: number;
   contractQty: number;
@@ -6413,6 +6433,7 @@ interface ServerLiveScannerConfig {
   riskPercent: number;
   capital: number;
   noConcurrentPositions: boolean;
+  maxCandlesToEnter?: number;
   maxPositionToRiskRatio?: number;
   entryCommissionPercent?: number;
   exitCommissionPercent?: number;
@@ -6467,6 +6488,46 @@ interface PersistentLiveScannerData {
 }
 
 let serverScannerTimer: NodeJS.Timeout | null = null;
+const lastScannedCandleCloseByTf = new Map<string, number>();
+
+function clearServerScannerTimer() {
+  if (serverScannerTimer) {
+    clearTimeout(serverScannerTimer);
+    clearInterval(serverScannerTimer);
+    serverScannerTimer = null;
+  }
+}
+
+function getNextAlignedBoundaryMs(intervalMs: number): number {
+  const step = Math.max(60 * 1000, intervalMs);
+  const now = Date.now();
+  // Schedule 2.5 seconds after the next exact candle boundary so XT/Binance finalize closing bars
+  return Math.ceil((now + 1000) / step) * step + 2500;
+}
+
+function scheduleNextAlignedScannerRun(overrideIntervalMs?: number) {
+  clearServerScannerTimer();
+  if (!serverScannerState.isRunning) return;
+  const interval = overrideIntervalMs || serverScannerState.config.intervalMs || getShortestIntervalMs(serverScannerState.config.timeframes, serverScannerState.config.timeframe || '5m');
+  serverScannerState.config.intervalMs = interval;
+  const nextRunMs = getNextAlignedBoundaryMs(interval);
+  const delayMs = Math.max(2500, nextRunMs - Date.now());
+  serverScannerState.nextRunAt = new Date(nextRunMs).toISOString();
+
+  serverScannerTimer = setTimeout(async () => {
+    if (!serverScannerState.isRunning) return;
+    try {
+      await runServerScannerCycle(false);
+    } catch (err: any) {
+      addServerScannerLog('error', `خطا در اجرای اسکن دوره‌ای سرور: ${err.message}`);
+      serverScannerState.isScanning = false;
+    } finally {
+      if (serverScannerState.isRunning) {
+        scheduleNextAlignedScannerRun();
+      }
+    }
+  }, delayMs);
+}
 const serverScannerState = {
   isRunning: false,
   isScanning: false, // Concurrency lock to prevent overlapping executions
@@ -6498,7 +6559,11 @@ const serverScannerState = {
     riskPercent: 1.0,
     capital: 1000,
     noConcurrentPositions: true,
+    maxCandlesToEnter: 35,
     maxPositionToRiskRatio: 300,
+    entryCommissionPercent: 0.06,
+    exitCommissionPercent: 0.06,
+    slSlippagePercent: 0.04,
     timeStopEnabled: true,
     timeStopCandles: 80,
     isLiveExecution: false,
@@ -6529,43 +6594,57 @@ function loadLiveConfigFromDisk(): PersistentLiveScannerData | null {
   return null;
 }
 
-async function syncLiveConfigToDatabase(data: PersistentLiveScannerData): Promise<boolean> {
-  try {
-    if (!pool) return false;
-    await pool.query(
-      `INSERT INTO live_scanner_state (id, is_running, started_at, last_run_at, total_runs_count, config_json, logs_json, execution_logs_json, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-       ON CONFLICT (id) DO UPDATE SET
-         is_running = EXCLUDED.is_running,
-         started_at = EXCLUDED.started_at,
-         last_run_at = EXCLUDED.last_run_at,
-         total_runs_count = EXCLUDED.total_runs_count,
-         config_json = EXCLUDED.config_json,
-         logs_json = EXCLUDED.logs_json,
-         execution_logs_json = EXCLUDED.execution_logs_json,
-         updated_at = NOW();`,
-      [
-        'current',
-        !!data.isRunning,
-        data.startedAt ? new Date(data.startedAt) : null,
-        data.lastRunAt ? new Date(data.lastRunAt) : null,
-        data.totalRunsCount || 0,
-        JSON.stringify(data.config || {}),
-        JSON.stringify(data.logs || []),
-        JSON.stringify(data.executionLogs || []),
-      ]
-    );
-    return true;
-  } catch (err: any) {
-    console.warn('[ServerLiveScanner] Error syncing config to PostgreSQL:', err.message);
-    return false;
-  }
+let hasBootHydratedLiveConfig = false;
+let dbSyncQueue: Promise<boolean> = Promise.resolve(true);
+
+function syncLiveConfigToDatabase(data: PersistentLiveScannerData): Promise<boolean> {
+  const writeTask = async (): Promise<boolean> => {
+    try {
+      if (!pool) return false;
+      await pool.query(
+        `INSERT INTO live_scanner_state (id, is_running, started_at, last_run_at, total_runs_count, config_json, logs_json, execution_logs_json, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+         ON CONFLICT (id) DO UPDATE SET
+           is_running = EXCLUDED.is_running,
+           started_at = EXCLUDED.started_at,
+           last_run_at = EXCLUDED.last_run_at,
+           total_runs_count = EXCLUDED.total_runs_count,
+           config_json = EXCLUDED.config_json,
+           logs_json = EXCLUDED.logs_json,
+           execution_logs_json = EXCLUDED.execution_logs_json,
+           updated_at = NOW();`,
+        [
+          'current',
+          !!data.isRunning,
+          data.startedAt ? new Date(data.startedAt) : null,
+          data.lastRunAt ? new Date(data.lastRunAt) : null,
+          data.totalRunsCount || 0,
+          JSON.stringify(data.config || {}),
+          JSON.stringify(data.logs || []),
+          JSON.stringify(data.executionLogs || []),
+        ]
+      );
+      return true;
+    } catch (err: any) {
+      console.warn('[ServerLiveScanner] Error syncing config to PostgreSQL:', err.message);
+      return false;
+    }
+  };
+  const next = dbSyncQueue.then(writeTask, writeTask);
+  dbSyncQueue = next;
+  return next;
 }
 
 async function loadLiveConfigFromDatabase(): Promise<boolean> {
+  if (hasBootHydratedLiveConfig) {
+    return true;
+  }
   try {
     if (!pool) return false;
     const res = await pool.query('SELECT * FROM live_scanner_state WHERE id = $1', ['current']);
+    if (hasBootHydratedLiveConfig) {
+      return true;
+    }
     if (res && res.rows && res.rows.length > 0) {
       const row = res.rows[0];
       let parsedConfig: any = null;
@@ -6600,29 +6679,19 @@ async function loadLiveConfigFromDatabase(): Promise<boolean> {
       if (Array.isArray(parsedExecLogs) && parsedExecLogs.length > 0) {
         serverScannerState.executionLogs = parsedExecLogs;
       }
+      hasBootHydratedLiveConfig = true;
 
       console.log(`[ServerLiveScanner] 🗄️ Loaded authoritative state from PostgreSQL (isRunning: ${serverScannerState.isRunning}, startedAt: ${serverScannerState.startedAt || 'None'})`);
 
-      // If autopilot is marked running in DB, ensure background loop timer is running
+      // If autopilot is marked running in DB, ensure aligned background loop timer is running
       if (serverScannerState.isRunning) {
         if (!serverScannerState.startedAt) {
           serverScannerState.startedAt = new Date().toISOString();
         }
         const interval = serverScannerState.config.intervalMs || getShortestIntervalMs(serverScannerState.config.timeframes, serverScannerState.config.timeframe || '5m');
         serverScannerState.config.intervalMs = interval;
-        serverScannerState.nextRunAt = new Date(Date.now() + interval).toISOString();
-
-        if (serverScannerTimer) {
-          clearInterval(serverScannerTimer);
-        }
-        serverScannerTimer = setInterval(() => {
-          runServerScannerCycle().catch((err) => {
-            addServerScannerLog('error', `خطا در اجرای اسکن دوره‌ای سرور: ${err.message}`);
-            serverScannerState.isScanning = false;
-          });
-        }, interval);
-
-        console.log(`[ServerLiveScanner] 🚀 Autopilot background loop automatically resumed via PostgreSQL (Interval: ${interval}ms)`);
+        scheduleNextAlignedScannerRun(interval);
+        console.log(`[ServerLiveScanner] 🚀 Autopilot candle-aligned background loop resumed via PostgreSQL (Interval: ${interval}ms, Next: ${serverScannerState.nextRunAt})`);
       }
       return true;
     }
@@ -6726,7 +6795,7 @@ function getScannerPublicState() {
   };
 }
 
-async function runServerScannerCycle() {
+async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
   if (serverScannerState.isScanning) {
     addServerScannerLog('warning', '⚠️ اسکن قبلی هنوز در حال اجراست؛ از تداخل جلوگیری شد.');
     return;
@@ -6825,15 +6894,20 @@ async function runServerScannerCycle() {
 
           if (cfg.exchange === 'xt' && cfg.isLiveExecution) {
             try {
+              const resolvedPosSide: 'LONG' | 'SHORT' = dbTrade.pos_side
+                ? (String(dbTrade.pos_side).toUpperCase() === 'SHORT' ? 'SHORT' : 'LONG')
+                : (String(dbTrade.side || '').toUpperCase() === 'SELL' ? 'SHORT' : 'LONG');
               await closePositionOnExchange(
                 dbTrade.symbol,
-                dbTrade.pos_side || dbTrade.side,
+                resolvedPosSide,
                 parseFloat(dbTrade.amount || '0')
               );
             } catch (closeErr: any) {
               console.warn('[ServerLiveScanner] Error closing position on time-stop:', closeErr.message);
             }
           }
+          openXtSymbolsSet.delete(cleanDbSym);
+          activePositionSymbols.delete(cleanDbSym);
 
           closedTradeIds.push(dbTrade.id);
           addServerScannerLog(
@@ -6887,6 +6961,25 @@ async function runServerScannerCycle() {
       }
     }
 
+    // Global Single-Position mode (noConcurrentPositions !== false): if ANY position is open in ANY timeframe or on exchange, skip all scanning!
+    const isSinglePositionMode = cfg.noConcurrentPositions !== false;
+    const totalActivePositionsCount = Math.max(activeTfToTradeMap.size, openXtPositions.length);
+    if (isSinglePositionMode && totalActivePositionsCount > 0) {
+      const activeList = Array.from(activeTfToTradeMap.entries())
+        .map(([tf, tr]) => `${tf}:${(tr?.symbol || '').toUpperCase()}`)
+        .join(', ');
+      addServerScannerLog(
+        'info',
+        `🔒 حالت تک‌پوزیشن فعال است: وجود پوزیشن باز [${activeList || `${openXtPositions.length} پوزیشن در صرافی`}]. اسکن همه تایم‌فریم‌ها در این چرخه رد شد.`
+      );
+      serverScannerState.lastRunAt = new Date().toISOString();
+      serverScannerState.totalRunsCount = (serverScannerState.totalRunsCount || 0) + 1;
+      serverScannerState.lastDurationMs = Date.now() - startTime;
+      serverScannerState.isScanning = false;
+      saveLiveConfigToDisk();
+      return;
+    }
+
     // Separate occupied vs available timeframes
     const activeTimeframesWithPosition = targetTimeframes.filter((tf) => activeTfToTradeMap.has(tf));
     const availableTimeframesToScan = targetTimeframes.filter((tf) => !activeTfToTradeMap.has(tf));
@@ -6915,18 +7008,40 @@ async function runServerScannerCycle() {
       return;
     }
 
+    // Filter out higher timeframes whose current candle has not closed yet (unless forced manual scan)
+    const timeframesDueThisCycle = availableTimeframesToScan.filter((tf) => {
+      if (forceAllTimeframes) return true;
+      const tfMs = getTimeframeMs(tf);
+      const latestClosedBucket = Math.floor((Date.now() - 1000) / tfMs) * tfMs;
+      return lastScannedCandleCloseByTf.get(tf) !== latestClosedBucket;
+    });
+
+    if (timeframesDueThisCycle.length === 0) {
+      serverScannerState.lastRunAt = new Date().toISOString();
+      serverScannerState.lastDurationMs = Date.now() - startTime;
+      serverScannerState.isScanning = false;
+      saveLiveConfigToDisk();
+      return;
+    }
+
     addServerScannerLog(
       'info',
-      `🔍 شروع اسکن موازی روی ${activeTargetSymbols.length} ارز در تایم‌فریم‌های آزاد [${availableTimeframesToScan.join(', ')}] (${cfg.exchange.toUpperCase()})...`
+      `🔍 شروع اسکن موازی بسته‌ای (۱۰۰۰ کندل بسته) روی ${activeTargetSymbols.length} ارز در تایم‌فریم‌های [${timeframesDueThisCycle.join(', ')}] (${cfg.exchange.toUpperCase()})...`
     );
 
-    // Process ONLY available free timeframes IN PARALLEL at the beginning of each cycle
+    let isGlobalPositionSlotTaken = isSinglePositionMode && totalActivePositionsCount > 0;
+    let isPlacingGlobalOrder = false;
+
+    // Process ONLY available due timeframes IN PARALLEL at the beginning of each cycle
     await Promise.all(
-      availableTimeframesToScan.map(async (currentTf) => {
-        // Timeframe is guaranteed free: scan all activeTargetSymbols for this timeframe in parallel
+      timeframesDueThisCycle.map(async (currentTf) => {
+        const tfMs = getTimeframeMs(currentTf);
+        const latestClosedBucket = Math.floor((Date.now() - 1000) / tfMs) * tfMs;
+        lastScannedCandleCloseByTf.set(currentTf, latestClosedBucket);
+
         addServerScannerLog(
           'info',
-          `🔍 شروع اسکن موازی روی ${activeTargetSymbols.length} ارز در تایم‌فریم ${currentTf} (${cfg.exchange.toUpperCase()})...`,
+          `🔍 شروع اسکن پرسرعت روی ${activeTargetSymbols.length} ارز در تایم‌فریم ${currentTf} (${cfg.exchange.toUpperCase()})...`,
           undefined,
           currentTf
         );
@@ -6934,75 +7049,93 @@ async function runServerScannerCycle() {
         const tfCandidateSignals: ServerActiveSignal[] = [];
         let scannedCount = 0;
 
-        for (const sym of activeTargetSymbols) {
-          // Guard: Ensure single cycle never exceeds 4.5 minutes (270 seconds)
-          if (Date.now() - startTime > 265000) {
-            addServerScannerLog('warning', `⚠️ تایم‌فریم ${currentTf}: به دلیل نزدیک‌شدن به سقف زمان کندل (۴.۵ دقیقه)، اسکن باقی ارزها خاتمه یافت.`, sym, currentTf);
+        const eligibleSymbols = activeTargetSymbols.filter((sym) => {
+          const cleanSymNorm = sym.toLowerCase().replace(/[-_]/g, '');
+          return !activePositionSymbols.has(cleanSymNorm);
+        });
+
+        const BATCH_SIZE = 10;
+        const evalNowMs = Date.now();
+
+        for (let bIdx = 0; bIdx < eligibleSymbols.length; bIdx += BATCH_SIZE) {
+          if (!forceAllTimeframes && !serverScannerState.isRunning) {
+            addServerScannerLog('info', `🛑 تایم‌فریم ${currentTf}: اسکن به دلیل دستور توقف کاربر بلافاصله متوقف شد.`, undefined, currentTf);
+            break;
+          }
+          // Guard: Ensure single cycle never exceeds 4 minutes (240 seconds)
+          if (Date.now() - startTime > 240000) {
+            addServerScannerLog('warning', `⚠️ تایم‌فریم ${currentTf}: به دلیل نزدیک‌شدن به سقف زمان اسکن، باقی ارزها خاتمه یافت.`, undefined, currentTf);
             break;
           }
 
-          const cleanSymNorm = sym.toLowerCase().replace(/[-_]/g, '');
-          // Do not open a position for a coin that is already active in another timeframe!
-          if (activePositionSymbols.has(cleanSymNorm)) {
-            continue;
-          }
+          const batch = eligibleSymbols.slice(bIdx, bIdx + BATCH_SIZE);
+          const batchSignals = await Promise.all(
+            batch.map(async (sym) => {
+              scannedCount++;
+              try {
+                let candles: CandleData[] = [];
+                if (cfg.exchange === 'xt') {
+                  candles = await fetchXtServerKlines(sym, currentTf, 1000);
+                } else {
+                  const cleanSym = sym.replace('_', '').toUpperCase();
+                  candles = await fetchServerKlines(cleanSym, currentTf, 1000, cfg.isFutures);
+                }
 
-          scannedCount++;
+                if (!candles || candles.length < 50) return null;
 
-          try {
-            let candles: CandleData[] = [];
-            if (cfg.exchange === 'xt') {
-              candles = await fetchXtServerKlines(sym, currentTf, 300);
-            } else {
-              const cleanSym = sym.replace('_', '').toUpperCase();
-              candles = await fetchServerKlines(cleanSym, currentTf, 300, cfg.isFutures);
-            }
+                const symXtMeta = cfg.exchange === 'xt' ? getXtSymbolMeta(toXtSymbol(sym)) : undefined;
+                return evaluateSymbolForLiveSignal({
+                  symbol: sym,
+                  candles,
+                  config: {
+                    strategyId: (cfg.strategyId as any) || 'strategy_2_next_pivot',
+                    timeframe: currentTf,
+                    atrPeriod: cfg.atrPeriod || 14,
+                    atrMultiplier: cfg.atrMultiplier || 2.0,
+                    minCandles: cfg.minCandles || 5,
+                    minCandlesForLongLeg: cfg.minCandlesForLongLeg || 5,
+                    minCandlesForBlueLeg: cfg.minCandlesForBlueLeg ?? 2,
+                    longLegAtrMultiplier: cfg.longLegAtrMultiplier || 3.0,
+                    blueLegAtrMultiplier: cfg.blueLegAtrMultiplier ?? 2.0,
+                    maxBlueLegPercent: cfg.maxBlueLegPercent || 70,
+                    maxBreakoutAtrMultiplier: cfg.maxBreakoutAtrMultiplier || 3.0,
+                    riskRewardRatio: cfg.riskRewardRatio || 2.0,
+                    riskMode: cfg.riskMode || 'percent',
+                    riskAmountFixed: cfg.riskAmountFixed || 50,
+                    riskPercent: cfg.riskPercent || 1.0,
+                    entryCommissionPercent: cfg.entryCommissionPercent ?? 0.06,
+                    exitCommissionPercent: cfg.exitCommissionPercent ?? 0.06,
+                    slSlippagePercent: cfg.slSlippagePercent ?? (cfg.exchange === 'binance' ? 0 : 0.04),
+                    exchange: cfg.exchange === 'binance' ? 'binance' : 'xt',
+                    xtContractSize: symXtMeta?.contractSize,
+                    xtMinNotional: symXtMeta?.minNotional,
+                    maxCandlesToEnter: cfg.maxCandlesToEnter ?? 35,
+                    noConcurrentPositions: false, // Per-timeframe & global isolation enforced by cycle & database reconciliation
+                    maxPositionToRiskRatio: cfg.maxPositionToRiskRatio ?? 300,
+                    timeStopEnabled: cfg.timeStopEnabled !== false,
+                    timeStopCandles: cfg.timeStopCandles ?? 80,
+                  },
+                  availableBalance,
+                  hasExistingPosition: false,
+                  nowMs: evalNowMs,
+                });
+              } catch {
+                return null;
+              }
+            })
+          );
 
-            if (!candles || candles.length < 50) continue;
-
-            // Evaluate using backend strategy engine with real XT contract & fee parity
-            const symXtMeta = cfg.exchange === 'xt' ? getXtSymbolMeta(toXtSymbol(sym)) : undefined;
-            const signal = evaluateSymbolForLiveSignal({
-              symbol: sym,
-              candles,
-              config: {
-                strategyId: (cfg.strategyId as any) || 'strategy_2_next_pivot',
-                timeframe: currentTf,
-                atrPeriod: cfg.atrPeriod || 14,
-                atrMultiplier: cfg.atrMultiplier || 2.0,
-                minCandles: cfg.minCandles || 5,
-                minCandlesForLongLeg: cfg.minCandlesForLongLeg || 5,
-                minCandlesForBlueLeg: cfg.minCandlesForBlueLeg ?? 2,
-                longLegAtrMultiplier: cfg.longLegAtrMultiplier || 3.0,
-                blueLegAtrMultiplier: cfg.blueLegAtrMultiplier ?? 2.0,
-                maxBlueLegPercent: cfg.maxBlueLegPercent || 70,
-                maxBreakoutAtrMultiplier: cfg.maxBreakoutAtrMultiplier || 3.0,
-                riskRewardRatio: cfg.riskRewardRatio || 2.0,
-                riskMode: cfg.riskMode || 'percent',
-                riskAmountFixed: cfg.riskAmountFixed || 50,
-                riskPercent: cfg.riskPercent || 1.0,
-                entryCommissionPercent: cfg.entryCommissionPercent ?? 0.06,
-                exitCommissionPercent: cfg.exitCommissionPercent ?? 0.06,
-                exchange: cfg.exchange === 'binance' ? 'binance' : 'xt',
-                xtContractSize: symXtMeta?.contractSize,
-                xtMinNotional: symXtMeta?.minNotional,
-                maxCandlesToEnter: 35,
-                noConcurrentPositions: false, // Per-timeframe isolation enforced by database reconciliation
-                maxPositionToRiskRatio: cfg.maxPositionToRiskRatio ?? 300,
-              },
-              availableBalance,
-              hasExistingPosition: false,
-            });
-
+          for (const signal of batchSignals) {
             if (signal) {
               signal.timeframe = currentTf;
               tfCandidateSignals.push(signal);
               allDiscoveredSignals.push(signal);
             }
-          } catch (err: any) {
-            // continue
           }
-          await sleep(20);
+
+          if (bIdx + BATCH_SIZE < eligibleSymbols.length) {
+            await sleep(45);
+          }
         }
 
         if (tfCandidateSignals.length === 0) {
@@ -7052,20 +7185,38 @@ async function runServerScannerCycle() {
 
         // Attempt order execution for candidate in this timeframe
         for (let candIdx = 0; candIdx < tfCandidateSignals.length; candIdx++) {
+          if (!forceAllTimeframes && !serverScannerState.isRunning) {
+            break;
+          }
           const chosen = tfCandidateSignals[candIdx];
           const xtSymbol = toXtSymbol(chosen.symbol);
           const cleanSymNorm = xtSymbol.toLowerCase().replace(/[-_]/g, '');
 
-          // Concurrency safety: check if another parallel timeframe just occupied this coin
+          // Concurrency safety: check if another parallel timeframe just occupied this coin or took global single-position slot
           if (activePositionSymbols.has(cleanSymNorm)) {
             continue;
           }
 
+          if (isSinglePositionMode) {
+            if (isGlobalPositionSlotTaken || isPlacingGlobalOrder) {
+              addServerScannerLog(
+                'info',
+                `🔒 [${currentTf}] سفارش همزمان برای ${chosen.symbol.toUpperCase()} در تایم‌فریم دیگر ثبت/در جریان است (تک‌پوزیشن).`,
+                chosen.symbol,
+                currentTf
+              );
+              break;
+            }
+            isPlacingGlobalOrder = true; // Claim synchronously before any await
+          }
+
           if (cfg.exchange === 'xt' && unsupportedOpenApiXtSymbols.has(xtSymbol)) {
+            if (isSinglePositionMode) isPlacingGlobalOrder = false;
             continue;
           }
 
           if (availableBalance < chosen.requiredMargin) {
+            if (isSinglePositionMode) isPlacingGlobalOrder = false;
             addServerScannerLog(
               'warning',
               `⚠️ [${currentTf}] موجودی آزاد ناکافی برای ${chosen.symbol.toUpperCase()}: مارجین ${chosen.requiredMargin}$ > موجودی آزاد ${availableBalance.toFixed(2)}$`,
@@ -7103,26 +7254,79 @@ async function runServerScannerCycle() {
               }
             } catch {}
 
-            // Calculate exact Stop Loss and Take Profit at live execution price:
+            // Calculate exact Stop Loss and verify SL Breach, Chase Guard, and Capped TP Parity at live execution price
             const rawStopLoss = chosen.stopLoss;
-            const liveStopDist = Math.abs(livePrice - rawStopLoss);
+            const finalStopLoss = parseFloat(rawStopLoss.toFixed(priceDecimals));
+
+            if (chosen.posSide === 'LONG' ? livePrice <= finalStopLoss : livePrice >= finalStopLoss) {
+              if (isSinglePositionMode) isPlacingGlobalOrder = false;
+              addServerScannerLog(
+                'warning',
+                `⛔ رد سیگنال ${chosen.symbol.toUpperCase()} [${currentTf}]: قیمت لحظه‌ای (${livePrice}) از حد ضرر (${finalStopLoss}) عبور کرده است.`,
+                chosen.symbol,
+                currentTf
+              );
+              continue;
+            }
+
+            const liveStopDist = Math.abs(livePrice - finalStopLoss);
             if (liveStopDist <= 0) {
+              if (isSinglePositionMode) isPlacingGlobalOrder = false;
               addServerScannerLog('warning', `⚠️ رد سیگنال ${chosen.symbol.toUpperCase()}: فاصله استاپ تا قیمت ورود صفر است.`, chosen.symbol, currentTf);
               continue;
             }
 
-            // Exactly derive Take Profit from livePrice and liveStopDist using targetRR to guarantee 100% exact R:R
-            const rawTakeProfit = chosen.posSide === 'LONG'
+            const refEntry = chosen.signalEntryPrice && chosen.signalEntryPrice > 0 ? chosen.signalEntryPrice : chosen.curPrice;
+            const refStopDist = chosen.signalStopDist && chosen.signalStopDist > 0 ? chosen.signalStopDist : Math.abs(refEntry - rawStopLoss);
+            if (refStopDist > 0 && liveStopDist > refStopDist * 1.25) {
+              if (isSinglePositionMode) isPlacingGlobalOrder = false;
+              addServerScannerLog(
+                'warning',
+                `⛔ رد سیگنال ${chosen.symbol.toUpperCase()} [${currentTf}]: فاصله استاپ لحظه‌ای (${((liveStopDist / refStopDist) * 100).toFixed(0)}%) بیش از ۲۵٪ کشیده شده (Chase Guard).`,
+                chosen.symbol,
+                currentTf
+              );
+              continue;
+            }
+
+            if (chosen.signalTakeProfit && chosen.signalTakeProfit > 0) {
+              const refTpDist = Math.abs(chosen.signalTakeProfit - refEntry);
+              const liveProgress = refTpDist > 0
+                ? (chosen.posSide === 'LONG' ? (livePrice - refEntry) / refTpDist : (refEntry - livePrice) / refTpDist)
+                : 0;
+              if (liveProgress >= 0.35) {
+                if (isSinglePositionMode) isPlacingGlobalOrder = false;
+                addServerScannerLog(
+                  'warning',
+                  `⛔ رد سیگنال ${chosen.symbol.toUpperCase()} [${currentTf}]: ${(liveProgress * 100).toFixed(0)}% از مسیر تارگت قبلاً طی شده است (Chase Guard).`,
+                  chosen.symbol,
+                  currentTf
+                );
+                continue;
+              }
+            }
+
+            // Capped TP Parity: match targetRR from livePrice but never stretch farther than Backtest's signalTakeProfit
+            const rrTakeProfit = chosen.posSide === 'LONG'
               ? livePrice + liveStopDist * targetRR
               : livePrice - liveStopDist * targetRR;
+            const rawTakeProfit = (chosen.signalTakeProfit && chosen.signalTakeProfit > 0)
+              ? (chosen.posSide === 'LONG' ? Math.min(chosen.signalTakeProfit, rrTakeProfit) : Math.max(chosen.signalTakeProfit, rrTakeProfit))
+              : rrTakeProfit;
 
-            const finalStopLoss = parseFloat(rawStopLoss.toFixed(priceDecimals));
             const finalTakeProfit = parseFloat(rawTakeProfit.toFixed(priceDecimals));
+            if (chosen.posSide === 'LONG' ? finalTakeProfit <= livePrice : finalTakeProfit >= livePrice) {
+              if (isSinglePositionMode) isPlacingGlobalOrder = false;
+              addServerScannerLog('warning', `⛔ رد سیگنال ${chosen.symbol.toUpperCase()} [${currentTf}]: قیمت لحظه‌ای از تارگت بکتست عبور کرده است.`, chosen.symbol, currentTf);
+              continue;
+            }
 
             const targetRiskUsdt = cfg.riskMode === 'fixed' && cfg.riskAmountFixed && cfg.riskAmountFixed > 0
               ? cfg.riskAmountFixed
               : (availableBalance * ((cfg.riskPercent || 1) / 100));
 
+            const entryFeeRate = (cfg.entryCommissionPercent ?? 0.06) / 100;
+            const exitFeeRate = (cfg.exitCommissionPercent ?? 0.06) / 100;
             const xtSizing = calculateXtRiskBudgetedOrder({
               riskBudget: targetRiskUsdt,
               entryPrice: livePrice,
@@ -7130,12 +7334,14 @@ async function runServerScannerCycle() {
               symbol: xtSymbol,
               contractSize: symMeta.contractSize,
               minNotional: symMeta.minNotional,
-              entryFeeRate: (cfg.entryCommissionPercent ?? 0.06) / 100,
-              exitFeeRate: (cfg.exitCommissionPercent ?? 0.06) / 100,
+              entryFeeRate,
+              exitFeeRate,
+              slSlippageRate: (cfg.slSlippagePercent ?? 0.04) / 100,
               pricePrecision: symMeta.pricePrecision,
             });
 
             if (xtSizing.contractQty <= 0) {
+              if (isSinglePositionMode) isPlacingGlobalOrder = false;
               addServerScannerLog(
                 'warning',
                 `⛔ رد سیگنال ${chosen.symbol.toUpperCase()} [${currentTf}]: زیان استاپ ۱ قرارداد (${xtSizing.lossPerContract}$) از سقف ریسک (${targetRiskUsdt}$) بیشتر است. سفارش ارسال نشد.`,
@@ -7149,6 +7355,7 @@ async function runServerScannerCycle() {
             const liveMaxRatio = cfg.maxPositionToRiskRatio ?? 300;
             const livePosToRisk = targetRiskUsdt > 0 ? xtSizing.nominalUsdt / targetRiskUsdt : 0;
             if (liveMaxRatio > 0 && livePosToRisk > liveMaxRatio) {
+              if (isSinglePositionMode) isPlacingGlobalOrder = false;
               addServerScannerLog(
                 'warning',
                 `⛔ رد سیگنال ${chosen.symbol.toUpperCase()} [${currentTf}] در قیمت لحظه‌ای: نسبت حجم/ریسک (${livePosToRisk.toFixed(1)}×) از سقف مجاز (${liveMaxRatio}×) عبور کرد.`,
@@ -7180,15 +7387,21 @@ async function runServerScannerCycle() {
               if (finalStopLoss > livePrice) validTriggerStopPrice = finalStopLoss;
             }
 
+            if (!validTriggerStopPrice) {
+              if (isSinglePositionMode) isPlacingGlobalOrder = false;
+              addServerScannerLog('warning', `⛔ رد سیگنال ${chosen.symbol.toUpperCase()} [${currentTf}]: تریگر استاپ معتبر نبود (جلوگیری از سفارش بدون SL).`, chosen.symbol, currentTf);
+              continue;
+            }
+
             const orderPayload: any = {
               symbol: xtSymbol,
               orderSide: chosen.side,
               orderType: 'MARKET',
               positionSide: chosen.posSide,
               origQty: orderQty,
+              triggerStopPrice: validTriggerStopPrice,
             };
             if (validTriggerProfitPrice) orderPayload.triggerProfitPrice = validTriggerProfitPrice;
-            if (validTriggerStopPrice) orderPayload.triggerStopPrice = validTriggerStopPrice;
 
             const execRecord: any = {
               id: `exec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -7213,16 +7426,12 @@ async function runServerScannerCycle() {
             };
 
             try {
-              let orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', orderPayload);
+              const orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', orderPayload);
 
-              // Auto-fallback if trigger price was rejected due to market fluctuation
               if (orderRes && orderRes.returnCode !== 0 && (orderPayload.triggerProfitPrice || orderPayload.triggerStopPrice)) {
                 const errMsg = (orderRes.msgInfo || orderRes.msg || '').toLowerCase();
                 if (errMsg.includes('triger') || errMsg.includes('trigger') || errMsg.includes('stop') || errMsg.includes('price')) {
-                  addServerScannerLog('warning', `⚠️ صرافی XT قیمت تریگر استاپ/تارگت را رد کرد (${errMsg}). ارسال مجدد به صورت مارکت ساده...`, chosen.symbol, currentTf);
-                  delete orderPayload.triggerProfitPrice;
-                  delete orderPayload.triggerStopPrice;
-                  orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', orderPayload);
+                  addServerScannerLog('warning', `⛔ صرافی XT قیمت تریگر استاپ/تارگت را رد کرد (${errMsg}). برای حفظ حد ضرر، سفارش بدون SL ارسال نشد.`, chosen.symbol, currentTf);
                 }
               }
 
@@ -7232,6 +7441,7 @@ async function runServerScannerCycle() {
               const isOpenApiError = errMsg.includes('openapi') || errMsg.includes('not support') || errMsg.includes('trading pair') || orderRes?.returnCode === 10005 || orderRes?.returnCode === 10004;
 
               if (orderRes && orderRes.returnCode !== 0 && isOpenApiError) {
+                if (isSinglePositionMode) isPlacingGlobalOrder = false;
                 unsupportedOpenApiXtSymbols.add(xtSymbol);
                 addServerScannerLog(
                   'warning',
@@ -7279,8 +7489,13 @@ async function runServerScannerCycle() {
                 // Register this timeframe and coin as occupied so no duplicate trades open
                 activeTfToTradeMap.set(currentTf, { symbol: xtSymbol, order_id: orderId, timeframe: currentTf });
                 activePositionSymbols.add(cleanSymNorm);
+                if (isSinglePositionMode) {
+                  isGlobalPositionSlotTaken = true;
+                  isPlacingGlobalOrder = false;
+                }
                 break; // ONLY 1 trade per timeframe!
               } else {
+                if (isSinglePositionMode) isPlacingGlobalOrder = false;
                 execRecord.status = 'FAILED';
                 const errDetail = orderRes?.error?.code
                   ? `${orderRes.error.code}${orderRes.error.msg ? ': ' + orderRes.error.msg : ''}`
@@ -7290,6 +7505,7 @@ async function runServerScannerCycle() {
                 serverScannerState.executionLogs = [execRecord, ...serverScannerState.executionLogs].slice(0, 100);
               }
             } catch (orderErr: any) {
+              if (isSinglePositionMode) isPlacingGlobalOrder = false;
               execRecord.status = 'FAILED';
               execRecord.error = orderErr.message;
               addServerScannerLog('error', `❌ استثنای شبکه در ارسال سفارش به صرافی XT: ${orderErr.message}`, chosen.symbol, currentTf);
@@ -7299,11 +7515,19 @@ async function runServerScannerCycle() {
             addServerScannerLog('info', `🚀 سفارش بایننس لایو برای ${chosen.symbol} در تایم‌فریم ${currentTf} محاسبه شد.`, chosen.symbol, currentTf);
             activeTfToTradeMap.set(currentTf, { symbol: chosen.symbol, timeframe: currentTf });
             activePositionSymbols.add(cleanSymNorm);
+            if (isSinglePositionMode) {
+              isGlobalPositionSlotTaken = true;
+              isPlacingGlobalOrder = false;
+            }
             break;
           } else {
             addServerScannerLog('info', `📝 معامله در حالت شبیه‌ساز (Paper Trading) در تایم‌فریم ${currentTf} برای ${chosen.symbol} ثبت شد.`, chosen.symbol, currentTf);
             activeTfToTradeMap.set(currentTf, { symbol: chosen.symbol, timeframe: currentTf });
             activePositionSymbols.add(cleanSymNorm);
+            if (isSinglePositionMode) {
+              isGlobalPositionSlotTaken = true;
+              isPlacingGlobalOrder = false;
+            }
             break;
           }
         }
@@ -7325,7 +7549,7 @@ async function runServerScannerCycle() {
 
     serverScannerState.totalRunsCount++;
     serverScannerState.lastRunAt = new Date().toISOString();
-    serverScannerState.nextRunAt = new Date(Date.now() + cfg.intervalMs).toISOString();
+    serverScannerState.nextRunAt = new Date(getNextAlignedBoundaryMs(cfg.intervalMs)).toISOString();
     serverScannerState.lastResult = {
       scannedCount: targetSymbols.length,
       signalsFound: allDiscoveredSignals.length,
@@ -7381,17 +7605,10 @@ app.post('/api/live-scanner/config', async (req, res) => {
       updatedAt: new Date().toISOString(),
     });
 
-    // If autopilot is actively running, update timer interval
+    // If autopilot is actively running, clear dedup cache and update aligned timer interval
+    lastScannedCandleCloseByTf.clear();
     if (serverScannerState.isRunning) {
-      if (serverScannerTimer) {
-        clearInterval(serverScannerTimer);
-      }
-      serverScannerTimer = setInterval(() => {
-        runServerScannerCycle().catch((err) => {
-          addServerScannerLog('error', `خطا در اجرای اسکن دوره‌ای سرور: ${err.message}`);
-          serverScannerState.isScanning = false;
-        });
-      }, serverScannerState.config.intervalMs);
+      scheduleNextAlignedScannerRun(serverScannerState.config.intervalMs);
     }
 
     addServerScannerLog('info', `💾 تنظیمات اسکنر و تایم‌فریم‌های [${(serverScannerState.config.timeframes || [serverScannerState.config.timeframe]).join(', ')}] در دیتابیس و دیسک سرور پایدار شد.`);
@@ -7434,14 +7651,20 @@ app.post('/api/live-scanner/start', async (req, res) => {
       serverScannerState.config.intervalMs = calculatedInterval;
     }
 
-    if (serverScannerTimer) {
-      clearInterval(serverScannerTimer);
-      serverScannerTimer = null;
-    }
+    clearServerScannerTimer();
+    lastScannedCandleCloseByTf.clear();
 
+    hasBootHydratedLiveConfig = true;
     serverScannerState.isRunning = true;
     serverScannerState.startedAt = serverScannerState.startedAt || new Date().toISOString();
-    serverScannerState.nextRunAt = new Date(Date.now() + serverScannerState.config.intervalMs).toISOString();
+    serverScannerState.nextRunAt = new Date(getNextAlignedBoundaryMs(serverScannerState.config.intervalMs)).toISOString();
+
+    const tradeModeText = serverScannerState.config.isLiveExecution ? '⚡ معامله زنده صرافی (Real Orders)' : '📝 شبیه‌ساز (Paper Trading)';
+    const tfList = (serverScannerState.config.timeframes || [serverScannerState.config.timeframe]).join(', ');
+    addServerScannerLog(
+      'success',
+      `🚀 اتوپایلوت مداوم سرور فعال شد [حالت: ${tradeModeText}]: تایم‌فریم‌های [${tfList}] همگام با بسته شدن کندل هر ${Math.round(serverScannerState.config.intervalMs / 60000)} دقیقه (${serverScannerState.config.symbols.length} ارز). اسکن اول فوراً آغاز شد.`
+    );
 
     // Persist running state authoritatively to disk and PostgreSQL
     saveLiveConfigToDisk();
@@ -7456,23 +7679,11 @@ app.post('/api/live-scanner/start', async (req, res) => {
       updatedAt: new Date().toISOString(),
     });
 
-    const tradeModeText = serverScannerState.config.isLiveExecution ? '⚡ معامله زنده صرافی (Real Orders)' : '📝 شبیه‌ساز (Paper Trading)';
-    const tfList = (serverScannerState.config.timeframes || [serverScannerState.config.timeframe]).join(', ');
-    addServerScannerLog(
-      'success',
-      `🚀 اتوپایلوت مداوم سرور فعال شد [حالت: ${tradeModeText}]: تایم‌فریم‌های موازی [${tfList}] با تکرار هر ${Math.round(serverScannerState.config.intervalMs / 60000)} دقیقه (${serverScannerState.config.symbols.length} ارز). اسکن اول فوراً آغاز شد.`
-    );
-
-    // Setup periodic interval timer on Node backend
-    serverScannerTimer = setInterval(() => {
-      runServerScannerCycle().catch((err) => {
-        addServerScannerLog('error', `خطا در اجرای اسکن دوره‌ای سرور: ${err.message}`);
-        serverScannerState.isScanning = false;
-      });
-    }, serverScannerState.config.intervalMs);
+    // Setup candle-boundary aligned scheduler on Node backend
+    scheduleNextAlignedScannerRun(serverScannerState.config.intervalMs);
 
     // Trigger immediate first run in background
-    runServerScannerCycle().catch((err) => {
+    runServerScannerCycle(true).catch((err) => {
       addServerScannerLog('error', `خطا در اجرای اسکن اولیه: ${err.message}`);
       serverScannerState.isScanning = false;
     });
@@ -7512,16 +7723,17 @@ app.post('/api/live-scanner/stop', async (_req, res) => {
       'Expires': '0',
     });
 
-    if (serverScannerTimer) {
-      clearInterval(serverScannerTimer);
-      serverScannerTimer = null;
-    }
+    clearServerScannerTimer();
+    lastScannedCandleCloseByTf.clear();
+    hasBootHydratedLiveConfig = true;
     serverScannerState.isRunning = false;
     serverScannerState.startedAt = null;
     serverScannerState.nextRunAt = null;
     serverScannerState.isScanning = false;
 
-    // Persist stopped state authoritatively to disk and PostgreSQL
+    addServerScannerLog('warning', '⏸️ اتوپایلوت مداوم در پس‌زمینه سرور متوقف گردید.');
+
+    // Persist stopped state authoritatively to disk and PostgreSQL in serialized queue order
     saveLiveConfigToDisk();
     await syncLiveConfigToDatabase({
       config: serverScannerState.config,
@@ -7533,8 +7745,6 @@ app.post('/api/live-scanner/stop', async (_req, res) => {
       executionLogs: serverScannerState.executionLogs.slice(0, 50),
       updatedAt: new Date().toISOString(),
     });
-
-    addServerScannerLog('warning', '⏸️ اتوپایلوت مداوم در پس‌زمینه سرور متوقف گردید.');
 
     res.json({
       success: true,
@@ -7556,12 +7766,14 @@ app.get('/api/live-scanner/status', async (_req, res) => {
     'Surrogate-Control': 'no-store',
   });
 
-  // If in-memory state is not running or out of sync, check PostgreSQL directly
-  if (!serverScannerState.isRunning) {
+  // Only hydrate from PostgreSQL during initial cold-start before boot hydration completes
+  if (!serverScannerState.isRunning && !hasBootHydratedLiveConfig) {
     try {
       const dbCheck = await pool.query('SELECT is_running FROM live_scanner_state WHERE id = $1', ['current']);
       if (dbCheck.rows.length > 0 && dbCheck.rows[0].is_running) {
         await loadLiveConfigFromDatabase();
+      } else {
+        hasBootHydratedLiveConfig = true;
       }
     } catch (err: any) {
       console.warn('[ServerLiveScanner] Error verifying DB status in status endpoint:', err.message);
@@ -7587,7 +7799,7 @@ app.post('/api/live-scanner/scan-now', async (_req, res) => {
     }
 
     addServerScannerLog('info', '🔍 اسکن دستی فوری سرور توسط کاربر درخواست شد.');
-    await runServerScannerCycle();
+    await runServerScannerCycle(true);
 
     return res.json({
       success: true,

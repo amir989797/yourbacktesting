@@ -116,6 +116,8 @@ export interface OptimizerTabProps {
   setOptMaxPositionToRiskRatio?: (val: number) => void;
   lockTimeStopCandles?: boolean;
   setLockTimeStopCandles?: (val: boolean) => void;
+  optTimeStopEnabled?: boolean;
+  setOptTimeStopEnabled?: (val: boolean) => void;
   optTimeStopCandles?: number;
   setOptTimeStopCandles?: (val: number) => void;
   onEvaluateCurrentManualConfig?: () => void;
@@ -239,6 +241,8 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
   setOptMaxPositionToRiskRatio,
   lockTimeStopCandles = false,
   setLockTimeStopCandles,
+  optTimeStopEnabled = true,
+  setOptTimeStopEnabled,
   optTimeStopCandles = 80,
   setOptTimeStopCandles,
   onEvaluateCurrentManualConfig,
@@ -839,11 +843,11 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                 </div>
 
                 {/* 9. Time-Stop (خروج زمانی) - رنج با گام ۵ تا ۵ تا */}
-                <div className="bg-[#0e121a] p-2.5 rounded-xl border border-cyan-500/40 space-y-1.5 shadow-sm">
+                <div className={`bg-[#0e121a] p-2.5 rounded-xl border space-y-1.5 shadow-sm ${optTimeStopEnabled ? 'border-cyan-500/40' : 'border-[#242e40] opacity-70'}`}>
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] font-bold text-cyan-300">۹. خروج زمانی (Time-Stop)</span>
                     <span className="text-[10px] font-mono text-cyan-400 bg-cyan-950/60 px-1.5 py-0.5 rounded">
-                      همگرایی {adaptiveRanges.timeStopCandles?.convergence ?? 50}%
+                      {optTimeStopEnabled ? `همگرایی ${adaptiveRanges.timeStopCandles?.convergence ?? 50}%` : 'غیرفعال'}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-1 text-[10px] text-gray-400">
@@ -852,11 +856,11 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                       <input
                         type="number"
                         step={adaptiveRanges.timeStopCandles?.step ?? 5}
-                        min={0}
+                        min={5}
                         value={adaptiveRanges.timeStopCandles?.min ?? 20}
-                        disabled={isOptimizing || lockTimeStopCandles}
+                        disabled={isOptimizing || lockTimeStopCandles || !optTimeStopEnabled}
                         onChange={(e) => handleUpdateParamRange('timeStopCandles', 'min', parseFloat(e.target.value) || 0)}
-                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400 disabled:opacity-40"
                       />
                     </div>
                     <div className="flex items-center gap-1">
@@ -864,16 +868,16 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                       <input
                         type="number"
                         step={adaptiveRanges.timeStopCandles?.step ?? 5}
-                        min={0}
+                        min={5}
                         value={adaptiveRanges.timeStopCandles?.max ?? 120}
-                        disabled={isOptimizing || lockTimeStopCandles}
+                        disabled={isOptimizing || lockTimeStopCandles || !optTimeStopEnabled}
                         onChange={(e) => handleUpdateParamRange('timeStopCandles', 'max', parseFloat(e.target.value) || 0)}
-                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400 disabled:opacity-40"
                       />
                     </div>
                   </div>
                   <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5 border-t border-[#1a2230]">
-                    <span>بهترین مقدار: <strong className="text-amber-300 font-mono">{adaptiveRanges.timeStopCandles?.bestVal ?? 80} کندل</strong></span>
+                    <span>بهترین مقدار: <strong className="text-amber-300 font-mono">{optTimeStopEnabled ? `${adaptiveRanges.timeStopCandles?.bestVal ?? 80} کندل` : 'خاموش'}</strong></span>
                     <span className="text-cyan-400 font-mono font-bold">گام: {adaptiveRanges.timeStopCandles?.step ?? 5} کندل</span>
                   </div>
                 </div>
@@ -1329,8 +1333,17 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
 
                 {/* ۹. قفل/تنظیم دستی Time-Stop */}
                 <div className={`p-2 rounded-xl border transition-all ${lockTimeStopCandles ? 'bg-cyan-950/30 border-cyan-400/80 shadow-sm shadow-cyan-500/10' : 'bg-[#171e2b] border-cyan-500/30'}`}>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="text-[10px] font-semibold text-cyan-300">۹. خروج زمانی (کندل)</label>
+                  <div className="flex items-center justify-between mb-1 gap-1">
+                    <label className="flex items-center gap-1 text-[10px] font-semibold text-cyan-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={optTimeStopEnabled}
+                        disabled={isOptimizing}
+                        onChange={(e) => setOptTimeStopEnabled?.(e.target.checked)}
+                        className="rounded bg-[#0d1017] border-gray-600 text-cyan-500 focus:ring-0 cursor-pointer"
+                      />
+                      <span>۹. خروج زمانی</span>
+                    </label>
                     <label className="flex items-center gap-1 text-[10px] text-cyan-400 cursor-pointer">
                       <input
                         type="checkbox"
@@ -1344,8 +1357,9 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   <input
                     type="number"
                     step={5}
+                    min={5}
                     value={optTimeStopCandles}
-                    disabled={isOptimizing}
+                    disabled={isOptimizing || !optTimeStopEnabled}
                     onChange={(e) => setOptTimeStopCandles?.(parseInt(e.target.value, 10) || 0)}
                     className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockTimeStopCandles ? 'border-cyan-400/80 text-cyan-300 font-bold' : 'border-[#2e3a4e] text-cyan-400'} disabled:bg-[#1b202c] disabled:text-gray-500`}
                     title="تعداد کندل ماندن در معامله قبل از خروج اجباری (با گام ۵ تا ۵ تا)"

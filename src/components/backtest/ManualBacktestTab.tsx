@@ -561,14 +561,14 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       type="number"
                       min={1}
                       max={20}
-                      step={0.5}
+                      step={0.05}
                       value={optMaxRiskReward === 0 || optMaxRiskReward ? optMaxRiskReward : ''}
                       onChange={(e) => {
                         const v = e.target.value;
                         setOptMaxRiskReward(v === '' ? ('' as any) : Number(v));
                       }}
                       onBlur={() => {
-                        if (!optMaxRiskReward || isNaN(optMaxRiskReward)) setOptMaxRiskReward(2);
+                        if (!optMaxRiskReward || isNaN(optMaxRiskReward)) setOptMaxRiskReward(2.25);
                       }}
                       disabled={isScanning}
                       className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-emerald-400 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
@@ -587,7 +587,7 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                         if (setOptMaxPositionToRiskRatio) setOptMaxPositionToRiskRatio(v === '' ? ('' as any) : Number(v));
                       }}
                       onBlur={() => {
-                        if ((!optMaxPositionToRiskRatio || isNaN(optMaxPositionToRiskRatio)) && setOptMaxPositionToRiskRatio) setOptMaxPositionToRiskRatio(300);
+                        if ((!optMaxPositionToRiskRatio || isNaN(optMaxPositionToRiskRatio)) && setOptMaxPositionToRiskRatio) setOptMaxPositionToRiskRatio(200);
                       }}
                       disabled={isScanning}
                       className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-purple-400 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
@@ -699,8 +699,8 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       }}
                       onBlur={() => {
                         if (!optAtrPeriod || isNaN(optAtrPeriod)) {
-                          setOptAtrPeriod(55);
-                          onUpdateZigZagSettings?.({ ...zigzagSettings, atrPeriod: 55 });
+                          setOptAtrPeriod(17);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, atrPeriod: 17 });
                         }
                       }}
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
@@ -719,8 +719,8 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       }}
                       onBlur={() => {
                         if (!optMinCandles || isNaN(optMinCandles)) {
-                          setOptMinCandles(3);
-                          onUpdateZigZagSettings?.({ ...zigzagSettings, minCandles: 3 });
+                          setOptMinCandles(5);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, minCandles: 5 });
                         }
                       }}
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
@@ -739,8 +739,8 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       }}
                       onBlur={() => {
                         if (!optMinCandlesLong || isNaN(optMinCandlesLong)) {
-                          setOptMinCandlesLong(20);
-                          onUpdateZigZagSettings?.({ ...zigzagSettings, minCandlesForLongLeg: 20 });
+                          setOptMinCandlesLong(12);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, minCandlesForLongLeg: 12 });
                         }
                       }}
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
@@ -760,8 +760,8 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       }}
                       onBlur={() => {
                         if (!optAtrMultiplier || isNaN(optAtrMultiplier)) {
-                          setOptAtrMultiplier(3.0);
-                          onUpdateZigZagSettings?.({ ...zigzagSettings, atrMultiplier: 3.0 });
+                          setOptAtrMultiplier(1);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, atrMultiplier: 1 });
                         }
                       }}
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
@@ -781,8 +781,8 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       }}
                       onBlur={() => {
                         if (!optLongLegAtrMult || isNaN(optLongLegAtrMult)) {
-                          setOptLongLegAtrMult(10.0);
-                          onUpdateZigZagSettings?.({ ...zigzagSettings, longLegAtrMultiplier: 10.0 });
+                          setOptLongLegAtrMult(14.5);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, longLegAtrMultiplier: 14.5 });
                         }
                       }}
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
@@ -802,8 +802,8 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       }}
                       onBlur={() => {
                         if (!optMinCandlesBlue || isNaN(optMinCandlesBlue)) {
-                          setOptMinCandlesBlue?.(3);
-                          onUpdateZigZagSettings?.({ ...zigzagSettings, minCandlesForBlueLeg: 3 });
+                          setOptMinCandlesBlue?.(7);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, minCandlesForBlueLeg: 7 });
                         }
                       }}
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-cyan-500/40 rounded text-cyan-300 text-xs font-mono text-center focus:outline-none focus:border-cyan-400"
@@ -824,8 +824,8 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       }}
                       onBlur={() => {
                         if (!optBlueLegAtrMult || isNaN(optBlueLegAtrMult)) {
-                          setOptBlueLegAtrMult?.(3.0);
-                          onUpdateZigZagSettings?.({ ...zigzagSettings, blueLegAtrMultiplier: 3.0 });
+                          setOptBlueLegAtrMult?.(4.75);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, blueLegAtrMultiplier: 4.75 });
                         }
                       }}
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-blue-500/40 rounded text-blue-300 text-xs font-mono text-center focus:outline-none focus:border-blue-400"
@@ -845,8 +845,8 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       }}
                       onBlur={() => {
                         if (!optMaxBlueLegPercent || isNaN(optMaxBlueLegPercent)) {
-                          setOptMaxBlueLegPercent(60);
-                          onUpdateZigZagSettings?.({ ...zigzagSettings, maxBlueLegPercent: 60 });
+                          setOptMaxBlueLegPercent(95);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, maxBlueLegPercent: 95 });
                         }
                       }}
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
@@ -866,8 +866,8 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       }}
                       onBlur={() => {
                         if (!optMaxBreakoutAtr || isNaN(optMaxBreakoutAtr)) {
-                          setOptMaxBreakoutAtr(5.0);
-                          onUpdateZigZagSettings?.({ ...zigzagSettings, maxBreakoutAtrMultiplier: 5.0 });
+                          setOptMaxBreakoutAtr(4);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, maxBreakoutAtrMultiplier: 4 });
                         }
                       }}
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"

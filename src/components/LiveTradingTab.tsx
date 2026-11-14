@@ -694,6 +694,13 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   const [maxCandlesToEnter, setMaxCandlesToEnter] = useState<number>(35);
   const [entryCommissionPercent, setEntryCommissionPercent] = useState<number>(0.06);
   const [exitCommissionPercent, setExitCommissionPercent] = useState<number>(0.06);
+  const [slSlippagePercent, setSlSlippagePercent] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('livetrade_sl_slippage_percent');
+      if (saved !== null) return parseFloat(saved);
+    } catch {}
+    return exchange === 'binance' ? 0 : 0.04;
+  });
 
   // 5. 5-Minute Auto-Scanner Loop State
   const [isAutoScanning, setIsAutoScanning] = useState<boolean>(false);
@@ -716,6 +723,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   const [showTestTradeModal, setShowTestTradeModal] = useState<boolean>(false);
   const [selectedExecDetail, setSelectedExecDetail] = useState<any | null>(null);
   const hasInitializedConfigFromServer = useRef<boolean>(false);
+  const statusEpochRef = useRef<number>(0);
+  const isTogglingRef = useRef<boolean>(false);
 
   // History Tab Filter: 'all' | 'wins' | 'losses' | 'open'
   const [historyFilter, setHistoryFilter] = useState<'all' | 'wins' | 'losses' | 'open'>('all');
@@ -815,9 +824,17 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           if (best.minCandlesForLongLeg) setMinCandlesForLongLeg(best.minCandlesForLongLeg);
           if (best.minCandlesForBlueLeg) setMinCandlesForBlueLeg(best.minCandlesForBlueLeg);
           if (best.blueLegAtrMultiplier) setBlueLegAtrMultiplier(best.blueLegAtrMultiplier);
-          if (best.maxBlueLegPercent) setMaxBlueLegPercent(best.maxBlueLegPercent);
-          if (best.maxBreakoutAtrMultiplier) setMaxBreakoutAtrMultiplier(best.maxBreakoutAtrMultiplier);
+          if (best.maxBlueLegPercent !== undefined) setMaxBlueLegPercent(best.maxBlueLegPercent);
+          if (best.maxBreakoutAtrMultiplier !== undefined) setMaxBreakoutAtrMultiplier(best.maxBreakoutAtrMultiplier);
           if (best.maxRiskReward) setRiskRewardRatio(best.maxRiskReward);
+          if (best.timeStopCandles) {
+            setTimeStopCandles(best.timeStopCandles);
+            try { localStorage.setItem('livetrade_time_stop_candles', String(best.timeStopCandles)); } catch {}
+          }
+          if (best.maxPositionToRiskRatio) {
+            setMaxPositionToRiskRatio(best.maxPositionToRiskRatio);
+            try { localStorage.setItem('livetrade_max_pos_to_risk_ratio', String(best.maxPositionToRiskRatio)); } catch {}
+          }
 
           addLog('success', `🎯 بهترین کانفیگ بهینه‌ساز با وین‌ریت ${best.winRate}% و سود ${best.netProfit}% بارگذاری شد.`);
           return;
@@ -834,6 +851,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       setBlueLegAtrMultiplier(2.0);
       setMaxBlueLegPercent(50);
       setMaxBreakoutAtrMultiplier(3.0);
+      setMaxCandlesToEnter(35);
+      setTimeStopEnabled(true);
+      setTimeStopCandles(80);
+      setMaxPositionToRiskRatio(300);
       setRiskRewardRatio(3.0);
       addLog('info', '⚡ کانفیگ کالیبره‌شده اسکلپ ۵ دقیقه‌ای با موفقیت بارگذاری شد.');
     } catch {
@@ -857,13 +878,27 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         if (zz.maxBlueLegPercent !== undefined) setMaxBlueLegPercent(zz.maxBlueLegPercent);
         if (zz.maxBreakoutAtrMultiplier !== undefined) setMaxBreakoutAtrMultiplier(zz.maxBreakoutAtrMultiplier);
         if (zz.maxRiskReward) setRiskRewardRatio(zz.maxRiskReward);
+        if (zz.maxPositionToRiskRatio) {
+          setMaxPositionToRiskRatio(zz.maxPositionToRiskRatio);
+          try { localStorage.setItem('livetrade_max_pos_to_risk_ratio', String(zz.maxPositionToRiskRatio)); } catch {}
+        }
       }
 
       const savedCfg = localStorage.getItem('trading_strategy_config');
       if (savedCfg) {
         const cfg = JSON.parse(savedCfg);
-        if (cfg.selectedStrategy) setSelectedStrategy(cfg.selectedStrategy);
+        if (cfg.selectedStrategyId || cfg.selectedStrategy) setSelectedStrategy(cfg.selectedStrategyId || cfg.selectedStrategy);
         if (cfg.maxRiskReward) setRiskRewardRatio(cfg.maxRiskReward);
+        if (cfg.maxCandlesToEnter) setMaxCandlesToEnter(cfg.maxCandlesToEnter);
+        if (cfg.riskMode === 'fixed' || cfg.riskMode === 'percent') setRiskMode(cfg.riskMode);
+        if (typeof cfg.riskAmountFixed === 'number') setRiskAmountFixed(cfg.riskAmountFixed);
+        if (typeof cfg.riskPercent === 'number') setRiskPercent(cfg.riskPercent);
+        if (typeof cfg.entryCommissionPercent === 'number') setEntryCommissionPercent(cfg.entryCommissionPercent);
+        if (typeof cfg.exitCommissionPercent === 'number') setExitCommissionPercent(cfg.exitCommissionPercent);
+        if (typeof cfg.slSlippagePercent === 'number') setSlSlippagePercent(cfg.slSlippagePercent);
+        if (typeof cfg.timeStopEnabled === 'boolean') setTimeStopEnabled(cfg.timeStopEnabled);
+        if (typeof cfg.timeStopCandles === 'number') setTimeStopCandles(cfg.timeStopCandles);
+        if (typeof cfg.maxPositionToRiskRatio === 'number') setMaxPositionToRiskRatio(cfg.maxPositionToRiskRatio);
       }
 
       addLog('success', '🔄 تنظیمات فعال چارت و پنل استراتژی با موفقیت در اتاق ترید لود شدند.');
@@ -901,6 +936,33 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     if (cfg.optMaxRiskReward) setRiskRewardRatio(cfg.optMaxRiskReward);
     if (cfg.selectedStrategyId) setSelectedStrategy(cfg.selectedStrategyId as any);
     if (cfg.timeframe) setTradeTimeframe(cfg.timeframe as any);
+    if (cfg.riskMode === 'fixed' || cfg.riskMode === 'percent') {
+      setRiskMode(cfg.riskMode);
+      try { localStorage.setItem('livetrade_risk_mode', cfg.riskMode); } catch {}
+    }
+    if (typeof cfg.riskAmountFixed === 'number') {
+      setRiskAmountFixed(cfg.riskAmountFixed);
+      try { localStorage.setItem('livetrade_risk_amount_fixed', String(cfg.riskAmountFixed)); } catch {}
+    }
+    if (typeof cfg.riskPercent === 'number') {
+      setRiskPercent(cfg.riskPercent);
+      try { localStorage.setItem('livetrade_risk_percent', String(cfg.riskPercent)); } catch {}
+    }
+    if (typeof cfg.entryCommissionPercent === 'number') setEntryCommissionPercent(cfg.entryCommissionPercent);
+    if (typeof cfg.exitCommissionPercent === 'number') setExitCommissionPercent(cfg.exitCommissionPercent);
+    if (typeof cfg.maxCandlesToEnter === 'number' && cfg.maxCandlesToEnter > 0) setMaxCandlesToEnter(cfg.maxCandlesToEnter);
+    if (typeof cfg.optTimeStopEnabled === 'boolean') {
+      setTimeStopEnabled(cfg.optTimeStopEnabled);
+      try { localStorage.setItem('livetrade_time_stop_enabled', String(cfg.optTimeStopEnabled)); } catch {}
+    }
+    if (typeof cfg.optTimeStopCandles === 'number' && cfg.optTimeStopCandles > 0) {
+      setTimeStopCandles(cfg.optTimeStopCandles);
+      try { localStorage.setItem('livetrade_time_stop_candles', String(cfg.optTimeStopCandles)); } catch {}
+    }
+    if (typeof cfg.optMaxPositionToRiskRatio === 'number' && cfg.optMaxPositionToRiskRatio > 0) {
+      setMaxPositionToRiskRatio(cfg.optMaxPositionToRiskRatio);
+      try { localStorage.setItem('livetrade_max_pos_to_risk_ratio', String(cfg.optMaxPositionToRiskRatio)); } catch {}
+    }
 
     setIsLoadConfigModalOpen(false);
     showToast(`✅ کانفیگ «${cfg.name}» با موفقیت در اتاق ترید اعمال شد!`);
@@ -941,12 +1003,14 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         name: customConfigName.trim(),
         timeframe: tradeTimeframe,
         capital: balance.availableBalance > 0 ? balance.availableBalance : 100,
-        riskPercent: 2,
+        riskMode,
+        riskAmountFixed,
+        riskPercent,
         selectedStrategyId: selectedStrategy,
-        entryCommissionPercent: 0.06,
-        exitCommissionPercent: 0.06,
-        maxCandlesToEnter: 35,
-        candleHistoryLimit: 300,
+        entryCommissionPercent,
+        exitCommissionPercent,
+        maxCandlesToEnter,
+        candleHistoryLimit: 1000,
         optAtrPeriod: atrPeriod,
         optMinCandles: minCandles,
         optMinCandlesLong: minCandlesForLongLeg,
@@ -957,6 +1021,9 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         optMaxBlueLegPercent: maxBlueLegPercent,
         optMaxBreakoutAtr: maxBreakoutAtrMultiplier,
         optMaxRiskReward: riskRewardRatio,
+        optTimeStopEnabled: timeStopEnabled,
+        optTimeStopCandles: timeStopCandles,
+        optMaxPositionToRiskRatio: maxPositionToRiskRatio,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -983,6 +1050,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
 
   // Fetch status of background scanner running on server.ts
   const fetchServerScannerStatus = useCallback(async () => {
+    const epochAtStart = statusEpochRef.current;
+    if (isTogglingRef.current) return;
     try {
       const res = await fetch(`/api/live-scanner/status?_t=${Date.now()}`, {
         cache: 'no-store',
@@ -993,9 +1062,12 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         },
       });
       if (!res.ok) return;
+      // Ignore stale responses that began before a Start/Stop toggle or while a toggle is in progress
+      if (isTogglingRef.current || statusEpochRef.current !== epochAtStart) return;
       const contentType = res.headers.get('content-type') || '';
       if (!contentType.includes('application/json')) return;
       const data = await res.json();
+      if (isTogglingRef.current || statusEpochRef.current !== epochAtStart) return;
       if (data.success && data.state) {
         const { isRunning, isScanning, secondsUntilNextRun, totalRunsCount, lastRunAt, activeSignals, logs, config, executionLogs, startedAt, elapsedSeconds } = data.state;
         const running = Boolean(isRunning);
@@ -1063,6 +1135,9 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
             if (typeof config.maxBreakoutAtrMultiplier === 'number') setMaxBreakoutAtrMultiplier(config.maxBreakoutAtrMultiplier);
             if (typeof config.maxCandlesToEnter === 'number') setMaxCandlesToEnter(config.maxCandlesToEnter);
             if (typeof config.maxPositionToRiskRatio === 'number') setMaxPositionToRiskRatio(config.maxPositionToRiskRatio);
+            if (typeof config.entryCommissionPercent === 'number') setEntryCommissionPercent(config.entryCommissionPercent);
+            if (typeof config.exitCommissionPercent === 'number') setExitCommissionPercent(config.exitCommissionPercent);
+            if (typeof config.slSlippagePercent === 'number') setSlSlippagePercent(config.slSlippagePercent);
             if (typeof config.timeStopEnabled === 'boolean') setTimeStopEnabled(config.timeStopEnabled);
             if (typeof config.timeStopCandles === 'number') setTimeStopCandles(config.timeStopCandles);
           }
@@ -1230,7 +1305,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         maxCandlesToEnter,
         entryCommissionPercent,
         exitCommissionPercent,
+        slSlippagePercent,
         maxPositionToRiskRatio,
+        timeStopEnabled,
+        timeStopCandles,
       });
     }, 800);
     return () => clearTimeout(timer);
@@ -1258,7 +1336,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     maxCandlesToEnter,
     entryCommissionPercent,
     exitCommissionPercent,
+    slSlippagePercent,
     maxPositionToRiskRatio,
+    timeStopEnabled,
+    timeStopCandles,
     syncConfigToServer,
   ]);
 
@@ -1287,8 +1368,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
 
   // Toggle Continuous Background Scanner on Node.js Server
   const handleToggleAutoScan = async () => {
-    if (isTogglingServer) return;
+    if (isTogglingServer || isTogglingRef.current) return;
     setIsTogglingServer(true);
+    isTogglingRef.current = true;
+    statusEpochRef.current += 1;
 
     try {
       if (!isAutoScanning) {
@@ -1312,10 +1395,14 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           blueLegAtrMultiplier,
           maxBlueLegPercent,
           maxBreakoutAtrMultiplier,
+          maxCandlesToEnter,
           riskRewardRatio,
           riskMode,
           riskAmountFixed,
           riskPercent,
+          entryCommissionPercent,
+          exitCommissionPercent,
+          slSlippagePercent,
           capital: balance.availableBalance > 0 ? balance.availableBalance : 1000,
           noConcurrentPositions,
           isLiveExecution,
@@ -1336,6 +1423,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
 
         if (res.ok) {
           const data = await res.json();
+          statusEpochRef.current += 1;
           setIsAutoScanning(true);
           const started = data.state?.startedAt || new Date().toISOString();
           setServerStartedAt(started);
@@ -1356,6 +1444,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         });
 
         if (res.ok) {
+          statusEpochRef.current += 1;
           setIsAutoScanning(false);
           setIsScanningNow(false);
           setServerStartedAt(null);
@@ -1369,6 +1458,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     } catch (err: any) {
       showToast(`❌ خطای شبکه: ${err.message}`);
     } finally {
+      isTogglingRef.current = false;
       setIsTogglingServer(false);
       await fetchServerScannerStatus();
     }
@@ -1636,7 +1726,9 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                   <span>• تایم‌فریم‌ها: <strong className="text-cyan-300">{(serverActiveConfig.timeframes && serverActiveConfig.timeframes.length > 0 ? serverActiveConfig.timeframes : [serverActiveConfig.timeframe || tradeTimeframe]).join(', ')}</strong></span>
                   <span>• استراتژی: <strong className="text-amber-300">{serverActiveConfig.strategyId === 'strategy_2_next_pivot' ? 'Next-Pivot (۲)' : 'E-Breakout (۱)'}</strong></span>
                   <span>• بودجه ریسک: <strong className="text-emerald-300">{serverActiveConfig.riskMode === 'fixed' ? `$${serverActiveConfig.riskAmountFixed || 50} ثابت (با احتساب اعشار و کارمزد صرافی)` : `${serverActiveConfig.riskPercent || 1}% بالانس`}</strong></span>
-                  <span>• تک‌پوزیشن هر تایم‌فریم: <strong className="text-amber-300">فعال (حداکثر ۱ معامله در هر تایم‌فریم)</strong></span>
+                  <span>• وضعیت همزمانی: <strong className="text-amber-300">{serverActiveConfig.noConcurrentPositions !== false ? 'تک‌پوزیشن کل (حداکثر ۱ معامله باز)' : 'هم‌زمان (حداکثر ۱ معامله در هر تایم‌فریم)'}</strong></span>
+                  <span>• سقف ورود: <strong className="text-cyan-300">{serverActiveConfig.maxCandlesToEnter ?? 35}c</strong></span>
+                  <span>• Time-Stop: <strong className="text-cyan-300">{serverActiveConfig.timeStopEnabled !== false ? `${serverActiveConfig.timeStopCandles ?? 80}c` : 'خاموش'}</strong></span>
                   <span>• واچ‌لیست: <strong className="text-cyan-300">{serverActiveConfig.symbols?.length || selectedSymbols?.length || 0} جفت‌ارز</strong></span>
                 </div>
                 {activeDbTrades.length > 0 && (
@@ -2106,32 +2198,49 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 <span className="text-[10px] text-gray-400 block">۹. ریسک به ریوارد (R:R):</span>
                 <input
                   type="number"
-                  step={0.1}
+                  step={0.05}
                   value={riskRewardRatio}
-                  onChange={(e) => setRiskRewardRatio(parseFloat(e.target.value) || 3.0)}
+                  onChange={(e) => {
+                    const parsed = parseFloat(e.target.value);
+                    if (!isNaN(parsed) && parsed > 0) setRiskRewardRatio(parsed);
+                  }}
                   className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-amber-300 font-mono text-center font-bold"
                 />
               </div>
 
               <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42]">
-                <span className="text-[10px] text-gray-400 block">۱۰. کارمزد ورود/خروج (%):</span>
+                <span className="text-[10px] text-gray-400 block">۱۰. کارمزد ورود/خروج و اسلیپیج (%):</span>
                 <div className="flex items-center gap-1 mt-1">
                   <input
                     type="number"
                     step={0.01}
                     value={entryCommissionPercent}
-                    onChange={(e) => setEntryCommissionPercent(parseFloat(e.target.value) || 0.06)}
-                    className="w-1/2 px-1.5 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-cyan-300 font-mono text-center font-bold text-[11px]"
-                    title="کارمزد ورود درصد"
+                    onChange={(e) => setEntryCommissionPercent(parseFloat(e.target.value) || 0)}
+                    className="w-1/3 px-1 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-cyan-300 font-mono text-center font-bold text-[11px]"
+                    title="کارمزد ورود (٪)"
                   />
-                  <span className="text-gray-500">/</span>
+                  <span className="text-gray-500 text-[10px]">/</span>
                   <input
                     type="number"
                     step={0.01}
                     value={exitCommissionPercent}
-                    onChange={(e) => setExitCommissionPercent(parseFloat(e.target.value) || 0.06)}
-                    className="w-1/2 px-1.5 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-cyan-300 font-mono text-center font-bold text-[11px]"
-                    title="کارمزد خروج درصد"
+                    onChange={(e) => setExitCommissionPercent(parseFloat(e.target.value) || 0)}
+                    className="w-1/3 px-1 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-cyan-300 font-mono text-center font-bold text-[11px]"
+                    title="کارمزد خروج (٪)"
+                  />
+                  <span className="text-gray-500 text-[10px]">/</span>
+                  <input
+                    type="number"
+                    step={0.01}
+                    min={0}
+                    value={slSlippagePercent}
+                    onChange={(e) => {
+                      const val = Math.max(0, parseFloat(e.target.value) || 0);
+                      setSlSlippagePercent(val);
+                      try { localStorage.setItem('livetrade_sl_slippage_percent', String(val)); } catch {}
+                    }}
+                    className="w-1/3 px-1 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-rose-300 font-mono text-center font-bold text-[11px]"
+                    title="اسلیپیج استاپ مارکت (٪)"
                   />
                 </div>
               </div>
@@ -2351,8 +2460,46 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
               </div>
             </div>
 
+            {/* هشدار انطباق تنظیمات زنده با بکتست نهایی */}
+            {(maxCandlesToEnter !== 100 || (riskMode === 'fixed' ? riskAmountFixed : ((balance.availableBalance > 0 ? balance.availableBalance : 100) * riskPercent) / 100) < 5) && (
+              <div className="p-3 rounded-xl bg-amber-950/30 border border-amber-500/40 text-[11px] space-y-2 text-amber-100 mt-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="font-bold flex items-center gap-1.5 text-amber-300">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    <span>توصیه‌های تطبیق کامل ترید زنده با بکتست:</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {maxCandlesToEnter !== 100 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMaxCandlesToEnter(100);
+                          showToast('✅ سقف کندل ورود روی 100 مطابق بکتست تنظیم شد.');
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-black font-bold text-[10px] cursor-pointer transition-colors"
+                      >
+                        تنظیم سقف کندل ورود روی ۱۰۰
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <ul className="list-disc pr-4 space-y-0.5 text-amber-200/90 leading-relaxed">
+                  {maxCandlesToEnter !== 100 && (
+                    <li>
+                      سقف کندل ورود در زنده <strong>{maxCandlesToEnter}</strong> است (در بکتست نهایی: <strong>100</strong>).
+                    </li>
+                  )}
+                  {(riskMode === 'fixed' ? riskAmountFixed : ((balance.availableBalance > 0 ? balance.availableBalance : 100) * riskPercent) / 100) < 5 && (
+                    <li>
+                      با ریسک دلاری زیر <strong>۵ دلار</strong> و کف سفارش <strong>$5 XT</strong>، رندشدن قراردادهای صحیح XT باعث نوسان نسبت حجم/ریسک و سهم کارمزد نسبت به بکتست ۱۰۰ دلاری می‌شود.
+                    </li>
+                  )}
+                </ul>
+              </div>
+            )}
+
             {/* راهنمای نحوه محاسبه دقیق حجم بر اساس Step Size صرافی بایننس و XT */}
-            <div className="p-2.5 rounded-xl bg-cyan-950/25 border border-cyan-800/35 text-[11px] space-y-1 text-cyan-200">
+            <div className="p-2.5 rounded-xl bg-cyan-950/25 border border-cyan-800/35 text-[11px] space-y-1 text-cyan-200 mt-3">
               <div className="font-bold flex items-center gap-1.5 text-cyan-300">
                 <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-cyan-400" />
                 <span>محاسبه دقیق حجم بر اساس حداقل اعشار (Step Size) و کارمزد صرافی:</span>

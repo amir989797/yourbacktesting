@@ -189,9 +189,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   // Navigation Tabs: 'scanner' (اسکن دستی بازار) | 'optimizer' (بهینه‌ساز بیزی رنج‌محور) | 'stats' (آمار و اعتبارسنجی داده‌ها)
   const [activeTab, setActiveTab] = useState<'scanner' | 'optimizer' | 'stats'>('scanner');
 
-  // Strategy selection
+  // Strategy selection (پیش‌فرض: استراتژی ۲ مطابق تنظیمات نهایی کاربر)
   const [selectedStrategyId, setSelectedStrategyId] = useState<'strategy_1_e_breakout' | 'strategy_2_next_pivot'>(
-    'strategy_1_e_breakout'
+    'strategy_2_next_pivot'
   );
 
   // General Parameters
@@ -201,7 +201,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       const saved = localStorage.getItem('backtest_risk_mode');
       if (saved === 'fixed' || saved === 'percent') return saved;
     } catch {}
-    return 'percent';
+    return 'fixed';
   });
   const [riskPercent, setRiskPercent] = useState<number>(() => {
     try {
@@ -213,9 +213,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const [riskAmountFixed, setRiskAmountFixed] = useState<number>(() => {
     try {
       const saved = localStorage.getItem('backtest_risk_amount_fixed');
-      if (saved !== null) return parseFloat(saved) || 10;
+      if (saved !== null) return parseFloat(saved) || 100;
     } catch {}
-    return 10; // پیش‌فرض: ۱۰ دلار ریسک ثابت در هر معامله
+    return 100; // پیش‌فرض: ۱۰۰ دلار ریسک ثابت در هر معامله
   });
 
   // درصد ریسک معادل (برای محاسبات درودان بهینه و سازگاری کامل فرمول‌ها با ریسک ثابت)
@@ -567,34 +567,34 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   // ==========================================
   // ۸ پارامتر بهینه‌سازی با چک‌باکس قفل
   // ==========================================
-  const [optAtrPeriod, setOptAtrPeriod] = useState<number>(zigzagSettings?.atrPeriod || 55);
+  const [optAtrPeriod, setOptAtrPeriod] = useState<number>(17);
   const [lockAtrPeriod, setLockAtrPeriod] = useState<boolean>(false);
 
-  const [optMinCandles, setOptMinCandles] = useState<number>(zigzagSettings?.minCandles || 3);
+  const [optMinCandles, setOptMinCandles] = useState<number>(5);
   const [lockMinCandles, setLockMinCandles] = useState<boolean>(false);
 
-  const [optMinCandlesLong, setOptMinCandlesLong] = useState<number>(zigzagSettings?.minCandlesForLongLeg || 20);
+  const [optMinCandlesLong, setOptMinCandlesLong] = useState<number>(12);
   const [lockMinCandlesLong, setLockMinCandlesLong] = useState<boolean>(false);
 
-  const [optMinCandlesBlue, setOptMinCandlesBlue] = useState<number>(zigzagSettings?.minCandlesForBlueLeg ?? 3);
+  const [optMinCandlesBlue, setOptMinCandlesBlue] = useState<number>(7);
   const [lockMinCandlesBlue, setLockMinCandlesBlue] = useState<boolean>(false);
 
-  const [optAtrMultiplier, setOptAtrMultiplier] = useState<number>(zigzagSettings?.atrMultiplier || 3.0);
+  const [optAtrMultiplier, setOptAtrMultiplier] = useState<number>(1);
   const [lockAtrMultiplier, setLockAtrMultiplier] = useState<boolean>(false);
 
-  const [optLongLegAtrMult, setOptLongLegAtrMult] = useState<number>(zigzagSettings?.longLegAtrMultiplier || 10.0);
+  const [optLongLegAtrMult, setOptLongLegAtrMult] = useState<number>(14.5);
   const [lockLongLegAtrMult, setLockLongLegAtrMult] = useState<boolean>(false);
 
-  const [optBlueLegAtrMult, setOptBlueLegAtrMult] = useState<number>(zigzagSettings?.blueLegAtrMultiplier ?? 3.0);
+  const [optBlueLegAtrMult, setOptBlueLegAtrMult] = useState<number>(4.75);
   const [lockBlueLegAtrMult, setLockBlueLegAtrMult] = useState<boolean>(false);
 
-  const [optMaxBlueLegPercent, setOptMaxBlueLegPercent] = useState<number>(zigzagSettings?.maxBlueLegPercent ?? 60);
+  const [optMaxBlueLegPercent, setOptMaxBlueLegPercent] = useState<number>(95);
   const [lockMaxBlueLegPercent, setLockMaxBlueLegPercent] = useState<boolean>(false);
 
-  const [optMaxBreakoutAtr, setOptMaxBreakoutAtr] = useState<number>(zigzagSettings?.maxBreakoutAtrMultiplier ?? 5.0);
+  const [optMaxBreakoutAtr, setOptMaxBreakoutAtr] = useState<number>(4);
   const [lockMaxBreakoutAtr, setLockMaxBreakoutAtr] = useState<boolean>(false);
 
-  const [optMaxRiskReward, setOptMaxRiskReward] = useState<number>(2.0);
+  const [optMaxRiskReward, setOptMaxRiskReward] = useState<number>(2.25);
   const [lockMaxRiskReward, setLockMaxRiskReward] = useState<boolean>(false);
 
   const [optTimeStopEnabled, setOptTimeStopEnabled] = useState<boolean>(() => {
@@ -608,9 +608,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const [optTimeStopCandles, setOptTimeStopCandles] = useState<number>(() => {
     try {
       const saved = localStorage.getItem('backtest_time_stop_candles');
-      return saved !== null ? parseInt(saved, 10) : 80;
+      return saved !== null ? parseInt(saved, 10) : 25;
     } catch {
-      return 80;
+      return 25;
     }
   });
   const [lockTimeStopCandles, setLockTimeStopCandles] = useState<boolean>(false);
@@ -618,9 +618,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const [optMaxPositionToRiskRatio, setOptMaxPositionToRiskRatio] = useState<number>(() => {
     try {
       const saved = localStorage.getItem('backtest_opt_max_pos_to_risk');
-      if (saved !== null) return parseFloat(saved) || 300;
+      if (saved !== null) return parseFloat(saved) || 200;
     } catch {}
-    return zigzagSettings?.maxPositionToRiskRatio || 300;
+    return 200;
   });
   const [lockMaxPositionToRiskRatio, setLockMaxPositionToRiskRatio] = useState<boolean>(false);
 
@@ -857,8 +857,11 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       localStorage.setItem('backtest_exit_commission_percent', exitCommissionPercent.toString());
       localStorage.setItem('backtest_commission_percent', commissionPercent.toString());
       localStorage.setItem('backtest_sl_slippage_percent', slSlippagePercent.toString());
+      localStorage.setItem('backtest_time_stop_enabled', String(optTimeStopEnabled));
+      localStorage.setItem('backtest_time_stop_candles', String(optTimeStopCandles));
+      localStorage.setItem('backtest_opt_max_pos_to_risk', String(optMaxPositionToRiskRatio));
     } catch {}
-  }, [universeOption, riskMode, riskPercent, riskAmountFixed, entryCommissionPercent, exitCommissionPercent, commissionPercent, slSlippagePercent]);
+  }, [universeOption, riskMode, riskPercent, riskAmountFixed, entryCommissionPercent, exitCommissionPercent, commissionPercent, slSlippagePercent, optTimeStopEnabled, optTimeStopCandles, optMaxPositionToRiskRatio]);
 
   // کنترل تایمر ۱۵ دقیقه‌ای پیوسته
   useEffect(() => {
@@ -1855,6 +1858,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         optMaxBlueLegPercent,
         optMaxBreakoutAtr,
         optMaxRiskReward,
+        optTimeStopEnabled,
         optTimeStopCandles,
         optMaxPositionToRiskRatio,
         createdAt: new Date().toISOString(),
@@ -1912,6 +1916,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     if (config.optMaxBlueLegPercent !== undefined) setOptMaxBlueLegPercent(config.optMaxBlueLegPercent);
     if (config.optMaxBreakoutAtr !== undefined) setOptMaxBreakoutAtr(config.optMaxBreakoutAtr);
     if (config.optMaxRiskReward) setOptMaxRiskReward(config.optMaxRiskReward);
+    if (typeof config.optTimeStopEnabled === 'boolean') setOptTimeStopEnabled(config.optTimeStopEnabled);
     if (config.optTimeStopCandles) setOptTimeStopCandles(config.optTimeStopCandles);
     if (config.optMaxPositionToRiskRatio) setOptMaxPositionToRiskRatio(config.optMaxPositionToRiskRatio);
 
@@ -1927,6 +1932,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       maxBreakoutAtrMultiplier: config.optMaxBreakoutAtr,
       maxRiskReward: config.optMaxRiskReward,
       maxPositionToRiskRatio: config.optMaxPositionToRiskRatio,
+      ...(typeof config.optTimeStopEnabled === 'boolean' ? { timeStopEnabled: config.optTimeStopEnabled } : {}),
     });
 
     setIsLoadConfigModalOpen(false);
@@ -4044,6 +4050,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setOptMaxPositionToRiskRatio={setOptMaxPositionToRiskRatio}
             lockTimeStopCandles={lockTimeStopCandles}
             setLockTimeStopCandles={setLockTimeStopCandles}
+            optTimeStopEnabled={optTimeStopEnabled}
+            setOptTimeStopEnabled={setOptTimeStopEnabled}
             optTimeStopCandles={optTimeStopCandles}
             setOptTimeStopCandles={setOptTimeStopCandles}
             onEvaluateCurrentManualConfig={handleEvaluateCurrentManualConfig}

@@ -55,6 +55,8 @@ export interface ServerStrategyConfig {
   xtContractSize?: number;
   xtMinNotional?: number;
   slSlippagePercent?: number;
+  timeStopEnabled?: boolean;
+  timeStopCandles?: number;
 }
 
 export interface CandidateSignal {
@@ -64,6 +66,11 @@ export interface CandidateSignal {
   curPrice: number;
   stopLoss: number;
   takeProfit: number;
+  signalEntryPrice?: number;
+  signalTakeProfit?: number;
+  signalStopDist?: number;
+  entryCandleTime?: number;
+  feeToRiskRatio?: number;
   riskReward?: number;
   contractQty: number;
   stepSize?: number;
@@ -77,6 +84,41 @@ export interface CandidateSignal {
   strategyName: string;
   timeframe?: string;
   discoveredAt: string;
+}
+
+export function getTimeframeDurationMs(tf?: string): number {
+  switch (tf) {
+    case '1m': return 60 * 1000;
+    case '3m': return 3 * 60 * 1000;
+    case '5m': return 5 * 60 * 1000;
+    case '15m': return 15 * 60 * 1000;
+    case '30m': return 30 * 60 * 1000;
+    case '1h': return 60 * 60 * 1000;
+    case '2h': return 2 * 60 * 60 * 1000;
+    case '4h': return 4 * 60 * 60 * 1000;
+    case '1d': return 24 * 60 * 60 * 1000;
+    default: return 5 * 60 * 1000;
+  }
+}
+
+/**
+ * Strips the trailing candle if it is still open/forming so ATR, ZigZag,
+ * and Strategy 2 run strictly on completed closed candles (matching Backtest).
+ */
+export function stripFormingCandle(
+  candles: CandleData[],
+  timeframe?: string,
+  nowMs: number = Date.now()
+): CandleData[] {
+  if (!candles || candles.length === 0) return candles;
+  const tfMs = getTimeframeDurationMs(timeframe);
+  const last = candles[candles.length - 1];
+  const lastOpenMs = last.time > 1e12 ? last.time : last.time * 1000;
+  // Keep 2s clock-skew tolerance so a candle closed right now is kept
+  if (lastOpenMs + tfMs > nowMs + 2000) {
+    return candles.slice(0, -1);
+  }
+  return candles;
 }
 
 /**
@@ -120,7 +162,7 @@ export function getMaxLeverageForSymbol(rawSymbol: string): number {
 
 /**
  * Evaluates a cryptocurrency pair in-memory on the backend and detects active breakout/entry signals.
- * Returns CandidateSignal if a valid trade entry occurred on the current/recent candle, or null if no signal.
+ * Runs strictly on closed candles to preserve 100% ATR / ZigZag / Entry parity with the Backtester.
  */
 export function evaluateSymbolForLiveSignal(params: {
   symbol: string;
@@ -128,9 +170,11 @@ export function evaluateSymbolForLiveSignal(params: {
   config: ServerStrategyConfig;
   availableBalance: number;
   hasExistingPosition?: boolean;
+  nowMs?: number;
 }): CandidateSignal | null {
-  const { symbol, candles, config, availableBalance, hasExistingPosition } = params;
+  const { symbol, candles: rawCandles, config, availableBalance, hasExistingPosition, nowMs } = params;
 
+  const candles = stripFormingCandle(rawCandles, config.timeframe, nowMs ?? Date.now());
   if (!candles || candles.length < 50) {
     return null;
   }
@@ -140,7 +184,7 @@ export function evaluateSymbolForLiveSignal(params: {
     return null;
   }
 
-  // 1. Run technical indicators
+  // 1. Run technical indicators strictly on closed candles
   const atrResult = calculateATR(candles, config.atrPeriod || 14);
   const atrValues = atrResult.atrValues;
 
@@ -183,10 +227,12 @@ export function evaluateSymbolForLiveSignal(params: {
     xtContractSize: config.xtContractSize,
     xtMinNotional: config.xtMinNotional,
     slSlippagePercent: config.slSlippagePercent ?? ((config.exchange ?? 'xt') === 'xt' ? 0.04 : 0),
+    timeStopEnabled: config.timeStopEnabled !== false,
+    timeStopCandles: config.timeStopCandles ?? 80,
     symbol,
   };
 
-  // 3. Run Strategy Backtest Engine on candles
+  // 3. Run Strategy Backtest Engine on closed candles
   let evalTrades: any[] = [];
   if (config.strategyId === 'strategy_2_next_pivot') {
     const res = runStrategy2Backtest(
@@ -208,36 +254,70 @@ export function evaluateSymbolForLiveSignal(params: {
     return null;
   }
 
-  // 4. Verify whether an entry occurred on the current or immediately preceding candle
+  // 4. Require signal on the FRESHLY closed candle ONLY (no 2-candle stale entry drift)
   const lastTrade = evalTrades[evalTrades.length - 1];
-  const isCurrentCandleEntry = lastTrade.entryCandleIdx >= candles.length - 2;
+  const isFreshClosedEntry = lastTrade.entryCandleIdx === candles.length - 1;
 
-  if (!isCurrentCandleEntry || (lastTrade.status !== 'ACTIVE' && lastTrade.status !== 'OPEN')) {
+  if (!isFreshClosedEntry || (lastTrade.status !== 'ACTIVE' && lastTrade.status !== 'OPEN')) {
     return null;
   }
 
-  // 5. Construct precise candidate signal
+  // 5. Construct precise candidate signal with SL Breach, Chase, and Capped TP guards
   const side: 'BUY' | 'SELL' = lastTrade.direction === 'BUY' ? 'BUY' : 'SELL';
   const posSide: 'LONG' | 'SHORT' = lastTrade.direction === 'BUY' ? 'LONG' : 'SHORT';
   const curPrice = candles[candles.length - 1].close;
   const targetRR = config.riskRewardRatio && config.riskRewardRatio > 0 ? config.riskRewardRatio : 2.0;
 
-  // Exact Stop Loss from pivot leg
-  const stopLoss = (lastTrade.stopLoss && lastTrade.stopLoss > 0)
-    ? lastTrade.stopLoss
-    : (posSide === 'LONG' ? curPrice * 0.98 : curPrice * 1.02);
+  if (!(curPrice > 0) || !(lastTrade.stopLoss > 0)) {
+    return null;
+  }
+
+  const stopLoss = lastTrade.stopLoss;
+  // SL Breach Guard: reject if close already crossed Stop Loss
+  if (posSide === 'LONG' ? curPrice <= stopLoss : curPrice >= stopLoss) {
+    return null;
+  }
 
   const stopDistance = Math.abs(curPrice - stopLoss);
   if (stopDistance <= 0) {
     return null;
   }
 
-  // Exact Take Profit strictly matching configured targetRR without arbitrary toFixed truncation
-  const takeProfit = posSide === 'LONG'
+  const signalEntryPrice = Number(lastTrade.entryPrice) > 0 ? Number(lastTrade.entryPrice) : curPrice;
+  const signalTakeProfit = Number(lastTrade.takeProfit) > 0
+    ? Number(lastTrade.takeProfit)
+    : (posSide === 'LONG' ? curPrice + stopDistance * targetRR : curPrice - stopDistance * targetRR);
+  const signalStopDist = Math.abs(signalEntryPrice - stopLoss);
+
+  // Chase Guard: reject if closed price already stretched >25% away from SL or covered >=35% to backtest TP
+  if (signalStopDist > 0) {
+    if (stopDistance > signalStopDist * 1.25) {
+      return null;
+    }
+    const signalTpDist = Math.abs(signalTakeProfit - signalEntryPrice);
+    if (signalTpDist > 0) {
+      const progressTowardTP = posSide === 'LONG'
+        ? (curPrice - signalEntryPrice) / signalTpDist
+        : (signalEntryPrice - curPrice) / signalTpDist;
+      if (progressTowardTP >= 0.35) {
+        return null;
+      }
+    }
+  }
+
+  // Capped TP Parity: never stretch TP farther than Backtest signalTakeProfit
+  const rrTargetTp = posSide === 'LONG'
     ? curPrice + stopDistance * targetRR
     : curPrice - stopDistance * targetRR;
-  const maxLev = getMaxLeverageForSymbol(symbol);
+  const takeProfit = posSide === 'LONG'
+    ? Math.min(signalTakeProfit, rrTargetTp)
+    : Math.max(signalTakeProfit, rrTargetTp);
 
+  if (posSide === 'LONG' ? takeProfit <= curPrice : takeProfit >= curPrice) {
+    return null;
+  }
+
+  const maxLev = getMaxLeverageForSymbol(symbol);
   const riskBudgetUsdt = config.riskMode === 'fixed' && config.riskAmountFixed && config.riskAmountFixed > 0
     ? config.riskAmountFixed
     : availableBalance * ((config.riskPercent || 1) / 100);
@@ -270,9 +350,13 @@ export function evaluateSymbolForLiveSignal(params: {
   const requiredMargin = parseFloat((notionalUsdt / maxLev).toFixed(2));
   const actualRiskUsdt = sizing.actualLossAtSL;
 
-  if (sizing.quantizedPositionSize <= 0 || notionalUsdt <= 0) {
+  if (sizing.exceedsRiskBudget || sizing.quantizedPositionSize <= 0 || notionalUsdt <= 0) {
     return null;
   }
+
+  // Track Fee-to-Risk Ratio for diagnostics (already bounded by maxPositionToRiskRatio)
+  const totalRoundTripFeeAtSL = sizing.totalFeesAtSL || (sizing.entryFee + sizing.exitFeeAtSL);
+  const feeToRiskRatio = riskBudgetUsdt > 0 ? totalRoundTripFeeAtSL / riskBudgetUsdt : 0;
 
   const maxPosRatio = config.maxPositionToRiskRatio !== undefined ? config.maxPositionToRiskRatio : 300;
   const posToRiskRatio = (riskBudgetUsdt > 0)
@@ -290,6 +374,11 @@ export function evaluateSymbolForLiveSignal(params: {
     curPrice,
     stopLoss,
     takeProfit,
+    signalEntryPrice,
+    signalTakeProfit,
+    signalStopDist,
+    entryCandleTime: candles[lastTrade.entryCandleIdx]?.time,
+    feeToRiskRatio: parseFloat(feeToRiskRatio.toFixed(4)),
     riskReward: targetRR,
     contractQty,
     stepSize: sizing.stepSize,

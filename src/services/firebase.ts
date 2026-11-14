@@ -272,6 +272,7 @@ export interface TestParameterConfigRecord {
   optMaxBlueLegPercent?: number;
   optMaxBreakoutAtr?: number;
   optMaxRiskReward?: number;
+  optTimeStopEnabled?: boolean;
   optTimeStopCandles?: number;
   optMaxPositionToRiskRatio?: number;
   createdAt: string;

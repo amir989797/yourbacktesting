@@ -318,10 +318,10 @@ export function useStatsAudit(props: UseStatsAuditProps) {
     const sellTradesCount = sellTrades.length;
     const buyPercentage = numberOfTrades > 0 ? ((buyTradesCount / numberOfTrades) * 100).toFixed(1) : '0';
     const sellPercentage = numberOfTrades > 0 ? ((sellTradesCount / numberOfTrades) * 100).toFixed(1) : '0';
-    const buyWinCount = buyTrades.filter((t) => (t.pnl || 0) > 0).length;
-    const buyLossCount = buyTradesCount - buyWinCount;
-    const sellWinCount = sellTrades.filter((t) => (t.pnl || 0) > 0).length;
-    const sellLossCount = sellTradesCount - sellWinCount;
+    const buyWinCount = buyTrades.filter((t) => (t.pnl || 0) > 0.0001).length;
+    const buyLossCount = buyTrades.filter((t) => (t.pnl || 0) < -0.0001).length;
+    const sellWinCount = sellTrades.filter((t) => (t.pnl || 0) > 0.0001).length;
+    const sellLossCount = sellTrades.filter((t) => (t.pnl || 0) < -0.0001).length;
     const totalWinCount = buyWinCount + sellWinCount;
     const totalLossCount = buyLossCount + sellLossCount;
     const buyWinRate = buyTradesCount > 0 ? ((buyWinCount / buyTradesCount) * 100).toFixed(1) : '0';
@@ -932,24 +932,24 @@ export function useStatsAudit(props: UseStatsAuditProps) {
 
       if (isLong) {
         longTradesCount++;
-        if (netPnl > 0) {
+        if (netPnl > 0.0001) {
           longWinTrades++;
-        } else {
+        } else if (netPnl < -0.0001) {
           longLossTrades++;
         }
       } else {
         shortTradesCount++;
-        if (netPnl > 0) {
+        if (netPnl > 0.0001) {
           shortWinTrades++;
-        } else {
+        } else if (netPnl < -0.0001) {
           shortLossTrades++;
         }
       }
 
-      if (netPnl > 0) {
+      if (netPnl > 0.0001) {
         grossProfit += netPnl;
         winTrades++;
-      } else {
+      } else if (netPnl < -0.0001) {
         grossLoss += Math.abs(netPnl);
         lossTrades++;
       }

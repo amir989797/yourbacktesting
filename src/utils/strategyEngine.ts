@@ -392,14 +392,14 @@ export function runStrategy1Backtest(
           );
 
           // User Rule: فقط یکبار دیگر میتواند پس از استاپ در صورت شرایطی که گفته شد وارد شود.
-          // (حداکثر ۱ بار ورود مجدد پس از استاپ)
-          if (status === 'LOSS' && exitCandleIdx !== undefined && attempt < 2) {
+          // (حداکثر ۱ بار ورود مجدد فقط پس از استاپ لاس واقعی، نه پس از خروج زمانی Time-Stop)
+          if (status === 'LOSS' && reason !== 'TIME_STOP' && exitCandleIdx !== undefined && attempt < 2) {
             // New entry window begins right from the stop loss candle!
             scanStartIdx = exitCandleIdx + 1;
             scanMaxWindow = exitCandleIdx + config.maxCandlesToEnter;
             attempt++;
           } else {
-            // If WIN, still ACTIVE, or already used the 1 re-entry attempt:
+            // If WIN, TIME_STOP, still ACTIVE, or already used the 1 re-entry attempt:
             break;
           }
         }
