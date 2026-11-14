@@ -6961,6 +6961,10 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
       }
     }
 
+    const formatElapsedFa = (ms: number) => ms >= 60000
+      ? `${Math.floor(ms / 60000)}دق و ${((ms % 60000) / 1000).toFixed(1)}ث`
+      : `${(ms / 1000).toFixed(1)}ث`;
+
     // Global Single-Position mode (noConcurrentPositions !== false): if ANY position is open in ANY timeframe or on exchange, skip all scanning!
     const isSinglePositionMode = cfg.noConcurrentPositions !== false;
     const totalActivePositionsCount = Math.max(activeTfToTradeMap.size, openXtPositions.length);
@@ -6968,12 +6972,15 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
       const activeList = Array.from(activeTfToTradeMap.entries())
         .map(([tf, tr]) => `${tf}:${(tr?.symbol || '').toUpperCase()}`)
         .join(', ');
+      const skipRoundNum = (serverScannerState.totalRunsCount || 0) + 1;
+      const skipDur = formatElapsedFa(Date.now() - startTime);
+      const tfZeroBreakdown = targetTimeframes.map((tf) => `${tf}: ۰ نماد (توقف به‌علت تک‌پوزیشن)`).join(' | ');
       addServerScannerLog(
         'info',
-        `🔒 حالت تک‌پوزیشن فعال است: وجود پوزیشن باز [${activeList || `${openXtPositions.length} پوزیشن در صرافی`}]. اسکن همه تایم‌فریم‌ها در این چرخه رد شد.`
+        `🔒 دور #${skipRoundNum} (${skipDur}) | تک‌پوزیشن کل فعال است [${activeList || `${openXtPositions.length} پوزیشن در صرافی`}] | [${tfZeroBreakdown}]`
       );
       serverScannerState.lastRunAt = new Date().toISOString();
-      serverScannerState.totalRunsCount = (serverScannerState.totalRunsCount || 0) + 1;
+      serverScannerState.totalRunsCount = skipRoundNum;
       serverScannerState.lastDurationMs = Date.now() - startTime;
       serverScannerState.isScanning = false;
       saveLiveConfigToDisk();
@@ -6996,12 +7003,15 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
 
     // If ALL target timeframes have an open position, do NOT scan any coins at all!
     if (availableTimeframesToScan.length === 0) {
+      const skipRoundNum = (serverScannerState.totalRunsCount || 0) + 1;
+      const skipDur = formatElapsedFa(Date.now() - startTime);
+      const tfZeroBreakdown = targetTimeframes.map((tf) => `${tf}: ۰ نماد (قفل معامله باز)`).join(' | ');
       addServerScannerLog(
         'info',
-        `⏸️ تمام تایم‌فریم‌های انتخابی [${activeTimeframesWithPosition.join(', ')}] دارای پوزیشن فعال در صرافی هستند. اسکن بازار در این چرخه به طور کامل متوقف شد (مدیریت پوزیشن‌های باز و خروج زمانی Time-Stop در جریان است).`
+        `⏸️ دور #${skipRoundNum} (${skipDur}) | تمام تایم‌فریم‌های انتخابی [${activeTimeframesWithPosition.join(', ')}] دارای پوزیشن فعال هستند | [${tfZeroBreakdown}]`
       );
       serverScannerState.lastRunAt = new Date().toISOString();
-      serverScannerState.totalRunsCount = (serverScannerState.totalRunsCount || 0) + 1;
+      serverScannerState.totalRunsCount = skipRoundNum;
       serverScannerState.lastDurationMs = Date.now() - startTime;
       serverScannerState.isScanning = false;
       saveLiveConfigToDisk();
@@ -7017,11 +7027,38 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
     });
 
     if (timeframesDueThisCycle.length === 0) {
+      const skipDur = formatElapsedFa(Date.now() - startTime);
+      const tfZeroBreakdown = targetTimeframes
+        .map((tf) => activeTfToTradeMap.has(tf) ? `${tf}: ۰ نماد (معامله باز)` : `${tf}: ۰ نماد (کندل بسته نشده)`)
+        .join(' | ');
+      addServerScannerLog(
+        'info',
+        `⏳ کندل جدید تایم‌فریم‌های آزاد هنوز بسته نشده است (${skipDur}) | [${tfZeroBreakdown}]`
+      );
       serverScannerState.lastRunAt = new Date().toISOString();
       serverScannerState.lastDurationMs = Date.now() - startTime;
       serverScannerState.isScanning = false;
       saveLiveConfigToDisk();
       return;
+    }
+
+    const tfCycleSummaryMap = new Map<string, string>();
+    for (const tf of activeTimeframesWithPosition) {
+      const symName = (activeTfToTradeMap.get(tf)?.symbol || '').toUpperCase();
+      tfCycleSummaryMap.set(tf, `${tf}: قفل معامله باز (${symName || 'فعال'})`);
+    }
+    for (const tf of availableTimeframesToScan) {
+      if (!timeframesDueThisCycle.includes(tf)) {
+        tfCycleSummaryMap.set(tf, `${tf}: منتظر بسته شدن کندل بعدی`);
+      }
+    }
+
+    const skippedNotDueTfs = availableTimeframesToScan.filter((tf) => !timeframesDueThisCycle.includes(tf));
+    if (skippedNotDueTfs.length > 0) {
+      addServerScannerLog(
+        'info',
+        `⏳ تایم‌فریم‌های [${skippedNotDueTfs.join(', ')}] هنوز کندل جدیدشان بسته نشده و در این دور بررسی نشدند (۰ نماد).`
+      );
     }
 
     addServerScannerLog(
@@ -7031,10 +7068,12 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
 
     let isGlobalPositionSlotTaken = isSinglePositionMode && totalActivePositionsCount > 0;
     let isPlacingGlobalOrder = false;
+    const inFlightOrderSymbols = new Set<string>();
 
     // Process ONLY available due timeframes IN PARALLEL at the beginning of each cycle
     await Promise.all(
       timeframesDueThisCycle.map(async (currentTf) => {
+        const tfStartTime = Date.now();
         const tfMs = getTimeframeMs(currentTf);
         const latestClosedBucket = Math.floor((Date.now() - 1000) / tfMs) * tfMs;
         lastScannedCandleCloseByTf.set(currentTf, latestClosedBucket);
@@ -7048,6 +7087,8 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
 
         const tfCandidateSignals: ServerActiveSignal[] = [];
         let scannedCount = 0;
+        let analyzedCount = 0;
+        let wasAbortedByStopOrTimeout = false;
 
         const eligibleSymbols = activeTargetSymbols.filter((sym) => {
           const cleanSymNorm = sym.toLowerCase().replace(/[-_]/g, '');
@@ -7059,12 +7100,14 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
 
         for (let bIdx = 0; bIdx < eligibleSymbols.length; bIdx += BATCH_SIZE) {
           if (!forceAllTimeframes && !serverScannerState.isRunning) {
-            addServerScannerLog('info', `🛑 تایم‌فریم ${currentTf}: اسکن به دلیل دستور توقف کاربر بلافاصله متوقف شد.`, undefined, currentTf);
+            wasAbortedByStopOrTimeout = true;
+            addServerScannerLog('info', `🛑 تایم‌فریم ${currentTf}: اسکن پس از بررسی ${analyzedCount} از ${eligibleSymbols.length} نماد به دلیل توقف کاربر متوقف شد (${formatElapsedFa(Date.now() - tfStartTime)}).`, undefined, currentTf);
             break;
           }
           // Guard: Ensure single cycle never exceeds 4 minutes (240 seconds)
           if (Date.now() - startTime > 240000) {
-            addServerScannerLog('warning', `⚠️ تایم‌فریم ${currentTf}: به دلیل نزدیک‌شدن به سقف زمان اسکن، باقی ارزها خاتمه یافت.`, undefined, currentTf);
+            wasAbortedByStopOrTimeout = true;
+            addServerScannerLog('warning', `⚠️ تایم‌فریم ${currentTf}: به دلیل نزدیک‌شدن به سقف زمان اسکن (${formatElapsedFa(Date.now() - tfStartTime)})، روی ${analyzedCount}/${eligibleSymbols.length} نماد خاتمه یافت.`, undefined, currentTf);
             break;
           }
 
@@ -7082,6 +7125,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
                 }
 
                 if (!candles || candles.length < 50) return null;
+                analyzedCount++;
 
                 const symXtMeta = cfg.exchange === 'xt' ? getXtSymbolMeta(toXtSymbol(sym)) : undefined;
                 return evaluateSymbolForLiveSignal({
@@ -7138,10 +7182,17 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
           }
         }
 
+        const tfDurationMs = Date.now() - tfStartTime;
+        const tfDurationStr = formatElapsedFa(tfDurationMs);
+        tfCycleSummaryMap.set(
+          currentTf,
+          `${currentTf}: ${analyzedCount}/${eligibleSymbols.length} نماد (${tfDurationStr}، ${tfCandidateSignals.length} سیگنال${wasAbortedByStopOrTimeout ? ' [ناقص]' : ''})`
+        );
+
         if (tfCandidateSignals.length === 0) {
           addServerScannerLog(
             'info',
-            `✅ تایم‌فریم ${currentTf}: اسکن ${scannedCount} ارز به پایان رسید و در کندل جاری هیچ سیگنال معتبری شناسایی نشد.`,
+            `✅ تایم‌فریم ${currentTf}: اسکن ${analyzedCount} نماد معتبر (از ${scannedCount} مورد) در مدت ${tfDurationStr} به پایان رسید و سیگنال معتبری شناسایی نشد.`,
             undefined,
             currentTf
           );
@@ -7178,7 +7229,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
 
         addServerScannerLog(
           'info',
-          `🎯 تایم‌فریم ${currentTf}: اسکن ${scannedCount} ارز به پایان رسید و تعداد ${tfCandidateSignals.length} فرصت معامله شناسایی شد: [${descList}]. سیگنال برگزیده با کمترین نسبت حجم/ریسک: ${chosenOptimal.symbol.toUpperCase()} (نسبت حجم/ریسک: ${optimalRatio})`,
+          `🎯 تایم‌فریم ${currentTf}: اسکن ${analyzedCount} نماد معتبر (از ${scannedCount} مورد) در مدت ${tfDurationStr} تمام شد و ${tfCandidateSignals.length} فرصت یافت شد: [${descList}]. منتخب: ${chosenOptimal.symbol.toUpperCase()} (حجم/ریسک: ${optimalRatio})`,
           undefined,
           currentTf
         );
@@ -7192,8 +7243,8 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
           const xtSymbol = toXtSymbol(chosen.symbol);
           const cleanSymNorm = xtSymbol.toLowerCase().replace(/[-_]/g, '');
 
-          // Concurrency safety: check if another parallel timeframe just occupied this coin or took global single-position slot
-          if (activePositionSymbols.has(cleanSymNorm)) {
+          // Concurrency safety: check if another parallel timeframe already holds or is submitting this coin
+          if (activePositionSymbols.has(cleanSymNorm) || inFlightOrderSymbols.has(cleanSymNorm)) {
             continue;
           }
 
@@ -7209,14 +7260,14 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
             }
             isPlacingGlobalOrder = true; // Claim synchronously before any await
           }
+          inFlightOrderSymbols.add(cleanSymNorm);
 
+          try {
           if (cfg.exchange === 'xt' && unsupportedOpenApiXtSymbols.has(xtSymbol)) {
-            if (isSinglePositionMode) isPlacingGlobalOrder = false;
             continue;
           }
 
           if (availableBalance < chosen.requiredMargin) {
-            if (isSinglePositionMode) isPlacingGlobalOrder = false;
             addServerScannerLog(
               'warning',
               `⚠️ [${currentTf}] موجودی آزاد ناکافی برای ${chosen.symbol.toUpperCase()}: مارجین ${chosen.requiredMargin}$ > موجودی آزاد ${availableBalance.toFixed(2)}$`,
@@ -7530,6 +7581,10 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
             }
             break;
           }
+          } finally {
+            inFlightOrderSymbols.delete(cleanSymNorm);
+            if (isSinglePositionMode) isPlacingGlobalOrder = false;
+          }
         }
       })
     );
@@ -7541,10 +7596,13 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
       ? `${Math.floor(durationMs / 60000)} دقیقه و ${((durationMs % 60000) / 1000).toFixed(1)} ثانیه`
       : `${(durationMs / 1000).toFixed(1)} ثانیه`;
     const runRoundNum = serverScannerState.totalRunsCount + 1;
+    const tfBreakdownStr = targetTimeframes
+      .map((tf) => tfCycleSummaryMap.get(tf) || `${tf}: بررسی نشد (۰ نماد)`)
+      .join(' | ');
 
     addServerScannerLog(
       'info',
-      `⏱️ چرخه اسکن شماره ${runRoundNum} در تایم‌فریم‌های [${targetTimeframes.join(', ')}] به پایان رسید. زمان سپری‌شده: ${durationFormatted}.`
+      `⏱️ چرخه اسکن شماره ${runRoundNum} در مدت ${durationFormatted} به پایان رسید | جزئیات هر تایم‌فریم: [${tfBreakdownStr}]`
     );
 
     serverScannerState.totalRunsCount++;
