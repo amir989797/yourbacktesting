@@ -8,7 +8,7 @@
 import { CandleData, ZigZagPoint, Leg } from '../types/crypto';
 import { StrategyConfig, DEFAULT_STRATEGY_CONFIG, Trade } from '../types/strategy';
 import { calculateATR, calculateAtrZigZag, analyzeZigZagLegs } from '../utils/indicators';
-import { runStrategy1Backtest, runStrategy2Backtest } from '../utils/strategyEngine';
+import { runStrategy1Backtest, runStrategy2Backtest, runStrategy3Backtest, findGiantLegConfirmCandleIdx } from '../utils/strategyEngine';
 import {
   calculateExactTradeSizing,
   calculateXtContractQuantity,
@@ -23,6 +23,8 @@ export {
   analyzeZigZagLegs,
   runStrategy1Backtest,
   runStrategy2Backtest,
+  runStrategy3Backtest,
+  findGiantLegConfirmCandleIdx,
   calculateExactTradeSizing,
   calculateXtContractQuantity,
   calculateXtRiskBudgetedOrder,
@@ -31,7 +33,7 @@ export {
 export type { XtRiskBudgetedResult };
 
 export interface ServerStrategyConfig {
-  strategyId: 'strategy_1_e_breakout' | 'strategy_2_next_pivot';
+  strategyId: 'strategy_1_e_breakout' | 'strategy_2_next_pivot' | 'strategy_3_ab_midpoint';
   timeframe: string;
   atrPeriod: number;
   atrMultiplier: number;
@@ -63,6 +65,8 @@ export interface CandidateSignal {
   symbol: string;
   posSide: 'LONG' | 'SHORT';
   side: 'BUY' | 'SELL';
+  orderType?: 'MARKET' | 'LIMIT';
+  limitEntryPrice?: number;
   curPrice: number;
   stopLoss: number;
   takeProfit: number;
@@ -232,7 +236,189 @@ export function evaluateSymbolForLiveSignal(params: {
     symbol,
   };
 
-  // 3. Run Strategy Backtest Engine on closed candles
+  // 3. Special Live Signal Mode for Strategy 3 (AB Midpoint Pending Limit Order placed on fresh pivot D or F confirmation)
+  if (config.strategyId === 'strategy_3_ab_midpoint') {
+    const effAtrMult = config.atrMultiplier || 2.0;
+    let matchedLeg: (typeof analyzedLegs)[number] | null = null;
+    let reversalPivot: 'D' | 'F' | null = null;
+
+    for (let li = analyzedLegs.length - 1; li >= 0; li--) {
+      const pivotLeg = analyzedLegs[li];
+      if (pivotLeg.color !== 'blue' && pivotLeg.color !== 'dark_blue') continue;
+
+      const parentIdx = pivotLeg.cycleGiantLegIndex;
+      const giantLeg =
+        (parentIdx !== undefined ? analyzedLegs.find((l) => l.index === parentIdx) : undefined) ||
+        (() => {
+          for (let gi = li - 1; gi >= 0; gi--) {
+            if (analyzedLegs[gi].isGiantLeg && (analyzedLegs[gi].color === 'green' || analyzedLegs[gi].color === 'red')) {
+              return analyzedLegs[gi];
+            }
+          }
+          return undefined;
+        })();
+
+      if (!giantLeg) continue;
+
+      const candleIdxPivot = zzResult.points[pivotLeg.endIndex]?.candleIndex ?? Math.max(0, candles.length - 1);
+      const confirmIdx = findGiantLegConfirmCandleIdx(candles, pivotLeg, candleIdxPivot, atrValues, effAtrMult);
+
+      if (confirmIdx === candles.length - 1) {
+        // Verify SL (A) was never breached since pivot B
+        const candleIdxB = zzResult.points[giantLeg.endIndex]?.candleIndex ?? 0;
+        const stopLossA = giantLeg.startPrice;
+        let slBreached = false;
+        for (let s = candleIdxB + 1; s <= confirmIdx; s++) {
+          if (giantLeg.isUp ? candles[s].low <= stopLossA : candles[s].high >= stopLossA) {
+            slBreached = true;
+            break;
+          }
+        }
+        if (slBreached) break;
+
+        // If F just confirmed, verify D of the same cycle did not already fill the AB midpoint limit
+        if (pivotLeg.color === 'dark_blue') {
+          const midPrice = (giantLeg.startPrice + giantLeg.endPrice) / 2;
+          const siblingBlue = analyzedLegs.find(
+            (l) => l.color === 'blue' && (l.cycleGiantLegIndex === giantLeg.index || (l.cycleGiantLegIndex === undefined && l.index < pivotLeg.index && l.index > giantLeg.index))
+          );
+          if (siblingBlue) {
+            const candleIdxD = zzResult.points[siblingBlue.endIndex]?.candleIndex ?? 0;
+            const confirmIdxD = findGiantLegConfirmCandleIdx(candles, siblingBlue, candleIdxD, atrValues, effAtrMult);
+            if (confirmIdxD >= 0 && confirmIdxD < confirmIdx) {
+              const maxWait = Math.max(1, config.maxCandlesToEnter || 100);
+              const dEnd = Math.min(candleIdxPivot, confirmIdxD + maxWait);
+              let dAlreadyFilled = false;
+              for (let dIdx = confirmIdxD + 1; dIdx <= dEnd; dIdx++) {
+                const cd = candles[dIdx];
+                if (giantLeg.isUp ? cd.open <= stopLossA : cd.open >= stopLossA) break;
+                if (giantLeg.isUp ? cd.low <= midPrice : cd.high >= midPrice) {
+                  dAlreadyFilled = true;
+                  break;
+                }
+              }
+              if (dAlreadyFilled) break;
+            }
+          }
+        }
+
+        matchedLeg = giantLeg;
+        reversalPivot = pivotLeg.color === 'dark_blue' ? 'F' : 'D';
+        break;
+      }
+
+      if (confirmIdx >= 0 && confirmIdx < candles.length - 1) {
+        break; // Most recent D/F pivot was already confirmed on an older candle
+      }
+    }
+
+    if (!matchedLeg || !reversalPivot) return null;
+
+    const priceA = matchedLeg.startPrice;
+    const priceB = matchedLeg.endPrice;
+    const limitEntryPrice = (priceA + priceB) / 2;
+    const stopLoss = priceA;
+    const stopDistance = Math.abs(limitEntryPrice - stopLoss);
+    const curPrice = candles[candles.length - 1].close;
+    const targetRR = config.riskRewardRatio && config.riskRewardRatio > 0 ? config.riskRewardRatio : 2.0;
+
+    if (!(curPrice > 0) || !(limitEntryPrice > 0) || !(stopLoss > 0) || stopDistance <= 0.000001) {
+      return null;
+    }
+
+    const side: 'BUY' | 'SELL' = matchedLeg.isUp ? 'BUY' : 'SELL';
+    const posSide: 'LONG' | 'SHORT' = matchedLeg.isUp ? 'LONG' : 'SHORT';
+
+    // Reject if price already broke stop A
+    if (posSide === 'LONG' ? curPrice <= stopLoss : curPrice >= stopLoss) {
+      return null;
+    }
+
+    const takeProfit = posSide === 'LONG'
+      ? limitEntryPrice + stopDistance * targetRR
+      : limitEntryPrice - stopDistance * targetRR;
+
+    // For a pending LIMIT pullback order, takeProfit must be valid relative to limitEntryPrice
+    // (NOT curPrice, since when R:R < 1 e.g. 0.5, curPrice at D/F is naturally above TP before pulling back to midpoint).
+    if (posSide === 'LONG' ? takeProfit <= limitEntryPrice : takeProfit >= limitEntryPrice) {
+      return null;
+    }
+
+    const maxLev = getMaxLeverageForSymbol(symbol);
+    const riskBudgetUsdt = config.riskMode === 'fixed' && config.riskAmountFixed && config.riskAmountFixed > 0
+      ? config.riskAmountFixed
+      : availableBalance * ((config.riskPercent || 1) / 100);
+    const entryFeeRate = entryFeePct / 100;
+    const exitFeeRate = exitFeePct / 100;
+    const effectiveExchange = config.exchange ?? 'xt';
+    const slSlipRate = (config.slSlippagePercent ?? (effectiveExchange === 'xt' ? 0.04 : 0)) / 100;
+    const effectiveEntryRef = posSide === 'LONG' ? Math.min(limitEntryPrice, curPrice) : Math.max(limitEntryPrice, curPrice);
+
+    const sizing = calculateExactTradeSizing(
+      riskBudgetUsdt,
+      effectiveEntryRef,
+      stopLoss,
+      takeProfit,
+      entryFeeRate,
+      exitFeeRate,
+      symbol,
+      {
+        exchange: effectiveExchange,
+        contractSize: config.xtContractSize,
+        minNotional: config.xtMinNotional,
+        riskCushion: effectiveExchange === 'xt' ? 0.92 : 1.0,
+        slSlippageRate: slSlipRate,
+      }
+    );
+
+    const contractQty = sizing.contractQty ?? sizing.quantizedPositionSize;
+    const notionalUsdt = sizing.positionValue;
+    const requiredMargin = parseFloat((notionalUsdt / maxLev).toFixed(2));
+    const actualRiskUsdt = sizing.actualLossAtSL;
+
+    if (sizing.exceedsRiskBudget || sizing.quantizedPositionSize <= 0 || notionalUsdt <= 0) {
+      return null;
+    }
+
+    const totalRoundTripFeeAtSL = sizing.totalFeesAtSL || (sizing.entryFee + sizing.exitFeeAtSL);
+    const feeToRiskRatio = riskBudgetUsdt > 0 ? totalRoundTripFeeAtSL / riskBudgetUsdt : 0;
+    const maxPosRatio = config.maxPositionToRiskRatio !== undefined ? config.maxPositionToRiskRatio : 300;
+    const posToRiskRatio = riskBudgetUsdt > 0 ? parseFloat((notionalUsdt / riskBudgetUsdt).toFixed(2)) : 0;
+
+    if (maxPosRatio > 0 && posToRiskRatio > maxPosRatio) {
+      return null;
+    }
+
+    return {
+      symbol,
+      posSide,
+      side,
+      orderType: 'LIMIT',
+      limitEntryPrice,
+      curPrice: limitEntryPrice,
+      stopLoss,
+      takeProfit,
+      signalEntryPrice: limitEntryPrice,
+      signalTakeProfit: takeProfit,
+      signalStopDist: stopDistance,
+      entryCandleTime: candles[candles.length - 1]?.time,
+      feeToRiskRatio: parseFloat(feeToRiskRatio.toFixed(4)),
+      riskReward: targetRR,
+      contractQty,
+      stepSize: sizing.stepSize,
+      qtyPrecision: sizing.qtyPrecision,
+      maxLeverage: maxLev,
+      requiredMargin,
+      notionalUsdt: parseFloat(notionalUsdt.toFixed(2)),
+      riskUsdt: parseFloat(actualRiskUsdt.toFixed(2)),
+      positionToRiskRatio: posToRiskRatio,
+      targetRiskUsdt: parseFloat(riskBudgetUsdt.toFixed(2)),
+      strategyName: `استراتژی ۳ (لیمیت وسط AB - برگشت از ${reversalPivot})`,
+      discoveredAt: new Date().toISOString(),
+    };
+  }
+
+  // Run Strategy 1 or Strategy 2 Backtest Engine on closed candles
   let evalTrades: any[] = [];
   if (config.strategyId === 'strategy_2_next_pivot') {
     const res = runStrategy2Backtest(
@@ -305,13 +491,11 @@ export function evaluateSymbolForLiveSignal(params: {
     }
   }
 
-  // Capped TP Parity: never stretch TP farther than Backtest signalTakeProfit
-  const rrTargetTp = posSide === 'LONG'
+  // Always preserve exact configured R:R (e.g. 2.25) from actual entry (curPrice) to stopLoss
+  // (Chase Guard above already prevents entering if price stretched >25% SL or >=35% toward signalTakeProfit)
+  const takeProfit = posSide === 'LONG'
     ? curPrice + stopDistance * targetRR
     : curPrice - stopDistance * targetRR;
-  const takeProfit = posSide === 'LONG'
-    ? Math.min(signalTakeProfit, rrTargetTp)
-    : Math.max(signalTakeProfit, rrTargetTp);
 
   if (posSide === 'LONG' ? takeProfit <= curPrice : takeProfit >= curPrice) {
     return null;

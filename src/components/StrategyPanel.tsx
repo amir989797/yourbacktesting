@@ -43,8 +43,12 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'signals' | 'history'>('signals');
   const [showRulesModal, setShowRulesModal] = useState<boolean>(false);
-  const [rulesTab, setRulesTab] = useState<'strategy1' | 'strategy2'>(
-    config.selectedStrategyId === 'strategy_2_next_pivot' ? 'strategy2' : 'strategy1'
+  const [rulesTab, setRulesTab] = useState<'strategy1' | 'strategy2' | 'strategy3'>(
+    config.selectedStrategyId === 'strategy_3_ab_midpoint'
+      ? 'strategy3'
+      : config.selectedStrategyId === 'strategy_2_next_pivot'
+      ? 'strategy2'
+      : 'strategy1'
   );
   const [capitalInput, setCapitalInput] = useState<string>(String(config.capital));
   const [riskInput, setRiskInput] = useState<string>(String(config.riskPercent));
@@ -200,6 +204,9 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                 <option value="strategy_2_next_pivot">
                   استراتژی دوم: ورود با تشکیل نقطه بعد از F (استاپ F / تارگت حداکثر R:R)
                 </option>
+                <option value="strategy_3_ab_midpoint">
+                  استراتژی سوم: لیمیت وسط AB با برگشت از D یا F (استاپ A / تارگت R:R)
+                </option>
                 <option value="none">
                   -- غیرفعال کردن استراتژی --
                 </option>
@@ -246,13 +253,21 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                 <span className="text-xs font-bold text-amber-300">
                   {config.selectedStrategyId === 'strategy_2_next_pivot'
                     ? 'پارامترهای استراتژی ۲ (نقطه بعد از F)'
+                    : config.selectedStrategyId === 'strategy_3_ab_midpoint'
+                    ? 'پارامترهای استراتژی ۳ (لیمیت وسط AB)'
                     : 'پارامترهای استراتژی ۱ (شکست E)'}
                 </span>
                 {/* Info Icon for Strategy Explanation */}
                 <button
                   type="button"
                   onClick={() => {
-                    setRulesTab(config.selectedStrategyId === 'strategy_2_next_pivot' ? 'strategy2' : 'strategy1');
+                    setRulesTab(
+                      config.selectedStrategyId === 'strategy_3_ab_midpoint'
+                        ? 'strategy3'
+                        : config.selectedStrategyId === 'strategy_2_next_pivot'
+                        ? 'strategy2'
+                        : 'strategy1'
+                    );
                     setShowRulesModal(true);
                   }}
                   className="p-1 rounded-full text-amber-400 hover:text-amber-200 hover:bg-amber-400/20 transition-all cursor-pointer"
@@ -299,14 +314,14 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
               {/* Max R:R */}
               <div className="bg-[#0e121a] p-2 rounded-lg border border-[#252f42]">
                 <div className="text-[10px] text-gray-300 font-semibold mb-1 flex items-center justify-between">
-                  <span>{config.selectedStrategyId === 'strategy_2_next_pivot' ? 'تارگت R:R' : 'حداکثر R:R'}</span>
+                  <span>{config.selectedStrategyId === 'strategy_2_next_pivot' || config.selectedStrategyId === 'strategy_3_ab_midpoint' ? 'تارگت R:R' : 'حداکثر R:R'}</span>
                   <span className="text-emerald-400 font-mono font-bold">R</span>
                 </div>
                 <input
                   type="number"
-                  min={0.5}
+                  min={0.1}
                   max={50}
-                  step={0.5}
+                  step={0.05}
                   value={maxRRInput}
                   onChange={(e) => handleMaxRRChange(e.target.value)}
                   className="w-full py-1 text-xs font-mono font-bold text-center text-emerald-400 bg-[#161c28] border border-[#2b364a] rounded focus:outline-none focus:border-emerald-400"
@@ -416,7 +431,7 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
               ) : (
                 <div className="bg-[#0e121a] p-2 rounded-lg border border-[#252f42]">
                   <div className="text-[10px] text-gray-300 font-semibold mb-1 flex items-center justify-between">
-                    <span>مهلت ورود</span>
+                    <span>{config.selectedStrategyId === 'strategy_3_ab_midpoint' ? 'انقضای لیمیت' : 'مهلت ورود'}</span>
                     <span className="text-sky-400 font-mono text-[9px]">کندل</span>
                   </div>
                   <input
@@ -738,7 +753,7 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
             </div>
 
             {/* Strategy Tab Switcher in Modal */}
-            <div className="grid grid-cols-2 gap-1.5 p-1 bg-[#0b0e14] rounded-xl border border-[#222a38]">
+            <div className="grid grid-cols-3 gap-1.5 p-1 bg-[#0b0e14] rounded-xl border border-[#222a38]">
               <button
                 type="button"
                 onClick={() => setRulesTab('strategy1')}
@@ -759,7 +774,18 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                     : 'text-gray-400 hover:text-white hover:bg-[#19202c]'
                 }`}
               >
-                استراتژی ۲ (نقطه بعد از F)
+                استراتژی ۲ (بعد از F)
+              </button>
+              <button
+                type="button"
+                onClick={() => setRulesTab('strategy3')}
+                className={`py-1.5 px-2 rounded-lg font-bold text-xs transition-colors cursor-pointer text-center ${
+                  rulesTab === 'strategy3'
+                    ? 'bg-amber-400 text-black shadow-xs'
+                    : 'text-gray-400 hover:text-white hover:bg-[#19202c]'
+                }`}
+              >
+                استراتژی ۳ (لیمیت AB)
               </button>
             </div>
 
@@ -853,6 +879,42 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                   <span className="text-purple-300 font-bold">•</span>
                   <div>
                     <strong className="text-purple-200">۶. محدودیت ورود:</strong> برای هر نقطه <strong>F فقط یک‌بار</strong> وارد می‌شویم (هیچ ورود مجددی پس از استاپ وجود ندارد).
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Strategy 3 Rules Content */}
+            {rulesTab === 'strategy3' && (
+              <div className="space-y-2 text-gray-300 text-[11px] leading-relaxed">
+                <div className="flex items-start gap-2 bg-[#0e121a] p-2.5 rounded-xl border border-[#202738]">
+                  <span className="text-amber-400 font-bold">•</span>
+                  <div>
+                    <strong className="text-white">۱. پیش‌شرط برگشت از پیوت D یا F:</strong> پس از تشکیل لگ بلند AB، به جای برگشت مستقیم از B، قیمت باید ابتدا لگ <strong>CD</strong> (پیوت <strong>D</strong>) یا <strong>EF</strong> (پیوت <strong>F</strong>) را بسازد و سپس از <strong>D</strong> یا <strong>F</strong> برگردد.
+                  </div>
+                </div>
+                <div className="flex items-start gap-2 bg-[#0e121a] p-2.5 rounded-xl border border-[#202738]">
+                  <span className="text-sky-400 font-bold">•</span>
+                  <div>
+                    <strong className="text-white">۲. سفارش لیمیت در وسط AB (50%):</strong> با تایید پیوت <strong>D</strong> (یا در صورت عدم ورود، با تایید پیوت <strong>F</strong>)، یک سفارش <span className="text-amber-300 font-bold">LIMIT</span> دقیقاً در قیمت <strong className="font-mono">(A + B) / 2</strong> و در جهت لگ AB (لگ صعودی → خرید، لگ نزولی → فروش) ثبت می‌شود.
+                  </div>
+                </div>
+                <div className="flex items-start gap-2 bg-[#0e121a] p-2.5 rounded-xl border border-[#202738]">
+                  <span className="text-rose-400 font-bold">•</span>
+                  <div>
+                    <strong className="text-white">۳. حد ضرر (Stop Loss):</strong> دقیقاً روی پیوت <strong>A</strong> (شروع لگ بلند) قرار می‌گیرد.
+                  </div>
+                </div>
+                <div className="flex items-start gap-2 bg-[#0e121a] p-2.5 rounded-xl border border-[#202738]">
+                  <span className="text-emerald-400 font-bold">•</span>
+                  <div>
+                    <strong className="text-white">۴. حد سود (Target):</strong> متناسب با <strong>R:R</strong> انتخابی (حتی مقادیری مثل <strong className="font-mono">0.5</strong> یا بالاتر) بر اساس فاصله نقطه ورود (وسط AB) تا استاپ A محاسبه می‌شود.
+                  </div>
+                </div>
+                <div className="flex items-start gap-2 bg-[#1b1527] p-2.5 rounded-xl border border-purple-500/30">
+                  <span className="text-purple-300 font-bold">•</span>
+                  <div>
+                    <strong className="text-purple-200">۵. انقضای سفارش لیمیت:</strong> اگر تا تعداد کندل مشخص‌شده در «سقف کندل ورود» قیمت به وسط AB نرسد، سفارش لیمیت به‌صورت خودکار منقضی/لغو می‌شود.
                   </div>
                 </div>
               </div>

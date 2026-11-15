@@ -329,7 +329,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   const [isLiveExecution, setIsLiveExecution] = useState<boolean>(true);
 
   // 4. Strategy & Order Execution Settings (پیش‌فرض: استراتژی دوم Next-Pivot)
-  const [selectedStrategy, setSelectedStrategy] = useState<'strategy_1_e_breakout' | 'strategy_2_next_pivot'>('strategy_2_next_pivot');
+  const [selectedStrategy, setSelectedStrategy] = useState<'strategy_1_e_breakout' | 'strategy_2_next_pivot' | 'strategy_3_ab_midpoint'>('strategy_2_next_pivot');
   const [selectedTimeframes, setSelectedTimeframes] = useState<Timeframe[]>(() => {
     try {
       const saved = localStorage.getItem('livetrade_timeframes');
@@ -968,7 +968,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     showToast(`✅ کانفیگ «${cfg.name}» با موفقیت در اتاق ترید اعمال شد!`);
     addLog(
       'success',
-      `⚡ کانفیگ «${cfg.name}» (استراتژی: ${cfg.selectedStrategyId === 'strategy_1_e_breakout' ? 'E-Breakout' : 'Next-Pivot'}، تایم‌فریم: ${cfg.timeframe || '5m'}، دوره ATR: ${cfg.optAtrPeriod}) بارگذاری شد.`
+      `⚡ کانفیگ «${cfg.name}» (استراتژی: ${cfg.selectedStrategyId === 'strategy_1_e_breakout' ? 'E-Breakout' : cfg.selectedStrategyId === 'strategy_3_ab_midpoint' ? 'AB-Midpoint Limit' : 'Next-Pivot'}، تایم‌فریم: ${cfg.timeframe || '5m'}، دوره ATR: ${cfg.optAtrPeriod}) بارگذاری شد.`
     );
   };
 
@@ -1724,7 +1724,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 <div className="text-[11px] text-gray-400 flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 font-mono">
                   <span>صرافی: <strong className="text-white uppercase">{serverActiveConfig.exchange || exchange}</strong></span>
                   <span>• تایم‌فریم‌ها: <strong className="text-cyan-300">{(serverActiveConfig.timeframes && serverActiveConfig.timeframes.length > 0 ? serverActiveConfig.timeframes : [serverActiveConfig.timeframe || tradeTimeframe]).join(', ')}</strong></span>
-                  <span>• استراتژی: <strong className="text-amber-300">{serverActiveConfig.strategyId === 'strategy_2_next_pivot' ? 'Next-Pivot (۲)' : 'E-Breakout (۱)'}</strong></span>
+                  <span>• استراتژی: <strong className="text-amber-300">{serverActiveConfig.strategyId === 'strategy_2_next_pivot' ? 'Next-Pivot (۲)' : serverActiveConfig.strategyId === 'strategy_3_ab_midpoint' ? 'AB-Midpoint Limit (۳)' : 'E-Breakout (۱)'}</strong></span>
                   <span>• بودجه ریسک: <strong className="text-emerald-300">{serverActiveConfig.riskMode === 'fixed' ? `$${serverActiveConfig.riskAmountFixed || 50} ثابت (با احتساب اعشار و کارمزد صرافی)` : `${serverActiveConfig.riskPercent || 1}% بالانس`}</strong></span>
                   <span>• وضعیت همزمانی: <strong className="text-amber-300">{serverActiveConfig.noConcurrentPositions !== false ? 'تک‌پوزیشن کل (حداکثر ۱ معامله باز)' : 'هم‌زمان (حداکثر ۱ معامله در هر تایم‌فریم)'}</strong></span>
                   <span>• سقف ورود: <strong className="text-cyan-300">{serverActiveConfig.maxCandlesToEnter ?? 35}c</strong></span>
@@ -2018,6 +2018,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 >
                   <option value="strategy_2_next_pivot">استراتژی ۲: ستاپ پیوت بعدی (Next-Pivot / تاییدیه پولبک) [پیش‌فرض]</option>
                   <option value="strategy_1_e_breakout">استراتژی ۱: شکست نقطه E (E-Breakout)</option>
+                  <option value="strategy_3_ab_midpoint">استراتژی ۳: لیمیت وسط AB با برگشت از D یا F (Limit + انقضای کندلی)</option>
                 </select>
               </div>
 
@@ -2198,6 +2199,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 <span className="text-[10px] text-gray-400 block">۹. ریسک به ریوارد (R:R):</span>
                 <input
                   type="number"
+                  min={0.1}
                   step={0.05}
                   value={riskRewardRatio}
                   onChange={(e) => {
@@ -3575,7 +3577,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
 
               <div className="p-3 rounded-xl bg-[#131926] border border-[#232f44] text-[11px] font-mono space-y-1 text-gray-300">
                 <div className="text-amber-400 font-bold font-sans">پارامترهای در حال ذخیره:</div>
-                <div>استراتژی: {selectedStrategy === 'strategy_1_e_breakout' ? 'شکست E (E-Breakout)' : 'پیوت بعدی (Next-Pivot)'}</div>
+                <div>استراتژی: {selectedStrategy === 'strategy_1_e_breakout' ? 'شکست E (E-Breakout)' : selectedStrategy === 'strategy_3_ab_midpoint' ? 'لیمیت وسط AB (استراتژی ۳)' : 'پیوت بعدی (Next-Pivot)'}</div>
                 <div>تایم‌فریم: {tradeTimeframe} | دوره ATR: {atrPeriod} | ضریب: {atrMultiplier}</div>
                 <div>حداقل کندل: {minCandles} | اهرم: بیشترین اهرم مجاز (Max) | R:R: {riskRewardRatio}</div>
               </div>
@@ -3673,7 +3675,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                             {cfg.timeframe || '5m'}
                           </span>
                           <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#1a2336] text-amber-300 border border-[#2d3a50]">
-                            {cfg.selectedStrategyId === 'strategy_1_e_breakout' ? 'استراتژی ۱' : 'استراتژی ۲'}
+                            {cfg.selectedStrategyId === 'strategy_1_e_breakout' ? 'استراتژی ۱' : cfg.selectedStrategyId === 'strategy_3_ab_midpoint' ? 'استراتژی ۳' : 'استراتژی ۲'}
                           </span>
                         </div>
 

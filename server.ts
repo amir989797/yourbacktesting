@@ -17,6 +17,7 @@ import {
   analyzeZigZagLegs,
   runStrategy1Backtest,
   runStrategy2Backtest,
+  runStrategy3Backtest,
 } from './src/server/engine';
 import {
   initDatabase,
@@ -3075,7 +3076,8 @@ function isExactStoredConfigMatch(
   const sSlip = storedCfg.slSlippagePercent ?? (sExch === 'xt' ? 0.04 : 0);
   const bSlip = baseConfig.slSlippagePercent ?? (bExch === 'xt' ? 0.04 : 0);
   if (!numEq(sSlip, bSlip)) return false;
-  if (Number(storedCfg.maxCandlesToEnter || 100) !== Number(baseConfig.maxCandlesToEnter || 100)) return false;
+  const effCandMaxCandles = Number(candidate.maxCandlesToEnter || baseConfig.maxCandlesToEnter || 100);
+  if (Number(storedCfg.maxCandlesToEnter || 100) !== effCandMaxCandles) return false;
   if ((storedCfg.timeStopEnabled !== false && storedCfg.optTimeStopEnabled !== false) !== (baseConfig.timeStopEnabled !== false)) return false;
   if ((storedCfg.noConcurrentPositions !== false) !== (baseConfig.noConcurrentPositions !== false)) return false;
 
@@ -3379,7 +3381,9 @@ async function runServerBacktestCycle(params: {
     };
 
     let backtestRes: any;
-    if (strategyId === 'strategy_2_next_pivot') {
+    if (strategyId === 'strategy_3_ab_midpoint') {
+      backtestRes = runStrategy3Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, atrMultiplier, minCandles);
+    } else if (strategyId === 'strategy_2_next_pivot') {
       backtestRes = runStrategy2Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, atrMultiplier, minCandles);
     } else {
       backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig);
@@ -4583,6 +4587,7 @@ interface ServerOptimizerTrial {
   blueLegAtrMultiplier?: number;
   maxBlueLegPercent: number;
   maxBreakoutAtrMultiplier: number;
+  maxCandlesToEnter?: number;
   maxRiskReward: number;
   timeStopCandles: number;
   maxPositionToRiskRatio?: number;
@@ -4633,6 +4638,7 @@ const ALLOWED_OPTIMIZER_SORT_COLUMNS = new Set([
   'blueLegAtrMultiplier',
   'maxBlueLegPercent',
   'maxBreakoutAtrMultiplier',
+  'maxCandlesToEnter',
   'maxRiskReward',
   'timeStopCandles',
   'maxPositionToRiskRatio',
@@ -4684,11 +4690,12 @@ function generateConfigHash(p: {
   blueLegAtrMultiplier?: number;
   maxBlueLegPercent: number;
   maxBreakoutAtrMultiplier: number;
+  maxCandlesToEnter?: number;
   maxRiskReward: number;
   timeStopCandles?: number;
   maxPositionToRiskRatio?: number;
 }): string {
-  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.minCandlesForBlueLeg ?? 3}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.blueLegAtrMultiplier ?? 3}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxRiskReward}_${p.timeStopCandles || 80}_${p.maxPositionToRiskRatio ?? 300}`;
+  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.minCandlesForBlueLeg ?? 3}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.blueLegAtrMultiplier ?? 3}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxCandlesToEnter ?? 100}_${p.maxRiskReward}_${p.timeStopCandles || 80}_${p.maxPositionToRiskRatio ?? 300}`;
 }
 
 function calculateQualityScore(trial: {
@@ -4746,6 +4753,7 @@ function refineAdaptiveRangesSmart(
     'blueLegAtrMultiplier',
     'maxBlueLegPercent',
     'maxBreakoutAtrMultiplier',
+    'maxCandlesToEnter',
     'maxRiskReward',
     'timeStopCandles',
     'maxPositionToRiskRatio',
@@ -4761,6 +4769,7 @@ function refineAdaptiveRangesSmart(
     blueLegAtrMultiplier: { lockProp: 'lockBlueLegAtrMult', valProp: 'optBlueLegAtrMult' },
     maxBlueLegPercent: { lockProp: 'lockMaxBlueLegPercent', valProp: 'optMaxBlueLegPercent' },
     maxBreakoutAtrMultiplier: { lockProp: 'lockMaxBreakoutAtr', valProp: 'optMaxBreakoutAtr' },
+    maxCandlesToEnter: { lockProp: 'lockMaxCandlesToEnter', valProp: 'optMaxCandlesToEnter' },
     maxRiskReward: { lockProp: 'lockMaxRiskReward', valProp: 'optMaxRiskReward' },
     timeStopCandles: { lockProp: 'lockTimeStopCandles', valProp: 'optTimeStopCandles' },
     maxPositionToRiskRatio: { lockProp: 'lockMaxPositionToRiskRatio', valProp: 'optMaxPositionToRiskRatio' },
@@ -4889,7 +4898,8 @@ function getDefaultRangesForTimeframe(timeframe: string): any {
       blueLegAtrMultiplier: makeRange(2.0, 6.0, 1.0, 12.0, 3.0, 0.25),
       maxBlueLegPercent: makeRange(35, 75, 20, 90, 55, 5),
       maxBreakoutAtrMultiplier: makeRange(2.0, 5.5, 1.0, 8.0, 3.5, 0.5),
-      maxRiskReward: makeRange(1.5, 4.5, 1.0, 10.0, 2.5, 0.25),
+      maxCandlesToEnter: makeRange(10, 60, 5, 120, 35, 5),
+      maxRiskReward: makeRange(1.5, 4.5, 0.25, 10.0, 2.5, 0.25),
       timeStopCandles: makeRange(20, 120, 5, 200, 80, 5),
       maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
     };
@@ -4906,7 +4916,8 @@ function getDefaultRangesForTimeframe(timeframe: string): any {
       blueLegAtrMultiplier: makeRange(1.5, 5.5, 1.0, 10.0, 2.5, 0.25),
       maxBlueLegPercent: makeRange(30, 70, 20, 85, 50, 5),
       maxBreakoutAtrMultiplier: makeRange(1.5, 5.0, 1.0, 7.0, 3.0, 0.5),
-      maxRiskReward: makeRange(1.5, 7.0, 1.0, 12.0, 3.5, 0.5),
+      maxCandlesToEnter: makeRange(10, 50, 5, 100, 30, 5),
+      maxRiskReward: makeRange(1.5, 7.0, 0.25, 12.0, 3.5, 0.25),
       timeStopCandles: makeRange(20, 120, 5, 200, 60, 5),
       maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
     };
@@ -4922,7 +4933,8 @@ function getDefaultRangesForTimeframe(timeframe: string): any {
     blueLegAtrMultiplier: makeRange(1.8, 6.0, 1.0, 11.0, 3.0, 0.25),
     maxBlueLegPercent: makeRange(35, 75, 25, 85, 55, 5),
     maxBreakoutAtrMultiplier: makeRange(1.8, 5.5, 1.0, 7.5, 3.5, 0.5),
-    maxRiskReward: makeRange(1.5, 6.0, 1.0, 10.0, 3.0, 0.5),
+    maxCandlesToEnter: makeRange(10, 60, 5, 120, 35, 5),
+    maxRiskReward: makeRange(1.5, 6.0, 0.25, 10.0, 3.0, 0.25),
     timeStopCandles: makeRange(20, 120, 5, 200, 80, 5),
     maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
   };
@@ -4994,6 +5006,7 @@ function getNextCandidateFromAdaptiveRanges(
       blueLegAtrMultiplier: sampleParam(ranges.blueLegAtrMultiplier, l.lockBlueLegAtrMult, l.optBlueLegAtrMult ?? 3.0),
       maxBlueLegPercent: sampleParam(ranges.maxBlueLegPercent, l.lockMaxBlueLegPercent, l.optMaxBlueLegPercent ?? 55),
       maxBreakoutAtrMultiplier: sampleParam(ranges.maxBreakoutAtrMultiplier, l.lockMaxBreakoutAtr, l.optMaxBreakoutAtr ?? 3.5),
+      maxCandlesToEnter: sampleParam(ranges.maxCandlesToEnter, l.lockMaxCandlesToEnter, l.optMaxCandlesToEnter ?? 100),
       maxRiskReward: sampleParam(ranges.maxRiskReward, l.lockMaxRiskReward, l.optMaxRiskReward ?? 2.5),
       timeStopCandles: sampleParam(ranges.timeStopCandles, l.lockTimeStopCandles, l.optTimeStopCandles ?? 80),
       maxPositionToRiskRatio: sampleParam(ranges.maxPositionToRiskRatio, l.lockMaxPositionToRiskRatio, l.optMaxPositionToRiskRatio ?? 300),
@@ -5350,7 +5363,7 @@ async function streamEvaluateDatasetFromPostgres(
         xtContractSize: xtMeta?.contractSize,
         xtMinNotional: xtMeta?.minNotional,
         maxRiskReward: candidate.maxRiskReward,
-        maxCandlesToEnter: baseConfig.maxCandlesToEnter,
+        maxCandlesToEnter: candidate.maxCandlesToEnter || baseConfig.maxCandlesToEnter || 100,
         maxTradesPerLeg: 1,
         showOnChart: false,
         noConcurrentPositions: baseConfig.noConcurrentPositions,
@@ -5361,7 +5374,9 @@ async function streamEvaluateDatasetFromPostgres(
       };
 
       let backtestRes: any;
-      if (strategyId === 'strategy_2_next_pivot') {
+      if (strategyId === 'strategy_3_ab_midpoint') {
+        backtestRes = runStrategy3Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, candidate.atrMultiplier, candidate.minCandles);
+      } else if (strategyId === 'strategy_2_next_pivot') {
         backtestRes = runStrategy2Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, candidate.atrMultiplier, candidate.minCandles);
       } else {
         backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig);
@@ -5392,6 +5407,7 @@ async function evaluateCombinationOnServer(
     blueLegAtrMultiplier?: number;
     maxBlueLegPercent: number;
     maxBreakoutAtrMultiplier: number;
+    maxCandlesToEnter?: number;
     maxRiskReward: number;
     timeStopCandles?: number;
     maxPositionToRiskRatio?: number;
@@ -5462,7 +5478,7 @@ async function evaluateCombinationOnServer(
       xtContractSize: xtMeta?.contractSize,
       xtMinNotional: xtMeta?.minNotional,
       maxRiskReward: params.maxRiskReward,
-      maxCandlesToEnter: baseConfig.maxCandlesToEnter,
+      maxCandlesToEnter: params.maxCandlesToEnter || baseConfig.maxCandlesToEnter || 100,
       maxTradesPerLeg: 1,
       showOnChart: false,
       noConcurrentPositions: baseConfig.noConcurrentPositions,
@@ -5473,7 +5489,9 @@ async function evaluateCombinationOnServer(
     };
 
     let backtestRes: any;
-    if (strategyId === 'strategy_2_next_pivot') {
+    if (strategyId === 'strategy_3_ab_midpoint') {
+      backtestRes = runStrategy3Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, params.atrMultiplier, params.minCandles);
+    } else if (strategyId === 'strategy_2_next_pivot') {
       backtestRes = runStrategy2Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, params.atrMultiplier, params.minCandles);
     } else {
       backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig);
@@ -5534,6 +5552,7 @@ async function runServerOptimizerLoop(
       blueLegAtrMultiplier: Number(locks?.optBlueLegAtrMult ?? 3.0),
       maxBlueLegPercent: Number(locks?.optMaxBlueLegPercent ?? 55),
       maxBreakoutAtrMultiplier: Number(locks?.optMaxBreakoutAtr ?? 3.5),
+      maxCandlesToEnter: Number(locks?.optMaxCandlesToEnter ?? baseConfig.maxCandlesToEnter ?? 100),
       maxRiskReward: Number(locks?.optMaxRiskReward ?? 2.5),
       timeStopCandles: Number(locks?.optTimeStopCandles ?? 80),
       maxPositionToRiskRatio: Number(locks?.optMaxPositionToRiskRatio ?? 300),
@@ -5843,6 +5862,7 @@ app.post('/api/optimizer/start', async (req, res) => {
       lockBlueLegAtrMult: Boolean(locks?.lockBlueLegAtrMult),
       lockMaxBlueLegPercent: Boolean(locks?.lockMaxBlueLegPercent),
       lockMaxBreakoutAtr: Boolean(locks?.lockMaxBreakoutAtr),
+      lockMaxCandlesToEnter: Boolean(locks?.lockMaxCandlesToEnter),
       lockMaxRiskReward: Boolean(locks?.lockMaxRiskReward),
       lockTimeStopCandles: Boolean(locks?.lockTimeStopCandles),
       lockMaxPositionToRiskRatio: Boolean(locks?.lockMaxPositionToRiskRatio),
@@ -5855,6 +5875,7 @@ app.post('/api/optimizer/start', async (req, res) => {
       optBlueLegAtrMult: Number(locks?.optBlueLegAtrMult ?? cfg?.blueLegAtrMultiplier ?? cfg?.optBlueLegAtrMult ?? 3.0),
       optMaxBlueLegPercent: Number(locks?.optMaxBlueLegPercent ?? cfg?.maxBlueLegPercent ?? cfg?.optMaxBlueLegPercent ?? 55),
       optMaxBreakoutAtr: Number(locks?.optMaxBreakoutAtr ?? cfg?.maxBreakoutAtrMultiplier ?? cfg?.optMaxBreakoutAtr ?? 3.5),
+      optMaxCandlesToEnter: Number(locks?.optMaxCandlesToEnter ?? cfg?.maxCandlesToEnter ?? cfg?.optMaxCandlesToEnter ?? 100),
       optMaxRiskReward: Number(locks?.optMaxRiskReward ?? cfg?.maxRiskReward ?? cfg?.optMaxRiskReward ?? 2.5),
       optTimeStopCandles: Number(locks?.optTimeStopCandles ?? cfg?.timeStopCandles ?? cfg?.optTimeStopCandles ?? 80),
       optMaxPositionToRiskRatio: Number(locks?.optMaxPositionToRiskRatio ?? cfg?.maxPositionToRiskRatio ?? cfg?.optMaxPositionToRiskRatio ?? 300),
@@ -5876,6 +5897,7 @@ app.post('/api/optimizer/start', async (req, res) => {
       'blueLegAtrMultiplier',
       'maxBlueLegPercent',
       'maxBreakoutAtrMultiplier',
+      'maxCandlesToEnter',
       'maxRiskReward',
       'timeStopCandles',
       'maxPositionToRiskRatio',
@@ -5910,6 +5932,7 @@ app.post('/api/optimizer/start', async (req, res) => {
       blueLegAtrMultiplier: { lockProp: 'lockBlueLegAtrMult', valProp: 'optBlueLegAtrMult' },
       maxBlueLegPercent: { lockProp: 'lockMaxBlueLegPercent', valProp: 'optMaxBlueLegPercent' },
       maxBreakoutAtrMultiplier: { lockProp: 'lockMaxBreakoutAtr', valProp: 'optMaxBreakoutAtr' },
+      maxCandlesToEnter: { lockProp: 'lockMaxCandlesToEnter', valProp: 'optMaxCandlesToEnter' },
       maxRiskReward: { lockProp: 'lockMaxRiskReward', valProp: 'optMaxRiskReward' },
       timeStopCandles: { lockProp: 'lockTimeStopCandles', valProp: 'optTimeStopCandles' },
       maxPositionToRiskRatio: { lockProp: 'lockMaxPositionToRiskRatio', valProp: 'optMaxPositionToRiskRatio' },
@@ -6389,6 +6412,8 @@ interface ServerActiveSignal {
   timeframe?: string;
   posSide: 'LONG' | 'SHORT';
   side: 'BUY' | 'SELL';
+  orderType?: 'MARKET' | 'LIMIT';
+  limitEntryPrice?: number;
   curPrice: number;
   stopLoss: number;
   takeProfit: number;
@@ -6830,6 +6855,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
   try {
     let availableBalance = cfg.capital || 1000;
     let openXtPositions: any[] = [];
+    let openXtOrders: any[] = [];
 
     if (cfg.exchange === 'xt') {
       try {
@@ -6853,12 +6879,28 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
       } catch (e) {
         // ignore
       }
+
+      try {
+        const ordRes = await requestXtApi('GET', '/future/trade/v1/order/list', 'application/x-www-form-urlencoded', { state: 'UNFINISHED', page: 1, size: 100 });
+        const rawItems = ordRes?.result?.items || (Array.isArray(ordRes?.result) ? ordRes.result : []);
+        if (ordRes && ordRes.returnCode === 0 && Array.isArray(rawItems)) {
+          openXtOrders = rawItems;
+        }
+      } catch (e) {
+        // ignore
+      }
     }
 
     // Set of currently open coin symbols on exchange (e.g. 'injusdt', 'clousdt')
     const openXtSymbolsSet = new Set<string>(
       openXtPositions.map((p: any) => (p.symbol || '').toLowerCase().replace(/[-_]/g, ''))
     );
+    const openXtOrderById = new Map<string, any>();
+    const openXtOrderSymbolsSet = new Set<string>();
+    for (const ord of openXtOrders) {
+      if (ord?.orderId) openXtOrderById.set(String(ord.orderId), ord);
+      if (ord?.symbol) openXtOrderSymbolsSet.add((ord.symbol || '').toLowerCase().replace(/[-_]/g, ''));
+    }
 
     // Read active trades tracked in PostgreSQL
     let activeDbTrades: any[] = [];
@@ -6868,19 +6910,20 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
       console.warn('[ServerLiveScanner] Error reading active trades from PostgreSQL:', dbErr.message);
     }
 
-    // Reconcile: identify positions closed on exchange and mark them CLOSED in DB
+    // Reconcile: identify positions/limit-orders closed or expired on exchange and mark them CLOSED in DB
     const closedTradeIds: string[] = [];
     const activeTfToTradeMap = new Map<string, any>(); // timeframe -> active db trade
     const activePositionSymbols = new Set<string>(openXtSymbolsSet);
 
     for (const dbTrade of activeDbTrades) {
       const cleanDbSym = (dbTrade.symbol || '').toLowerCase().replace(/[-_]/g, '');
+      const tradeTf = dbTrade.timeframe || cfg.timeframe || '5m';
+      const tfMs = getTimeframeMs(tradeTf);
+      const openTimeMs = dbTrade.created_at ? new Date(dbTrade.created_at).getTime() : Date.now();
+      const candlesElapsed = Math.floor((Date.now() - openTimeMs) / tfMs);
+
       if (openXtSymbolsSet.has(cleanDbSym)) {
-        // Position is actively open on exchange!
-        const tradeTf = dbTrade.timeframe || cfg.timeframe || '5m';
-        const tfMs = getTimeframeMs(tradeTf);
-        const openTimeMs = dbTrade.created_at ? new Date(dbTrade.created_at).getTime() : Date.now();
-        const candlesElapsed = Math.floor((Date.now() - openTimeMs) / tfMs);
+        // Position is actively open (filled) on exchange!
         const maxTimeStopCandles = cfg.timeStopCandles || 80;
 
         // Check if Time-Stop condition is triggered for this position
@@ -6920,8 +6963,37 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
           activeTfToTradeMap.set(tradeTf, dbTrade);
           activePositionSymbols.add(cleanDbSym);
         }
+      } else if (
+        (dbTrade.order_id && openXtOrderById.has(String(dbTrade.order_id))) ||
+        openXtOrderSymbolsSet.has(cleanDbSym)
+      ) {
+        // Pending unfilled LIMIT order still resting on XT! Enforce maxCandlesToEnter expiration.
+        const maxExpireCandles = cfg.maxCandlesToEnter || 100;
+        if (candlesElapsed >= maxExpireCandles) {
+          if (cfg.exchange === 'xt' && cfg.isLiveExecution) {
+            try {
+              if (dbTrade.order_id) {
+                await requestXtApi('POST', '/future/trade/v1/order/cancel', 'application/json', { orderId: dbTrade.order_id });
+              } else {
+                await requestXtApi('POST', '/future/trade/v1/order/cancel-all', 'application/x-www-form-urlencoded', { symbol: toXtSymbol(dbTrade.symbol) });
+              }
+            } catch (cancelErr: any) {
+              console.warn('[ServerLiveScanner] Error canceling expired limit order:', cancelErr.message);
+            }
+          }
+          closedTradeIds.push(dbTrade.id);
+          addServerScannerLog(
+            'warning',
+            `⌛ انقضای سفارش لیمیت [${tradeTf}]: سفارش ${dbTrade.symbol.toUpperCase()} پس از ${candlesElapsed} کندل (سقف ${maxExpireCandles}) پر نشد و در صرافی XT لغو گردید.`,
+            dbTrade.symbol,
+            tradeTf
+          );
+        } else {
+          activeTfToTradeMap.set(tradeTf, dbTrade);
+          activePositionSymbols.add(cleanDbSym);
+        }
       } else {
-        // Position was closed on exchange (hit Take Profit, Stop Loss, or closed manually)!
+        // Position was closed on exchange (hit Take Profit, Stop Loss, or canceled manually)!
         closedTradeIds.push(dbTrade.id);
       }
     }
@@ -6930,7 +7002,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
       await markLiveTradesClosedInDb(closedTradeIds);
       addServerScannerLog(
         'info',
-        `🔄 همگام‌سازی دیتابیس با صرافی: ${closedTradeIds.length} معامله بسته شده در صرافی (با تارگت، حد ضرر یا Time-Stop) در دیتابیس علامت‌گذاری و تایم‌فریم آنها برای معامله جدید آزاد شد.`
+        `🔄 همگام‌سازی دیتابیس با صرافی: ${closedTradeIds.length} معامله/سفارش پایان‌یافته در دیتابیس بسته شد و تایم‌فریم آنها آزاد گردید.`
       );
     }
 
@@ -7305,7 +7377,12 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
               }
             } catch {}
 
-            // Calculate exact Stop Loss and verify SL Breach, Chase Guard, and Capped TP Parity at live execution price
+            const isLimitOrderSignal = chosen.orderType === 'LIMIT' && (chosen.limitEntryPrice || chosen.curPrice) > 0;
+            const targetLimitPrice = isLimitOrderSignal
+              ? parseFloat((chosen.limitEntryPrice || chosen.curPrice).toFixed(priceDecimals))
+              : livePrice;
+
+            // Calculate exact Stop Loss and verify SL Breach, Chase Guard, and Capped TP Parity
             const rawStopLoss = chosen.stopLoss;
             const finalStopLoss = parseFloat(rawStopLoss.toFixed(priceDecimals));
 
@@ -7320,55 +7397,56 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
               continue;
             }
 
-            const liveStopDist = Math.abs(livePrice - finalStopLoss);
+            const execEntryPrice = isLimitOrderSignal ? targetLimitPrice : livePrice;
+            const liveStopDist = Math.abs(execEntryPrice - finalStopLoss);
             if (liveStopDist <= 0) {
               if (isSinglePositionMode) isPlacingGlobalOrder = false;
               addServerScannerLog('warning', `⚠️ رد سیگنال ${chosen.symbol.toUpperCase()}: فاصله استاپ تا قیمت ورود صفر است.`, chosen.symbol, currentTf);
               continue;
             }
 
-            const refEntry = chosen.signalEntryPrice && chosen.signalEntryPrice > 0 ? chosen.signalEntryPrice : chosen.curPrice;
-            const refStopDist = chosen.signalStopDist && chosen.signalStopDist > 0 ? chosen.signalStopDist : Math.abs(refEntry - rawStopLoss);
-            if (refStopDist > 0 && liveStopDist > refStopDist * 1.25) {
-              if (isSinglePositionMode) isPlacingGlobalOrder = false;
-              addServerScannerLog(
-                'warning',
-                `⛔ رد سیگنال ${chosen.symbol.toUpperCase()} [${currentTf}]: فاصله استاپ لحظه‌ای (${((liveStopDist / refStopDist) * 100).toFixed(0)}%) بیش از ۲۵٪ کشیده شده (Chase Guard).`,
-                chosen.symbol,
-                currentTf
-              );
-              continue;
-            }
-
-            if (chosen.signalTakeProfit && chosen.signalTakeProfit > 0) {
-              const refTpDist = Math.abs(chosen.signalTakeProfit - refEntry);
-              const liveProgress = refTpDist > 0
-                ? (chosen.posSide === 'LONG' ? (livePrice - refEntry) / refTpDist : (refEntry - livePrice) / refTpDist)
-                : 0;
-              if (liveProgress >= 0.35) {
+            if (!isLimitOrderSignal) {
+              const refEntry = chosen.signalEntryPrice && chosen.signalEntryPrice > 0 ? chosen.signalEntryPrice : chosen.curPrice;
+              const refStopDist = chosen.signalStopDist && chosen.signalStopDist > 0 ? chosen.signalStopDist : Math.abs(refEntry - rawStopLoss);
+              if (refStopDist > 0 && liveStopDist > refStopDist * 1.25) {
                 if (isSinglePositionMode) isPlacingGlobalOrder = false;
                 addServerScannerLog(
                   'warning',
-                  `⛔ رد سیگنال ${chosen.symbol.toUpperCase()} [${currentTf}]: ${(liveProgress * 100).toFixed(0)}% از مسیر تارگت قبلاً طی شده است (Chase Guard).`,
+                  `⛔ رد سیگنال ${chosen.symbol.toUpperCase()} [${currentTf}]: فاصله استاپ لحظه‌ای (${((liveStopDist / refStopDist) * 100).toFixed(0)}%) بیش از ۲۵٪ کشیده شده (Chase Guard).`,
                   chosen.symbol,
                   currentTf
                 );
                 continue;
               }
+
+              if (chosen.signalTakeProfit && chosen.signalTakeProfit > 0) {
+                const refTpDist = Math.abs(chosen.signalTakeProfit - refEntry);
+                const liveProgress = refTpDist > 0
+                  ? (chosen.posSide === 'LONG' ? (livePrice - refEntry) / refTpDist : (refEntry - livePrice) / refTpDist)
+                  : 0;
+                if (liveProgress >= 0.35) {
+                  if (isSinglePositionMode) isPlacingGlobalOrder = false;
+                  addServerScannerLog(
+                    'warning',
+                    `⛔ رد سیگنال ${chosen.symbol.toUpperCase()} [${currentTf}]: ${(liveProgress * 100).toFixed(0)}% از مسیر تارگت قبلاً طی شده است (Chase Guard).`,
+                    chosen.symbol,
+                    currentTf
+                  );
+                  continue;
+                }
+              }
             }
 
-            // Capped TP Parity: match targetRR from livePrice but never stretch farther than Backtest's signalTakeProfit
-            const rrTakeProfit = chosen.posSide === 'LONG'
-              ? livePrice + liveStopDist * targetRR
-              : livePrice - liveStopDist * targetRR;
-            const rawTakeProfit = (chosen.signalTakeProfit && chosen.signalTakeProfit > 0)
-              ? (chosen.posSide === 'LONG' ? Math.min(chosen.signalTakeProfit, rrTakeProfit) : Math.max(chosen.signalTakeProfit, rrTakeProfit))
-              : rrTakeProfit;
+            // Compute exact targetRR (e.g. 2.25) directly from actual execEntryPrice and finalStopLoss
+            const rawTakeProfit = chosen.posSide === 'LONG'
+              ? execEntryPrice + liveStopDist * targetRR
+              : execEntryPrice - liveStopDist * targetRR;
 
             const finalTakeProfit = parseFloat(rawTakeProfit.toFixed(priceDecimals));
-            if (chosen.posSide === 'LONG' ? finalTakeProfit <= livePrice : finalTakeProfit >= livePrice) {
+            const tpRefPrice = isLimitOrderSignal ? execEntryPrice : livePrice;
+            if (chosen.posSide === 'LONG' ? finalTakeProfit <= tpRefPrice : finalTakeProfit >= tpRefPrice) {
               if (isSinglePositionMode) isPlacingGlobalOrder = false;
-              addServerScannerLog('warning', `⛔ رد سیگنال ${chosen.symbol.toUpperCase()} [${currentTf}]: قیمت لحظه‌ای از تارگت بکتست عبور کرده است.`, chosen.symbol, currentTf);
+              addServerScannerLog('warning', `⛔ رد سیگنال ${chosen.symbol.toUpperCase()} [${currentTf}]: ${isLimitOrderSignal ? 'تارگت نامعتبر نسبت به قیمت لیمیت' : 'قیمت لحظه‌ای از تارگت عبور کرده است'}.`, chosen.symbol, currentTf);
               continue;
             }
 
@@ -7378,9 +7456,13 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
 
             const entryFeeRate = (cfg.entryCommissionPercent ?? 0.06) / 100;
             const exitFeeRate = (cfg.exitCommissionPercent ?? 0.06) / 100;
+            const sizingPriceRef = isLimitOrderSignal
+              ? (chosen.posSide === 'LONG' ? Math.min(targetLimitPrice, livePrice) : Math.max(targetLimitPrice, livePrice))
+              : livePrice;
+
             const xtSizing = calculateXtRiskBudgetedOrder({
               riskBudget: targetRiskUsdt,
-              entryPrice: livePrice,
+              entryPrice: sizingPriceRef,
               stopLoss: finalStopLoss,
               symbol: xtSymbol,
               contractSize: symMeta.contractSize,
@@ -7409,7 +7491,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
               if (isSinglePositionMode) isPlacingGlobalOrder = false;
               addServerScannerLog(
                 'warning',
-                `⛔ رد سیگنال ${chosen.symbol.toUpperCase()} [${currentTf}] در قیمت لحظه‌ای: نسبت حجم/ریسک (${livePosToRisk.toFixed(1)}×) از سقف مجاز (${liveMaxRatio}×) عبور کرد.`,
+                `⛔ رد سیگنال ${chosen.symbol.toUpperCase()} [${currentTf}] در قیمت ورود: نسبت حجم/ریسک (${livePosToRisk.toFixed(1)}×) از سقف مجاز (${liveMaxRatio}×) عبور کرد.`,
                 chosen.symbol,
                 currentTf
               );
@@ -7431,11 +7513,13 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
             let validTriggerStopPrice: number | undefined = undefined;
 
             if (chosen.posSide === 'LONG') {
-              if (finalTakeProfit > livePrice) validTriggerProfitPrice = finalTakeProfit;
-              if (finalStopLoss < livePrice && finalStopLoss > 0) validTriggerStopPrice = finalStopLoss;
+              const tpFloor = isLimitOrderSignal ? execEntryPrice : Math.max(livePrice, execEntryPrice);
+              if (finalTakeProfit > tpFloor) validTriggerProfitPrice = finalTakeProfit;
+              if (finalStopLoss < Math.min(livePrice, execEntryPrice) && finalStopLoss > 0) validTriggerStopPrice = finalStopLoss;
             } else {
-              if (finalTakeProfit < livePrice && finalTakeProfit > 0) validTriggerProfitPrice = finalTakeProfit;
-              if (finalStopLoss > livePrice) validTriggerStopPrice = finalStopLoss;
+              const tpCeil = isLimitOrderSignal ? execEntryPrice : Math.min(livePrice, execEntryPrice);
+              if (finalTakeProfit < tpCeil && finalTakeProfit > 0) validTriggerProfitPrice = finalTakeProfit;
+              if (finalStopLoss > Math.max(livePrice, execEntryPrice)) validTriggerStopPrice = finalStopLoss;
             }
 
             if (!validTriggerStopPrice) {
@@ -7447,11 +7531,15 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
             const orderPayload: any = {
               symbol: xtSymbol,
               orderSide: chosen.side,
-              orderType: 'MARKET',
+              orderType: isLimitOrderSignal ? 'LIMIT' : 'MARKET',
               positionSide: chosen.posSide,
               origQty: orderQty,
               triggerStopPrice: validTriggerStopPrice,
             };
+            if (isLimitOrderSignal) {
+              orderPayload.price = targetLimitPrice;
+              orderPayload.timeInForce = 'GTC';
+            }
             if (validTriggerProfitPrice) orderPayload.triggerProfitPrice = validTriggerProfitPrice;
 
             const execRecord: any = {
@@ -7462,11 +7550,12 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
               timeframe: currentTf,
               side: chosen.side,
               posSide: chosen.posSide,
+              orderType: orderPayload.orderType,
               contractQty: orderQty,
               contractSize: xtSizing.contractSize,
               coinQty: xtSizing.effectiveCoinQty,
               nominalUsdt: xtSizing.nominalUsdt,
-              curPrice: livePrice,
+              curPrice: execEntryPrice,
               stopLoss: finalStopLoss,
               takeProfit: finalTakeProfit,
               riskReward: targetRR,
@@ -7506,11 +7595,77 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
 
               if (orderRes && orderRes.returnCode === 0) {
                 const orderId = orderRes.result?.orderId || (typeof orderRes.result === 'string' || typeof orderRes.result === 'number' ? String(orderRes.result) : 'ثبت شد');
+                let recordedEntryPrice = execEntryPrice;
+                let recordedTakeProfit = finalTakeProfit;
+
+                // Post-fill R:R precision sync for MARKET orders (adjust TP on XT if actual fill price drifted due to spread/slippage)
+                if (!isLimitOrderSignal && validTriggerProfitPrice) {
+                  try {
+                    await sleep(450);
+                    const [posCheckRes, profitCheckRes] = await Promise.all([
+                      requestXtApi('GET', '/future/user/v1/position/list', 'application/x-www-form-urlencoded', { symbol: xtSymbol }).catch(() => null),
+                      requestXtApi('GET', '/future/trade/v1/entrust/profit-list', 'application/x-www-form-urlencoded', { ps: '20', symbol: xtSymbol }).catch(() => null),
+                    ]);
+                    const posItems = Array.isArray(posCheckRes?.result) ? posCheckRes.result : [];
+                    const openPos = posItems.find(
+                      (p: any) => p.symbol === xtSymbol && p.positionSide === chosen.posSide && parseFloat(p.positionSize || p.holdAmount || '0') > 0
+                    );
+                    const actualFillEntry = openPos ? parseFloat(openPos.entryPrice || openPos.openPrice || '0') : 0;
+                    if (
+                      actualFillEntry > 0 &&
+                      (chosen.posSide === 'LONG' ? actualFillEntry > finalStopLoss : actualFillEntry < finalStopLoss)
+                    ) {
+                      const actualSlDist = Math.abs(actualFillEntry - finalStopLoss);
+                      const syncedTp = parseFloat(
+                        (chosen.posSide === 'LONG'
+                          ? actualFillEntry + actualSlDist * targetRR
+                          : actualFillEntry - actualSlDist * targetRR
+                        ).toFixed(priceDecimals)
+                      );
+                      const isTpValid = chosen.posSide === 'LONG' ? syncedTp > actualFillEntry : syncedTp < actualFillEntry;
+                      if (isTpValid && Math.abs(syncedTp - finalTakeProfit) > 0) {
+                        const profItems = Array.isArray(profitCheckRes?.result?.items) ? profitCheckRes.result.items : [];
+                        const activeProfit = profItems.find(
+                          (p: any) =>
+                            p.symbol === xtSymbol &&
+                            p.positionSide === chosen.posSide &&
+                            p.state !== 'PLATFORM_REVOCATION' &&
+                            p.state !== 'TRIGGERED' &&
+                            p.state !== 'CANCELED' &&
+                            p.state !== 'REVOKED'
+                        );
+                        if (activeProfit?.profitId) {
+                          const updRes = await requestXtApi('POST', '/future/trade/v1/entrust/update-profit-stop', 'application/json', {
+                            profitId: activeProfit.profitId,
+                            triggerProfitPrice: syncedTp,
+                            triggerStopPrice: finalStopLoss,
+                          });
+                          if (updRes && updRes.returnCode === 0) {
+                            recordedEntryPrice = actualFillEntry;
+                            recordedTakeProfit = syncedTp;
+                            execRecord.curPrice = actualFillEntry;
+                            execRecord.takeProfit = syncedTp;
+                            addServerScannerLog(
+                              'info',
+                              `🎯 همگام‌سازی دقیق تارگت ${xtSymbol.toUpperCase()} پس از لغزش مارکت: ورود واقعی ${actualFillEntry} | تارگت اصلاح‌شده ${syncedTp} (R:R دقیق 1:${targetRR})`,
+                              chosen.symbol,
+                              currentTf
+                            );
+                          }
+                        }
+                      }
+                    }
+                  } catch {}
+                }
+
                 execRecord.status = 'SUCCESS';
                 execRecord.orderId = orderId;
+                const orderKindLabel = isLimitOrderSignal
+                  ? `لیمیت (LIMIT در ${recordedEntryPrice} | انقضا: ${cfg.maxCandlesToEnter || 100} کندل)`
+                  : `مارکت (MARKET در ${recordedEntryPrice})`;
                 addServerScannerLog(
                   'success',
-                  `✅ سفارش زنده فیوچرز در تایم‌فریم ${currentTf} با موفقیت در صرافی XT ثبت شد (Order ID: ${orderId}) | حجم: ${orderQty} قرارداد (${xtSizing.effectiveCoinQty} واحد، ارزش: $${xtSizing.nominalUsdt}) | استاپ: ${finalStopLoss} | تارگت: ${finalTakeProfit} | نسبت R:R: 1:${targetRR}`,
+                  `✅ سفارش زنده فیوچرز (${orderKindLabel}) در تایم‌فریم ${currentTf} با موفقیت در صرافی XT ثبت شد (Order ID: ${orderId}) | حجم: ${orderQty} قرارداد (${xtSizing.effectiveCoinQty} واحد، ارزش: $${xtSizing.nominalUsdt}) | استاپ: ${finalStopLoss} | تارگت: ${recordedTakeProfit} | نسبت R:R: 1:${targetRR}`,
                   chosen.symbol,
                   currentTf
                 );
@@ -7526,11 +7681,11 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
                   timeframe: currentTf,
                   side: chosen.side,
                   posSide: chosen.posSide,
-                  price: livePrice,
+                  price: recordedEntryPrice,
                   amount: orderQty,
                   status: 'ACTIVE',
                   stopLoss: finalStopLoss,
-                  takeProfit: finalTakeProfit,
+                  takeProfit: recordedTakeProfit,
                   riskReward: targetRR,
                   strategyName: cfg.strategyId,
                   payloadJson: JSON.stringify(orderPayload),

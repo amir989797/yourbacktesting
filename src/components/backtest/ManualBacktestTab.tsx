@@ -45,8 +45,8 @@ import { Timeframe, ZigZagSettings } from '../../types/crypto';
 import { BacktestResultItem, GLOBAL_CANDLE_CACHE } from './types';
 
 export interface ManualBacktestTabProps {
-  selectedStrategyId: 'strategy_1_e_breakout' | 'strategy_2_next_pivot';
-  setSelectedStrategyId: (val: 'strategy_1_e_breakout' | 'strategy_2_next_pivot') => void;
+  selectedStrategyId: 'strategy_1_e_breakout' | 'strategy_2_next_pivot' | 'strategy_3_ab_midpoint';
+  setSelectedStrategyId: (val: 'strategy_1_e_breakout' | 'strategy_2_next_pivot' | 'strategy_3_ab_midpoint') => void;
   isScanning: boolean;
   selectedAllowedSymbols: string[];
   onOpenAllowedPairsModal: () => void;
@@ -99,6 +99,8 @@ export interface ManualBacktestTabProps {
   setOptMaxBreakoutAtr: (val: number) => void;
   optMaxRiskReward: number;
   setOptMaxRiskReward: (val: number) => void;
+  maxCandlesToEnter?: number;
+  setMaxCandlesToEnter?: (val: number) => void;
   optMaxPositionToRiskRatio?: number;
   setOptMaxPositionToRiskRatio?: (val: number) => void;
   optTimeStopEnabled: boolean;
@@ -229,6 +231,8 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
   setOptMaxBreakoutAtr,
   optMaxRiskReward,
   setOptMaxRiskReward,
+  maxCandlesToEnter = 100,
+  setMaxCandlesToEnter,
   optMaxPositionToRiskRatio = 300,
   setOptMaxPositionToRiskRatio,
   optTimeStopEnabled,
@@ -306,6 +310,7 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                   >
                     <option value="strategy_1_e_breakout">استراتژی ۱: شکست نقطه E (تارگت A / استاپ F)</option>
                     <option value="strategy_2_next_pivot">استراتژی ۲: اولین تشکیل لگ بعد از F (تارگت R:R)</option>
+                    <option value="strategy_3_ab_midpoint">استراتژی ۳: لیمیت وسط AB با برگشت از D یا F (استاپ A / تارگت R:R)</option>
                   </select>
                 </div>
 
@@ -559,7 +564,7 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                     <label className="text-[10px] font-semibold text-gray-400 block mb-1">حداکثر R:R:</label>
                     <input
                       type="number"
-                      min={1}
+                      min={0.1}
                       max={20}
                       step={0.05}
                       value={optMaxRiskReward === 0 || optMaxRiskReward ? optMaxRiskReward : ''}
@@ -624,6 +629,26 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       disabled={isScanning || !optTimeStopEnabled}
                       className="w-full px-1 py-1 bg-[#171d28] border border-[#2e394e] rounded-lg text-cyan-300 text-xs font-mono font-bold text-center focus:outline-none disabled:opacity-50"
                       title="حداکثر تعداد کندل ماندن در معامله (خروج زمانی چه در سود چه در ضرر)"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-sky-300 block mb-1" title="حداکثر تعداد کندل انتظار برای فعال‌شدن/پرشدن سفارش ورود (پس از آن منقضی می‌شود)">سقف کندل ورود (انقضا):</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={1000}
+                      step={5}
+                      value={maxCandlesToEnter === 0 || maxCandlesToEnter ? maxCandlesToEnter : ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setMaxCandlesToEnter?.(v === '' ? ('' as any) : parseInt(v, 10));
+                      }}
+                      onBlur={() => {
+                        if (!maxCandlesToEnter || isNaN(maxCandlesToEnter)) setMaxCandlesToEnter?.(100);
+                      }}
+                      disabled={isScanning}
+                      className="w-full px-1 py-1 bg-[#171d28] border border-sky-500/30 rounded-lg text-sky-300 text-xs font-mono font-bold text-center focus:outline-none focus:border-sky-400 disabled:opacity-50"
+                      title="مدت اعتبار سفارش ورود/لیمیت بر حسب تعداد کندل پس از تایید ستاپ (در صورت پرنشدن در این بازه، سفارش منقضی/لغو می‌شود)"
                     />
                   </div>
                 </div>

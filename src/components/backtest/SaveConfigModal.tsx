@@ -106,7 +106,7 @@ export const SaveConfigModal: React.FC<SaveConfigModalProps> = ({
               <span>پارامترهای موجود در این کانفیگ:</span>
             </div>
             <div className="grid grid-cols-2 gap-2 text-[11px] text-gray-300 font-mono">
-              <div>استراتژی: <strong className="text-white font-sans">{selectedStrategyId === 'strategy_1_e_breakout' ? 'استراتژی ۱' : 'استراتژی ۲'}</strong></div>
+              <div>استراتژی: <strong className="text-white font-sans">{selectedStrategyId === 'strategy_1_e_breakout' ? 'استراتژی ۱' : selectedStrategyId === 'strategy_3_ab_midpoint' ? 'استراتژی ۳ (لیمیت وسط AB)' : 'استراتژی ۲'}</strong></div>
               <div>تایم‌فریم: <strong className="text-cyan-300">{timeframe}</strong></div>
               <div>سرمایه اولیه: <strong className="text-white">${capital.toLocaleString()}</strong></div>
               <div>درصد ریسک: <strong className="text-rose-400">{riskPercent}%</strong></div>

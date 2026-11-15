@@ -92,7 +92,7 @@ export const LoadConfigModal: React.FC<LoadConfigModalProps> = ({
                         {cfg.timeframe || '5m'}
                       </span>
                       <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#1a2336] text-amber-300 border border-[#2d3a50]">
-                        {cfg.selectedStrategyId === 'strategy_1_e_breakout' ? 'استراتژی ۱' : 'استراتژی ۲'}
+                        {cfg.selectedStrategyId === 'strategy_1_e_breakout' ? 'استراتژی ۱' : cfg.selectedStrategyId === 'strategy_3_ab_midpoint' ? 'استراتژی ۳' : 'استراتژی ۲'}
                       </span>
                     </div>
 

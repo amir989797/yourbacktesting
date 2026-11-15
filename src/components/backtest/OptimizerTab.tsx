@@ -23,8 +23,8 @@ import {
 import { AdaptiveRanges, OptimizationTrial, OptSortCol } from './types';
 
 export interface OptimizerTabProps {
-  selectedStrategyId: 'strategy_1_e_breakout' | 'strategy_2_next_pivot';
-  setSelectedStrategyId: (val: 'strategy_1_e_breakout' | 'strategy_2_next_pivot') => void;
+  selectedStrategyId: 'strategy_1_e_breakout' | 'strategy_2_next_pivot' | 'strategy_3_ab_midpoint';
+  setSelectedStrategyId: (val: 'strategy_1_e_breakout' | 'strategy_2_next_pivot' | 'strategy_3_ab_midpoint') => void;
   isOptimizing: boolean;
   timeframe: string;
   riskMode: 'percent' | 'fixed';
@@ -263,6 +263,8 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                     <span className="text-xs font-extrabold text-cyan-300 font-sans px-2.5 py-0.5 rounded-md bg-cyan-950/80 border border-cyan-500/40">
                       {selectedStrategyId === 'strategy_1_e_breakout'
                         ? 'استراتژی ۱: شکست نقطه E (تارگت A / استاپ F)'
+                        : selectedStrategyId === 'strategy_3_ab_midpoint'
+                        ? 'استراتژی ۳: لیمیت وسط AB با برگشت از D یا F (استاپ A / تارگت R:R)'
                         : 'استراتژی ۲: اولین تشکیل لگ بعد از F (تارگت R:R)'}
                     </span>
                   </div>
@@ -299,6 +301,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                 >
                   <option value="strategy_1_e_breakout">تغییر استراتژی به: شکست نقطه E</option>
                   <option value="strategy_2_next_pivot">تغییر استراتژی به: تشکیل لگ بعد از F</option>
+                  <option value="strategy_3_ab_midpoint">تغییر استراتژی به: لیمیت وسط AB (استراتژی ۳)</option>
                 </select>
 
                 <button
@@ -775,7 +778,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                         <input
                           type="number"
                           step={5}
-                          min={5}
+                          min={1}
                           value={adaptiveRanges.maxCandlesToEnter.min}
                           disabled={isOptimizing || lockMaxCandlesToEnter}
                           onChange={(e) => handleUpdateParamRange('maxCandlesToEnter', 'min', parseFloat(e.target.value) || 0)}
@@ -787,7 +790,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                         <input
                           type="number"
                           step={5}
-                          min={5}
+                          min={1}
                           value={adaptiveRanges.maxCandlesToEnter.max}
                           disabled={isOptimizing || lockMaxCandlesToEnter}
                           onChange={(e) => handleUpdateParamRange('maxCandlesToEnter', 'max', parseFloat(e.target.value) || 0)}
@@ -1299,11 +1302,11 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   <input
                     type="number"
                     step={5}
-                    min={5}
+                    min={1}
                     value={optMaxCandlesToEnter}
                     disabled={isOptimizing}
-                    onChange={(e) => setOptMaxCandlesToEnter?.(parseInt(e.target.value, 10) || 0)}
-                    placeholder="35"
+                    onChange={(e) => setOptMaxCandlesToEnter?.(parseInt(e.target.value, 10) || 1)}
+                    placeholder="100"
                     className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockMaxCandlesToEnter ? 'border-cyan-500/70 text-cyan-300 font-bold' : 'border-[#2e3a4e] text-cyan-300'} disabled:bg-[#1b202c] disabled:text-gray-500`}
                   />
                 </div>
@@ -1323,7 +1326,8 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   </div>
                   <input
                     type="number"
-                    step={0.25}
+                    min={0.1}
+                    step={0.05}
                     value={optMaxRiskReward}
                     disabled={isOptimizing}
                     onChange={(e) => setOptMaxRiskReward(parseFloat(e.target.value) || 0)}
@@ -1591,7 +1595,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   </div>
 
                   <div className="text-[11px] text-gray-400 font-mono bg-[#0d1017] px-3 py-1.5 rounded-xl border border-[#232c3d]">
-                    ATR:{bestWinningRow.atrPeriod} | MinC:{bestWinningRow.minCandles} | MinLong:{bestWinningRow.minCandlesForLongLeg} | BlueC:{bestWinningRow.minCandlesForBlueLeg ?? 3} | Mult:{bestWinningRow.atrMultiplier}x | LongMult:{bestWinningRow.longLegAtrMultiplier}x | BlueMult:{bestWinningRow.blueLegAtrMultiplier ?? 3}x | Blue%:{bestWinningRow.maxBlueLegPercent}% | Break:{bestWinningRow.maxBreakoutAtrMultiplier}x | R:R:{bestWinningRow.maxRiskReward} | Pos/Risk:{bestWinningRow.maxPositionToRiskRatio ?? 300}x | TimeStop:{bestWinningRow.timeStopCandles || 80}c
+                    ATR:{bestWinningRow.atrPeriod} | MinC:{bestWinningRow.minCandles} | MinLong:{bestWinningRow.minCandlesForLongLeg} | BlueC:{bestWinningRow.minCandlesForBlueLeg ?? 3} | Mult:{bestWinningRow.atrMultiplier}x | LongMult:{bestWinningRow.longLegAtrMultiplier}x | BlueMult:{bestWinningRow.blueLegAtrMultiplier ?? 3}x | Blue%:{bestWinningRow.maxBlueLegPercent}% | Break:{bestWinningRow.maxBreakoutAtrMultiplier}x | MaxWait:{bestWinningRow.maxCandlesToEnter ?? 100}c | R:R:{bestWinningRow.maxRiskReward} | Pos/Risk:{bestWinningRow.maxPositionToRiskRatio ?? 300}x | TimeStop:{bestWinningRow.timeStopCandles || 80}c
                   </div>
                 </div>
 
@@ -1715,6 +1719,8 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                       atrMultiplier: 'ضریب عادی',
                       blueLegAtrMultiplier: 'ضریب CD,EF',
                       maxRiskReward: 'R:R',
+                      maxCandlesToEnter: 'سقف کندل ورود',
+                      timeStopCandles: 'Time-Stop',
                     };
                     const colLabel = colLabels[String(optSortColumn)] || String(optSortColumn);
                     const dirLabel = optSortDirection === 'desc' ? 'بیشترین' : 'کمترین';
@@ -1747,6 +1753,9 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                       </th>
                       <th className="py-2.5 px-2 text-center">سقف آبی%</th>
                       <th className="py-2.5 px-2 text-center">نفوذ شکست</th>
+                      <th className="py-2.5 px-2 text-center text-cyan-300 cursor-pointer" onClick={() => handleOptSort('maxCandlesToEnter')} title="سقف تعداد کندل مهلت ورود/انقضای سفارش">
+                        سقف کندل ورود {renderOptSortArrow('maxCandlesToEnter')}
+                      </th>
                       <th className="py-2.5 px-2 text-center cursor-pointer" onClick={() => handleOptSort('maxRiskReward')}>
                         R:R {renderOptSortArrow('maxRiskReward')}
                       </th>
@@ -1756,9 +1765,6 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                       </th>
                       <th className="py-2.5 px-2 text-center text-amber-300 font-bold">
                         کارمزد کل
-                      </th>
-                      <th className="py-2.5 px-2 text-center text-cyan-300 font-bold">
-                        بازدهی (%)
                       </th>
                       <th className="py-2.5 px-2 text-center cursor-pointer" onClick={() => handleOptSort('winRate')}>
                         وین‌ریت {renderOptSortArrow('winRate')}
@@ -1808,6 +1814,9 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                             <td className="py-2 px-2 text-center text-blue-300">{row.blueLegAtrMultiplier !== undefined ? `${row.blueLegAtrMultiplier}×` : '—'}</td>
                             <td className="py-2 px-2 text-center text-gray-300">{row.maxBlueLegPercent}%</td>
                             <td className="py-2 px-2 text-center text-gray-300">{row.maxBreakoutAtrMultiplier}×</td>
+                            <td className="py-2 px-2 text-center font-bold text-cyan-300">
+                              {row.maxCandlesToEnter ? `${row.maxCandlesToEnter}c` : '100c'}
+                            </td>
                             <td className="py-2 px-2 text-center font-bold text-cyan-300">{row.maxRiskReward}</td>
                             <td className="py-2 px-2 text-center font-bold text-cyan-400">
                               {row.timeStopCandles ? `${row.timeStopCandles}c` : '80c'}
@@ -1817,9 +1826,6 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                             </td>
                             <td className="py-2 px-2 text-center text-amber-300 font-mono">
                               -{((row.totalFees || 0)).toLocaleString()}
-                            </td>
-                            <td className={`py-2 px-2 text-center font-bold ${row.netProfit >= 0 ? 'text-cyan-300' : 'text-rose-400'}`}>
-                              {capital > 0 ? `${row.netProfit >= 0 ? '+' : ''}${((row.netProfit / capital) * 100).toFixed(1)}%` : '—'}
                             </td>
                             <td className={`py-2 px-2 text-center font-bold ${row.winRate >= targetMinWinRate ? 'text-sky-400' : 'text-rose-400'}`}>
                               {row.winRate}%

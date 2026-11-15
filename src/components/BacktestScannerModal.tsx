@@ -45,7 +45,7 @@ import {
 } from '../services/binance';
 import { fetchXtPairs } from '../services/xt';
 import { calculateATR, calculateAtrZigZag, analyzeZigZagLegs } from '../utils/indicators';
-import { runStrategy1Backtest, runStrategy2Backtest } from '../utils/strategyEngine';
+import { runStrategy1Backtest, runStrategy2Backtest, runStrategy3Backtest } from '../utils/strategyEngine';
 import {
   saveTestConfigToFirestore,
   loadTestConfigsFromFirestore,
@@ -190,7 +190,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const [activeTab, setActiveTab] = useState<'scanner' | 'optimizer' | 'stats'>('scanner');
 
   // Strategy selection (پیش‌فرض: استراتژی ۲ مطابق تنظیمات نهایی کاربر)
-  const [selectedStrategyId, setSelectedStrategyId] = useState<'strategy_1_e_breakout' | 'strategy_2_next_pivot'>(
+  const [selectedStrategyId, setSelectedStrategyId] = useState<'strategy_1_e_breakout' | 'strategy_2_next_pivot' | 'strategy_3_ab_midpoint'>(
     'strategy_2_next_pivot'
   );
 
@@ -256,7 +256,24 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     return 0.04; // میانگین اسلیپیج واقعی استاپ مارکت در صرافی XT
   });
   const commissionPercent = parseFloat((entryCommissionPercent + exitCommissionPercent).toFixed(4));
-  const [maxCandlesToEnter, setMaxCandlesToEnter] = useState<number>(100);
+  const [maxCandlesToEnter, setMaxCandlesToEnter] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('backtest_max_candles_to_enter');
+      if (saved !== null) {
+        const parsed = parseInt(saved, 10);
+        if (!isNaN(parsed) && parsed > 0) return parsed;
+      }
+    } catch {}
+    return 100;
+  });
+  const handleSetMaxCandlesToEnter = (val: number) => {
+    setMaxCandlesToEnter(val);
+    try {
+      if (typeof val === 'number' && !isNaN(val) && val > 0) {
+        localStorage.setItem('backtest_max_candles_to_enter', String(val));
+      }
+    } catch {}
+  };
   const [timeframe, setTimeframe] = useState<Timeframe>('5m');
   const [candleHistoryLimit, setCandleHistoryLimit] = useState<number>(5000);
   const [universeOption, setUniverseOption] = useState<'all_market' | 'all_futures' | 'all_spot' | 'top_50' | 'top_30'>(() => {
@@ -596,6 +613,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
 
   const [optMaxRiskReward, setOptMaxRiskReward] = useState<number>(2.25);
   const [lockMaxRiskReward, setLockMaxRiskReward] = useState<boolean>(false);
+  const [lockMaxCandlesToEnter, setLockMaxCandlesToEnter] = useState<boolean>(false);
 
   const [optTimeStopEnabled, setOptTimeStopEnabled] = useState<boolean>(() => {
     try {
@@ -1815,7 +1833,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   // ۱. ذخیره و فراخوانی کانفیگ پارامترهای تست (Test Config Parameters Only)
   // =========================================================
   const handleOpenSaveConfigModal = () => {
-    const stratName = selectedStrategyId === 'strategy_1_e_breakout' ? 'استراتژی ۱' : 'استراتژی ۲';
+    const stratName =
+      selectedStrategyId === 'strategy_1_e_breakout'
+        ? 'استراتژی ۱'
+        : selectedStrategyId === 'strategy_3_ab_midpoint'
+        ? 'استراتژی ۳'
+        : 'استراتژی ۲';
     const dateStr = new Date().toLocaleDateString('fa-IR');
     const timeStr = new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
     const defaultName = `کانفیگ ${stratName} [${timeframe}] - ${dateStr} ${timeStr}`;
@@ -2588,6 +2611,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       const stratTitle =
         selectedStrategyId === 'strategy_1_e_breakout'
           ? 'استراتژی ۱: شکست نقطه E (تارگت A / استاپ F)'
+          : selectedStrategyId === 'strategy_3_ab_midpoint'
+          ? 'استراتژی ۳: لیمیت وسط AB پس از تایید B (استاپ A / تارگت R:R)'
           : 'استراتژی ۲: اولین تشکیل لگ بعد از F (تارگت R:R)';
       ctx.fillText(
         `${stratTitle}  |  تایم‌فریم: ${timeframe}  |  دامنه: فیوچرز  |  تاریخ: ${new Date().toLocaleDateString('fa-IR')} ${new Date().toLocaleTimeString('fa-IR')}`,
@@ -2825,6 +2850,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       blueLegAtrMultiplier?: number;
       maxBlueLegPercent: number;
       maxBreakoutAtrMultiplier: number;
+      maxCandlesToEnter?: number;
       maxRiskReward: number;
       timeStopCandles?: number;
     },
@@ -2909,7 +2935,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         slSlippagePercent,
         exchange: selectedExchange,
         maxRiskReward: params.maxRiskReward,
-        maxCandlesToEnter,
+        maxCandlesToEnter: params.maxCandlesToEnter || maxCandlesToEnter,
         maxTradesPerLeg: 1,
         showOnChart: false,
         noConcurrentPositions: true, // در سطح تک‌ارز: عدم ورود به معامله جدید تا خروج پوزیشن قبلی همان ارز
@@ -2919,7 +2945,17 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       };
 
       let res;
-      if (selectedStrategyId === 'strategy_2_next_pivot') {
+      if (selectedStrategyId === 'strategy_3_ab_midpoint') {
+        res = runStrategy3Backtest(
+          candles,
+          points,
+          legs,
+          tempConfig,
+          atrMetrics.atrValues,
+          params.atrMultiplier,
+          params.minCandles
+        );
+      } else if (selectedStrategyId === 'strategy_2_next_pivot') {
         res = runStrategy2Backtest(
           candles,
           points,
@@ -3083,6 +3119,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       blueLegAtrMultiplier: optBlueLegAtrMult,
       maxBlueLegPercent: optMaxBlueLegPercent,
       maxBreakoutAtrMultiplier: optMaxBreakoutAtr,
+      maxCandlesToEnter,
       maxRiskReward: optMaxRiskReward,
       maxPositionToRiskRatio: optMaxPositionToRiskRatio,
       timeStopCandles: optTimeStopCandles,
@@ -3167,6 +3204,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     blueLegAtrMultiplier: number;
     maxBlueLegPercent: number;
     maxBreakoutAtrMultiplier: number;
+    maxCandlesToEnter: number;
     maxRiskReward: number;
     timeStopCandles: number;
   } | null => {
@@ -3228,6 +3266,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         blueLegAtrMultiplier: sampleParam(ranges.blueLegAtrMultiplier, lockBlueLegAtrMult, optBlueLegAtrMult),
         maxBlueLegPercent: sampleParam(ranges.maxBlueLegPercent, lockMaxBlueLegPercent, optMaxBlueLegPercent),
         maxBreakoutAtrMultiplier: sampleParam(ranges.maxBreakoutAtrMultiplier, lockMaxBreakoutAtr, optMaxBreakoutAtr),
+        maxCandlesToEnter: sampleParam(ranges.maxCandlesToEnter, lockMaxCandlesToEnter, maxCandlesToEnter),
         maxRiskReward: sampleParam(ranges.maxRiskReward, lockMaxRiskReward, optMaxRiskReward),
         maxPositionToRiskRatio: sampleParam(ranges.maxPositionToRiskRatio, lockMaxPositionToRiskRatio, optMaxPositionToRiskRatio),
         timeStopCandles: sampleParam(ranges.timeStopCandles, lockTimeStopCandles, optTimeStopCandles),
@@ -3345,6 +3384,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           lockBlueLegAtrMult,
           lockMaxBlueLegPercent,
           lockMaxBreakoutAtr,
+          lockMaxCandlesToEnter,
           lockMaxRiskReward,
           lockMaxPositionToRiskRatio,
           lockTimeStopCandles,
@@ -3357,6 +3397,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           optBlueLegAtrMult: Number(optBlueLegAtrMult),
           optMaxBlueLegPercent: Number(optMaxBlueLegPercent),
           optMaxBreakoutAtr: Number(optMaxBreakoutAtr),
+          optMaxCandlesToEnter: Number(maxCandlesToEnter),
           optMaxRiskReward: Number(optMaxRiskReward),
           optMaxPositionToRiskRatio: Number(optMaxPositionToRiskRatio),
           optTimeStopCandles: Number(optTimeStopCandles),
@@ -3448,6 +3489,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     }
     setOptMaxBlueLegPercent(trial.maxBlueLegPercent);
     setOptMaxBreakoutAtr(trial.maxBreakoutAtrMultiplier);
+    if (trial.maxCandlesToEnter !== undefined && trial.maxCandlesToEnter > 0) {
+      handleSetMaxCandlesToEnter(trial.maxCandlesToEnter);
+    }
     setOptMaxRiskReward(trial.maxRiskReward);
     if (trial.maxPositionToRiskRatio) {
       setOptMaxPositionToRiskRatio(trial.maxPositionToRiskRatio);
@@ -3466,6 +3510,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         ...(trial.blueLegAtrMultiplier !== undefined ? { blueLegAtrMultiplier: trial.blueLegAtrMultiplier } : {}),
         maxBlueLegPercent: trial.maxBlueLegPercent,
         maxBreakoutAtrMultiplier: trial.maxBreakoutAtrMultiplier,
+        ...(trial.maxCandlesToEnter !== undefined && trial.maxCandlesToEnter > 0 ? { maxCandlesToEnter: trial.maxCandlesToEnter } : {}),
         maxPositionToRiskRatio: trial.maxPositionToRiskRatio || 300,
       });
     }
@@ -3498,6 +3543,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         blueLegAtrMultiplier: trial.blueLegAtrMultiplier ?? optBlueLegAtrMult,
         maxBlueLegPercent: trial.maxBlueLegPercent,
         maxBreakoutAtrMultiplier: trial.maxBreakoutAtrMultiplier,
+        maxCandlesToEnter: trial.maxCandlesToEnter ?? maxCandlesToEnter,
         maxRiskReward: trial.maxRiskReward,
         timeStopEnabled: optTimeStopEnabled,
         timeStopCandles: trial.timeStopCandles,
@@ -3887,6 +3933,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setOptMaxBreakoutAtr={setOptMaxBreakoutAtr}
             optMaxRiskReward={optMaxRiskReward}
             setOptMaxRiskReward={setOptMaxRiskReward}
+            maxCandlesToEnter={maxCandlesToEnter}
+            setMaxCandlesToEnter={handleSetMaxCandlesToEnter}
             optMaxPositionToRiskRatio={optMaxPositionToRiskRatio}
             setOptMaxPositionToRiskRatio={setOptMaxPositionToRiskRatio}
             optTimeStopEnabled={optTimeStopEnabled}
@@ -4046,6 +4094,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setOptMaxBreakoutAtr={setOptMaxBreakoutAtr}
             optMaxRiskReward={optMaxRiskReward}
             setOptMaxRiskReward={setOptMaxRiskReward}
+            optMaxCandlesToEnter={maxCandlesToEnter}
+            setOptMaxCandlesToEnter={handleSetMaxCandlesToEnter}
+            lockMaxCandlesToEnter={lockMaxCandlesToEnter}
+            setLockMaxCandlesToEnter={setLockMaxCandlesToEnter}
             optMaxPositionToRiskRatio={optMaxPositionToRiskRatio}
             setOptMaxPositionToRiskRatio={setOptMaxPositionToRiskRatio}
             lockTimeStopCandles={lockTimeStopCandles}
