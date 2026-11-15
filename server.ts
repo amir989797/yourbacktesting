@@ -887,6 +887,15 @@ app.get('/api/xt/balance', async (req, res) => {
   }
 });
 
+function parsePositiveNum(...vals: any[]): number {
+  for (const v of vals) {
+    if (v === undefined || v === null || v === '') continue;
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 0;
+}
+
 // XT Open Positions
 // XT Open Positions (Merged with exact floatingPL, active TP/SL from profit-list, and coin quantities)
 app.get('/api/xt/positions', async (req, res) => {
@@ -912,7 +921,7 @@ app.get('/api/xt/positions', async (req, res) => {
 
     // Filter out 0-size closed positions
     const listItems = rawListItems.filter((item: any) => {
-      const size = parseFloat(item.positionSize || item.holdAmount || '0');
+      const size = parsePositiveNum(item.positionSize, item.holdAmount, item.availableCloseSize, item.amount);
       return size > 0;
     });
 
@@ -949,7 +958,7 @@ app.get('/api/xt/positions', async (req, res) => {
         }
       } catch {}
 
-      const contractQty = parseFloat(item.positionSize || item.holdAmount || '0');
+      const contractQty = parsePositiveNum(item.positionSize, item.holdAmount, item.availableCloseSize, item.amount);
       const contractSize = parseFloat(item.contractSize || '1');
       const coinQty = item.coinQty !== undefined
         ? parseFloat(item.coinQty)
@@ -1092,7 +1101,7 @@ async function closePositionOnExchange(
     const posRes = await requestXtApi('GET', '/future/trade/v1/position/list/active', 'application/x-www-form-urlencoded', { symbol: xtSymbol }, apiKey, secretKey);
     const match = posRes?.result?.find((p: any) => p.symbol === xtSymbol && (p.positionSide === positionSide || !p.positionSide));
     if (match) {
-      qtyToClose = Math.floor(parseFloat(match.availableCloseSize || match.positionSize || match.holdAmount || match.amount || '0'));
+      qtyToClose = Math.floor(parsePositiveNum(match.availableCloseSize, match.positionSize, match.holdAmount, match.amount));
     }
   } catch {}
 
@@ -1101,7 +1110,7 @@ async function closePositionOnExchange(
       const posRes2 = await requestXtApi('GET', '/future/user/v1/position/list', 'application/x-www-form-urlencoded', { symbol: xtSymbol }, apiKey, secretKey);
       const match2 = posRes2?.result?.find((p: any) => p.symbol === xtSymbol && (p.positionSide === positionSide || !p.positionSide));
       if (match2) {
-        qtyToClose = Math.floor(parseFloat(match2.availableCloseSize || match2.positionSize || match2.holdAmount || match2.amount || '0'));
+        qtyToClose = Math.floor(parsePositiveNum(match2.availableCloseSize, match2.positionSize, match2.holdAmount, match2.amount));
       }
     } catch {}
   }
@@ -1383,19 +1392,30 @@ async function getEnrichedXtPositionHistory(
   const xtOrders = aux.orders || [];
   const xtProfits = aux.profits || [];
 
-  const formatted = items.map((item: any) => {
+  // Filter out still-open positions (working === true or no closeTime) and phantom 0-size fee settlement rows
+  const closedItems = items.filter((item: any) => {
+    if (item?.working === true) return false;
+    const closeTimeNum = Number(item?.closeTime || 0);
+    if (!Number.isFinite(closeTimeNum) || closeTimeNum <= 0) return false;
+    const hasAnySize =
+      parsePositiveNum(item.closePositionSize, item.maxPositionSize, item.positionSize, item.holdAmount) > 0;
+    const hasAnyPrice =
+      parsePositiveNum(item.closeOpenPrice, item.entryPrice, item.closePrice) > 0;
+    return hasAnySize || hasAnyPrice;
+  });
+
+  const formatted = closedItems.map((item: any) => {
     const sym = item.symbol || '';
     const cleanSym = sym.toLowerCase().replace(/[-_]/g, '');
     const posSide = (item.positionSide || 'LONG').toUpperCase() as 'LONG' | 'SHORT';
     const exitSide = posSide === 'LONG' ? 'SELL' : 'BUY';
     const entryOrderSide = posSide === 'LONG' ? 'BUY' : 'SELL';
-    const entryPrice = parseFloat(item.closeOpenPrice || item.entryPrice || '0');
-    const exitPrice = parseFloat(item.closePrice || '0');
+    const entryPrice = parsePositiveNum(item.closeOpenPrice, item.entryPrice);
+    const exitPrice = parsePositiveNum(item.closePrice);
     const grossProfit = parseFloat(item.closeProfit || '0');
     const fee = parseFloat(item.totalFee || '0');
     const fundFee = parseFloat(item.totalFundFee || '0');
     const netProfit = parseFloat((grossProfit + fee + fundFee).toFixed(6));
-    const amount = parseFloat(item.closePositionSize || item.maxPositionSize || '0');
 
     const entryTimeMs = Number(item.openTime || item.ctime || item.closeTime || Date.now());
     const exitTimeMs = Number(item.closeTime || item.mtime || item.ctime || Date.now());
@@ -1460,6 +1480,38 @@ async function getEnrichedXtPositionHistory(
         matchOrder = o;
       }
     }
+
+    // 3b. Fallback filled order matcher (even if order had no TP/SL attached) for volume recovery
+    const candidateAnyOrders = xtOrders.filter(
+      (o: any) =>
+        (o.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym &&
+        (!o.positionSide || String(o.positionSide).toUpperCase() === posSide) &&
+        parsePositiveNum(o.executedQty, o.origQty) > 0
+    );
+    let matchAnyOrder: any = matchOrder;
+    if (!matchAnyOrder) {
+      let bestAnyDiff = 15 * 60 * 1000;
+      for (const o of candidateAnyOrders) {
+        const oTs = Number(o.createdTime || o.updatedTime || 0);
+        if (!oTs) continue;
+        const diff = Math.min(Math.abs(oTs - entryTimeMs), Math.abs(oTs - exitTimeMs));
+        if (diff < bestAnyDiff) {
+          bestAnyDiff = diff;
+          matchAnyOrder = o;
+        }
+      }
+    }
+
+    const amount = parsePositiveNum(
+      item.closePositionSize,
+      item.maxPositionSize,
+      item.positionSize,
+      item.holdAmount,
+      matchExec?.contractQty,
+      matchDb?.amount,
+      matchAnyOrder?.executedQty,
+      matchAnyOrder?.origQty
+    );
 
     // 4. Match closest XT profit/stop entrust within trade window [entryTimeMs - 2m, exitTimeMs + 2m]
     const candidateProfits = xtProfits.filter(
@@ -2947,7 +2999,7 @@ function getRangeDatasetId(exchange: string, timeframe: string, startTime?: numb
   return `range_${ex}_${tf}_${s}_${e}`;
 }
 
-const ENGINE_PARITY_VERSION = 'xt_parity_v3';
+const ENGINE_PARITY_VERSION = 'xt_parity_v4';
 
 const MEME_ALIAS_NORM_MAP: Record<string, string> = {
   'PEPEUSDT': '1000PEPEUSDT',
@@ -3050,11 +3102,19 @@ function isExactStoredConfigMatch(
   const isRrMatch = numEq(candidate.maxRiskReward, storedCfg.optMaxRiskReward ?? storedCfg.maxRiskReward);
   const isTimeStopCandlesMatch = Number(candidate.timeStopCandles || 80) === Number(storedCfg.optTimeStopCandles ?? storedCfg.timeStopCandles ?? 80);
   const isPosRatioMatch = Number(candidate.maxPositionToRiskRatio ?? 300) === Number(storedCfg.optMaxPositionToRiskRatio ?? storedCfg.maxPositionToRiskRatio ?? 300);
+  const isMinAtrPctMatch = numEq(
+    candidate.minAtrPercent ?? baseConfig.minAtrPercent ?? 0.25,
+    storedCfg.optMinAtrPercent ?? storedCfg.minAtrPercent ?? 0.25
+  );
+  const isS2RsiMatch = numEq(
+    candidate.s2RsiThreshold ?? baseConfig.s2RsiThreshold ?? 38,
+    storedCfg.optS2RsiThreshold ?? storedCfg.s2RsiThreshold ?? 38
+  );
 
   if (
     !isAtrMatch || !isAtrMultMatch || !isMinCandlesMatch || !isMinLongMatch || !isMinBlueMatch ||
     !isLongMultMatch || !isBlueMultMatch || !isBlueMatch || !isBreakoutMatch || !isRrMatch ||
-    !isTimeStopCandlesMatch || !isPosRatioMatch
+    !isTimeStopCandlesMatch || !isPosRatioMatch || !isMinAtrPctMatch || !isS2RsiMatch
   ) {
     return false;
   }
@@ -3340,12 +3400,20 @@ async function runServerBacktestCycle(params: {
   const timeStopEnabled = cfg.timeStopEnabled !== false && cfg.optTimeStopEnabled !== false;
   const timeStopCandles = Number(cfg.optTimeStopCandles ?? cfg.timeStopCandles) || 80;
   const maxPositionToRiskRatio = Number(cfg.optMaxPositionToRiskRatio ?? cfg.maxPositionToRiskRatio) || 300;
+  const rawMinAtrPct = cfg.optMinAtrPercent ?? cfg.minAtrPercent;
+  const minAtrPercent = rawMinAtrPct !== undefined && rawMinAtrPct !== null && !isNaN(Number(rawMinAtrPct))
+    ? Math.max(0, Number(rawMinAtrPct))
+    : 0.25;
+  const rawS2Rsi = cfg.optS2RsiThreshold ?? cfg.s2RsiThreshold;
+  const s2RsiThreshold = rawS2Rsi !== undefined && rawS2Rsi !== null && !isNaN(Number(rawS2Rsi))
+    ? Number(rawS2Rsi)
+    : 38;
 
   if (effectiveExchange === 'xt') {
     await getXtSymbolsOpenApiMap().catch(() => {});
   }
 
-  console.log(`[Server Backtest] 🚀 Starting cycle: Dataset=${datasetId}, Exchange=${effectiveExchange}, Mode=${incrementalSync ? 'INCREMENTAL_SYNC' : (forceRedownload ? 'FORCE_REDOWNLOAD' : 'SMART_DB')}, Strategy=${strategyId}, ATR=${atrPeriod}, Mult=${atrMultiplier}, minCandles=${minCandles}, minLong=${minCandlesForLongLeg}, minBlue=${minCandlesForBlueLeg}, longMult=${longLegAtrMultiplier}, blueMult=${blueLegAtrMultiplier}, blue%=${maxBlueLegPercent}, breakoutMult=${maxBreakoutAtrMultiplier}, RR=${maxRiskReward}, slSlip=${slSlippagePercent}%, timeStop=${timeStopCandles}, maxPosRatio=${maxPositionToRiskRatio}, capital=${capital}, risk=${riskPercent}%`);
+  console.log(`[Server Backtest] 🚀 Starting cycle: Dataset=${datasetId}, Exchange=${effectiveExchange}, Mode=${incrementalSync ? 'INCREMENTAL_SYNC' : (forceRedownload ? 'FORCE_REDOWNLOAD' : 'SMART_DB')}, Strategy=${strategyId}, ATR=${atrPeriod}, Mult=${atrMultiplier}, minCandles=${minCandles}, minLong=${minCandlesForLongLeg}, minBlue=${minCandlesForBlueLeg}, longMult=${longLegAtrMultiplier}, blueMult=${blueLegAtrMultiplier}, blue%=${maxBlueLegPercent}, breakoutMult=${maxBreakoutAtrMultiplier}, RR=${maxRiskReward}, minATR%=${minAtrPercent}, s2RSI=${s2RsiThreshold}, slSlip=${slSlippagePercent}%, timeStop=${timeStopCandles}, maxPosRatio=${maxPositionToRiskRatio}, capital=${capital}, risk=${riskPercent}%`);
 
   const processSymbolStrategy = (pair: { symbol: string; baseAsset: string; quoteAsset: string }, candles: CandleData[]) => {
     if (!candles || candles.length < 50) return null;
@@ -3378,6 +3446,10 @@ async function runServerBacktestCycle(params: {
       timeStopCandles,
       maxPositionToRiskRatio,
       optMaxPositionToRiskRatio: maxPositionToRiskRatio,
+      minAtrPercent,
+      optMinAtrPercent: minAtrPercent,
+      s2RsiThreshold,
+      optS2RsiThreshold: s2RsiThreshold,
     };
 
     let backtestRes: any;
@@ -3962,6 +4034,10 @@ async function runServerBacktestCycle(params: {
         timeStopEnabled,
         timeStopCandles,
         maxPositionToRiskRatio,
+        minAtrPercent,
+        optMinAtrPercent: minAtrPercent,
+        s2RsiThreshold,
+        optS2RsiThreshold: s2RsiThreshold,
         startTime: toMsSafe(startTime),
         endTime: toMsSafe(endTime),
         symbolsSignature: computeSymbolsSignature(symbols),
@@ -4591,6 +4667,8 @@ interface ServerOptimizerTrial {
   maxRiskReward: number;
   timeStopCandles: number;
   maxPositionToRiskRatio?: number;
+  minAtrPercent?: number;
+  s2RsiThreshold?: number;
   totalTrades: number;
   winTrades: number;
   lossTrades: number;
@@ -4642,6 +4720,8 @@ const ALLOWED_OPTIMIZER_SORT_COLUMNS = new Set([
   'maxRiskReward',
   'timeStopCandles',
   'maxPositionToRiskRatio',
+  'minAtrPercent',
+  's2RsiThreshold',
   'totalFees',
   'qualityScore',
 ]);
@@ -4694,8 +4774,10 @@ function generateConfigHash(p: {
   maxRiskReward: number;
   timeStopCandles?: number;
   maxPositionToRiskRatio?: number;
+  minAtrPercent?: number;
+  s2RsiThreshold?: number;
 }): string {
-  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.minCandlesForBlueLeg ?? 3}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.blueLegAtrMultiplier ?? 3}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxCandlesToEnter ?? 100}_${p.maxRiskReward}_${p.timeStopCandles || 80}_${p.maxPositionToRiskRatio ?? 300}`;
+  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.minCandlesForBlueLeg ?? 3}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.blueLegAtrMultiplier ?? 3}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxCandlesToEnter ?? 100}_${p.maxRiskReward}_${p.timeStopCandles || 80}_${p.maxPositionToRiskRatio ?? 300}_${p.minAtrPercent ?? 0.25}_${p.s2RsiThreshold ?? 38}`;
 }
 
 function calculateQualityScore(trial: {
@@ -4757,6 +4839,8 @@ function refineAdaptiveRangesSmart(
     'maxRiskReward',
     'timeStopCandles',
     'maxPositionToRiskRatio',
+    'minAtrPercent',
+    's2RsiThreshold',
   ];
 
   const lockKeyMap: Record<string, { lockProp: string; valProp: string }> = {
@@ -4773,6 +4857,8 @@ function refineAdaptiveRangesSmart(
     maxRiskReward: { lockProp: 'lockMaxRiskReward', valProp: 'optMaxRiskReward' },
     timeStopCandles: { lockProp: 'lockTimeStopCandles', valProp: 'optTimeStopCandles' },
     maxPositionToRiskRatio: { lockProp: 'lockMaxPositionToRiskRatio', valProp: 'optMaxPositionToRiskRatio' },
+    minAtrPercent: { lockProp: 'lockMinAtrPercent', valProp: 'optMinAtrPercent' },
+    s2RsiThreshold: { lockProp: 'lockS2RsiThreshold', valProp: 'optS2RsiThreshold' },
   };
 
   for (const key of keys) {
@@ -4817,12 +4903,16 @@ function refineAdaptiveRangesSmart(
       continue;
     }
 
-    const values = samplePool.map((t) => Number(t[key]) || 0);
+    const values = samplePool.map((t) => {
+      const v = Number(t[key] ?? 0);
+      return isNaN(v) ? 0 : v;
+    });
     let weightedSum = 0;
     let totalWeight = 0;
     for (const t of samplePool) {
       const weight = Math.max(1, t.netProfit > 0 ? t.netProfit : 1);
-      weightedSum += (Number(t[key]) || 0) * weight;
+      const v = Number(t[key] ?? 0);
+      weightedSum += (isNaN(v) ? 0 : v) * weight;
       totalWeight += weight;
     }
     const center = totalWeight > 0 ? weightedSum / totalWeight : values.reduce((a, b) => a + b, 0) / values.length;
@@ -4902,6 +4992,8 @@ function getDefaultRangesForTimeframe(timeframe: string): any {
       maxRiskReward: makeRange(1.5, 4.5, 0.25, 10.0, 2.5, 0.25),
       timeStopCandles: makeRange(20, 120, 5, 200, 80, 5),
       maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
+      minAtrPercent: makeRange(0.15, 0.55, 0.0, 1.5, 0.25, 0.05),
+      s2RsiThreshold: makeRange(30, 44, 0, 49, 38, 2),
     };
   }
 
@@ -4920,6 +5012,8 @@ function getDefaultRangesForTimeframe(timeframe: string): any {
       maxRiskReward: makeRange(1.5, 7.0, 0.25, 12.0, 3.5, 0.25),
       timeStopCandles: makeRange(20, 120, 5, 200, 60, 5),
       maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
+      minAtrPercent: makeRange(0.2, 0.8, 0.0, 2.0, 0.3, 0.05),
+      s2RsiThreshold: makeRange(30, 44, 0, 49, 38, 2),
     };
   }
 
@@ -4937,6 +5031,8 @@ function getDefaultRangesForTimeframe(timeframe: string): any {
     maxRiskReward: makeRange(1.5, 6.0, 0.25, 10.0, 3.0, 0.25),
     timeStopCandles: makeRange(20, 120, 5, 200, 80, 5),
     maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
+    minAtrPercent: makeRange(0.15, 0.65, 0.0, 1.5, 0.25, 0.05),
+    s2RsiThreshold: makeRange(30, 44, 0, 49, 38, 2),
   };
 }
 
@@ -4961,8 +5057,10 @@ function getNextCandidateFromAdaptiveRanges(
       return parseFloat(hardMin.toFixed(2));
     }
 
-    const curMin = Math.max(hardMin, Math.min(hardMax, Number(r.min) || hardMin));
-    const curMax = Math.min(hardMax, Math.max(hardMin, Number(r.max) || hardMax));
+    const rawCurMin = Number(r.min);
+    const rawCurMax = Number(r.max);
+    const curMin = Math.max(hardMin, Math.min(hardMax, isNaN(rawCurMin) ? hardMin : rawCurMin));
+    const curMax = Math.min(hardMax, Math.max(hardMin, isNaN(rawCurMax) ? hardMax : rawCurMax));
     const step = Number(r.step) > 0 ? Number(r.step) : 1;
 
     let candidateVal: number;
@@ -5010,6 +5108,8 @@ function getNextCandidateFromAdaptiveRanges(
       maxRiskReward: sampleParam(ranges.maxRiskReward, l.lockMaxRiskReward, l.optMaxRiskReward ?? 2.5),
       timeStopCandles: sampleParam(ranges.timeStopCandles, l.lockTimeStopCandles, l.optTimeStopCandles ?? 80),
       maxPositionToRiskRatio: sampleParam(ranges.maxPositionToRiskRatio, l.lockMaxPositionToRiskRatio, l.optMaxPositionToRiskRatio ?? 300),
+      minAtrPercent: sampleParam(ranges.minAtrPercent, l.lockMinAtrPercent, l.optMinAtrPercent ?? 0.25),
+      s2RsiThreshold: sampleParam(ranges.s2RsiThreshold, l.lockS2RsiThreshold, l.optS2RsiThreshold ?? 38),
     };
 
     const hash = generateConfigHash(candidate);
@@ -5371,6 +5471,14 @@ async function streamEvaluateDatasetFromPostgres(
         timeStopEnabled: baseConfig.timeStopEnabled,
         timeStopCandles: candidate.timeStopCandles || 80,
         maxPositionToRiskRatio: candidate.maxPositionToRiskRatio || 300,
+        minAtrPercent:
+          candidate.minAtrPercent !== undefined && candidate.minAtrPercent !== null && !isNaN(Number(candidate.minAtrPercent))
+            ? Math.max(0, Number(candidate.minAtrPercent))
+            : (baseConfig.minAtrPercent ?? 0.25),
+        s2RsiThreshold:
+          candidate.s2RsiThreshold !== undefined && candidate.s2RsiThreshold !== null && !isNaN(Number(candidate.s2RsiThreshold))
+            ? Number(candidate.s2RsiThreshold)
+            : (baseConfig.s2RsiThreshold ?? 38),
       };
 
       let backtestRes: any;
@@ -5411,6 +5519,8 @@ async function evaluateCombinationOnServer(
     maxRiskReward: number;
     timeStopCandles?: number;
     maxPositionToRiskRatio?: number;
+    minAtrPercent?: number;
+    s2RsiThreshold?: number;
   },
   entries: ServerCandleEntry[],
   strategyId: string,
@@ -5427,6 +5537,8 @@ async function evaluateCombinationOnServer(
     maxCandlesToEnter: number;
     noConcurrentPositions: boolean;
     timeStopEnabled: boolean;
+    minAtrPercent?: number;
+    s2RsiThreshold?: number;
   },
   constraints: {
     targetMaxDrawdown: number;
@@ -5486,6 +5598,14 @@ async function evaluateCombinationOnServer(
       timeStopEnabled: baseConfig.timeStopEnabled,
       timeStopCandles: params.timeStopCandles || 80,
       maxPositionToRiskRatio: params.maxPositionToRiskRatio || 300,
+      minAtrPercent:
+        params.minAtrPercent !== undefined && params.minAtrPercent !== null && !isNaN(Number(params.minAtrPercent))
+          ? Math.max(0, Number(params.minAtrPercent))
+          : (baseConfig.minAtrPercent ?? 0.25),
+      s2RsiThreshold:
+        params.s2RsiThreshold !== undefined && params.s2RsiThreshold !== null && !isNaN(Number(params.s2RsiThreshold))
+          ? Number(params.s2RsiThreshold)
+          : (baseConfig.s2RsiThreshold ?? 38),
     };
 
     let backtestRes: any;
@@ -5556,6 +5676,12 @@ async function runServerOptimizerLoop(
       maxRiskReward: Number(locks?.optMaxRiskReward ?? 2.5),
       timeStopCandles: Number(locks?.optTimeStopCandles ?? 80),
       maxPositionToRiskRatio: Number(locks?.optMaxPositionToRiskRatio ?? 300),
+      minAtrPercent: locks?.optMinAtrPercent !== undefined && locks?.optMinAtrPercent !== null && !isNaN(Number(locks.optMinAtrPercent))
+        ? Math.max(0, Number(locks.optMinAtrPercent))
+        : (baseConfig.minAtrPercent ?? 0.25),
+      s2RsiThreshold: locks?.optS2RsiThreshold !== undefined && locks?.optS2RsiThreshold !== null && !isNaN(Number(locks.optS2RsiThreshold))
+        ? Number(locks.optS2RsiThreshold)
+        : (baseConfig.s2RsiThreshold ?? 38),
     };
 
     let manualEval: any = null;
@@ -5828,6 +5954,15 @@ app.post('/api/optimizer/start', async (req, res) => {
     const noConcurrentPositions = Boolean(cfg.noConcurrentPositions !== false);
     const timeStopEnabled = cfg.timeStopEnabled !== false && cfg.optTimeStopEnabled !== false;
 
+    const rawOptMinAtr = cfg.optMinAtrPercent ?? cfg.minAtrPercent;
+    const baseMinAtrPercent = rawOptMinAtr !== undefined && rawOptMinAtr !== null && !isNaN(Number(rawOptMinAtr))
+      ? Math.max(0, Number(rawOptMinAtr))
+      : 0.25;
+    const rawOptRsi = cfg.optS2RsiThreshold ?? cfg.s2RsiThreshold;
+    const baseS2RsiThreshold = rawOptRsi !== undefined && rawOptRsi !== null && !isNaN(Number(rawOptRsi))
+      ? Number(rawOptRsi)
+      : 38;
+
     const baseConfig = {
       capital,
       riskMode,
@@ -5841,6 +5976,8 @@ app.post('/api/optimizer/start', async (req, res) => {
       maxCandlesToEnter,
       noConcurrentPositions,
       timeStopEnabled,
+      minAtrPercent: baseMinAtrPercent,
+      s2RsiThreshold: baseS2RsiThreshold,
       symbols: Array.isArray(symbols) ? symbols : [],
       startTime: startTime ? Number(startTime) : null,
       endTime: endTime ? Number(endTime) : null,
@@ -5852,6 +5989,8 @@ app.post('/api/optimizer/start', async (req, res) => {
       targetMinTrades: Number(constraints.targetMinTrades) || 100,
     };
 
+    const rawLockMinAtr = locks?.optMinAtrPercent ?? cfg?.optMinAtrPercent ?? cfg?.minAtrPercent;
+    const rawLockRsi = locks?.optS2RsiThreshold ?? cfg?.optS2RsiThreshold ?? cfg?.s2RsiThreshold;
     const effectiveLocks = {
       lockAtrPeriod: Boolean(locks?.lockAtrPeriod),
       lockMinCandles: Boolean(locks?.lockMinCandles),
@@ -5866,6 +6005,8 @@ app.post('/api/optimizer/start', async (req, res) => {
       lockMaxRiskReward: Boolean(locks?.lockMaxRiskReward),
       lockTimeStopCandles: Boolean(locks?.lockTimeStopCandles),
       lockMaxPositionToRiskRatio: Boolean(locks?.lockMaxPositionToRiskRatio),
+      lockMinAtrPercent: Boolean(locks?.lockMinAtrPercent),
+      lockS2RsiThreshold: Boolean(locks?.lockS2RsiThreshold),
       optAtrPeriod: Number(locks?.optAtrPeriod ?? cfg?.atrPeriod ?? cfg?.optAtrPeriod ?? 45),
       optMinCandles: Number(locks?.optMinCandles ?? cfg?.minCandles ?? cfg?.optMinCandles ?? 3),
       optMinCandlesLong: Number(locks?.optMinCandlesLong ?? cfg?.minCandlesForLongLeg ?? cfg?.optMinCandlesLong ?? 14),
@@ -5879,12 +6020,18 @@ app.post('/api/optimizer/start', async (req, res) => {
       optMaxRiskReward: Number(locks?.optMaxRiskReward ?? cfg?.maxRiskReward ?? cfg?.optMaxRiskReward ?? 2.5),
       optTimeStopCandles: Number(locks?.optTimeStopCandles ?? cfg?.timeStopCandles ?? cfg?.optTimeStopCandles ?? 80),
       optMaxPositionToRiskRatio: Number(locks?.optMaxPositionToRiskRatio ?? cfg?.maxPositionToRiskRatio ?? cfg?.optMaxPositionToRiskRatio ?? 300),
+      optMinAtrPercent: rawLockMinAtr !== undefined && rawLockMinAtr !== null && !isNaN(Number(rawLockMinAtr)) ? Math.max(0, Number(rawLockMinAtr)) : 0.25,
+      optS2RsiThreshold: rawLockRsi !== undefined && rawLockRsi !== null && !isNaN(Number(rawLockRsi)) ? Number(rawLockRsi) : 38,
     };
 
-    const initialRanges = {
-      ...getDefaultRangesForTimeframe(timeframe),
-      ...(ranges || serverOptimizerState.adaptiveRanges || {}),
-    };
+    const defaultTfRanges = getDefaultRangesForTimeframe(timeframe);
+    const incomingRanges = ranges || serverOptimizerState.adaptiveRanges || {};
+    const initialRanges: any = { ...defaultTfRanges };
+    for (const [rk, rv] of Object.entries(incomingRanges)) {
+      if (rv && typeof rv === 'object') {
+        initialRanges[rk] = { ...(defaultTfRanges[rk] || {}), ...rv };
+      }
+    }
 
     // Initialize and enforce immutable user boundaries on all parameters
     const paramKeys = [
@@ -5901,6 +6048,8 @@ app.post('/api/optimizer/start', async (req, res) => {
       'maxRiskReward',
       'timeStopCandles',
       'maxPositionToRiskRatio',
+      'minAtrPercent',
+      's2RsiThreshold',
     ];
     for (const key of paramKeys) {
       if (initialRanges[key]) {
@@ -5913,8 +6062,10 @@ app.post('/api/optimizer/start', async (req, res) => {
         r.userMin = hardMin;
         r.boundMax = hardMax;
         r.userMax = hardMax;
-        r.min = Math.max(hardMin, Math.min(hardMax, Number(r.min) || hardMin));
-        r.max = Math.min(hardMax, Math.max(hardMin, Number(r.max) || hardMax));
+        const rMinNum = Number(r.min);
+        const rMaxNum = Number(r.max);
+        r.min = Math.max(hardMin, Math.min(hardMax, isNaN(rMinNum) ? hardMin : rMinNum));
+        r.max = Math.min(hardMax, Math.max(hardMin, isNaN(rMaxNum) ? hardMax : rMaxNum));
         if (r.bestVal !== undefined) {
           r.bestVal = Math.max(hardMin, Math.min(hardMax, Number(r.bestVal)));
         }
@@ -5936,6 +6087,8 @@ app.post('/api/optimizer/start', async (req, res) => {
       maxRiskReward: { lockProp: 'lockMaxRiskReward', valProp: 'optMaxRiskReward' },
       timeStopCandles: { lockProp: 'lockTimeStopCandles', valProp: 'optTimeStopCandles' },
       maxPositionToRiskRatio: { lockProp: 'lockMaxPositionToRiskRatio', valProp: 'optMaxPositionToRiskRatio' },
+      minAtrPercent: { lockProp: 'lockMinAtrPercent', valProp: 'optMinAtrPercent' },
+      s2RsiThreshold: { lockProp: 'lockS2RsiThreshold', valProp: 'optS2RsiThreshold' },
     };
 
     for (const [k, m] of Object.entries(lockKeyMap)) {
@@ -6147,6 +6300,8 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
     const manualSlSlip = cfg.slSlippagePercent !== undefined && cfg.slSlippagePercent !== null
       ? Number(cfg.slSlippagePercent)
       : (manualExchange === 'xt' ? 0.04 : 0);
+    const rawEvalMinAtr = candidate?.minAtrPercent ?? cfg.optMinAtrPercent ?? cfg.minAtrPercent;
+    const rawEvalRsi = candidate?.s2RsiThreshold ?? cfg.optS2RsiThreshold ?? cfg.s2RsiThreshold;
     const baseConfig = {
       capital: Number(cfg.capital) || 10000,
       riskMode: cfg.riskMode || 'percent',
@@ -6160,6 +6315,8 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
       maxCandlesToEnter: Number(cfg.maxCandlesToEnter) || 100,
       noConcurrentPositions: Boolean(cfg.noConcurrentPositions !== false),
       timeStopEnabled: cfg.timeStopEnabled !== false && cfg.optTimeStopEnabled !== false,
+      minAtrPercent: rawEvalMinAtr !== undefined && rawEvalMinAtr !== null && !isNaN(Number(rawEvalMinAtr)) ? Math.max(0, Number(rawEvalMinAtr)) : 0.25,
+      s2RsiThreshold: rawEvalRsi !== undefined && rawEvalRsi !== null && !isNaN(Number(rawEvalRsi)) ? Number(rawEvalRsi) : 38,
       symbols: Array.isArray(symbols) ? symbols : [],
       startTime: startTime ? Number(startTime) : null,
       endTime: endTime ? Number(endTime) : null,
@@ -6465,6 +6622,8 @@ interface ServerLiveScannerConfig {
   slSlippagePercent?: number;
   timeStopEnabled?: boolean;
   timeStopCandles?: number;
+  minAtrPercent?: number;
+  s2RsiThreshold?: number;
   isLiveExecution?: boolean;
   userId: string;
 }
@@ -6591,6 +6750,8 @@ const serverScannerState = {
     slSlippagePercent: 0.04,
     timeStopEnabled: true,
     timeStopCandles: 80,
+    minAtrPercent: 0.25,
+    s2RsiThreshold: 38,
     isLiveExecution: false,
     userId: 'amir',
   } as ServerLiveScannerConfig,
@@ -7230,6 +7391,14 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
                     maxPositionToRiskRatio: cfg.maxPositionToRiskRatio ?? 300,
                     timeStopEnabled: cfg.timeStopEnabled !== false,
                     timeStopCandles: cfg.timeStopCandles ?? 80,
+                    minAtrPercent:
+                      cfg.minAtrPercent !== undefined && cfg.minAtrPercent !== null && !isNaN(Number(cfg.minAtrPercent))
+                        ? Math.max(0, Number(cfg.minAtrPercent))
+                        : 0.25,
+                    s2RsiThreshold:
+                      cfg.s2RsiThreshold !== undefined && cfg.s2RsiThreshold !== null && !isNaN(Number(cfg.s2RsiThreshold))
+                        ? Number(cfg.s2RsiThreshold)
+                        : 38,
                   },
                   availableBalance,
                   hasExistingPosition: false,

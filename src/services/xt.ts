@@ -122,7 +122,10 @@ export async function fetchXtPositions(symbol?: string): Promise<LivePosition[]>
       return data.result.map((item: any) => {
         const entryPrice = parseFloat(item.entryPrice || item.openPrice || '0');
         const markPrice = parseFloat(item.markPrice || item.curPrice || entryPrice.toString());
-        const contractQty = parseFloat(item.contractQty || item.positionSize || item.holdAmount || '0');
+        const contractQty =
+          [item.contractQty, item.positionSize, item.holdAmount, item.availableCloseSize, item.amount]
+            .map((v) => Number(v))
+            .find((n) => Number.isFinite(n) && n > 0) || 0;
         const contractSize = parseFloat(item.contractSize || '1');
         const coinQty = item.coinQty !== undefined ? parseFloat(item.coinQty) : parseFloat((contractQty * contractSize).toFixed(8));
         const leverage = parseInt(item.leverage || '10', 10);

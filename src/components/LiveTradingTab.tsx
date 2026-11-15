@@ -320,7 +320,12 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   const [tradeHistory, setTradeHistory] = useState<LiveTradeOrder[]>(() => {
     try {
       const saved = localStorage.getItem('live_trade_history_v1');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed.filter((t: any) => !(t?.exchange === 'xt' && Number(t?.amount || 0) <= 0));
+        }
+      }
     } catch {}
     return [];
   });
@@ -701,6 +706,26 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     } catch {}
     return exchange === 'binance' ? 0 : 0.04;
   });
+  const [minAtrPercent, setMinAtrPercent] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('livetrade_min_atr_percent');
+      if (saved !== null) {
+        const parsed = parseFloat(saved);
+        if (!isNaN(parsed)) return parsed;
+      }
+    } catch {}
+    return 0.25;
+  });
+  const [s2RsiThreshold, setS2RsiThreshold] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('livetrade_s2_rsi_threshold');
+      if (saved !== null) {
+        const parsed = parseFloat(saved);
+        if (!isNaN(parsed)) return parsed;
+      }
+    } catch {}
+    return 38;
+  });
 
   // 5. 5-Minute Auto-Scanner Loop State
   const [isAutoScanning, setIsAutoScanning] = useState<boolean>(false);
@@ -788,7 +813,17 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         if (history && history.length > 0) {
           setTradeHistory((prev) => {
             const exchangeIds = new Set(history.map((h) => h.id));
-            const localOnly = prev.filter((p) => !exchangeIds.has(p.id) && !history.some((h) => h.symbol === p.symbol && Math.abs((h.price || 0) - (p.price || 0)) < 0.0001));
+            const nowMs = Date.now();
+            const localOnly = prev.filter((p) => {
+              if (exchangeIds.has(p.id)) return false;
+              if (history.some((h) => h.symbol === p.symbol && Math.abs((h.price || 0) - (p.price || 0)) < 0.0001)) return false;
+              if (p.exchange !== 'xt') return true;
+              if (String(p.id || '').startsWith('close-') && Number(p.amount) > 0) {
+                const tMs = Number((p as any).exitTimeMs || (p as any).rawTimeMs || (p as any).time || 0);
+                return tMs > 0 && nowMs - tMs < 5 * 60 * 1000;
+              }
+              return false;
+            });
             return [...history, ...localOnly];
           });
         }
@@ -835,6 +870,14 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
             setMaxPositionToRiskRatio(best.maxPositionToRiskRatio);
             try { localStorage.setItem('livetrade_max_pos_to_risk_ratio', String(best.maxPositionToRiskRatio)); } catch {}
           }
+          if (best.minAtrPercent !== undefined && !isNaN(Number(best.minAtrPercent))) {
+            setMinAtrPercent(Number(best.minAtrPercent));
+            try { localStorage.setItem('livetrade_min_atr_percent', String(best.minAtrPercent)); } catch {}
+          }
+          if (best.s2RsiThreshold !== undefined && !isNaN(Number(best.s2RsiThreshold))) {
+            setS2RsiThreshold(Number(best.s2RsiThreshold));
+            try { localStorage.setItem('livetrade_s2_rsi_threshold', String(best.s2RsiThreshold)); } catch {}
+          }
 
           addLog('success', `🎯 بهترین کانفیگ بهینه‌ساز با وین‌ریت ${best.winRate}% و سود ${best.netProfit}% بارگذاری شد.`);
           return;
@@ -855,6 +898,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       setTimeStopEnabled(true);
       setTimeStopCandles(80);
       setMaxPositionToRiskRatio(300);
+      setMinAtrPercent(0.25);
+      setS2RsiThreshold(38);
       setRiskRewardRatio(3.0);
       addLog('info', '⚡ کانفیگ کالیبره‌شده اسکلپ ۵ دقیقه‌ای با موفقیت بارگذاری شد.');
     } catch {
@@ -899,6 +944,14 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         if (typeof cfg.timeStopEnabled === 'boolean') setTimeStopEnabled(cfg.timeStopEnabled);
         if (typeof cfg.timeStopCandles === 'number') setTimeStopCandles(cfg.timeStopCandles);
         if (typeof cfg.maxPositionToRiskRatio === 'number') setMaxPositionToRiskRatio(cfg.maxPositionToRiskRatio);
+        if (typeof cfg.minAtrPercent === 'number') {
+          setMinAtrPercent(cfg.minAtrPercent);
+          try { localStorage.setItem('livetrade_min_atr_percent', String(cfg.minAtrPercent)); } catch {}
+        }
+        if (typeof cfg.s2RsiThreshold === 'number') {
+          setS2RsiThreshold(cfg.s2RsiThreshold);
+          try { localStorage.setItem('livetrade_s2_rsi_threshold', String(cfg.s2RsiThreshold)); } catch {}
+        }
       }
 
       addLog('success', '🔄 تنظیمات فعال چارت و پنل استراتژی با موفقیت در اتاق ترید لود شدند.');
@@ -963,6 +1016,14 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       setMaxPositionToRiskRatio(cfg.optMaxPositionToRiskRatio);
       try { localStorage.setItem('livetrade_max_pos_to_risk_ratio', String(cfg.optMaxPositionToRiskRatio)); } catch {}
     }
+    if (cfg.optMinAtrPercent !== undefined && !isNaN(Number(cfg.optMinAtrPercent))) {
+      setMinAtrPercent(Number(cfg.optMinAtrPercent));
+      try { localStorage.setItem('livetrade_min_atr_percent', String(cfg.optMinAtrPercent)); } catch {}
+    }
+    if (cfg.optS2RsiThreshold !== undefined && !isNaN(Number(cfg.optS2RsiThreshold))) {
+      setS2RsiThreshold(Number(cfg.optS2RsiThreshold));
+      try { localStorage.setItem('livetrade_s2_rsi_threshold', String(cfg.optS2RsiThreshold)); } catch {}
+    }
 
     setIsLoadConfigModalOpen(false);
     showToast(`✅ کانفیگ «${cfg.name}» با موفقیت در اتاق ترید اعمال شد!`);
@@ -1024,6 +1085,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         optTimeStopEnabled: timeStopEnabled,
         optTimeStopCandles: timeStopCandles,
         optMaxPositionToRiskRatio: maxPositionToRiskRatio,
+        optMinAtrPercent: minAtrPercent,
+        optS2RsiThreshold: s2RsiThreshold,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -1140,6 +1203,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
             if (typeof config.slSlippagePercent === 'number') setSlSlippagePercent(config.slSlippagePercent);
             if (typeof config.timeStopEnabled === 'boolean') setTimeStopEnabled(config.timeStopEnabled);
             if (typeof config.timeStopCandles === 'number') setTimeStopCandles(config.timeStopCandles);
+            if (typeof config.minAtrPercent === 'number') setMinAtrPercent(config.minAtrPercent);
+            if (typeof config.s2RsiThreshold === 'number') setS2RsiThreshold(config.s2RsiThreshold);
           }
         }
 
@@ -1309,6 +1374,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         maxPositionToRiskRatio,
         timeStopEnabled,
         timeStopCandles,
+        minAtrPercent,
+        s2RsiThreshold,
       });
     }, 800);
     return () => clearTimeout(timer);
@@ -1340,6 +1407,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     maxPositionToRiskRatio,
     timeStopEnabled,
     timeStopCandles,
+    minAtrPercent,
+    s2RsiThreshold,
     syncConfigToServer,
   ]);
 
@@ -1409,6 +1478,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           maxPositionToRiskRatio,
           timeStopEnabled,
           timeStopCandles,
+          minAtrPercent,
+          s2RsiThreshold,
           userId: currentUser || 'amir',
         };
 
@@ -1729,6 +1800,12 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                   <span>• وضعیت همزمانی: <strong className="text-amber-300">{serverActiveConfig.noConcurrentPositions !== false ? 'تک‌پوزیشن کل (حداکثر ۱ معامله باز)' : 'هم‌زمان (حداکثر ۱ معامله در هر تایم‌فریم)'}</strong></span>
                   <span>• سقف ورود: <strong className="text-cyan-300">{serverActiveConfig.maxCandlesToEnter ?? 35}c</strong></span>
                   <span>• Time-Stop: <strong className="text-cyan-300">{serverActiveConfig.timeStopEnabled !== false ? `${serverActiveConfig.timeStopCandles ?? 80}c` : 'خاموش'}</strong></span>
+                  {serverActiveConfig.strategyId === 'strategy_2_next_pivot' && (
+                    <>
+                      <span>• حداقل ATR: <strong className="text-emerald-300">{(serverActiveConfig.minAtrPercent ?? 0.25) === 0 ? 'خاموش' : `${serverActiveConfig.minAtrPercent ?? 0.25}%`}</strong></span>
+                      <span>• RSI پیوت F: <strong className="text-sky-300">{(serverActiveConfig.s2RsiThreshold ?? 38) === 0 ? 'خاموش' : (serverActiveConfig.s2RsiThreshold ?? 38)}</strong></span>
+                    </>
+                  )}
                   <span>• واچ‌لیست: <strong className="text-cyan-300">{serverActiveConfig.symbols?.length || selectedSymbols?.length || 0} جفت‌ارز</strong></span>
                 </div>
                 {activeDbTrades.length > 0 && (
@@ -2371,6 +2448,78 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                   </div>
                 )}
               </div>
+
+              <div className="bg-[#141924] p-2.5 rounded-xl border border-emerald-500/40">
+                <span className="text-[10px] text-emerald-300 block font-bold" title="حداقل درصد ATR به قیمت ورود در استراتژی ۲ (۰ = خاموش)">۱۳. حداقل ATR% (S2):</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={5}
+                  step={0.05}
+                  value={minAtrPercent === 0 || minAtrPercent ? minAtrPercent : ''}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    if (raw === '') {
+                      setMinAtrPercent('' as any);
+                      return;
+                    }
+                    const parsed = parseFloat(raw);
+                    if (!isNaN(parsed) && parsed >= 0) {
+                      setMinAtrPercent(parsed);
+                      try { localStorage.setItem('livetrade_min_atr_percent', String(parsed)); } catch {}
+                    }
+                  }}
+                  onBlur={() => {
+                    if (
+                      minAtrPercent === ('' as any) ||
+                      minAtrPercent === null ||
+                      minAtrPercent === undefined ||
+                      isNaN(Number(minAtrPercent))
+                    ) {
+                      setMinAtrPercent(0.25);
+                      try { localStorage.setItem('livetrade_min_atr_percent', '0.25'); } catch {}
+                    }
+                  }}
+                  className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-emerald-500/30 rounded text-emerald-300 font-mono text-center font-bold text-xs"
+                  title="حداقل نوسان ATR بر حسب درصد از قیمت در لحظه ورود برای استراتژی ۲ (پیش‌فرض ۰.۲۵٪ — ۰ = خاموش)"
+                />
+              </div>
+
+              <div className="bg-[#141924] p-2.5 rounded-xl border border-sky-500/40">
+                <span className="text-[10px] text-sky-300 block font-bold" title="آستانه RSI(14) روی پیوت F در استراتژی ۲ (لانگ <= آستانه، شورت >= 100-آستانه — ۰ = خاموش)">۱۴. RSI پیوت F (S2):</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={49}
+                  step={1}
+                  value={s2RsiThreshold === 0 || s2RsiThreshold ? s2RsiThreshold : ''}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    if (raw === '') {
+                      setS2RsiThreshold('' as any);
+                      return;
+                    }
+                    const parsed = parseFloat(raw);
+                    if (!isNaN(parsed) && parsed >= 0) {
+                      setS2RsiThreshold(parsed);
+                      try { localStorage.setItem('livetrade_s2_rsi_threshold', String(parsed)); } catch {}
+                    }
+                  }}
+                  onBlur={() => {
+                    if (
+                      s2RsiThreshold === ('' as any) ||
+                      s2RsiThreshold === null ||
+                      s2RsiThreshold === undefined ||
+                      isNaN(Number(s2RsiThreshold))
+                    ) {
+                      setS2RsiThreshold(38);
+                      try { localStorage.setItem('livetrade_s2_rsi_threshold', '38'); } catch {}
+                    }
+                  }}
+                  className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-sky-500/30 rounded text-sky-300 font-mono text-center font-bold text-xs"
+                  title="آستانه RSI(14) روی کندل پیوت F برای استراتژی ۲: لانگ ≤ آستانه و شورت ≥ (100 - آستانه)؛ پیش‌فرض ۳۸ (۰ = خاموش)"
+                />
+              </div>
             </div>
 
             {/* چک‌باکس عدم ورود به معامله جدید در صورت وجود پوزیشن باز (تک‌پوزیشن) */}
@@ -2881,7 +3030,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                         <td className="py-2.5 px-3">
                           <div className="flex flex-col">
                             <div className="font-bold text-white flex items-center gap-1 font-mono">
-                              <span>{pos.contractQty ?? pos.amount}</span>
+                              <span>{Number(pos.contractQty) > 0 ? pos.contractQty : pos.amount}</span>
                               <span className="text-[10px] text-gray-400 font-sans">قرارداد</span>
                             </div>
                             <div className="text-[10px] text-cyan-300 font-mono">
@@ -3385,12 +3534,22 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 <tbody className="divide-y divide-[#18202d] font-mono">
                   {filteredHistory.map((order) => {
                     const cleanOrderSym = (order.symbol || '').toLowerCase().replace(/[-_]/g, '');
-                    const matchedDb = allDbTrades.find(
-                      (t) => (t.order_id && t.order_id === order.orderId) ||
-                        (t.id && t.id === order.id) ||
-                        ((t.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanOrderSym)
-                    );
+                    const orderEntryMs = Number((order as any).entryTimeMs || (order as any).rawTimeMs || 0);
+                    const matchedDb = allDbTrades.find((t) => {
+                      if (t.order_id && order.orderId && t.order_id === order.orderId) return true;
+                      if (t.id && order.id && t.id === order.id) return true;
+                      if ((t.symbol || '').toLowerCase().replace(/[-_]/g, '') !== cleanOrderSym) return false;
+                      if (order.positionSide && t.pos_side && String(t.pos_side).toUpperCase() !== String(order.positionSide).toUpperCase()) return false;
+                      if (orderEntryMs > 0 && t.created_at) {
+                        const diff = Math.abs(new Date(t.created_at).getTime() - orderEntryMs);
+                        return diff <= 30 * 60 * 1000;
+                      }
+                      return false;
+                    });
                     const orderTimeframe = order.timeframe || matchedDb?.timeframe || '5m';
+                    const displayAmount = Number(order.amount) > 0
+                      ? order.amount
+                      : (Number(matchedDb?.amount) > 0 ? Number(matchedDb.amount) : 0);
 
                     return (
                       <tr
@@ -3478,7 +3637,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                           })()}
                         </td>
                         <td className="py-2.5 px-3 text-gray-300 font-mono">
-                          <span>{order.amount}</span>
+                          <span>{displayAmount}</span>
                           <span className="text-[10px] text-gray-500 mr-1 font-sans">قرارداد</span>
                         </td>
                         <td className="py-2.5 px-3 text-center font-mono text-[11px]">
@@ -3580,6 +3739,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 <div>استراتژی: {selectedStrategy === 'strategy_1_e_breakout' ? 'شکست E (E-Breakout)' : selectedStrategy === 'strategy_3_ab_midpoint' ? 'لیمیت وسط AB (استراتژی ۳)' : 'پیوت بعدی (Next-Pivot)'}</div>
                 <div>تایم‌فریم: {tradeTimeframe} | دوره ATR: {atrPeriod} | ضریب: {atrMultiplier}</div>
                 <div>حداقل کندل: {minCandles} | اهرم: بیشترین اهرم مجاز (Max) | R:R: {riskRewardRatio}</div>
+                <div>حداقل ATR% (S2): {minAtrPercent === 0 ? 'خاموش' : `${minAtrPercent}%`} | RSI پیوت F (S2): {s2RsiThreshold === 0 ? 'خاموش' : s2RsiThreshold}</div>
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-2">

@@ -51,6 +51,8 @@ export interface OptimizationTrial {
   maxRiskReward: number;
   timeStopCandles?: number;
   maxPositionToRiskRatio?: number; // حداکثر نسبت ارزش پوزیشن به ریسک (پیش‌فرض 300)
+  minAtrPercent?: number; // حداقل نوسان ATR% نسبت به قیمت ورود (پیش‌فرض ۰.۲۵٪، صفر=غیرفعال)
+  s2RsiThreshold?: number; // آستانه RSI پیوت F در استراتژی ۲ (پیش‌فرض ۳۸، صفر=غیرفعال)
   // خروجی‌های شبیه‌سازی
   totalTrades: number;
   winTrades: number;
@@ -96,6 +98,8 @@ export interface AdaptiveRanges {
   maxRiskReward: ParameterRange;
   timeStopCandles: ParameterRange;
   maxPositionToRiskRatio: ParameterRange;
+  minAtrPercent: ParameterRange;
+  s2RsiThreshold: ParameterRange;
 }
 
 export type SortDirection = 'asc' | 'desc';
@@ -169,6 +173,8 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
       maxRiskReward: makeRange(1.5, 4.5, 0.25, 10.0, 2.5, 0.25),
       timeStopCandles: makeRange(20, 120, 5, 200, 80, 5),
       maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
+      minAtrPercent: makeRange(0.15, 0.55, 0.0, 1.5, 0.25, 0.05),
+      s2RsiThreshold: makeRange(30, 44, 0, 49, 38, 2),
     };
   }
 
@@ -187,6 +193,8 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
       maxRiskReward: makeRange(1.5, 7.0, 0.25, 12.0, 3.5, 0.25),
       timeStopCandles: makeRange(20, 120, 5, 200, 60, 5),
       maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
+      minAtrPercent: makeRange(0.2, 0.8, 0.0, 2.0, 0.3, 0.05),
+      s2RsiThreshold: makeRange(30, 44, 0, 49, 38, 2),
     };
   }
 
@@ -205,6 +213,8 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
     maxRiskReward: makeRange(1.5, 6.0, 0.25, 10.0, 3.0, 0.25),
     timeStopCandles: makeRange(20, 120, 5, 200, 80, 5),
     maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
+    minAtrPercent: makeRange(0.15, 0.65, 0.0, 1.5, 0.25, 0.05),
+    s2RsiThreshold: makeRange(30, 44, 0, 49, 38, 2),
   };
 }
 
@@ -268,18 +278,26 @@ export function refineAdaptiveRangesSmart(
     'maxRiskReward',
     'timeStopCandles',
     'maxPositionToRiskRatio',
+    'minAtrPercent',
+    's2RsiThreshold',
   ];
 
   for (const key of keys) {
-    const r = { ...nextRanges[key] };
-    if (!r || r.isManualOverride) continue;
+    const baseRange = nextRanges[key];
+    if (!baseRange) continue;
+    const r = { ...baseRange };
+    if (r.isManualOverride) continue;
 
-    const values = samplePool.map((t) => Number(t[key]) || 0);
+    const values = samplePool.map((t) => {
+      const v = Number(t[key] ?? 0);
+      return isNaN(v) ? 0 : v;
+    });
     let weightedSum = 0;
     let totalWeight = 0;
     for (const t of samplePool) {
       const weight = Math.max(1, t.netProfit > 0 ? t.netProfit : 1);
-      weightedSum += (Number(t[key]) || 0) * weight;
+      const v = Number(t[key] ?? 0);
+      weightedSum += (isNaN(v) ? 0 : v) * weight;
       totalWeight += weight;
     }
     const center = totalWeight > 0 ? weightedSum / totalWeight : values.reduce((a, b) => a + b, 0) / values.length;
@@ -302,7 +320,10 @@ export function refineAdaptiveRangesSmart(
     }
 
     const bestTrial = samplePool[0];
-    r.bestVal = Number(bestTrial[key]) || r.bestVal;
+    const bestRaw = bestTrial[key];
+    if (bestRaw !== undefined && bestRaw !== null && !isNaN(Number(bestRaw))) {
+      r.bestVal = Number(bestRaw);
+    }
     r.min = parseFloat(newMin.toFixed(2));
     r.max = parseFloat(newMax.toFixed(2));
 
@@ -330,6 +351,8 @@ export function generateConfigHash(p: {
   maxRiskReward: number;
   timeStopCandles?: number;
   maxPositionToRiskRatio?: number;
+  minAtrPercent?: number;
+  s2RsiThreshold?: number;
 }): string {
-  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.minCandlesForBlueLeg ?? 3}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.blueLegAtrMultiplier ?? 3}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxCandlesToEnter ?? 100}_${p.maxRiskReward}_${p.timeStopCandles || 80}_${p.maxPositionToRiskRatio ?? 300}`;
+  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.minCandlesForBlueLeg ?? 3}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.blueLegAtrMultiplier ?? 3}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxCandlesToEnter ?? 100}_${p.maxRiskReward}_${p.timeStopCandles || 80}_${p.maxPositionToRiskRatio ?? 300}_${p.minAtrPercent ?? 0.25}_${p.s2RsiThreshold ?? 38}`;
 }

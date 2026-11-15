@@ -59,6 +59,8 @@ export interface ServerStrategyConfig {
   slSlippagePercent?: number;
   timeStopEnabled?: boolean;
   timeStopCandles?: number;
+  minAtrPercent?: number;
+  s2RsiThreshold?: number;
 }
 
 export interface CandidateSignal {
@@ -233,6 +235,14 @@ export function evaluateSymbolForLiveSignal(params: {
     slSlippagePercent: config.slSlippagePercent ?? ((config.exchange ?? 'xt') === 'xt' ? 0.04 : 0),
     timeStopEnabled: config.timeStopEnabled !== false,
     timeStopCandles: config.timeStopCandles ?? 80,
+    minAtrPercent:
+      config.minAtrPercent !== undefined && config.minAtrPercent !== null && !isNaN(Number(config.minAtrPercent))
+        ? Math.max(0, Number(config.minAtrPercent))
+        : 0.25,
+    s2RsiThreshold:
+      config.s2RsiThreshold !== undefined && config.s2RsiThreshold !== null && !isNaN(Number(config.s2RsiThreshold))
+        ? Number(config.s2RsiThreshold)
+        : 38,
     symbol,
   };
 

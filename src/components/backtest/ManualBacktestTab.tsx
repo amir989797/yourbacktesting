@@ -107,6 +107,10 @@ export interface ManualBacktestTabProps {
   setOptTimeStopEnabled: (val: boolean) => void;
   optTimeStopCandles: number;
   setOptTimeStopCandles: (val: number) => void;
+  optMinAtrPercent?: number;
+  setOptMinAtrPercent?: (val: number) => void;
+  optS2RsiThreshold?: number;
+  setOptS2RsiThreshold?: (val: number) => void;
   onUpdateZigZagSettings?: (settings: Partial<ZigZagSettings>) => void;
   zigzagSettings?: ZigZagSettings;
   scanWorkersCount: number;
@@ -239,6 +243,10 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
   setOptTimeStopEnabled,
   optTimeStopCandles,
   setOptTimeStopCandles,
+  optMinAtrPercent = 0.25,
+  setOptMinAtrPercent,
+  optS2RsiThreshold = 38,
+  setOptS2RsiThreshold,
   onUpdateZigZagSettings,
   zigzagSettings,
   scanWorkersCount,
@@ -897,6 +905,85 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       }}
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
                     />
+                  </div>
+                </div>
+
+                {/* فیلترهای اختصاصی استراتژی ۲: حداقل نوسان ATR% و آستانه RSI(14) روی پیوت F */}
+                <div className={`mt-2.5 pt-2.5 border-t border-[#1e2738] flex flex-wrap items-center justify-between gap-2.5 rounded-lg p-2 ${
+                  selectedStrategyId === 'strategy_2_next_pivot'
+                    ? 'bg-emerald-950/20 border border-emerald-500/30'
+                    : 'bg-[#101520]/70 border border-[#1f293b] opacity-80'
+                }`}>
+                  <div className="flex items-center gap-2 text-[10px]">
+                    <Filter className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span className="font-bold text-emerald-300">فیلترهای کیفیت سیگنال استراتژی ۲:</span>
+                    <span className="text-gray-400 hidden md:inline">(برای غیرفعال‌سازی هر فیلتر مقدار آن را ۰ بگذارید)</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex items-center gap-1.5">
+                      <label
+                        className="text-[10px] text-emerald-300 font-semibold whitespace-nowrap"
+                        title="حداقل درصد ATR به قیمت ورود در کندل سیگنال (پیش‌فرض ۰.۲۵٪ — عدد ۰ فیلتر را غیرفعال می‌کند)"
+                      >
+                        حداقل ATR (%):
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={5}
+                        step={0.05}
+                        value={optMinAtrPercent === 0 || optMinAtrPercent ? optMinAtrPercent : ''}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setOptMinAtrPercent?.(v === '' ? ('' as any) : parseFloat(v));
+                        }}
+                        onBlur={() => {
+                          if (
+                            optMinAtrPercent === ('' as any) ||
+                            optMinAtrPercent === null ||
+                            optMinAtrPercent === undefined ||
+                            isNaN(Number(optMinAtrPercent))
+                          ) {
+                            setOptMinAtrPercent?.(0.25);
+                          }
+                        }}
+                        disabled={isScanning}
+                        className="w-20 px-1.5 py-1 bg-[#171d28] border border-emerald-500/40 rounded text-emerald-300 text-xs font-mono font-bold text-center focus:outline-none focus:border-emerald-400 disabled:opacity-50"
+                        title="حداقل نوسان ATR بر حسب درصد از قیمت در لحظه ورود (پیش‌فرض ۰.۲۵٪، ۰ = خاموش)"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <label
+                        className="text-[10px] text-sky-300 font-semibold whitespace-nowrap"
+                        title="آستانه RSI(14) روی پیوت F: در لانگ RSI <= آستانه و در شورت RSI >= (100 - آستانه) — عدد ۰ فیلتر را غیرفعال می‌کند"
+                      >
+                        RSI پیوت F:
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={49}
+                        step={1}
+                        value={optS2RsiThreshold === 0 || optS2RsiThreshold ? optS2RsiThreshold : ''}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setOptS2RsiThreshold?.(v === '' ? ('' as any) : parseFloat(v));
+                        }}
+                        onBlur={() => {
+                          if (
+                            optS2RsiThreshold === ('' as any) ||
+                            optS2RsiThreshold === null ||
+                            optS2RsiThreshold === undefined ||
+                            isNaN(Number(optS2RsiThreshold))
+                          ) {
+                            setOptS2RsiThreshold?.(38);
+                          }
+                        }}
+                        disabled={isScanning}
+                        className="w-20 px-1.5 py-1 bg-[#171d28] border border-sky-500/40 rounded text-sky-300 text-xs font-mono font-bold text-center focus:outline-none focus:border-sky-400 disabled:opacity-50"
+                        title="RSI(14) روی کندل پیوت F: لانگ ≤ آستانه، شورت ≥ (100 - آستانه)؛ پیش‌فرض ۳۸ (شورت ≥ ۶۲) و ۰ = خاموش"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>

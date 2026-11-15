@@ -642,6 +642,30 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   });
   const [lockMaxPositionToRiskRatio, setLockMaxPositionToRiskRatio] = useState<boolean>(false);
 
+  const [optMinAtrPercent, setOptMinAtrPercent] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('backtest_opt_min_atr_percent');
+      if (saved !== null) {
+        const parsed = parseFloat(saved);
+        if (!isNaN(parsed)) return parsed;
+      }
+    } catch {}
+    return 0.25;
+  });
+  const [lockMinAtrPercent, setLockMinAtrPercent] = useState<boolean>(false);
+
+  const [optS2RsiThreshold, setOptS2RsiThreshold] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('backtest_opt_s2_rsi_threshold');
+      if (saved !== null) {
+        const parsed = parseFloat(saved);
+        if (!isNaN(parsed)) return parsed;
+      }
+    } catch {}
+    return 38;
+  });
+  const [lockS2RsiThreshold, setLockS2RsiThreshold] = useState<boolean>(false);
+
   // همگام‌سازی اولیه یا به‌روزرسانی خارجی تنظیمات زیگ‌زاگ وارده توسط کاربر در چارت
   const prevZigzagSettingsRef = useRef<ZigZagSettings | undefined>(zigzagSettings);
   useEffect(() => {
@@ -743,9 +767,14 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const [adaptiveRanges, setAdaptiveRanges] = useState<AdaptiveRanges>(() => {
     try {
       const saved = localStorage.getItem('zigzag_opt_ranges_v5');
-      if (saved) return { ...DEFAULT_RANGES, ...JSON.parse(saved) };
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') {
+          return { ...getDefaultRangesForContext(timeframe, selectedStrategyId), ...parsed };
+        }
+      }
     } catch {}
-    return DEFAULT_RANGES;
+    return getDefaultRangesForContext(timeframe, selectedStrategyId);
   });
 
   // حالت یادگیری و انقباض خودکار رنج‌ها حول خوشه برنده (Adaptive Learning Mode)
@@ -878,8 +907,14 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       localStorage.setItem('backtest_time_stop_enabled', String(optTimeStopEnabled));
       localStorage.setItem('backtest_time_stop_candles', String(optTimeStopCandles));
       localStorage.setItem('backtest_opt_max_pos_to_risk', String(optMaxPositionToRiskRatio));
+      if (typeof optMinAtrPercent === 'number' && !isNaN(optMinAtrPercent)) {
+        localStorage.setItem('backtest_opt_min_atr_percent', String(optMinAtrPercent));
+      }
+      if (typeof optS2RsiThreshold === 'number' && !isNaN(optS2RsiThreshold)) {
+        localStorage.setItem('backtest_opt_s2_rsi_threshold', String(optS2RsiThreshold));
+      }
     } catch {}
-  }, [universeOption, riskMode, riskPercent, riskAmountFixed, entryCommissionPercent, exitCommissionPercent, commissionPercent, slSlippagePercent, optTimeStopEnabled, optTimeStopCandles, optMaxPositionToRiskRatio]);
+  }, [universeOption, riskMode, riskPercent, riskAmountFixed, entryCommissionPercent, exitCommissionPercent, commissionPercent, slSlippagePercent, optTimeStopEnabled, optTimeStopCandles, optMaxPositionToRiskRatio, optMinAtrPercent, optS2RsiThreshold]);
 
   // کنترل تایمر ۱۵ دقیقه‌ای پیوسته
   useEffect(() => {
@@ -938,7 +973,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           // بسیار مهم: فقط در صورتی که بهینه‌ساز در سرور در حال اجرا باشد (s.isOptimizing)، رنج‌های تطبیق‌پذیر سرور دریافت می‌شوند
           // تا تغییرات دستی و تایپ کاربر در ورودی‌های رنج با مقادیر سرور بازنویسی و ریست نشوند!
           if (s.isOptimizing && s.adaptiveRanges && typeof s.adaptiveRanges === 'object') {
-            setAdaptiveRanges((prev) => ({ ...DEFAULT_RANGES, ...prev, ...s.adaptiveRanges }));
+            setAdaptiveRanges((prev) => ({ ...getDefaultRangesForContext(timeframe, selectedStrategyId), ...prev, ...s.adaptiveRanges }));
           }
         }
       } catch {}
@@ -1368,6 +1403,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             optTimeStopCandles: overrideConfig?.timeStopCandles ?? optTimeStopCandles,
             maxPositionToRiskRatio: overrideConfig?.maxPositionToRiskRatio ?? optMaxPositionToRiskRatio,
             optMaxPositionToRiskRatio: overrideConfig?.maxPositionToRiskRatio ?? optMaxPositionToRiskRatio,
+            minAtrPercent: overrideConfig?.minAtrPercent !== undefined ? overrideConfig.minAtrPercent : optMinAtrPercent,
+            optMinAtrPercent: overrideConfig?.minAtrPercent !== undefined ? overrideConfig.minAtrPercent : optMinAtrPercent,
+            s2RsiThreshold: overrideConfig?.s2RsiThreshold !== undefined ? overrideConfig.s2RsiThreshold : optS2RsiThreshold,
+            optS2RsiThreshold: overrideConfig?.s2RsiThreshold !== undefined ? overrideConfig.s2RsiThreshold : optS2RsiThreshold,
           },
         }),
       });
@@ -1884,6 +1923,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         optTimeStopEnabled,
         optTimeStopCandles,
         optMaxPositionToRiskRatio,
+        optMinAtrPercent,
+        optS2RsiThreshold,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -1942,6 +1983,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     if (typeof config.optTimeStopEnabled === 'boolean') setOptTimeStopEnabled(config.optTimeStopEnabled);
     if (config.optTimeStopCandles) setOptTimeStopCandles(config.optTimeStopCandles);
     if (config.optMaxPositionToRiskRatio) setOptMaxPositionToRiskRatio(config.optMaxPositionToRiskRatio);
+    if (config.optMinAtrPercent !== undefined && !isNaN(Number(config.optMinAtrPercent))) {
+      setOptMinAtrPercent(Number(config.optMinAtrPercent));
+    }
+    if (config.optS2RsiThreshold !== undefined && !isNaN(Number(config.optS2RsiThreshold))) {
+      setOptS2RsiThreshold(Number(config.optS2RsiThreshold));
+    }
 
     onUpdateZigZagSettings?.({
       atrPeriod: config.optAtrPeriod,
@@ -1955,6 +2002,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       maxBreakoutAtrMultiplier: config.optMaxBreakoutAtr,
       maxRiskReward: config.optMaxRiskReward,
       maxPositionToRiskRatio: config.optMaxPositionToRiskRatio,
+      ...(config.optMinAtrPercent !== undefined ? { minAtrPercent: Number(config.optMinAtrPercent) } : {}),
+      ...(config.optS2RsiThreshold !== undefined ? { s2RsiThreshold: Number(config.optS2RsiThreshold) } : {}),
       ...(typeof config.optTimeStopEnabled === 'boolean' ? { timeStopEnabled: config.optTimeStopEnabled } : {}),
     });
 
@@ -2852,7 +2901,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       maxBreakoutAtrMultiplier: number;
       maxCandlesToEnter?: number;
       maxRiskReward: number;
+      maxPositionToRiskRatio?: number;
       timeStopCandles?: number;
+      minAtrPercent?: number;
+      s2RsiThreshold?: number;
     },
     overrideNoConcurrent?: boolean
   ) => {
@@ -2940,8 +2992,11 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         showOnChart: false,
         noConcurrentPositions: true, // در سطح تک‌ارز: عدم ورود به معامله جدید تا خروج پوزیشن قبلی همان ارز
         symbol: item.pair.symbol,
+        maxPositionToRiskRatio: params.maxPositionToRiskRatio !== undefined ? params.maxPositionToRiskRatio : optMaxPositionToRiskRatio,
         timeStopEnabled: optTimeStopEnabled,
         timeStopCandles: params.timeStopCandles || optTimeStopCandles || 80,
+        minAtrPercent: params.minAtrPercent !== undefined ? params.minAtrPercent : optMinAtrPercent,
+        s2RsiThreshold: params.s2RsiThreshold !== undefined ? params.s2RsiThreshold : optS2RsiThreshold,
       };
 
       let res;
@@ -3123,6 +3178,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       maxRiskReward: optMaxRiskReward,
       maxPositionToRiskRatio: optMaxPositionToRiskRatio,
       timeStopCandles: optTimeStopCandles,
+      minAtrPercent: optMinAtrPercent,
+      s2RsiThreshold: optS2RsiThreshold,
     };
     try {
       showToast('⏳ در حال ارزیابی مستقیم کانفیگ در بک‌اند سرور با دیتابیس PostgreSQL...');
@@ -3156,6 +3213,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             maxCandlesToEnter,
             timeStopEnabled: optTimeStopEnabled,
             timeStopCandles: optTimeStopCandles,
+            minAtrPercent: optMinAtrPercent,
+            optMinAtrPercent,
+            s2RsiThreshold: optS2RsiThreshold,
+            optS2RsiThreshold,
           },
           constraints: {
             targetMaxDrawdown,
@@ -3206,7 +3267,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     maxBreakoutAtrMultiplier: number;
     maxCandlesToEnter: number;
     maxRiskReward: number;
+    maxPositionToRiskRatio: number;
     timeStopCandles: number;
+    minAtrPercent: number;
+    s2RsiThreshold: number;
   } | null => {
     const sampleParam = (r: ParameterRange, isLocked: boolean, lockedVal: number) => {
       const numLocked = Number(lockedVal);
@@ -3222,8 +3286,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         return parseFloat(hardMin.toFixed(2));
       }
 
-      const curMin = Math.max(hardMin, Math.min(hardMax, Number(r.min) || hardMin));
-      const curMax = Math.min(hardMax, Math.max(hardMin, Number(r.max) || hardMax));
+      const rawMinNum = r.min !== undefined && !isNaN(Number(r.min)) ? Number(r.min) : hardMin;
+      const rawMaxNum = r.max !== undefined && !isNaN(Number(r.max)) ? Number(r.max) : hardMax;
+      const curMin = Math.max(hardMin, Math.min(hardMax, rawMinNum));
+      const curMax = Math.min(hardMax, Math.max(hardMin, rawMaxNum));
       const step = Number(r.step) > 0 ? Number(r.step) : 1;
 
       let candidateVal: number;
@@ -3270,6 +3336,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         maxRiskReward: sampleParam(ranges.maxRiskReward, lockMaxRiskReward, optMaxRiskReward),
         maxPositionToRiskRatio: sampleParam(ranges.maxPositionToRiskRatio, lockMaxPositionToRiskRatio, optMaxPositionToRiskRatio),
         timeStopCandles: sampleParam(ranges.timeStopCandles, lockTimeStopCandles, optTimeStopCandles),
+        minAtrPercent: sampleParam(ranges.minAtrPercent, lockMinAtrPercent, optMinAtrPercent),
+        s2RsiThreshold: sampleParam(ranges.s2RsiThreshold, lockS2RsiThreshold, optS2RsiThreshold),
       };
 
       const hash = generateConfigHash(candidate);
@@ -3367,6 +3435,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           optMaxPositionToRiskRatio,
           timeStopEnabled: optTimeStopEnabled,
           timeStopCandles: optTimeStopCandles,
+          minAtrPercent: optMinAtrPercent,
+          optMinAtrPercent,
+          s2RsiThreshold: optS2RsiThreshold,
+          optS2RsiThreshold,
         },
         constraints: {
           targetMaxDrawdown,
@@ -3388,6 +3460,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           lockMaxRiskReward,
           lockMaxPositionToRiskRatio,
           lockTimeStopCandles,
+          lockMinAtrPercent,
+          lockS2RsiThreshold,
           optAtrPeriod: Number(optAtrPeriod),
           optMinCandles: Number(optMinCandles),
           optMinCandlesLong: Number(optMinCandlesLong),
@@ -3401,6 +3475,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           optMaxRiskReward: Number(optMaxRiskReward),
           optMaxPositionToRiskRatio: Number(optMaxPositionToRiskRatio),
           optTimeStopCandles: Number(optTimeStopCandles),
+          optMinAtrPercent: Number(optMinAtrPercent),
+          optS2RsiThreshold: Number(optS2RsiThreshold),
         },
         datasetId: activeSessionDatasetId || rangeStatus?.datasetId || `range_${(selectedExchange || 'xt').toLowerCase()}_${timeframe}_${timeRangeStartMs || 0}_${timeRangeEndMs || 0}`,
         autoAdaptiveEnabled,
@@ -3449,7 +3525,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       });
     } catch {}
     setTop10Trials([]);
-    setAdaptiveRanges(getDefaultRangesForContext(timeframe, 'zigzag-hybrid'));
+    setAdaptiveRanges(getDefaultRangesForContext(timeframe, selectedStrategyId));
     setTotalEvaluatedCount(0);
     visitedHashesRef.current.clear();
     setSessionSecondsLeft(900);
@@ -3498,6 +3574,12 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     }
     if (trial.timeStopCandles) {
       setOptTimeStopCandles(trial.timeStopCandles);
+    }
+    if (trial.minAtrPercent !== undefined && !isNaN(Number(trial.minAtrPercent))) {
+      setOptMinAtrPercent(Number(trial.minAtrPercent));
+    }
+    if (trial.s2RsiThreshold !== undefined && !isNaN(Number(trial.s2RsiThreshold))) {
+      setOptS2RsiThreshold(Number(trial.s2RsiThreshold));
     }
     if (onUpdateZigZagSettings) {
       onUpdateZigZagSettings({
@@ -3548,6 +3630,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         timeStopEnabled: optTimeStopEnabled,
         timeStopCandles: trial.timeStopCandles,
         maxPositionToRiskRatio: trial.maxPositionToRiskRatio ?? optMaxPositionToRiskRatio,
+        minAtrPercent: trial.minAtrPercent !== undefined ? trial.minAtrPercent : optMinAtrPercent,
+        s2RsiThreshold: trial.s2RsiThreshold !== undefined ? trial.s2RsiThreshold : optS2RsiThreshold,
       });
     }, 200);
   };
@@ -3603,7 +3687,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         }
 
         if (parsed.adaptiveRanges) {
-          setAdaptiveRanges({ ...DEFAULT_RANGES, ...parsed.adaptiveRanges });
+          setAdaptiveRanges({ ...getDefaultRangesForContext(timeframe, parsed.strategyId || selectedStrategyId), ...parsed.adaptiveRanges });
         }
 
         if (Array.isArray(parsed.top10Trials)) {
@@ -3941,6 +4025,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setOptTimeStopEnabled={setOptTimeStopEnabled}
             optTimeStopCandles={optTimeStopCandles}
             setOptTimeStopCandles={setOptTimeStopCandles}
+            optMinAtrPercent={optMinAtrPercent}
+            setOptMinAtrPercent={setOptMinAtrPercent}
+            optS2RsiThreshold={optS2RsiThreshold}
+            setOptS2RsiThreshold={setOptS2RsiThreshold}
             onUpdateZigZagSettings={onUpdateZigZagSettings}
             zigzagSettings={zigzagSettings}
             scanWorkersCount={scanWorkersCount}
@@ -4106,6 +4194,14 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setOptTimeStopEnabled={setOptTimeStopEnabled}
             optTimeStopCandles={optTimeStopCandles}
             setOptTimeStopCandles={setOptTimeStopCandles}
+            optMinAtrPercent={optMinAtrPercent}
+            setOptMinAtrPercent={setOptMinAtrPercent}
+            lockMinAtrPercent={lockMinAtrPercent}
+            setLockMinAtrPercent={setLockMinAtrPercent}
+            optS2RsiThreshold={optS2RsiThreshold}
+            setOptS2RsiThreshold={setOptS2RsiThreshold}
+            lockS2RsiThreshold={lockS2RsiThreshold}
+            setLockS2RsiThreshold={setLockS2RsiThreshold}
             onEvaluateCurrentManualConfig={handleEvaluateCurrentManualConfig}
             onApplyTrialToManualScan={applyTrialToManualInputs}
             onRunTrialInManualScan={handleRunTrialInManualScan}
@@ -4202,6 +4298,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           optLongLegAtrMult={optLongLegAtrMult}
           optBlueLegAtrMult={optBlueLegAtrMult}
           optMaxBlueLegPercent={optMaxBlueLegPercent}
+          optMinAtrPercent={optMinAtrPercent}
+          optS2RsiThreshold={optS2RsiThreshold}
         />
 
         <LoadConfigModal

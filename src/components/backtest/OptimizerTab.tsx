@@ -120,6 +120,14 @@ export interface OptimizerTabProps {
   setOptTimeStopEnabled?: (val: boolean) => void;
   optTimeStopCandles?: number;
   setOptTimeStopCandles?: (val: number) => void;
+  optMinAtrPercent?: number;
+  setOptMinAtrPercent?: (val: number) => void;
+  lockMinAtrPercent?: boolean;
+  setLockMinAtrPercent?: (val: boolean) => void;
+  optS2RsiThreshold?: number;
+  setOptS2RsiThreshold?: (val: number) => void;
+  lockS2RsiThreshold?: boolean;
+  setLockS2RsiThreshold?: (val: boolean) => void;
   onEvaluateCurrentManualConfig?: () => void;
   onApplyTrialToManualScan?: (trial: OptimizationTrial) => void;
   onRunTrialInManualScan?: (trial: OptimizationTrial) => void;
@@ -245,6 +253,14 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
   setOptTimeStopEnabled,
   optTimeStopCandles = 80,
   setOptTimeStopCandles,
+  optMinAtrPercent = 0.25,
+  setOptMinAtrPercent,
+  lockMinAtrPercent = false,
+  setLockMinAtrPercent,
+  optS2RsiThreshold = 38,
+  setOptS2RsiThreshold,
+  lockS2RsiThreshold = false,
+  setLockS2RsiThreshold,
   onEvaluateCurrentManualConfig,
   onApplyTrialToManualScan,
   onRunTrialInManualScan,
@@ -924,6 +940,102 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                     <span className="text-purple-400 font-mono font-bold">گام: {adaptiveRanges.maxPositionToRiskRatio?.step ?? 50}</span>
                   </div>
                 </div>
+
+                {/* ۱۱. حداقل نوسان ATR% (استراتژی ۲) */}
+                <div className="bg-[#0e121a] p-2.5 rounded-xl border border-emerald-500/40 space-y-1.5 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-emerald-300" title="حداقل درصد ATR نسبت به قیمت ورود (0 = خاموش)">۱۱. حداقل نوسان ATR (%)</span>
+                    <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/60 px-1.5 py-0.5 rounded">
+                      همگرایی {adaptiveRanges.minAtrPercent?.convergence ?? 50}%
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-1 text-[10px] text-gray-400">
+                    <div className="flex items-center gap-1">
+                      <span>حداقل:</span>
+                      <input
+                        type="number"
+                        step={adaptiveRanges.minAtrPercent?.step ?? 0.05}
+                        min={0}
+                        max={5}
+                        value={adaptiveRanges.minAtrPercent?.min ?? 0}
+                        disabled={isOptimizing || lockMinAtrPercent}
+                        onChange={(e) => {
+                          const p = parseFloat(e.target.value);
+                          handleUpdateParamRange('minAtrPercent', 'min', isNaN(p) ? 0 : p);
+                        }}
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-emerald-300 font-mono text-xs text-center focus:outline-none focus:border-emerald-400"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span>حداکثر:</span>
+                      <input
+                        type="number"
+                        step={adaptiveRanges.minAtrPercent?.step ?? 0.05}
+                        min={0}
+                        max={5}
+                        value={adaptiveRanges.minAtrPercent?.max ?? 0.45}
+                        disabled={isOptimizing || lockMinAtrPercent}
+                        onChange={(e) => {
+                          const p = parseFloat(e.target.value);
+                          handleUpdateParamRange('minAtrPercent', 'max', isNaN(p) ? 0 : p);
+                        }}
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-emerald-300 font-mono text-xs text-center focus:outline-none focus:border-emerald-400"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5 border-t border-[#1a2230]">
+                    <span>بهترین مقدار: <strong className="text-amber-300 font-mono">{adaptiveRanges.minAtrPercent?.bestVal ?? 0.25}%</strong></span>
+                    <span className="text-emerald-400 font-mono font-bold">گام: {adaptiveRanges.minAtrPercent?.step ?? 0.05}</span>
+                  </div>
+                </div>
+
+                {/* ۱۲. آستانه RSI(14) روی پیوت F (استراتژی ۲) */}
+                <div className="bg-[#0e121a] p-2.5 rounded-xl border border-sky-500/40 space-y-1.5 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-sky-300" title="RSI(14) روی پیوت F — لانگ <= آستانه، شورت >= 100-آستانه (0 = خاموش)">۱۲. آستانه RSI پیوت F</span>
+                    <span className="text-[10px] font-mono text-sky-400 bg-sky-950/60 px-1.5 py-0.5 rounded">
+                      همگرایی {adaptiveRanges.s2RsiThreshold?.convergence ?? 50}%
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-1 text-[10px] text-gray-400">
+                    <div className="flex items-center gap-1">
+                      <span>حداقل:</span>
+                      <input
+                        type="number"
+                        step={adaptiveRanges.s2RsiThreshold?.step ?? 2}
+                        min={0}
+                        max={49}
+                        value={adaptiveRanges.s2RsiThreshold?.min ?? 28}
+                        disabled={isOptimizing || lockS2RsiThreshold}
+                        onChange={(e) => {
+                          const p = parseFloat(e.target.value);
+                          handleUpdateParamRange('s2RsiThreshold', 'min', isNaN(p) ? 0 : p);
+                        }}
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-sky-300 font-mono text-xs text-center focus:outline-none focus:border-sky-400"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span>حداکثر:</span>
+                      <input
+                        type="number"
+                        step={adaptiveRanges.s2RsiThreshold?.step ?? 2}
+                        min={0}
+                        max={49}
+                        value={adaptiveRanges.s2RsiThreshold?.max ?? 48}
+                        disabled={isOptimizing || lockS2RsiThreshold}
+                        onChange={(e) => {
+                          const p = parseFloat(e.target.value);
+                          handleUpdateParamRange('s2RsiThreshold', 'max', isNaN(p) ? 0 : p);
+                        }}
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-sky-300 font-mono text-xs text-center focus:outline-none focus:border-sky-400"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5 border-t border-[#1a2230]">
+                    <span>بهترین مقدار: <strong className="text-amber-300 font-mono">{adaptiveRanges.s2RsiThreshold?.bestVal ?? 38}</strong></span>
+                    <span className="text-sky-400 font-mono font-bold">گام: {adaptiveRanges.s2RsiThreshold?.step ?? 2}</span>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1394,6 +1506,86 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                     title="سقف نسبت ارزش پوزیشن به ریسک (با گام ۵۰ تا ۵۰ تا - پیش‌فرض ۳۰۰)"
                   />
                 </div>
+
+                {/* ۱۱. قفل/تنظیم دستی حداقل نوسان ATR% (استراتژی ۲) */}
+                <div className={`p-2 rounded-xl border transition-all ${lockMinAtrPercent ? 'bg-emerald-950/30 border-emerald-400/80 shadow-sm shadow-emerald-500/10' : 'bg-[#171e2b] border-emerald-500/30'}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] font-semibold text-emerald-300" title="حداقل ATR% در کندل ورود (۰ = خاموش)">۱۱. حداقل ATR%</label>
+                    <label className="flex items-center gap-1 text-[10px] text-emerald-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={lockMinAtrPercent}
+                        onChange={(e) => setLockMinAtrPercent?.(e.target.checked)}
+                        className="rounded bg-[#0d1017] border-gray-600 text-emerald-500 focus:ring-0 cursor-pointer"
+                      />
+                      <span className={lockMinAtrPercent ? 'font-bold text-emerald-300' : ''}>{lockMinAtrPercent ? '🔒 قفل' : 'آزاد'}</span>
+                    </label>
+                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    max={5}
+                    step={0.05}
+                    value={optMinAtrPercent === 0 || optMinAtrPercent ? optMinAtrPercent : ''}
+                    disabled={isOptimizing}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setOptMinAtrPercent?.(v === '' ? ('' as any) : parseFloat(v));
+                    }}
+                    onBlur={() => {
+                      if (
+                        optMinAtrPercent === ('' as any) ||
+                        optMinAtrPercent === null ||
+                        optMinAtrPercent === undefined ||
+                        isNaN(Number(optMinAtrPercent))
+                      ) {
+                        setOptMinAtrPercent?.(0.25);
+                      }
+                    }}
+                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockMinAtrPercent ? 'border-emerald-400/80 text-emerald-300 font-bold' : 'border-[#2e3a4e] text-emerald-400'} disabled:bg-[#1b202c] disabled:text-gray-500`}
+                    title="حداقل درصد ATR به قیمت ورود (پیش‌فرض ۰.۲۵٪ — ۰ = خاموش)"
+                  />
+                </div>
+
+                {/* ۱۲. قفل/تنظیم دستی آستانه RSI(14) پیوت F (استراتژی ۲) */}
+                <div className={`p-2 rounded-xl border transition-all ${lockS2RsiThreshold ? 'bg-sky-950/30 border-sky-400/80 shadow-sm shadow-sky-500/10' : 'bg-[#171e2b] border-sky-500/30'}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] font-semibold text-sky-300" title="RSI(14) روی پیوت F: لانگ <= آستانه و شورت >= 100-آستانه (۰ = خاموش)">۱۲. RSI پیوت F</label>
+                    <label className="flex items-center gap-1 text-[10px] text-sky-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={lockS2RsiThreshold}
+                        onChange={(e) => setLockS2RsiThreshold?.(e.target.checked)}
+                        className="rounded bg-[#0d1017] border-gray-600 text-sky-500 focus:ring-0 cursor-pointer"
+                      />
+                      <span className={lockS2RsiThreshold ? 'font-bold text-sky-300' : ''}>{lockS2RsiThreshold ? '🔒 قفل' : 'آزاد'}</span>
+                    </label>
+                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    max={49}
+                    step={1}
+                    value={optS2RsiThreshold === 0 || optS2RsiThreshold ? optS2RsiThreshold : ''}
+                    disabled={isOptimizing}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setOptS2RsiThreshold?.(v === '' ? ('' as any) : parseFloat(v));
+                    }}
+                    onBlur={() => {
+                      if (
+                        optS2RsiThreshold === ('' as any) ||
+                        optS2RsiThreshold === null ||
+                        optS2RsiThreshold === undefined ||
+                        isNaN(Number(optS2RsiThreshold))
+                      ) {
+                        setOptS2RsiThreshold?.(38);
+                      }
+                    }}
+                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockS2RsiThreshold ? 'border-sky-400/80 text-sky-300 font-bold' : 'border-[#2e3a4e] text-sky-300'} disabled:bg-[#1b202c] disabled:text-gray-500`}
+                    title="آستانه RSI(14) پیوت F (پیش‌فرض ۳۸ یعنی لانگ ≤ ۳۸ و شورت ≥ ۶۲ — ۰ = خاموش)"
+                  />
+                </div>
               </div>
 
               {/* کنترل اجرای سشن بهینه‌ساز */}
@@ -1595,7 +1787,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   </div>
 
                   <div className="text-[11px] text-gray-400 font-mono bg-[#0d1017] px-3 py-1.5 rounded-xl border border-[#232c3d]">
-                    ATR:{bestWinningRow.atrPeriod} | MinC:{bestWinningRow.minCandles} | MinLong:{bestWinningRow.minCandlesForLongLeg} | BlueC:{bestWinningRow.minCandlesForBlueLeg ?? 3} | Mult:{bestWinningRow.atrMultiplier}x | LongMult:{bestWinningRow.longLegAtrMultiplier}x | BlueMult:{bestWinningRow.blueLegAtrMultiplier ?? 3}x | Blue%:{bestWinningRow.maxBlueLegPercent}% | Break:{bestWinningRow.maxBreakoutAtrMultiplier}x | MaxWait:{bestWinningRow.maxCandlesToEnter ?? 100}c | R:R:{bestWinningRow.maxRiskReward} | Pos/Risk:{bestWinningRow.maxPositionToRiskRatio ?? 300}x | TimeStop:{bestWinningRow.timeStopCandles || 80}c
+                    ATR:{bestWinningRow.atrPeriod} | MinC:{bestWinningRow.minCandles} | MinLong:{bestWinningRow.minCandlesForLongLeg} | BlueC:{bestWinningRow.minCandlesForBlueLeg ?? 3} | Mult:{bestWinningRow.atrMultiplier}x | LongMult:{bestWinningRow.longLegAtrMultiplier}x | BlueMult:{bestWinningRow.blueLegAtrMultiplier ?? 3}x | Blue%:{bestWinningRow.maxBlueLegPercent}% | Break:{bestWinningRow.maxBreakoutAtrMultiplier}x | MaxWait:{bestWinningRow.maxCandlesToEnter ?? 100}c | R:R:{bestWinningRow.maxRiskReward} | Pos/Risk:{bestWinningRow.maxPositionToRiskRatio ?? 300}x | TimeStop:{bestWinningRow.timeStopCandles || 80}c | ATR%:{bestWinningRow.minAtrPercent ?? 0.25}% | RSI(F):{bestWinningRow.s2RsiThreshold ?? 38}
                   </div>
                 </div>
 
@@ -1721,6 +1913,8 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                       maxRiskReward: 'R:R',
                       maxCandlesToEnter: 'سقف کندل ورود',
                       timeStopCandles: 'Time-Stop',
+                      minAtrPercent: 'حداقل ATR%',
+                      s2RsiThreshold: 'RSI پیوت F',
                     };
                     const colLabel = colLabels[String(optSortColumn)] || String(optSortColumn);
                     const dirLabel = optSortDirection === 'desc' ? 'بیشترین' : 'کمترین';
@@ -1760,6 +1954,12 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                         R:R {renderOptSortArrow('maxRiskReward')}
                       </th>
                       <th className="py-2.5 px-2 text-center text-cyan-300">Time-Stop</th>
+                      <th className="py-2.5 px-2 text-center text-emerald-300 cursor-pointer" onClick={() => handleOptSort('minAtrPercent')} title="حداقل نوسان ATR% در کندل ورود (استراتژی ۲)">
+                        حداقل ATR% {renderOptSortArrow('minAtrPercent')}
+                      </th>
+                      <th className="py-2.5 px-2 text-center text-sky-300 cursor-pointer" onClick={() => handleOptSort('s2RsiThreshold')} title="آستانه RSI(14) پیوت F (استراتژی ۲)">
+                        RSI پیوت F {renderOptSortArrow('s2RsiThreshold')}
+                      </th>
                       <th className="py-2.5 px-2.5 text-center cursor-pointer text-emerald-400 font-bold" onClick={() => handleOptSort('netProfit')}>
                         سود خالص (USDT) {renderOptSortArrow('netProfit')}
                       </th>
@@ -1785,7 +1985,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   <tbody className="divide-y divide-[#1e2736] font-mono text-[11px]">
                     {sortedTop10.length === 0 ? (
                       <tr>
-                        <td colSpan={21} className="py-8 text-center text-gray-500 font-sans">
+                        <td colSpan={23} className="py-8 text-center text-gray-500 font-sans">
                           هنوز آزمایشی ثبت نشده است. با زدن «شروع بهینه‌سازی رنج‌محور»، تست‌ها شروع شده و ۱۰ ترکیب برتر اینجا نمایش داده می‌شوند.
                         </td>
                       </tr>
@@ -1820,6 +2020,12 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                             <td className="py-2 px-2 text-center font-bold text-cyan-300">{row.maxRiskReward}</td>
                             <td className="py-2 px-2 text-center font-bold text-cyan-400">
                               {row.timeStopCandles ? `${row.timeStopCandles}c` : '80c'}
+                            </td>
+                            <td className="py-2 px-2 text-center font-bold text-emerald-300">
+                              {row.minAtrPercent === 0 ? 'خاموش' : `${row.minAtrPercent ?? 0.25}%`}
+                            </td>
+                            <td className="py-2 px-2 text-center font-bold text-sky-300">
+                              {row.s2RsiThreshold === 0 ? 'خاموش' : (row.s2RsiThreshold ?? 38)}
                             </td>
                             <td className={`py-2 px-2.5 text-center font-extrabold ${row.netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                               {row.netProfit >= 0 ? '+' : ''}{row.netProfit.toLocaleString()}

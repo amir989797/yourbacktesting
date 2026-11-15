@@ -275,6 +275,8 @@ export interface TestParameterConfigRecord {
   optTimeStopEnabled?: boolean;
   optTimeStopCandles?: number;
   optMaxPositionToRiskRatio?: number;
+  optMinAtrPercent?: number;
+  optS2RsiThreshold?: number;
   createdAt: string;
   updatedAt: string;
 }

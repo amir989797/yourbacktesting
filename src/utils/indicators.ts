@@ -186,6 +186,41 @@ export function calculateATR(
   };
 }
 
+/**
+ * Wilder's Relative Strength Index (RSI) on candle closes.
+ * Causal at every index i (uses only candles[0..i]).
+ */
+export function calculateRSI(candles: CandleData[], period: number = 14): number[] {
+  const n = candles.length;
+  if (n === 0) return [];
+  const p = Math.max(1, Math.floor(period));
+  const rsiValues = new Array<number>(n).fill(50);
+  if (n <= p) return rsiValues;
+
+  let gainSum = 0;
+  let lossSum = 0;
+  for (let i = 1; i <= p; i++) {
+    const diff = candles[i].close - candles[i - 1].close;
+    if (diff > 0) gainSum += diff;
+    else if (diff < 0) lossSum += -diff;
+  }
+
+  let avgGain = gainSum / p;
+  let avgLoss = lossSum / p;
+  rsiValues[p] = avgLoss === 0 ? (avgGain === 0 ? 50 : 100) : 100 - 100 / (1 + avgGain / avgLoss);
+
+  for (let i = p + 1; i < n; i++) {
+    const diff = candles[i].close - candles[i - 1].close;
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+    avgGain = (avgGain * (p - 1) + gain) / p;
+    avgLoss = (avgLoss * (p - 1) + loss) / p;
+    rsiValues[i] = avgLoss === 0 ? (avgGain === 0 ? 50 : 100) : 100 - 100 / (1 + avgGain / avgLoss);
+  }
+
+  return rsiValues;
+}
+
 export interface ZigZagPoint {
   time: number;
   value: number;

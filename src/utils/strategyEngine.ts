@@ -1,5 +1,5 @@
 import { CandleData, Leg, ZigZagPoint as CryptoZigZagPoint } from '../types/crypto.ts';
-import { ZigZagLeg, ZigZagPoint } from './indicators';
+import { ZigZagLeg, ZigZagPoint, calculateRSI } from './indicators';
 import { StrategyConfig, StrategyMetrics, StrategyTrade, TradeStatus, BacktestMetrics, StrategyParams, Trade } from '../types/strategy.ts';
 import { calculateExactTradeSizing } from './exchangePrecision.ts';
 
@@ -463,6 +463,19 @@ export function runStrategy2Backtest(
   const effectiveAtrMult = atrMultiplier > 0 ? atrMultiplier : 3;
   const effectiveMaxCandles = (config.maxCandlesToEnter && config.maxCandlesToEnter > 0) ? config.maxCandlesToEnter : 35;
 
+  const rawMinAtr = config.minAtrPercent ?? config.optMinAtrPercent;
+  const effectiveMinAtrPct =
+    rawMinAtr !== undefined && rawMinAtr !== null && !isNaN(Number(rawMinAtr))
+      ? Math.max(0, Number(rawMinAtr))
+      : 0.25;
+  const rawRsi = config.s2RsiThreshold ?? config.optS2RsiThreshold;
+  const parsedRsi =
+    rawRsi !== undefined && rawRsi !== null && !isNaN(Number(rawRsi))
+      ? Number(rawRsi)
+      : 38;
+  const effectiveRsiThresh = parsedRsi > 0 && parsedRsi < 50 ? parsedRsi : 0;
+  const rsi14 = effectiveRsiThresh > 0 ? calculateRSI(candles, 14) : [];
+
   let currentGiant: ZigZagLeg | null = null;
   let lastTradeExitCandleIdx = -1;
   let rollingCapital = config.capital;
@@ -522,6 +535,16 @@ export function runStrategy2Backtest(
             const entryCandleIdx = cIdx;
             const stopLoss = currentFVal;
             const stopDistance = Math.abs(entryPrice - stopLoss);
+
+            if (effectiveMinAtrPct > 0 && (entryPrice <= 0 || (atr / entryPrice) * 100 < effectiveMinAtrPct)) {
+              break;
+            }
+            if (effectiveRsiThresh > 0) {
+              const pivotRsi = rsi14[currentFIdx] ?? 50;
+              if (pivotRsi < 100 - effectiveRsiThresh) {
+                break;
+              }
+            }
 
             if (config.noConcurrentPositions && entryCandleIdx <= lastTradeExitCandleIdx) {
               break;
@@ -761,6 +784,16 @@ export function runStrategy2Backtest(
             const entryCandleIdx = cIdx;
             const stopLoss = currentFVal;
             const stopDistance = Math.abs(entryPrice - stopLoss);
+
+            if (effectiveMinAtrPct > 0 && (entryPrice <= 0 || (atr / entryPrice) * 100 < effectiveMinAtrPct)) {
+              break;
+            }
+            if (effectiveRsiThresh > 0) {
+              const pivotRsi = rsi14[currentFIdx] ?? 50;
+              if (pivotRsi > effectiveRsiThresh) {
+                break;
+              }
+            }
 
             if (config.noConcurrentPositions && entryCandleIdx <= lastTradeExitCandleIdx) {
               break;

@@ -23,6 +23,8 @@ export interface SaveConfigModalProps {
   optLongLegAtrMult: number;
   optBlueLegAtrMult?: number;
   optMaxBlueLegPercent: number;
+  optMinAtrPercent?: number;
+  optS2RsiThreshold?: number;
 }
 
 export const SaveConfigModal: React.FC<SaveConfigModalProps> = ({
@@ -47,6 +49,8 @@ export const SaveConfigModal: React.FC<SaveConfigModalProps> = ({
   optLongLegAtrMult,
   optBlueLegAtrMult = 3,
   optMaxBlueLegPercent,
+  optMinAtrPercent = 0.25,
+  optS2RsiThreshold = 38,
 }) => {
   if (!isOpen) return null;
 
@@ -120,6 +124,8 @@ export const SaveConfigModal: React.FC<SaveConfigModalProps> = ({
               <div>کندل لگ CD,EF: <strong className="text-cyan-300">{optMinCandlesBlue}</strong></div>
               <div>ضریب لگ CD,EF: <strong className="text-blue-300">{optBlueLegAtrMult}×</strong></div>
               <div>سقف لگ آبی: <strong className="text-white">{optMaxBlueLegPercent}%</strong></div>
+              <div>حداقل ATR% (S2): <strong className="text-emerald-300">{optMinAtrPercent === 0 ? 'خاموش' : `${optMinAtrPercent}%`}</strong></div>
+              <div>RSI پیوت F (S2): <strong className="text-sky-300">{optS2RsiThreshold === 0 ? 'خاموش' : optS2RsiThreshold}</strong></div>
             </div>
             <div className="text-[10px] text-gray-400 border-t border-[#1e2838] pt-2 font-sans flex items-center gap-1">
               <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
