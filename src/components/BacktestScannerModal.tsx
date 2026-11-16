@@ -2661,7 +2661,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         selectedStrategyId === 'strategy_1_e_breakout'
           ? 'استراتژی ۱: شکست نقطه E (تارگت A / استاپ F)'
           : selectedStrategyId === 'strategy_3_ab_midpoint'
-          ? 'استراتژی ۳: لیمیت وسط AB پس از تایید B (استاپ A / تارگت R:R)'
+          ? 'استراتژی ۳: دو لگ بلند متوالی + شکست A و لیمیت ۶۶٪ AB دوم (استاپ A دوم / تارگت R:R)'
           : 'استراتژی ۲: اولین تشکیل لگ بعد از F (تارگت R:R)';
       ctx.fillText(
         `${stratTitle}  |  تایم‌فریم: ${timeframe}  |  دامنه: فیوچرز  |  تاریخ: ${new Date().toLocaleDateString('fa-IR')} ${new Date().toLocaleTimeString('fa-IR')}`,

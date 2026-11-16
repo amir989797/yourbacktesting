@@ -246,88 +246,65 @@ export function evaluateSymbolForLiveSignal(params: {
     symbol,
   };
 
-  // 3. Special Live Signal Mode for Strategy 3 (AB Midpoint Pending Limit Order placed on fresh pivot D or F confirmation)
+  // 3. Special Live Signal Mode for Strategy 3 (Two Consecutive Giant Legs + Midpoint LIMIT Order)
   if (config.strategyId === 'strategy_3_ab_midpoint') {
     const effAtrMult = config.atrMultiplier || 2.0;
-    let matchedLeg: (typeof analyzedLegs)[number] | null = null;
-    let reversalPivot: 'D' | 'F' | null = null;
+    let matchedLeg2: (typeof analyzedLegs)[number] | null = null;
+    let matchedDirection: 'BUY' | 'SELL' | null = null;
 
-    for (let li = analyzedLegs.length - 1; li >= 0; li--) {
-      const pivotLeg = analyzedLegs[li];
-      if (pivotLeg.color !== 'blue' && pivotLeg.color !== 'dark_blue') continue;
+    for (let li = analyzedLegs.length - 1; li >= 1; li--) {
+      const leg2 = analyzedLegs[li];
+      const leg1 = analyzedLegs[li - 1];
 
-      const parentIdx = pivotLeg.cycleGiantLegIndex;
-      const giantLeg =
-        (parentIdx !== undefined ? analyzedLegs.find((l) => l.index === parentIdx) : undefined) ||
-        (() => {
-          for (let gi = li - 1; gi >= 0; gi--) {
-            if (analyzedLegs[gi].isGiantLeg && (analyzedLegs[gi].color === 'green' || analyzedLegs[gi].color === 'red')) {
-              return analyzedLegs[gi];
-            }
-          }
-          return undefined;
-        })();
+      if (!leg1.isGiantLeg || !leg2.isGiantLeg) continue;
 
-      if (!giantLeg) continue;
+      const isBearishSetup =
+        leg1.color === 'green' &&
+        leg1.isUp &&
+        leg2.color === 'red' &&
+        !leg2.isUp &&
+        leg2.endPrice < leg1.startPrice; // B red breaks A green
 
-      const candleIdxPivot = zzResult.points[pivotLeg.endIndex]?.candleIndex ?? Math.max(0, candles.length - 1);
-      const confirmIdx = findGiantLegConfirmCandleIdx(candles, pivotLeg, candleIdxPivot, atrValues, effAtrMult);
+      const isBullishSetup =
+        leg1.color === 'red' &&
+        !leg1.isUp &&
+        leg2.color === 'green' &&
+        leg2.isUp &&
+        leg2.endPrice > leg1.startPrice; // B green breaks A red
+
+      if (!isBearishSetup && !isBullishSetup) continue;
+
+      const candleIdxB2 = zzResult.points[leg2.endIndex]?.candleIndex ?? Math.max(0, candles.length - 1);
+      const confirmIdx = findGiantLegConfirmCandleIdx(candles, leg2, candleIdxB2, atrValues, effAtrMult);
 
       if (confirmIdx === candles.length - 1) {
-        // Verify SL (A) was never breached since pivot B
-        const candleIdxB = zzResult.points[giantLeg.endIndex]?.candleIndex ?? 0;
-        const stopLossA = giantLeg.startPrice;
+        // Verify SL (A of leg2) was never breached since B2 up to confirmIdx
+        const stopLossA2 = leg2.startPrice;
         let slBreached = false;
-        for (let s = candleIdxB + 1; s <= confirmIdx; s++) {
-          if (giantLeg.isUp ? candles[s].low <= stopLossA : candles[s].high >= stopLossA) {
+        for (let s = candleIdxB2 + 1; s <= confirmIdx; s++) {
+          if (isBullishSetup ? candles[s].low <= stopLossA2 : candles[s].high >= stopLossA2) {
             slBreached = true;
             break;
           }
         }
         if (slBreached) break;
 
-        // If F just confirmed, verify D of the same cycle did not already fill the AB midpoint limit
-        if (pivotLeg.color === 'dark_blue') {
-          const midPrice = (giantLeg.startPrice + giantLeg.endPrice) / 2;
-          const siblingBlue = analyzedLegs.find(
-            (l) => l.color === 'blue' && (l.cycleGiantLegIndex === giantLeg.index || (l.cycleGiantLegIndex === undefined && l.index < pivotLeg.index && l.index > giantLeg.index))
-          );
-          if (siblingBlue) {
-            const candleIdxD = zzResult.points[siblingBlue.endIndex]?.candleIndex ?? 0;
-            const confirmIdxD = findGiantLegConfirmCandleIdx(candles, siblingBlue, candleIdxD, atrValues, effAtrMult);
-            if (confirmIdxD >= 0 && confirmIdxD < confirmIdx) {
-              const maxWait = Math.max(1, config.maxCandlesToEnter || 100);
-              const dEnd = Math.min(candleIdxPivot, confirmIdxD + maxWait);
-              let dAlreadyFilled = false;
-              for (let dIdx = confirmIdxD + 1; dIdx <= dEnd; dIdx++) {
-                const cd = candles[dIdx];
-                if (giantLeg.isUp ? cd.open <= stopLossA : cd.open >= stopLossA) break;
-                if (giantLeg.isUp ? cd.low <= midPrice : cd.high >= midPrice) {
-                  dAlreadyFilled = true;
-                  break;
-                }
-              }
-              if (dAlreadyFilled) break;
-            }
-          }
-        }
-
-        matchedLeg = giantLeg;
-        reversalPivot = pivotLeg.color === 'dark_blue' ? 'F' : 'D';
+        matchedLeg2 = leg2;
+        matchedDirection = isBullishSetup ? 'BUY' : 'SELL';
         break;
       }
 
       if (confirmIdx >= 0 && confirmIdx < candles.length - 1) {
-        break; // Most recent D/F pivot was already confirmed on an older candle
+        break; // Most recent valid consecutive giant-leg pair was already confirmed on an older candle
       }
     }
 
-    if (!matchedLeg || !reversalPivot) return null;
+    if (!matchedLeg2 || !matchedDirection) return null;
 
-    const priceA = matchedLeg.startPrice;
-    const priceB = matchedLeg.endPrice;
-    const limitEntryPrice = (priceA + priceB) / 2;
-    const stopLoss = priceA;
+    const leg2A = matchedLeg2.startPrice;
+    const leg2B = matchedLeg2.endPrice;
+    const limitEntryPrice = leg2B + 0.66 * (leg2A - leg2B);
+    const stopLoss = leg2A;
     const stopDistance = Math.abs(limitEntryPrice - stopLoss);
     const curPrice = candles[candles.length - 1].close;
     const targetRR = config.riskRewardRatio && config.riskRewardRatio > 0 ? config.riskRewardRatio : 2.0;
@@ -336,10 +313,10 @@ export function evaluateSymbolForLiveSignal(params: {
       return null;
     }
 
-    const side: 'BUY' | 'SELL' = matchedLeg.isUp ? 'BUY' : 'SELL';
-    const posSide: 'LONG' | 'SHORT' = matchedLeg.isUp ? 'LONG' : 'SHORT';
+    const side: 'BUY' | 'SELL' = matchedDirection;
+    const posSide: 'LONG' | 'SHORT' = matchedDirection === 'BUY' ? 'LONG' : 'SHORT';
 
-    // Reject if price already broke stop A
+    // Reject if price already broke stop A of second leg
     if (posSide === 'LONG' ? curPrice <= stopLoss : curPrice >= stopLoss) {
       return null;
     }
@@ -349,7 +326,6 @@ export function evaluateSymbolForLiveSignal(params: {
       : limitEntryPrice - stopDistance * targetRR;
 
     // For a pending LIMIT pullback order, takeProfit must be valid relative to limitEntryPrice
-    // (NOT curPrice, since when R:R < 1 e.g. 0.5, curPrice at D/F is naturally above TP before pulling back to midpoint).
     if (posSide === 'LONG' ? takeProfit <= limitEntryPrice : takeProfit >= limitEntryPrice) {
       return null;
     }
@@ -423,7 +399,10 @@ export function evaluateSymbolForLiveSignal(params: {
       riskUsdt: parseFloat(actualRiskUsdt.toFixed(2)),
       positionToRiskRatio: posToRiskRatio,
       targetRiskUsdt: parseFloat(riskBudgetUsdt.toFixed(2)),
-      strategyName: `استراتژی ۳ (لیمیت وسط AB - برگشت از ${reversalPivot})`,
+      strategyName:
+        matchedDirection === 'SELL'
+          ? 'استراتژی ۳ (سبز←قرمز + شکست A / لیمیت ۶۶٪ قرمز)'
+          : 'استراتژی ۳ (قرمز←سبز + شکست A / لیمیت ۶۶٪ سبز)',
       discoveredAt: new Date().toISOString(),
     };
   }

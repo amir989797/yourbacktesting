@@ -1412,11 +1412,48 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     syncConfigToServer,
   ]);
 
-  // Poll server status every 3 seconds to keep UI in sync even after refresh
+  // Poll server status every 3 seconds + sync immediately on tab focus/visibility or BroadcastChannel toggle
   useEffect(() => {
     fetchServerScannerStatus();
     const poller = setInterval(fetchServerScannerStatus, 3000);
-    return () => clearInterval(poller);
+    const onFocusOrVisible = () => {
+      if (document.visibilityState === 'visible') {
+        fetchServerScannerStatus();
+      }
+    };
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'livetrade_scanner_sync_event') {
+        fetchServerScannerStatus();
+      }
+    };
+    let bc: BroadcastChannel | null = null;
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        bc = new BroadcastChannel('live_scanner_sync');
+        bc.onmessage = (ev) => {
+          if (ev?.data && typeof ev.data.isRunning === 'boolean') {
+            statusEpochRef.current += 1;
+            setIsAutoScanning(ev.data.isRunning);
+            if (!ev.data.isRunning) {
+              setIsScanningNow(false);
+              setServerStartedAt(null);
+              setElapsedActiveSeconds(0);
+            }
+            fetchServerScannerStatus();
+          }
+        };
+      }
+    } catch {}
+    window.addEventListener('focus', onFocusOrVisible);
+    document.addEventListener('visibilitychange', onFocusOrVisible);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      clearInterval(poller);
+      window.removeEventListener('focus', onFocusOrVisible);
+      document.removeEventListener('visibilitychange', onFocusOrVisible);
+      window.removeEventListener('storage', onStorage);
+      try { bc?.close(); } catch {}
+    };
   }, [fetchServerScannerStatus]);
 
   // Smooth local countdown ticker and continuous elapsed session timer
@@ -1434,6 +1471,17 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     }, 1000);
     return () => clearInterval(ticker);
   }, [isAutoScanning, serverStartedAt]);
+
+  const broadcastScannerState = (running: boolean) => {
+    try {
+      localStorage.setItem('livetrade_scanner_sync_event', JSON.stringify({ isRunning: running, ts: Date.now() }));
+      if (typeof BroadcastChannel !== 'undefined') {
+        const ch = new BroadcastChannel('live_scanner_sync');
+        ch.postMessage({ isRunning: running, ts: Date.now() });
+        ch.close();
+      }
+    } catch {}
+  };
 
   // Toggle Continuous Background Scanner on Node.js Server
   const handleToggleAutoScan = async () => {
@@ -1501,6 +1549,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           setElapsedActiveSeconds(data.state?.elapsedSeconds || 0);
           setScanSecondsLeft(data.state?.secondsUntilNextRun || 300);
           setIsScanningNow(true);
+          broadcastScannerState(true);
           showToast('🚀 اتوپایلوت مداوم سرور فعال شد: اسکن و بررسی خودکار در پس‌زمینه سرور Node.js آغاز گردید.');
           addLog('success', `🚀 اتوپایلوت سرور فعال شد: اسکن مداوم ${targetSymbols.length} ارز در سرور به راه افتاد (پایدار حتی با بستن مرورگر).`);
         } else {
@@ -1520,6 +1569,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           setIsScanningNow(false);
           setServerStartedAt(null);
           setElapsedActiveSeconds(0);
+          broadcastScannerState(false);
           showToast('⏸️ اسکنر پس‌زمینه سرور متوقف گردید.');
           addLog('warning', '⏸️ اتوپایلوت سرور متوقف شد.');
         } else {
@@ -2095,7 +2145,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 >
                   <option value="strategy_2_next_pivot">استراتژی ۲: ستاپ پیوت بعدی (Next-Pivot / تاییدیه پولبک) [پیش‌فرض]</option>
                   <option value="strategy_1_e_breakout">استراتژی ۱: شکست نقطه E (E-Breakout)</option>
-                  <option value="strategy_3_ab_midpoint">استراتژی ۳: لیمیت وسط AB با برگشت از D یا F (Limit + انقضای کندلی)</option>
+                  <option value="strategy_3_ab_midpoint">استراتژی ۳: دو لگ بلند متوالی + شکست A و لیمیت ۶۶٪ AB دوم (Limit + انقضای کندلی)</option>
                 </select>
               </div>
 
@@ -3736,7 +3786,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
 
               <div className="p-3 rounded-xl bg-[#131926] border border-[#232f44] text-[11px] font-mono space-y-1 text-gray-300">
                 <div className="text-amber-400 font-bold font-sans">پارامترهای در حال ذخیره:</div>
-                <div>استراتژی: {selectedStrategy === 'strategy_1_e_breakout' ? 'شکست E (E-Breakout)' : selectedStrategy === 'strategy_3_ab_midpoint' ? 'لیمیت وسط AB (استراتژی ۳)' : 'پیوت بعدی (Next-Pivot)'}</div>
+                <div>استراتژی: {selectedStrategy === 'strategy_1_e_breakout' ? 'شکست E (E-Breakout)' : selectedStrategy === 'strategy_3_ab_midpoint' ? 'دو لگ متوالی + لیمیت ۶۶٪ AB (استراتژی ۳)' : 'پیوت بعدی (Next-Pivot)'}</div>
                 <div>تایم‌فریم: {tradeTimeframe} | دوره ATR: {atrPeriod} | ضریب: {atrMultiplier}</div>
                 <div>حداقل کندل: {minCandles} | اهرم: بیشترین اهرم مجاز (Max) | R:R: {riskRewardRatio}</div>
                 <div>حداقل ATR% (S2): {minAtrPercent === 0 ? 'خاموش' : `${minAtrPercent}%`} | RSI پیوت F (S2): {s2RsiThreshold === 0 ? 'خاموش' : s2RsiThreshold}</div>

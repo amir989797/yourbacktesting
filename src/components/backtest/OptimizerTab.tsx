@@ -280,7 +280,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                       {selectedStrategyId === 'strategy_1_e_breakout'
                         ? 'استراتژی ۱: شکست نقطه E (تارگت A / استاپ F)'
                         : selectedStrategyId === 'strategy_3_ab_midpoint'
-                        ? 'استراتژی ۳: لیمیت وسط AB با برگشت از D یا F (استاپ A / تارگت R:R)'
+                        ? 'استراتژی ۳: دو لگ بلند متوالی + شکست A و لیمیت ۶۶٪ AB دوم (استاپ A دوم / تارگت R:R)'
                         : 'استراتژی ۲: اولین تشکیل لگ بعد از F (تارگت R:R)'}
                     </span>
                   </div>
@@ -317,7 +317,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                 >
                   <option value="strategy_1_e_breakout">تغییر استراتژی به: شکست نقطه E</option>
                   <option value="strategy_2_next_pivot">تغییر استراتژی به: تشکیل لگ بعد از F</option>
-                  <option value="strategy_3_ab_midpoint">تغییر استراتژی به: لیمیت وسط AB (استراتژی ۳)</option>
+                  <option value="strategy_3_ab_midpoint">تغییر استراتژی به: دو لگ متوالی + لیمیت ۶۶٪ AB (استراتژی ۳)</option>
                 </select>
 
                 <button

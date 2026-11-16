@@ -1052,16 +1052,24 @@ export function findGiantLegConfirmCandleIdx(
 }
 
 /**
- * Runs Backtest for Strategy 3 (AB Midpoint Limit Order — Reversal from D or F):
- * 1. A Giant Leg (A -> B) forms, followed by continuation pivot D (light blue leg C -> D)
- *    and optionally pivot F (dark blue leg E -> F) in the same cycle.
- * 2. Instead of entering directly from B, wait until price confirms pivot D (or pivot F)
- *    and pulls back from D or F to the midpoint (A + B) / 2 in the direction of AB.
- * 3. Place LIMIT order at midpoint (A + B) / 2:
- *    - Bullish AB (green): BUY LIMIT at (A + B)/2, Stop Loss = A
- *    - Bearish AB (red): SELL LIMIT at (A + B)/2, Stop Loss = A
- * 4. Take Profit = entryPrice +/- |entryPrice - stopLoss| * targetRR (supports any R:R > 0, including 0.5).
- * 5. Limit order expires if not filled within `maxCandlesToEnter` candles after pivot D or F confirmation.
+ * Runs Backtest for Strategy 3 (Two Consecutive Giant Legs + Midpoint Limit):
+ * Setups must be immediately consecutive giant legs (`legs[i]` and `legs[i + 1]`):
+ *
+ * Bearish Setup (SELL LIMIT):
+ *   1. `AB green leg` (`legs[i]`: giant up leg from A_green to B_green)
+ *   2. Immediately followed by `AB red leg` (`legs[i + 1]`: giant down leg from A_red to B_red)
+ *   3. `B red breaks A green` (`B_red < A_green`)
+ *   4. SELL LIMIT at 66% retracement of `AB red` (closer to reversal `A_red`): `B_red + 0.66 * (A_red - B_red)`, valid until `سقف کندل ورود` (`maxCandlesToEnter`)
+ *   5. Stop Loss = `A red` (`legs[i + 1].startPrice`)
+ *
+ * Bullish Setup (BUY LIMIT):
+ *   1. `AB red leg` (`legs[i]`: giant down leg from A_red to B_red)
+ *   2. Immediately followed by `AB green leg` (`legs[i + 1]`: giant up leg from A_green to B_green)
+ *   3. `B green breaks A red` (`B_green > A_red`)
+ *   4. BUY LIMIT at 66% retracement of `AB green` (closer to reversal `A_green`): `B_green + 0.66 * (A_green - B_green)`, valid until `سقف کندل ورود` (`maxCandlesToEnter`)
+ *   5. Stop Loss = `A green` (`legs[i + 1].startPrice`)
+ *
+ * Take Profit = entryPrice +/- |entryPrice - stopLoss| * targetRR (supports any R:R > 0, e.g. 0.5 or 2).
  */
 export function runStrategy3Backtest(
   candles: CandleData[],
@@ -1076,7 +1084,7 @@ export function runStrategy3Backtest(
   metrics: StrategyMetrics;
 } {
   const trades: StrategyTrade[] = [];
-  if (candles.length === 0 || legs.length === 0 || points.length === 0) {
+  if (candles.length === 0 || legs.length < 2 || points.length === 0) {
     return {
       trades: [],
       metrics: getEmptyMetrics(config.capital),
@@ -1104,45 +1112,41 @@ export function runStrategy3Backtest(
   let lastTradeExitCandleIdx = -1;
   let rollingCapital = config.capital;
 
-  for (let i = 0; i < legs.length; i++) {
-    const leg = legs[i];
-    if (!leg.isGiantLeg || (leg.color !== 'green' && leg.color !== 'red')) {
+  for (let i = 0; i < legs.length - 1; i++) {
+    const leg1 = legs[i];
+    const leg2 = legs[i + 1];
+
+    // Both legs must be immediately consecutive giant legs (green/red)
+    if (!leg1.isGiantLeg || !leg2.isGiantLeg) {
       continue;
     }
 
-    // Locate pivot D (light blue CD) and/or pivot F (dark blue EF) belonging to this AB cycle
-    let blueLeg: ZigZagLeg | undefined;
-    let darkBlueLeg: ZigZagLeg | undefined;
-    for (let j = i + 1; j < legs.length; j++) {
-      const candidateLeg = legs[j];
-      if (candidateLeg.cycleGiantLegIndex !== undefined) {
-        if (candidateLeg.cycleGiantLegIndex === leg.index) {
-          if (candidateLeg.color === 'blue' && !blueLeg) blueLeg = candidateLeg;
-          else if (candidateLeg.color === 'dark_blue' && !darkBlueLeg) darkBlueLeg = candidateLeg;
-        }
-        if (candidateLeg.isGiantLeg && candidateLeg.index !== leg.index && darkBlueLeg) {
-          break;
-        }
-      } else {
-        if (candidateLeg.isGiantLeg) break;
-        if (candidateLeg.color === 'blue' && !blueLeg) blueLeg = candidateLeg;
-        else if (candidateLeg.color === 'dark_blue' && !darkBlueLeg) darkBlueLeg = candidateLeg;
-      }
-    }
+    const isBearishSetup =
+      leg1.color === 'green' &&
+      leg1.isUp &&
+      leg2.color === 'red' &&
+      !leg2.isUp &&
+      leg2.endPrice < leg1.startPrice; // B red breaks A green
 
-    // Condition: must reverse from D or F (instead of directly from B)
-    if (!blueLeg && !darkBlueLeg) {
+    const isBullishSetup =
+      leg1.color === 'red' &&
+      !leg1.isUp &&
+      leg2.color === 'green' &&
+      leg2.isUp &&
+      leg2.endPrice > leg1.startPrice; // B green breaks A red
+
+    if (!isBearishSetup && !isBullishSetup) {
       continue;
     }
 
-    const priceA = leg.startPrice;
-    const priceB = leg.endPrice;
-    const candleIdxB = points[leg.endIndex]?.candleIndex ?? findCandleIndex(leg.endTime);
+    const direction: 'BUY' | 'SELL' = isBullishSetup ? 'BUY' : 'SELL';
+    const cycleType: 'bullish' | 'bearish' = isBullishSetup ? 'bullish' : 'bearish';
 
-    const direction: 'BUY' | 'SELL' = leg.isUp ? 'BUY' : 'SELL';
-    const cycleType: 'bullish' | 'bearish' = leg.isUp ? 'bullish' : 'bearish';
-    const entryPrice = (priceA + priceB) / 2;
-    const stopLoss = priceA;
+    // Entry at 66% retracement of the second AB leg (closer to reversal A2); Stop at A of the second AB leg
+    const leg2A = leg2.startPrice;
+    const leg2B = leg2.endPrice;
+    const entryPrice = leg2B + 0.66 * (leg2A - leg2B);
+    const stopLoss = leg2A;
     const stopDistance = Math.abs(entryPrice - stopLoss);
     if (stopDistance <= 0.000001) continue;
 
@@ -1151,138 +1155,67 @@ export function runStrategy3Backtest(
         ? entryPrice + stopDistance * targetRR
         : entryPrice - stopDistance * targetRR;
 
-    const candleIdxD = blueLeg
-      ? (points[blueLeg.endIndex]?.candleIndex ?? findCandleIndex(blueLeg.endTime))
-      : undefined;
-    const confirmIdxD =
-      blueLeg && candleIdxD !== undefined
-        ? findGiantLegConfirmCandleIdx(candles, blueLeg, candleIdxD, atrValues, effectiveAtrMult)
-        : -1;
+    // Causal confirmation of leg2 pivot B (B red or B green)
+    const candleIdxB2 = points[leg2.endIndex]?.candleIndex ?? findCandleIndex(leg2.endTime);
+    const confirmIdx = findGiantLegConfirmCandleIdx(
+      candles,
+      leg2,
+      candleIdxB2,
+      atrValues,
+      effectiveAtrMult
+    );
 
-    const candleIdxF = darkBlueLeg
-      ? (points[darkBlueLeg.endIndex]?.candleIndex ?? findCandleIndex(darkBlueLeg.endTime))
-      : undefined;
-    const confirmIdxF =
-      darkBlueLeg && candleIdxF !== undefined
-        ? findGiantLegConfirmCandleIdx(candles, darkBlueLeg, candleIdxF, atrValues, effectiveAtrMult)
-        : -1;
+    if (confirmIdx < 0 || confirmIdx >= candles.length - 1) {
+      continue;
+    }
 
-    const wasStopBreachedBefore = (upToIdx: number): boolean => {
-      for (let s = candleIdxB + 1; s <= upToIdx && s < candles.length; s++) {
-        const cs = candles[s];
-        if (direction === 'BUY' ? cs.low <= stopLoss : cs.high >= stopLoss) {
-          return true;
-        }
+    // Ensure stopLoss (A of leg2) was never breached between B2 and causal confirmation
+    let stopBreachedBeforeConfirm = false;
+    for (let s = candleIdxB2 + 1; s <= confirmIdx && s < candles.length; s++) {
+      const cs = candles[s];
+      if (direction === 'BUY' ? cs.low <= stopLoss : cs.high >= stopLoss) {
+        stopBreachedBeforeConfirm = true;
+        break;
       }
-      return false;
-    };
+    }
+    if (stopBreachedBeforeConfirm) {
+      continue;
+    }
+
+    const scanStart = confirmIdx + 1;
+    const scanEnd = Math.min(candles.length - 1, confirmIdx + effectiveMaxCandles);
 
     let entryCandleIdx: number | undefined;
     let entryTime: number | undefined;
-    let reversalSource: 'D' | 'F' | undefined;
-    let sourceConfirmIdx: number | undefined;
-    let sourcePivotTime: number | undefined;
 
-    // 1. Check reversal returning from pivot D (light blue CD)
-    if (
-      blueLeg &&
-      confirmIdxD >= 0 &&
-      confirmIdxD < candles.length - 1 &&
-      !wasStopBreachedBefore(confirmIdxD)
-    ) {
-      const scanStartD = confirmIdxD + 1;
-      const maxWindowD = confirmIdxD + effectiveMaxCandles;
-      const scanEndD = Math.min(
-        candles.length - 1,
-        maxWindowD,
-        candleIdxF !== undefined ? candleIdxF : candles.length - 1
-      );
-
-      for (let cIdx = scanStartD; cIdx <= scanEndD; cIdx++) {
-        const c = candles[cIdx];
-        if (direction === 'BUY') {
-          if (c.open <= stopLoss) {
-            break;
+    for (let cIdx = scanStart; cIdx <= scanEnd; cIdx++) {
+      const c = candles[cIdx];
+      if (direction === 'BUY') {
+        if (c.open <= stopLoss) {
+          break;
+        }
+        if (c.low <= entryPrice) {
+          if (!(config.noConcurrentPositions && cIdx <= lastTradeExitCandleIdx)) {
+            entryCandleIdx = cIdx;
+            entryTime = c.time;
           }
-          if (c.low <= entryPrice) {
-            if (!(config.noConcurrentPositions && cIdx <= lastTradeExitCandleIdx)) {
-              entryCandleIdx = cIdx;
-              entryTime = c.time;
-              reversalSource = 'D';
-              sourceConfirmIdx = confirmIdxD;
-              sourcePivotTime = candles[confirmIdxD]?.time || blueLeg.endTime;
-            }
-            break;
+          break;
+        }
+      } else {
+        if (c.open >= stopLoss) {
+          break;
+        }
+        if (c.high >= entryPrice) {
+          if (!(config.noConcurrentPositions && cIdx <= lastTradeExitCandleIdx)) {
+            entryCandleIdx = cIdx;
+            entryTime = c.time;
           }
-        } else {
-          if (c.open >= stopLoss) {
-            break;
-          }
-          if (c.high >= entryPrice) {
-            if (!(config.noConcurrentPositions && cIdx <= lastTradeExitCandleIdx)) {
-              entryCandleIdx = cIdx;
-              entryTime = c.time;
-              reversalSource = 'D';
-              sourceConfirmIdx = confirmIdxD;
-              sourcePivotTime = candles[confirmIdxD]?.time || blueLeg.endTime;
-            }
-            break;
-          }
+          break;
         }
       }
     }
 
-    // 2. If D did not fill a trade for this cycle, check reversal returning from pivot F (dark blue EF)
-    if (
-      entryCandleIdx === undefined &&
-      darkBlueLeg &&
-      confirmIdxF >= 0 &&
-      confirmIdxF < candles.length - 1 &&
-      !wasStopBreachedBefore(confirmIdxF)
-    ) {
-      const scanStartF = confirmIdxF + 1;
-      const scanEndF = Math.min(candles.length - 1, confirmIdxF + effectiveMaxCandles);
-
-      for (let cIdx = scanStartF; cIdx <= scanEndF; cIdx++) {
-        const c = candles[cIdx];
-        if (direction === 'BUY') {
-          if (c.open <= stopLoss) {
-            break;
-          }
-          if (c.low <= entryPrice) {
-            if (!(config.noConcurrentPositions && cIdx <= lastTradeExitCandleIdx)) {
-              entryCandleIdx = cIdx;
-              entryTime = c.time;
-              reversalSource = 'F';
-              sourceConfirmIdx = confirmIdxF;
-              sourcePivotTime = candles[confirmIdxF]?.time || darkBlueLeg.endTime;
-            }
-            break;
-          }
-        } else {
-          if (c.open >= stopLoss) {
-            break;
-          }
-          if (c.high >= entryPrice) {
-            if (!(config.noConcurrentPositions && cIdx <= lastTradeExitCandleIdx)) {
-              entryCandleIdx = cIdx;
-              entryTime = c.time;
-              reversalSource = 'F';
-              sourceConfirmIdx = confirmIdxF;
-              sourcePivotTime = candles[confirmIdxF]?.time || darkBlueLeg.endTime;
-            }
-            break;
-          }
-        }
-      }
-    }
-
-    if (
-      entryCandleIdx === undefined ||
-      entryTime === undefined ||
-      sourceConfirmIdx === undefined ||
-      reversalSource === undefined
-    ) {
+    if (entryCandleIdx === undefined || entryTime === undefined) {
       continue;
     }
 
@@ -1439,21 +1372,21 @@ export function runStrategy3Backtest(
     const netVal = grossVal - tradeTotalFee;
     const capitalBeforeTrade = parseFloat(rollingCapital.toFixed(4));
     const nextCap = Math.max(1, parseFloat((rollingCapital + netVal).toFixed(4)));
-    const waitCandles = entryCandleIdx - sourceConfirmIdx;
+    const waitCandles = entryCandleIdx - confirmIdx;
 
     trades.push({
-      id: `trade-s3-${trades.length + 1}-${leg.index}`,
+      id: `trade-s3-${trades.length + 1}-${leg2.index}`,
       strategyId: 'strategy_3_ab_midpoint',
       strategyName:
-        reversalSource === 'F'
-          ? 'استراتژی ۳ (لیمیت وسط AB - برگشت از F)'
-          : 'استراتژی ۳ (لیمیت وسط AB - برگشت از D)',
+        direction === 'SELL'
+          ? 'استراتژی ۳ (سبز←قرمز + شکست A / لیمیت ۶۶٪ قرمز)'
+          : 'استراتژی ۳ (قرمز←سبز + شکست A / لیمیت ۶۶٪ سبز)',
       cycleIndex: trades.length + 1,
       attemptNumber: 1,
       direction,
       cycleType,
-      priceA,
-      priceE: reversalSource === 'F' ? darkBlueLeg!.endPrice : blueLeg!.endPrice,
+      priceA: leg1.startPrice,
+      priceE: leg2.endPrice,
       priceF: stopLoss,
       entryPrice,
       stopLoss,
@@ -1467,8 +1400,8 @@ export function runStrategy3Backtest(
       positionValue: parseFloat(positionValue.toFixed(4)),
       positionToRiskRatio: posToRiskRatio,
       riskReward: parseFloat(targetRR.toFixed(2)),
-      timeF: sourcePivotTime || candles[sourceConfirmIdx]?.time || leg.endTime,
-      candleIdxF: sourceConfirmIdx,
+      timeF: candles[confirmIdx]?.time || leg2.endTime,
+      candleIdxF: confirmIdx,
       entryTime,
       entryCandleIdx,
       exitTime,

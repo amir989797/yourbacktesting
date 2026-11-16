@@ -836,6 +836,15 @@ export function useStatsAudit(props: UseStatsAuditProps) {
     // آرایه‌های سری زمانی ارزش حساب و بازده معاملات جهت سنجش پایداری و ریسک نزولی
     const accountEquitySeries: number[] = [initialCap];
     const tradeReturnPcts: number[] = [];
+    const nominalRiskForR = effectiveRiskUsdt > 0 ? effectiveRiskUsdt : ((initialCap * (risk || 1)) / 100);
+    const tradeNetPnls: number[] = [];
+    const tradeRMultiples: number[] = [];
+    const winTradePnls: number[] = [];
+    const winTradeRs: number[] = [];
+    const lossTradePnls: number[] = [];
+    const lossTradeRs: number[] = [];
+    const timeStopRs: number[] = [];
+    const tpSlRs: number[] = [];
 
     for (const t of sortedTrades) {
       const netPnl = t.pnl || 0;
@@ -946,12 +955,26 @@ export function useStatsAudit(props: UseStatsAuditProps) {
         }
       }
 
+      const rMultiple = nominalRiskForR > 0 ? netPnl / nominalRiskForR : 0;
+      tradeNetPnls.push(netPnl);
+      tradeRMultiples.push(rMultiple);
+
       if (netPnl > 0.0001) {
         grossProfit += netPnl;
         winTrades++;
+        winTradePnls.push(netPnl);
+        winTradeRs.push(rMultiple);
       } else if (netPnl < -0.0001) {
         grossLoss += Math.abs(netPnl);
         lossTrades++;
+        lossTradePnls.push(netPnl);
+        lossTradeRs.push(rMultiple);
+      }
+
+      if (t.reason === 'TIME_STOP') {
+        timeStopRs.push(rMultiple);
+      } else {
+        tpSlRs.push(rMultiple);
       }
 
       if (netPnl > bestTradePnl) {
@@ -1430,11 +1453,38 @@ export function useStatsAudit(props: UseStatsAuditProps) {
     const minDaily = sortedDailyPcts[0] || 0;
     const maxDaily = sortedDailyPcts[sortedDailyPcts.length - 1] || 0;
 
-    const varianceDaily =
-      sortedDailyPcts.length > 1
-        ? sortedDailyPcts.reduce((sum, r) => sum + Math.pow(r - meanDaily, 2), 0) / (sortedDailyPcts.length - 1)
-        : 0;
-    const stdDevDaily = Math.sqrt(varianceDaily);
+    const calcSampleStats = (arr: number[]) => {
+      const n = arr.length;
+      if (n === 0) return { mean: 0, stdDev: 0, skewness: 0, excessKurtosis: 0 };
+      const mean = arr.reduce((a, b) => a + b, 0) / n;
+      if (n < 2) return { mean, stdDev: 0, skewness: 0, excessKurtosis: 0 };
+      let sumSq = 0;
+      for (const x of arr) {
+        const d = x - mean;
+        sumSq += d * d;
+      }
+      const variance = sumSq / (n - 1);
+      const stdDev = Math.sqrt(variance);
+      if (stdDev <= 1e-12) return { mean, stdDev: 0, skewness: 0, excessKurtosis: 0 };
+
+      let sumCubedZ = 0;
+      let sumQuarticZ = 0;
+      for (const x of arr) {
+        const z = (x - mean) / stdDev;
+        sumCubedZ += z * z * z;
+        sumQuarticZ += z * z * z * z;
+      }
+      const skewness = n >= 3 ? (n / ((n - 1) * (n - 2))) * sumCubedZ : 0;
+      const excessKurtosis =
+        n >= 4
+          ? ((n * (n + 1)) / ((n - 1) * (n - 2) * (n - 3))) * sumQuarticZ -
+            (3 * (n - 1) * (n - 1)) / ((n - 2) * (n - 3))
+          : 0;
+      return { mean, stdDev, skewness, excessKurtosis };
+    };
+
+    const dailyReturnStats = calcSampleStats(dailyReturnsList);
+    const stdDevDaily = dailyReturnStats.stdDev;
     const annualizedVolatility = stdDevDaily * Math.sqrt(365.25);
 
     const downsideDailyReturns = dailyReturnsList.filter((r) => r < 0);
@@ -1445,20 +1495,90 @@ export function useStatsAudit(props: UseStatsAuditProps) {
     const downsideStdDev = Math.sqrt(downsideVariance);
     const annualizedDownsideVol = downsideStdDev * Math.sqrt(365.25);
 
+    const dailyDownsideDevFull =
+      dailyReturnsList.length > 0
+        ? Math.sqrt(
+            dailyReturnsList.reduce((sum, r) => {
+              const d = Math.min(0, r);
+              return sum + d * d;
+            }, 0) / dailyReturnsList.length
+          )
+        : 0;
+
     const riskFreeRate = 4.0;
-    const excessReturn = annualizedReturn - riskFreeRate;
+    const dailyRiskFreeRatePct = riskFreeRate / 365.25;
     const sharpeRatio =
-      annualizedVolatility > 0
-        ? excessReturn / annualizedVolatility
-        : totalNetProfit > 0
+      stdDevDaily > 0
+        ? ((meanDaily - dailyRiskFreeRatePct) / stdDevDaily) * Math.sqrt(365.25)
+        : meanDaily > dailyRiskFreeRatePct
         ? 99.0
         : 0.0;
     const sortinoRatio =
-      annualizedDownsideVol > 0
-        ? excessReturn / annualizedDownsideVol
-        : totalNetProfit > 0
+      dailyDownsideDevFull > 0
+        ? ((meanDaily - dailyRiskFreeRatePct) / dailyDownsideDevFull) * Math.sqrt(365.25)
+        : meanDaily > dailyRiskFreeRatePct
         ? 99.0
         : 0.0;
+
+    // شاخص‌های انحراف معیار معامله‌به‌معامله و کیفیت سیستم (Per-Trade StdDev & SQN)
+    const tradeUsdStats = calcSampleStats(tradeNetPnls);
+    const tradeRStats = calcSampleStats(tradeRMultiples);
+    const winUsdStats = calcSampleStats(winTradePnls);
+    const winRStats = calcSampleStats(winTradeRs);
+    const lossUsdStats = calcSampleStats(lossTradePnls);
+    const lossRStats = calcSampleStats(lossTradeRs);
+    const timeStopRStats = calcSampleStats(timeStopRs);
+    const tpSlRStats = calcSampleStats(tpSlRs);
+
+    const perTradeSharpe =
+      tradeRStats.stdDev > 0
+        ? tradeRStats.mean / tradeRStats.stdDev
+        : tradeRStats.mean > 0
+        ? 99.0
+        : 0.0;
+    const sqnRaw =
+      tradeRStats.stdDev > 0 && totalTrades > 0
+        ? (tradeRStats.mean / tradeRStats.stdDev) * Math.sqrt(totalTrades)
+        : 0;
+    const sqn100 =
+      tradeRStats.stdDev > 0 && totalTrades > 0
+        ? (tradeRStats.mean / tradeRStats.stdDev) * 10
+        : 0;
+    const sqnGrade =
+      sqn100 > 3.0 ? 'Excellent' : sqn100 >= 2.0 ? 'Good' : sqn100 >= 1.6 ? 'Average' : 'Poor';
+    const sqnGradeFa =
+      sqn100 > 3.0 ? 'عالی' : sqn100 >= 2.0 ? 'خوب' : sqn100 >= 1.6 ? 'متوسط' : 'ضعیف';
+    const lossDispersionBounded =
+      winTradeRs.length > 1 && lossTradeRs.length > 1
+        ? lossRStats.stdDev < winRStats.stdDev
+        : lossRStats.stdDev <= winRStats.stdDev;
+
+    const dispersionMetrics = {
+      nominalRiskUsd: parseFloat(nominalRiskForR.toFixed(2)),
+      perTradeUsdStdDev: parseFloat(tradeUsdStats.stdDev.toFixed(2)),
+      perTradeRMean: parseFloat(tradeRStats.mean.toFixed(3)),
+      perTradeRStdDev: parseFloat(tradeRStats.stdDev.toFixed(2)),
+      perTradeSharpe: parseFloat(perTradeSharpe.toFixed(2)),
+      winsCount: winTradePnls.length,
+      lossesCount: lossTradePnls.length,
+      winsUsdStdDev: parseFloat(winUsdStats.stdDev.toFixed(2)),
+      winsRStdDev: parseFloat(winRStats.stdDev.toFixed(2)),
+      lossesUsdStdDev: parseFloat(lossUsdStats.stdDev.toFixed(2)),
+      lossesRStdDev: parseFloat(lossRStats.stdDev.toFixed(2)),
+      lossDispersionHealth: (lossDispersionBounded ? 'PASS' : 'WARN') as 'PASS' | 'WARN',
+      timeStopCount: timeStopRs.length,
+      timeStopRStdDev: parseFloat(timeStopRStats.stdDev.toFixed(2)),
+      tpSlCount: tpSlRs.length,
+      tpSlRStdDev: parseFloat(tpSlRStats.stdDev.toFixed(2)),
+      sqnRaw: parseFloat(sqnRaw.toFixed(2)),
+      sqn100: parseFloat(sqn100.toFixed(2)),
+      sqnGrade,
+      sqnGradeFa,
+      tradeSkewness: parseFloat(tradeRStats.skewness.toFixed(3)),
+      dailySkewness: parseFloat(dailyReturnStats.skewness.toFixed(3)),
+      tradeExcessKurtosis: parseFloat(tradeRStats.excessKurtosis.toFixed(3)),
+      dailyExcessKurtosis: parseFloat(dailyReturnStats.excessKurtosis.toFixed(3)),
+    };
 
     const p5Idx = Math.max(0, Math.floor(sortedDailyPcts.length * 0.05));
     const p1Idx = Math.max(0, Math.floor(sortedDailyPcts.length * 0.01));
@@ -1652,6 +1772,10 @@ export function useStatsAudit(props: UseStatsAuditProps) {
       var99: parseFloat(var99_magnitude.toFixed(2)),
       cvar95: parseFloat(cvar95_magnitude.toFixed(2)),
       cvar99: parseFloat(cvar99_magnitude.toFixed(2)),
+      tradeSkewness: dispersionMetrics.tradeSkewness,
+      dailySkewness: dispersionMetrics.dailySkewness,
+      tradeExcessKurtosis: dispersionMetrics.tradeExcessKurtosis,
+      dailyExcessKurtosis: dispersionMetrics.dailyExcessKurtosis,
       signConventionNote: 'قرارداد علامت: مقادیر VaR و CVaR به صورت قدرمطلق زیان (Positive Loss Magnitude % of Equity) گزارش شده‌اند. ارزش در معرض ریسک شرطی (Expected Shortfall) میانگین زیان در بدترین ۵٪ و ۱٪ روزها است و با VaR یکسان فرض نشده است.',
     };
 
@@ -2042,9 +2166,11 @@ export function useStatsAudit(props: UseStatsAuditProps) {
       annualizedReturn,
       annualizedVolatility,
       sharpeRatio,
+      perTradeSharpe: dispersionMetrics.perTradeSharpe,
       sortinoRatio,
       calmarRatio,
       sortinoMetrics,
+      dispersionMetrics,
       perTradeSortino: parseFloat(perTradeSortino.toFixed(2)),
       annualizedDailySortino: parseFloat(annualizedDailySortino.toFixed(2)),
       equityCurveStability,
@@ -2330,7 +2456,7 @@ export function useStatsAudit(props: UseStatsAuditProps) {
 گزارش جامع ۱۳ جدول ممیزی، صحه‌گذاری و اعتبارسنجی بک‌تست (13-Table Complete Audit & Validation)
 زمان صدور گزارش: ${new Date().toISOString()}
 تایم‌فریم انتخابی: ${timeframe}
-استراتژی انتخابی: ${selectedStrategyId === 'strategy_1_e_breakout' ? 'استراتژی ۱ (شکست سطح E با فیبوناچی)' : selectedStrategyId === 'strategy_3_ab_midpoint' ? 'استراتژی ۳ (لیمیت وسط AB با برگشت از D یا F)' : 'استراتژی ۲'}
+استراتژی انتخابی: ${selectedStrategyId === 'strategy_1_e_breakout' ? 'استراتژی ۱ (شکست سطح E با فیبوناچی)' : selectedStrategyId === 'strategy_3_ab_midpoint' ? 'استراتژی ۳ (دو لگ بلند متوالی + شکست A و لیمیت ۶۶٪ AB دوم)' : 'استراتژی ۲'}
 مرحله ارزیابی پورتفوی: [FINAL / POST-CONCURRENCY] (کلیه شاخص‌های نهایی بر مبنای معاملات فیلترشده سبد محاسبه شده‌اند)
 وضعیت کلی ممیزی سیستم: [${baselineReconstruction.consistencyAudit.overallStatus === 'PASS' ? '✅ PASS (تایید کامل)' : baselineReconstruction.consistencyAudit.overallStatus === 'WARN' ? '⚠️ WARN (هشدار متدولوژی/سایزینگ)' : '❌ FAIL (دارای خطای ریاضی)'}]
 =====================================================
@@ -2381,8 +2507,12 @@ export function useStatsAudit(props: UseStatsAuditProps) {
 * Account-level Profit Factor after funding: ${baselineReconstruction.accountLevelProfitFactor.toFixed(2)}
 * وین‌ریت کل: ${baselineReconstruction.winRate.toFixed(2)}% (${baselineReconstruction.winTrades} برد / ${baselineReconstruction.lossTrades} باخت)
 * امید ریاضی: $${baselineReconstruction.expectancyUsd.toFixed(2)} per trade (${baselineReconstruction.expectancyR.toFixed(2)} R)
-* Sharpe Ratio: ${baselineReconstruction.sharpeRatio.toFixed(2)} | Sortino: ${baselineReconstruction.sortinoRatio.toFixed(2)} | Calmar: ${baselineReconstruction.calmarRatio.toFixed(2)}
+* Sharpe Ratio (Annualized / Per-Trade SNR): Annualized: ${baselineReconstruction.sharpeRatio.toFixed(2)} | Per-Trade: ${baselineReconstruction.perTradeSharpe.toFixed(2)} | Calmar: ${baselineReconstruction.calmarRatio.toFixed(2)}
 * Sortino Ratio (Per-Trade / Annualized): Per-Trade: ${baselineReconstruction.sortinoMetrics.perTradeSortino.toFixed(2)} | Annualized: ${baselineReconstruction.sortinoMetrics.annualizedDailySortino.toFixed(2)}
+* Per-Trade PnL StdDev (انحراف معیار سود هر معامله): $${baselineReconstruction.dispersionMetrics.perTradeUsdStdDev.toFixed(2)} USDT (${baselineReconstruction.dispersionMetrics.perTradeRStdDev.toFixed(2)} R)
+* Win / Loss StdDev Breakdown: Wins StdDev: $${baselineReconstruction.dispersionMetrics.winsUsdStdDev.toFixed(2)} (${baselineReconstruction.dispersionMetrics.winsRStdDev.toFixed(2)} R) | Losses StdDev: $${baselineReconstruction.dispersionMetrics.lossesUsdStdDev.toFixed(2)} (${baselineReconstruction.dispersionMetrics.lossesRStdDev.toFixed(2)} R) [${baselineReconstruction.dispersionMetrics.lossDispersionHealth}]
+* Time-Stop vs. TP/SL StdDev: Time-Stop StdDev: ${baselineReconstruction.dispersionMetrics.timeStopRStdDev.toFixed(2)} R (n=${baselineReconstruction.dispersionMetrics.timeStopCount}) vs. TP/SL StdDev: ${baselineReconstruction.dispersionMetrics.tpSlRStdDev.toFixed(2)} R (n=${baselineReconstruction.dispersionMetrics.tpSlCount})
+* System Quality Number (SQN Raw / SQN-100): SQN Raw: ${baselineReconstruction.dispersionMetrics.sqnRaw.toFixed(2)} | SQN-100: ${baselineReconstruction.dispersionMetrics.sqn100.toFixed(2)} (${baselineReconstruction.dispersionMetrics.sqnGrade} / ${baselineReconstruction.dispersionMetrics.sqnGradeFa})
 
 بخش چهارم: جدول سنجش ریسک واقعی پرتفوی (Table 4 — Measure Actual Portfolio Risk):
 -----------------------------------------------------
@@ -2476,6 +2606,8 @@ ${baselineReconstruction.monthlyPerformanceAudit.map((m: any) => `* ماه ${m.m
 * ارزش در معرض ریسک روزانه (VaR 99%): ${baselineReconstruction.dailyRiskDistributionAudit.var99.toFixed(2)}% (-$${(capital * baselineReconstruction.dailyRiskDistributionAudit.var99 / 100).toFixed(2)} USDT)
 * کسری موردانتظار شرطی (CVaR 95%): ${baselineReconstruction.dailyRiskDistributionAudit.cvar95.toFixed(2)}% (-$${(capital * baselineReconstruction.dailyRiskDistributionAudit.cvar95 / 100).toFixed(2)} USDT)
 * کسری موردانتظار شرطی (CVaR 99%): ${baselineReconstruction.dailyRiskDistributionAudit.cvar99.toFixed(2)}% (-$${(capital * baselineReconstruction.dailyRiskDistributionAudit.cvar99 / 100).toFixed(2)} USDT)
+* چولگی توزیع بازده (Skewness — Trade / Daily): Trade: ${baselineReconstruction.dailyRiskDistributionAudit.tradeSkewness.toFixed(3)} | Daily: ${baselineReconstruction.dailyRiskDistributionAudit.dailySkewness.toFixed(3)}
+* کشیدگی مازاد توزیع بازده (Excess Kurtosis — Tail Risk): Trade: ${baselineReconstruction.dailyRiskDistributionAudit.tradeExcessKurtosis.toFixed(3)} | Daily: ${baselineReconstruction.dailyRiskDistributionAudit.dailyExcessKurtosis.toFixed(3)}
 * صحه‌گذاری ریاضی: [${baselineReconstruction.dailyRiskDistributionAudit.cvar95 >= baselineReconstruction.dailyRiskDistributionAudit.var95 ? '✅ CVaR >= VaR تایید شد' : '❌ بررسی مجدد'}]
 
 بخش سیزدهم: ممیزی فیلتر همزمانی و صحه‌گذاری عدم اریب (Table 13 — Concurrency Filter & Look-Ahead Bias):
@@ -2582,7 +2714,8 @@ ${baselineReconstruction.monthlyPerformanceAudit.map((m: any) => `* ماه ${m.m
       ['Total Account Return', `${baselineReconstruction.totalReturnPercent.toFixed(2)}%`, 'محاسبه‌شده', 'بازدهی کل حساب بر سرمایه اولیه'],
       ['Annualized Return (CAGR)', `${baselineReconstruction.annualizedReturn.toFixed(2)}%`, 'محاسبه‌شده', baselineReconstruction.cagrEligible ? 'محاسبه CAGR بر مبنای بازه تقویمی' : 'برآورد خطی سالانه (دوره زیر ۳۰ روز)'],
       ['Annualized Volatility', `${baselineReconstruction.annualizedVolatility.toFixed(2)}%`, 'محاسبه‌شده', 'انحراف معیار بازده‌های روزانه × √365.25'],
-      ['Sharpe Ratio', `${baselineReconstruction.sharpeRatio.toFixed(2)}`, 'محاسبه‌شده', 'نرخ بدون ریسک ۴٪ سالانه'],
+      ['Sharpe Ratio (Annualized)', `${baselineReconstruction.sharpeRatio.toFixed(2)}`, 'محاسبه‌شده', '((Mean Daily Return - Rf/365.25) / Daily StdDev) × √365.25 با Rf=۴٪'],
+      ['Sharpe Ratio (Per-Trade / SNR)', `${baselineReconstruction.perTradeSharpe.toFixed(2)}`, 'محاسبه‌شده', 'نسبت سیگنال به نویز هر معامله (μ_R / σ_R)'],
       ['Sortino Ratio (Annualized)', `${baselineReconstruction.sortinoMetrics.annualizedDailySortino.toFixed(2)}`, 'محاسبه‌شده', 'نسبت سورتینو سالانه‌شده با انحراف معیار زیان‌های منفی (Rf=0)'],
       ['Sortino Ratio (Per-Trade)', `${baselineReconstruction.sortinoMetrics.perTradeSortino.toFixed(2)}`, 'محاسبه‌شده', 'نسبت سورتینو به ازای هر معامله'],
       ['Calmar Ratio', `${baselineReconstruction.calmarRatio.toFixed(2)}`, 'محاسبه‌شده', 'بازده سالانه تقسیم بر حداکثر افت سرمایه'],
@@ -2595,6 +2728,10 @@ ${baselineReconstruction.monthlyPerformanceAudit.map((m: any) => `* ماه ${m.m
       ['Average Loss', `-$${baselineReconstruction.avgLossUsd.toFixed(2)} USDT (-${baselineReconstruction.avgLossPercent.toFixed(2)}%)`, 'محاسبه‌شده', 'میانگین زیان معاملات بازنده'],
       ['Win/Loss Ratio', `${baselineReconstruction.winLossRatio.toFixed(2)}`, 'محاسبه‌شده', 'Average Win / Average Loss'],
       ['امید ریاضی', `$${baselineReconstruction.expectancyUsd.toFixed(2)} per trade (${baselineReconstruction.expectancyR.toFixed(2)} R)`, 'محاسبه‌شده', 'امید ریاضی دلاری و بر مبنای واحد ریسک R'],
+      ['Per-Trade PnL StdDev (انحراف معیار سود هر معامله)', `${baselineReconstruction.dispersionMetrics.perTradeUsdStdDev.toFixed(2)} USDT (${baselineReconstruction.dispersionMetrics.perTradeRStdDev.toFixed(2)} R)`, 'محاسبه‌شده', 'انحراف معیار نمونه‌ای بازده معاملات بر حسب دلار و R'],
+      ['Win / Loss StdDev Breakdown (انحراف معیار تفکیکی برد و باخت)', `Wins StdDev: $${baselineReconstruction.dispersionMetrics.winsUsdStdDev.toFixed(2)} (${baselineReconstruction.dispersionMetrics.winsRStdDev.toFixed(2)} R) | Losses StdDev: $${baselineReconstruction.dispersionMetrics.lossesUsdStdDev.toFixed(2)} (${baselineReconstruction.dispersionMetrics.lossesRStdDev.toFixed(2)} R)`, baselineReconstruction.dispersionMetrics.lossDispersionHealth, 'کنترل پراکندگی زیان (PASS اگر σ_Loss < σ_Win)'],
+      ['Time-Stop vs. TP/SL StdDev (انحراف معیار خروج زمانی در برابر حد سود/ضرر)', `Time-Stop StdDev: ${baselineReconstruction.dispersionMetrics.timeStopRStdDev.toFixed(2)} R (n=${baselineReconstruction.dispersionMetrics.timeStopCount}) vs. TP/SL StdDev: ${baselineReconstruction.dispersionMetrics.tpSlRStdDev.toFixed(2)} R (n=${baselineReconstruction.dispersionMetrics.tpSlCount})`, 'محاسبه‌شده', 'مقایسه پراکندگی بازده R بین خروج‌های زمانی و TP/SL'],
+      ['System Quality Number (SQN Raw / SQN-100)', `SQN Raw: ${baselineReconstruction.dispersionMetrics.sqnRaw.toFixed(2)} | SQN-100: ${baselineReconstruction.dispersionMetrics.sqn100.toFixed(2)} (${baselineReconstruction.dispersionMetrics.sqnGrade})`, baselineReconstruction.dispersionMetrics.sqnGradeFa, 'شاخص کیفیت سیستم وان ثارپ: Raw = (μ_R/σ_R)×√N و نرمال‌شده صدتایی = (μ_R/σ_R)×10'],
       ['حداکثر افت سرمایه حساب (Max Account Drawdown)', `${baselineReconstruction.accountEquityMaxDD_percent.toFixed(2)}% (-$${baselineReconstruction.accountEquityMaxDD_usd.toFixed(2)} USDT)`, 'محاسبه‌شده', 'افت قله به دره منحنی ارزش واقعی حساب با کارمزد و فاندینگ'],
       ['حداکثر افت سرمایه معاملاتی (Max Trading Drawdown)', `${baselineReconstruction.tradingEquityMaxDD_percent.toFixed(2)}% (-$${baselineReconstruction.tradingEquityMaxDD_usd.toFixed(2)} USDT)`, 'محاسبه‌شده', 'افت قله به دره منحنی معاملاتی بدون فاندینگ'],
       ['مدت زمان درودان', `${baselineReconstruction.maxDDDurationDays.toFixed(1)} روز (${baselineReconstruction.maxDDDurationTrades} معامله)`, 'محاسبه‌شده', 'طولانی‌ترین بازه افت و بهبود'],
@@ -2744,6 +2881,8 @@ ${baselineReconstruction.monthlyPerformanceAudit.map((m: any) => `* ماه ${m.m
       ['ارزش در معرض ریسک روزانه ۹۹٪ (Daily VaR 99%)', `${baselineReconstruction.dailyRiskDistributionAudit.var99.toFixed(2)}% (-$${((capital * baselineReconstruction.dailyRiskDistributionAudit.var99) / 100).toFixed(2)} USDT)`, 'محاسبه‌شده', 'بیشترین زیان روزانه در ۹۹٪ روزها'],
       ['کسری موردانتظار شرطی روزانه ۹۵٪ (Daily CVaR 95%)', `${baselineReconstruction.dailyRiskDistributionAudit.cvar95.toFixed(2)}% (-$${((capital * baselineReconstruction.dailyRiskDistributionAudit.cvar95) / 100).toFixed(2)} USDT)`, 'محاسبه‌شده', 'میانگین زیان در بدترین ۵٪ روزها (Expected Shortfall)'],
       ['کسری موردانتظار شرطی روزانه ۹۹٪ (Daily CVaR 99%)', `${baselineReconstruction.dailyRiskDistributionAudit.cvar99.toFixed(2)}% (-$${((capital * baselineReconstruction.dailyRiskDistributionAudit.cvar99) / 100).toFixed(2)} USDT)`, 'محاسبه‌شده', 'میانگین زیان در بدترین ۱٪ روزها (Expected Shortfall)'],
+      ['چولگی توزیع بازده (Return Distribution Skewness — Trade / Daily)', `Trade: ${baselineReconstruction.dailyRiskDistributionAudit.tradeSkewness.toFixed(3)} | Daily: ${baselineReconstruction.dailyRiskDistributionAudit.dailySkewness.toFixed(3)}`, 'محاسبه‌شده', 'چولگی مثبت بیانگر کشیدگی بیشتر دنباله سود نسبت به دنباله زیان است'],
+      ['کشیدگی مازاد توزیع بازده (Return Distribution Excess Kurtosis — Tail Risk)', `Trade: ${baselineReconstruction.dailyRiskDistributionAudit.tradeExcessKurtosis.toFixed(3)} | Daily: ${baselineReconstruction.dailyRiskDistributionAudit.dailyExcessKurtosis.toFixed(3)}`, 'محاسبه‌شده', 'کشیدگی منفی تاییدکننده توزیع پلاتی‌کورتیک با ریسک دنباله‌ای محدود است'],
       ['شرط برابری یا بزرگتر بودن CVaR نسبت به VaR', baselineReconstruction.dailyRiskDistributionAudit.cvar95 >= baselineReconstruction.dailyRiskDistributionAudit.var95 ? '✅ PASS (تایید شد)' : '❌ FAIL', 'تاییدشده', 'شرط ریاضی CVaR >= VaR کاملاً برقرار است'],
       ['', '', '', ''],
       ['بخش ۱۳: ممیزی فیلتر همزمانی پورتفوی و عدم اریب (Table 13 — Concurrency Filter Audit & Zero Look-Ahead Bias)', '', '', ''],

@@ -1251,31 +1251,47 @@ export const StatsTab: React.FC<StatsTabProps> = ({
                     {/* 5. Sharpe */}
                     <tr className="hover:bg-[#151c28] transition-colors">
                       <td className="py-3 px-4 font-sans font-bold text-gray-200">
-                        <div>نسبت شارپ برون‌یابی‌شده</div>
-                        <div className="text-[10px] text-gray-400 font-mono font-normal">Sharpe (Annualized estimate)</div>
-                      </td>
-                      <td className="py-3 px-4 font-bold">
-                        <span className={baselineReconstruction.sharpeRatio >= 1.5 ? 'text-emerald-400' : baselineReconstruction.sharpeRatio >= 1.0 ? 'text-cyan-300' : baselineReconstruction.sharpeRatio >= 0 ? 'text-amber-300' : 'text-rose-400'}>
-                          {baselineReconstruction.sharpeRatio.toFixed(2)}
-                        </span>
-                        <span className="text-gray-400 text-[10px] font-sans mr-1.5">(تخمینی سالانه با نرخ بهره بدون ریسک Rf=4%)</span>
-                      </td>
-                    </tr>
-
-                    {/* 6. Sortino Ratio (Per-Trade / Annualized) */}
-                    <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
-                      <td className="py-3 px-4 font-sans font-bold text-gray-200">
-                        <div>نسبت سورتینو (به ازای معامله / سالانه‌شده)</div>
-                        <div className="text-[10px] text-gray-400 font-mono font-normal">Sortino Ratio (Per-Trade / Annualized)</div>
+                        <div>نسبت شارپ (سالانه‌شده / به ازای معامله)</div>
+                        <div className="text-[10px] text-gray-400 font-mono font-normal">Sharpe Ratio (Annualized / Per-Trade SNR)</div>
                       </td>
                       <td className="py-3 px-4 font-bold">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="font-mono text-cyan-300">
-                            Per-Trade: <strong className={(baselineReconstruction.sortinoMetrics?.perTradeSortino ?? 0) >= 0.5 ? 'text-emerald-400' : 'text-amber-300'}>{(baselineReconstruction.sortinoMetrics?.perTradeSortino ?? baselineReconstruction.sortinoRatio).toFixed(2)}</strong>
+                            Annualized:{' '}
+                            <strong className={baselineReconstruction.sharpeRatio >= 2.0 ? 'text-emerald-400' : baselineReconstruction.sharpeRatio >= 1.0 ? 'text-cyan-300' : baselineReconstruction.sharpeRatio >= 0 ? 'text-amber-300' : 'text-rose-400'}>
+                              {baselineReconstruction.sharpeRatio.toFixed(2)}
+                            </strong>
                           </span>
                           <span className="text-gray-500">|</span>
                           <span className="font-mono text-cyan-300">
-                            Annualized: <strong className={(baselineReconstruction.sortinoMetrics?.annualizedDailySortino ?? 0) >= 2.0 ? 'text-emerald-400' : (baselineReconstruction.sortinoMetrics?.annualizedDailySortino ?? 0) >= 1.0 ? 'text-cyan-300' : 'text-amber-300'}>{(baselineReconstruction.sortinoMetrics?.annualizedDailySortino ?? baselineReconstruction.sortinoRatio).toFixed(2)}</strong>
+                            Per-Trade (SNR):{' '}
+                            <strong className={(baselineReconstruction.perTradeSharpe ?? 0) >= 0.3 ? 'text-emerald-400' : (baselineReconstruction.perTradeSharpe ?? 0) >= 0.15 ? 'text-cyan-300' : 'text-amber-300'}>
+                              {(baselineReconstruction.perTradeSharpe ?? 0).toFixed(2)}
+                            </strong>
+                          </span>
+                          <span className="text-gray-400 text-[10px] font-sans mr-1">(محاسبه حسابی روزانه با Rf=۴٪)</span>
+                        </div>
+                      </td>
+                    </tr>
+
+                    {/* 6. Sortino Ratio (Per-Trade / Annualized) & Sharpe SNR */}
+                    <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
+                      <td className="py-3 px-4 font-sans font-bold text-gray-200">
+                        <div>نسبت سورتینو و شارپ معامله (Per-Trade / Annualized)</div>
+                        <div className="text-[10px] text-gray-400 font-mono font-normal">Sortino Ratio &amp; Sharpe (Per-Trade / SNR)</div>
+                      </td>
+                      <td className="py-3 px-4 font-bold">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-cyan-300">
+                            Sortino Per-Trade: <strong className={(baselineReconstruction.sortinoMetrics?.perTradeSortino ?? 0) >= 0.5 ? 'text-emerald-400' : 'text-amber-300'}>{(baselineReconstruction.sortinoMetrics?.perTradeSortino ?? baselineReconstruction.sortinoRatio).toFixed(2)}</strong>
+                          </span>
+                          <span className="text-gray-500">|</span>
+                          <span className="font-mono text-cyan-300">
+                            Sharpe (Per-Trade / SNR): <strong className={(baselineReconstruction.perTradeSharpe ?? 0) >= 0.25 ? 'text-emerald-400' : 'text-cyan-300'}>{(baselineReconstruction.perTradeSharpe ?? 0).toFixed(2)}</strong>
+                          </span>
+                          <span className="text-gray-500">|</span>
+                          <span className="font-mono text-cyan-300">
+                            Sortino Annualized: <strong className={(baselineReconstruction.sortinoMetrics?.annualizedDailySortino ?? 0) >= 2.0 ? 'text-emerald-400' : (baselineReconstruction.sortinoMetrics?.annualizedDailySortino ?? 0) >= 1.0 ? 'text-cyan-300' : 'text-amber-300'}>{(baselineReconstruction.sortinoMetrics?.annualizedDailySortino ?? baselineReconstruction.sortinoRatio).toFixed(2)}</strong>
                           </span>
                           <span className="text-gray-400 text-[10px] font-sans mr-1">(انحراف نزولی با Rf=0)</span>
                         </div>
@@ -1474,6 +1490,110 @@ export const StatsTab: React.FC<StatsTabProps> = ({
                           {baselineReconstruction.expectancyR >= 0 ? '+' : ''}{baselineReconstruction.expectancyR.toFixed(2)} R
                         </span>
                         <span className="text-gray-400 text-[10px] font-sans mr-1.5">(به ازای هر ۱ واحد ریسک اولیه استاپ‌لاس)</span>
+                      </td>
+                    </tr>
+
+                    {/* 18a. Per-Trade PnL StdDev */}
+                    <tr className="hover:bg-[#151c28] transition-colors">
+                      <td className="py-3 px-4 font-sans font-bold text-gray-200">
+                        <div>انحراف معیار سود هر معامله (Per-Trade PnL StdDev)</div>
+                        <div className="text-[10px] text-gray-400 font-mono font-normal">Per-Trade Standard Deviation (USD &amp; R-Multiple)</div>
+                      </td>
+                      <td className="py-3 px-4 font-bold font-mono">
+                        <span className="text-amber-300">
+                          ${(baselineReconstruction.dispersionMetrics?.perTradeUsdStdDev ?? 0).toFixed(2)} USDT
+                        </span>
+                        <span className="text-cyan-300 mr-1.5">
+                          ({(baselineReconstruction.dispersionMetrics?.perTradeRStdDev ?? 0).toFixed(2)} R)
+                        </span>
+                        <span className="text-gray-400 text-[10px] font-sans mr-1.5">
+                          (پراکندگی نمونه‌ای معاملات بر مبنای ریسک اسمی ${(baselineReconstruction.dispersionMetrics?.nominalRiskUsd ?? 0).toFixed(0)})
+                        </span>
+                      </td>
+                    </tr>
+
+                    {/* 18b. Win / Loss StdDev Breakdown */}
+                    <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
+                      <td className="py-3 px-4 font-sans font-bold text-gray-200">
+                        <div>انحراف معیار تفکیکی برد و باخت (Win / Loss StdDev Breakdown)</div>
+                        <div className="text-[10px] text-gray-400 font-mono font-normal">Wins vs. Losses Dispersion Health Check (σ_Loss &lt; σ_Win)</div>
+                      </td>
+                      <td className="py-3 px-4">
+                        <div className="flex flex-wrap items-center gap-2 font-mono text-xs">
+                          <span className="text-emerald-400 font-bold">
+                            Wins StdDev: ${(baselineReconstruction.dispersionMetrics?.winsUsdStdDev ?? 0).toFixed(2)} ({(baselineReconstruction.dispersionMetrics?.winsRStdDev ?? 0).toFixed(2)} R)
+                          </span>
+                          <span className="text-gray-500">|</span>
+                          <span className="text-rose-400 font-bold">
+                            Losses StdDev: ${(baselineReconstruction.dispersionMetrics?.lossesUsdStdDev ?? 0).toFixed(2)} ({(baselineReconstruction.dispersionMetrics?.lossesRStdDev ?? 0).toFixed(2)} R)
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                              baselineReconstruction.dispersionMetrics?.lossDispersionHealth === 'PASS'
+                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                : 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                            }`}
+                          >
+                            {baselineReconstruction.dispersionMetrics?.lossDispersionHealth === 'PASS'
+                              ? 'PASS (کنترل پراکندگی زیان)'
+                              : 'WARN (پراکندگی زیان بالا)'}
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+
+                    {/* 18c. Time-Stop vs. TP/SL StdDev */}
+                    <tr className="hover:bg-[#151c28] transition-colors">
+                      <td className="py-3 px-4 font-sans font-bold text-gray-200">
+                        <div>انحراف معیار خروج زمانی در برابر حد سود/ضرر</div>
+                        <div className="text-[10px] text-gray-400 font-mono font-normal">Time-Stop vs. TP/SL StdDev (R-Multiple Dispersion)</div>
+                      </td>
+                      <td className="py-3 px-4 font-mono text-xs">
+                        <span className="text-cyan-300 font-bold">
+                          Time-Stop StdDev: {(baselineReconstruction.dispersionMetrics?.timeStopRStdDev ?? 0).toFixed(2)} R
+                        </span>
+                        <span className="text-gray-400 text-[10px] mr-1">
+                          ({baselineReconstruction.dispersionMetrics?.timeStopCount ?? 0} معامله)
+                        </span>
+                        <span className="text-gray-500 mx-2">vs.</span>
+                        <span className="text-amber-300 font-bold">
+                          TP/SL StdDev: {(baselineReconstruction.dispersionMetrics?.tpSlRStdDev ?? 0).toFixed(2)} R
+                        </span>
+                        <span className="text-gray-400 text-[10px] mr-1">
+                          ({baselineReconstruction.dispersionMetrics?.tpSlCount ?? 0} معامله)
+                        </span>
+                      </td>
+                    </tr>
+
+                    {/* 18d. System Quality Number (SQN Raw / SQN-100) */}
+                    <tr className="hover:bg-[#151c28] transition-colors bg-[#111622]/50">
+                      <td className="py-3 px-4 font-sans font-bold text-gray-200">
+                        <div>شاخص کیفیت سیستم (SQN Raw / SQN-100)</div>
+                        <div className="text-[10px] text-gray-400 font-mono font-normal">System Quality Number: (μ_R / σ_R) × √N &amp; Normalized-100</div>
+                      </td>
+                      <td className="py-3 px-4">
+                        <div className="flex flex-wrap items-center gap-2 font-mono text-xs">
+                          <span className="text-cyan-300 font-bold">
+                            SQN Raw: {(baselineReconstruction.dispersionMetrics?.sqnRaw ?? 0).toFixed(2)}
+                          </span>
+                          <span className="text-gray-500">|</span>
+                          <span className="text-emerald-400 font-bold">
+                            SQN-100: {(baselineReconstruction.dispersionMetrics?.sqn100 ?? 0).toFixed(2)}
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                              (baselineReconstruction.dispersionMetrics?.sqn100 ?? 0) > 3.0
+                                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                                : (baselineReconstruction.dispersionMetrics?.sqn100 ?? 0) >= 2.0
+                                ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                                : (baselineReconstruction.dispersionMetrics?.sqn100 ?? 0) >= 1.6
+                                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                                : 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                            }`}
+                          >
+                            {baselineReconstruction.dispersionMetrics?.sqnGrade || 'Poor'} ({baselineReconstruction.dispersionMetrics?.sqnGradeFa || 'ضعیف'})
+                          </span>
+                        </div>
                       </td>
                     </tr>
 
@@ -2690,8 +2810,8 @@ export const StatsTab: React.FC<StatsTabProps> = ({
                 </div>
               </div>
 
-              {/* بخش تکمیلی انحراف معیار نزولی روزانه و نسبت سورتینو */}
-              <div className="px-4 pb-3.5 pt-0 text-xs font-mono">
+              {/* بخش تکمیلی انحراف معیار نزولی روزانه و نسبت سورتینو + ممان‌های بالاتر توزیع بازده */}
+              <div className="px-4 pb-4 pt-0 space-y-2.5 text-xs font-mono">
                 <div className="p-2.5 rounded-xl bg-[#111724] border border-[#1f283a] flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <span className="font-sans font-bold text-gray-200">📉 انحراف معیار نزولی روزانه و سورتینو:</span>
@@ -2708,6 +2828,40 @@ export const StatsTab: React.FC<StatsTabProps> = ({
                     </span>
                   </div>
                   <span className="text-gray-400 text-[10px] font-sans">محاسبه بر کلیه روزهای تقویمی با بازده هدف صفر (Rf=0)</span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                  <div className="p-2.5 rounded-xl bg-[#111724] border border-[#1f283a] flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="font-sans font-bold text-gray-200">چولگی توزیع بازده (Return Distribution Skewness — Trade / Daily)</div>
+                      <div className="text-[10px] text-gray-400 font-sans">چولگی مثبت بیانگر دنباله سود بزرگ‌تر نسبت به دنباله زیان است</div>
+                    </div>
+                    <div className="flex items-center gap-2 font-bold">
+                      <span className={(baselineReconstruction.dailyRiskDistributionAudit.tradeSkewness ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                        Trade: {(baselineReconstruction.dailyRiskDistributionAudit.tradeSkewness ?? 0).toFixed(3)}
+                      </span>
+                      <span className="text-gray-500">|</span>
+                      <span className={(baselineReconstruction.dailyRiskDistributionAudit.dailySkewness ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                        Daily: {(baselineReconstruction.dailyRiskDistributionAudit.dailySkewness ?? 0).toFixed(3)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="p-2.5 rounded-xl bg-[#111724] border border-[#1f283a] flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="font-sans font-bold text-gray-200">کشیدگی توزیع بازده (Return Distribution Excess Kurtosis — Tail Risk)</div>
+                      <div className="text-[10px] text-gray-400 font-sans">کشیدگی منفی بیانگر توزیع پلاتی‌کورتیک و ریسک دنباله‌ای مهار‌شده است</div>
+                    </div>
+                    <div className="flex items-center gap-2 font-bold">
+                      <span className={(baselineReconstruction.dailyRiskDistributionAudit.tradeExcessKurtosis ?? 0) <= 0 ? 'text-cyan-300' : 'text-amber-300'}>
+                        Trade: {(baselineReconstruction.dailyRiskDistributionAudit.tradeExcessKurtosis ?? 0).toFixed(3)}
+                      </span>
+                      <span className="text-gray-500">|</span>
+                      <span className={(baselineReconstruction.dailyRiskDistributionAudit.dailyExcessKurtosis ?? 0) <= 0 ? 'text-cyan-300' : 'text-amber-300'}>
+                        Daily: {(baselineReconstruction.dailyRiskDistributionAudit.dailyExcessKurtosis ?? 0).toFixed(3)}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>

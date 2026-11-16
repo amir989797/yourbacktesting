@@ -205,7 +205,7 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                   استراتژی دوم: ورود با تشکیل نقطه بعد از F (استاپ F / تارگت حداکثر R:R)
                 </option>
                 <option value="strategy_3_ab_midpoint">
-                  استراتژی سوم: لیمیت وسط AB با برگشت از D یا F (استاپ A / تارگت R:R)
+                  استراتژی سوم: دو لگ بلند متوالی + شکست A و لیمیت ۶۶٪ AB دوم (استاپ A دوم / تارگت R:R)
                 </option>
                 <option value="none">
                   -- غیرفعال کردن استراتژی --
@@ -254,7 +254,7 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                   {config.selectedStrategyId === 'strategy_2_next_pivot'
                     ? 'پارامترهای استراتژی ۲ (نقطه بعد از F)'
                     : config.selectedStrategyId === 'strategy_3_ab_midpoint'
-                    ? 'پارامترهای استراتژی ۳ (لیمیت وسط AB)'
+                    ? 'پارامترهای استراتژی ۳ (لیمیت ۶۶٪ AB)'
                     : 'پارامترهای استراتژی ۱ (شکست E)'}
                 </span>
                 {/* Info Icon for Strategy Explanation */}
@@ -785,7 +785,7 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                     : 'text-gray-400 hover:text-white hover:bg-[#19202c]'
                 }`}
               >
-                استراتژی ۳ (لیمیت AB)
+                استراتژی ۳ (لیمیت ۶۶٪ AB)
               </button>
             </div>
 
@@ -890,31 +890,35 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                 <div className="flex items-start gap-2 bg-[#0e121a] p-2.5 rounded-xl border border-[#202738]">
                   <span className="text-amber-400 font-bold">•</span>
                   <div>
-                    <strong className="text-white">۱. پیش‌شرط برگشت از پیوت D یا F:</strong> پس از تشکیل لگ بلند AB، به جای برگشت مستقیم از B، قیمت باید ابتدا لگ <strong>CD</strong> (پیوت <strong>D</strong>) یا <strong>EF</strong> (پیوت <strong>F</strong>) را بسازد و سپس از <strong>D</strong> یا <strong>F</strong> برگردد.
-                  </div>
-                </div>
-                <div className="flex items-start gap-2 bg-[#0e121a] p-2.5 rounded-xl border border-[#202738]">
-                  <span className="text-sky-400 font-bold">•</span>
-                  <div>
-                    <strong className="text-white">۲. سفارش لیمیت در وسط AB (50%):</strong> با تایید پیوت <strong>D</strong> (یا در صورت عدم ورود، با تایید پیوت <strong>F</strong>)، یک سفارش <span className="text-amber-300 font-bold">LIMIT</span> دقیقاً در قیمت <strong className="font-mono">(A + B) / 2</strong> و در جهت لگ AB (لگ صعودی → خرید، لگ نزولی → فروش) ثبت می‌شود.
+                    <strong className="text-white">۱. شرط توالی بلافاصله دو لگ بلند:</strong> دو لگ بلند (سبز و قرمز) باید <strong>بلافاصله پشت‌سرهم</strong> (بدون هیچ لگ واسطه بین آن‌ها) تشکیل شوند.
                   </div>
                 </div>
                 <div className="flex items-start gap-2 bg-[#0e121a] p-2.5 rounded-xl border border-[#202738]">
                   <span className="text-rose-400 font-bold">•</span>
                   <div>
-                    <strong className="text-white">۳. حد ضرر (Stop Loss):</strong> دقیقاً روی پیوت <strong>A</strong> (شروع لگ بلند) قرار می‌گیرد.
+                    <strong className="text-white">۲. ستاپ فروش (SELL LIMIT):</strong>
+                    <div className="mt-1 text-gray-400 space-y-0.5">
+                      <div>- ابتدا یک لگ بلند <span className="text-emerald-400 font-bold">سبز (AB green)</span> و بلافاصله بعد از آن یک لگ بلند <span className="text-rose-400 font-bold">قرمز (AB red)</span> تشکیل شود.</div>
+                      <div>- انتهای لگ قرمز (<strong>B red</strong>) باید شروع لگ سبز قبلی (<strong>A green</strong>) را به پایین بشکند.</div>
+                      <div>- سفارش <strong>SELL LIMIT</strong> در ۶۶٪ اصلاح لگ قرمز (نزدیک‌تر به برگشت <strong className="font-mono">A red</strong>: <strong className="font-mono">B red + 0.66 × (A red - B red)</strong>) با استاپ روی <strong>A red</strong> تا سقف کندل ورود ثبت می‌شود.</div>
+                    </div>
                   </div>
                 </div>
                 <div className="flex items-start gap-2 bg-[#0e121a] p-2.5 rounded-xl border border-[#202738]">
                   <span className="text-emerald-400 font-bold">•</span>
                   <div>
-                    <strong className="text-white">۴. حد سود (Target):</strong> متناسب با <strong>R:R</strong> انتخابی (حتی مقادیری مثل <strong className="font-mono">0.5</strong> یا بالاتر) بر اساس فاصله نقطه ورود (وسط AB) تا استاپ A محاسبه می‌شود.
+                    <strong className="text-white">۳. ستاپ خرید (BUY LIMIT):</strong>
+                    <div className="mt-1 text-gray-400 space-y-0.5">
+                      <div>- ابتدا یک لگ بلند <span className="text-rose-400 font-bold">قرمز (AB red)</span> و بلافاصله بعد از آن یک لگ بلند <span className="text-emerald-400 font-bold">سبز (AB green)</span> تشکیل شود.</div>
+                      <div>- انتهای لگ سبز (<strong>B green</strong>) باید شروع لگ قرمز قبلی (<strong>A red</strong>) را به بالا بشکند.</div>
+                      <div>- سفارش <strong>BUY LIMIT</strong> در ۶۶٪ اصلاح لگ سبز (نزدیک‌تر به برگشت <strong className="font-mono">A green</strong>: <strong className="font-mono">B green + 0.66 × (A green - B green)</strong>) با استاپ روی <strong>A green</strong> تا سقف کندل ورود ثبت می‌شود.</div>
+                    </div>
                   </div>
                 </div>
-                <div className="flex items-start gap-2 bg-[#1b1527] p-2.5 rounded-xl border border-purple-500/30">
-                  <span className="text-purple-300 font-bold">•</span>
+                <div className="flex items-start gap-2 bg-[#0e121a] p-2.5 rounded-xl border border-[#202738]">
+                  <span className="text-sky-400 font-bold">•</span>
                   <div>
-                    <strong className="text-purple-200">۵. انقضای سفارش لیمیت:</strong> اگر تا تعداد کندل مشخص‌شده در «سقف کندل ورود» قیمت به وسط AB نرسد، سفارش لیمیت به‌صورت خودکار منقضی/لغو می‌شود.
+                    <strong className="text-white">۴. حد سود (Target) و انقضای لیمیت:</strong> تارگت بر اساس <strong>R:R</strong> انتخابی (از <strong className="font-mono">0.5</strong> به بالا) نسبت به فاصله نقطه ورود (۶۶٪ AB دوم) تا استاپ <strong>A</strong> لگ دوم محاسبه شده و سفارش در صورت عدم پر شدن تا «سقف کندل ورود» منقضی می‌شود.
                   </div>
                 </div>
               </div>

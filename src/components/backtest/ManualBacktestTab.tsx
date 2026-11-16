@@ -318,7 +318,7 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                   >
                     <option value="strategy_1_e_breakout">استراتژی ۱: شکست نقطه E (تارگت A / استاپ F)</option>
                     <option value="strategy_2_next_pivot">استراتژی ۲: اولین تشکیل لگ بعد از F (تارگت R:R)</option>
-                    <option value="strategy_3_ab_midpoint">استراتژی ۳: لیمیت وسط AB با برگشت از D یا F (استاپ A / تارگت R:R)</option>
+                    <option value="strategy_3_ab_midpoint">استراتژی ۳: دو لگ بلند متوالی + شکست A و لیمیت ۶۶٪ AB دوم (استاپ A دوم / تارگت R:R)</option>
                   </select>
                 </div>
 

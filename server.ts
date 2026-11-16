@@ -6781,6 +6781,8 @@ function loadLiveConfigFromDisk(): PersistentLiveScannerData | null {
 }
 
 let hasBootHydratedLiveConfig = false;
+let manualStopRequested = false;
+let lastDbRunningCheckMs = 0;
 let dbSyncQueue: Promise<boolean> = Promise.resolve(true);
 
 function syncLiveConfigToDatabase(data: PersistentLiveScannerData): Promise<boolean> {
@@ -6982,6 +6984,23 @@ function getScannerPublicState() {
 }
 
 async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
+  if (manualStopRequested) {
+    return;
+  }
+  if (!forceAllTimeframes && pool) {
+    try {
+      const dbCheck = await pool.query('SELECT is_running FROM live_scanner_state WHERE id = $1', ['current']);
+      if (dbCheck.rows.length > 0 && dbCheck.rows[0].is_running === false) {
+        clearServerScannerTimer();
+        serverScannerState.isRunning = false;
+        serverScannerState.startedAt = null;
+        serverScannerState.nextRunAt = null;
+        saveLiveConfigToDisk();
+        addServerScannerLog('warning', '⏸️ اسکنر پس‌زمینه مطابق وضعیت توقف دیتابیس متوقف گردید.');
+        return;
+      }
+    } catch {}
+  }
   if (serverScannerState.isScanning) {
     addServerScannerLog('warning', '⚠️ اسکن قبلی هنوز در حال اجراست؛ از تداخل جلوگیری شد.');
     return;
@@ -7332,7 +7351,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
         const evalNowMs = Date.now();
 
         for (let bIdx = 0; bIdx < eligibleSymbols.length; bIdx += BATCH_SIZE) {
-          if (!forceAllTimeframes && !serverScannerState.isRunning) {
+          if (manualStopRequested || (!forceAllTimeframes && !serverScannerState.isRunning)) {
             wasAbortedByStopOrTimeout = true;
             addServerScannerLog('info', `🛑 تایم‌فریم ${currentTf}: اسکن پس از بررسی ${analyzedCount} از ${eligibleSymbols.length} نماد به دلیل توقف کاربر متوقف شد (${formatElapsedFa(Date.now() - tfStartTime)}).`, undefined, currentTf);
             break;
@@ -7477,7 +7496,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
 
         // Attempt order execution for candidate in this timeframe
         for (let candIdx = 0; candIdx < tfCandidateSignals.length; candIdx++) {
-          if (!forceAllTimeframes && !serverScannerState.isRunning) {
+          if (manualStopRequested || (!forceAllTimeframes && !serverScannerState.isRunning)) {
             break;
           }
           const chosen = tfCandidateSignals[candIdx];
@@ -8036,6 +8055,7 @@ app.post('/api/live-scanner/start', async (req, res) => {
     clearServerScannerTimer();
     lastScannedCandleCloseByTf.clear();
 
+    manualStopRequested = false;
     hasBootHydratedLiveConfig = true;
     serverScannerState.isRunning = true;
     serverScannerState.startedAt = serverScannerState.startedAt || new Date().toISOString();
@@ -8107,6 +8127,7 @@ app.post('/api/live-scanner/stop', async (_req, res) => {
 
     clearServerScannerTimer();
     lastScannedCandleCloseByTf.clear();
+    manualStopRequested = true;
     hasBootHydratedLiveConfig = true;
     serverScannerState.isRunning = false;
     serverScannerState.startedAt = null;
@@ -8160,6 +8181,20 @@ app.get('/api/live-scanner/status', async (_req, res) => {
     } catch (err: any) {
       console.warn('[ServerLiveScanner] Error verifying DB status in status endpoint:', err.message);
     }
+  } else if (serverScannerState.isRunning && Date.now() - lastDbRunningCheckMs > 5000) {
+    // Also cross-check PostgreSQL in case another server instance stopped the autopilot
+    lastDbRunningCheckMs = Date.now();
+    try {
+      const dbCheck = await pool.query('SELECT is_running FROM live_scanner_state WHERE id = $1', ['current']);
+      if (dbCheck.rows.length > 0 && dbCheck.rows[0].is_running === false) {
+        clearServerScannerTimer();
+        manualStopRequested = true;
+        serverScannerState.isRunning = false;
+        serverScannerState.startedAt = null;
+        serverScannerState.nextRunAt = null;
+        saveLiveConfigToDisk();
+      }
+    } catch {}
   }
 
   res.json({
@@ -8180,6 +8215,7 @@ app.post('/api/live-scanner/scan-now', async (_req, res) => {
       });
     }
 
+    manualStopRequested = false;
     addServerScannerLog('info', '🔍 اسکن دستی فوری سرور توسط کاربر درخواست شد.');
     await runServerScannerCycle(true);
 
