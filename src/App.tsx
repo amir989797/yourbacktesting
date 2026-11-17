@@ -143,16 +143,20 @@ export default function App() {
   });
 
   const handleUpdateZigZagSettings = (newSettings: ZigZagSettings) => {
-    setZigzagSettings({ ...newSettings });
-    if (newSettings.maxPositionToRiskRatio) {
-      setStrategyConfig((prev) => ({
-        ...prev,
-        maxPositionToRiskRatio: newSettings.maxPositionToRiskRatio,
-      }));
-    }
-    try {
-      localStorage.setItem('strategy_zigzag_settings', JSON.stringify(newSettings));
-    } catch {}
+    setZigzagSettings((prev) => {
+      const merged = { ...prev, ...newSettings };
+      try {
+        localStorage.setItem('strategy_zigzag_settings', JSON.stringify(merged));
+      } catch {}
+      return merged;
+    });
+    setStrategyConfig((prev) => ({
+      ...prev,
+      ...(newSettings.maxPositionToRiskRatio ? { maxPositionToRiskRatio: newSettings.maxPositionToRiskRatio } : {}),
+      ...(newSettings.minAtrPercent !== undefined ? { minAtrPercent: newSettings.minAtrPercent } : {}),
+      ...(newSettings.s2RsiThreshold !== undefined ? { s2RsiThreshold: newSettings.s2RsiThreshold } : {}),
+      ...(newSettings.minEntryPivotAtr !== undefined ? { minEntryPivotAtr: newSettings.minEntryPivotAtr } : {}),
+    }));
   };
 
   // Dynamic Hovered ATR state (مقادیر در لحظه موس برای تمام باکس‌ها)
@@ -516,7 +520,23 @@ export default function App() {
         isOpen={isBacktestModalOpen}
         onClose={() => setIsBacktestModalOpen(false)}
         zigzagSettings={zigzagSettings}
-        onUpdateZigZagSettings={(partial) => setZigzagSettings((prev) => ({ ...prev, ...partial }))}
+        onUpdateZigZagSettings={(partial) => {
+          setZigzagSettings((prev) => ({ ...prev, ...partial }));
+          if (
+            partial.minAtrPercent !== undefined ||
+            partial.s2RsiThreshold !== undefined ||
+            partial.minEntryPivotAtr !== undefined ||
+            partial.maxPositionToRiskRatio !== undefined
+          ) {
+            setStrategyConfig((prev) => ({
+              ...prev,
+              ...(partial.maxPositionToRiskRatio !== undefined ? { maxPositionToRiskRatio: partial.maxPositionToRiskRatio } : {}),
+              ...(partial.minAtrPercent !== undefined ? { minAtrPercent: partial.minAtrPercent } : {}),
+              ...(partial.s2RsiThreshold !== undefined ? { s2RsiThreshold: partial.s2RsiThreshold } : {}),
+              ...(partial.minEntryPivotAtr !== undefined ? { minEntryPivotAtr: partial.minEntryPivotAtr } : {}),
+            }));
+          }
+        }}
         currentTimeframe={timeframe}
         onSelectPairAndClose={(p) => {
           setSelectedPair(p);

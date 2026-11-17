@@ -90,6 +90,9 @@ export interface ZigZagSettings {
   maxCandlesToEnter?: number; // سقف کندل ورود (استراتژی ۱: مهلت ورود پس از الگو | استراتژی ۲: سقف کندل از نقطه پیوت تا ورود)
   maxRiskReward?: number;
   maxPositionToRiskRatio?: number; // حداکثر نسبت ارزش پوزیشن به ریسک (پیش‌فرض 300)
+  minAtrPercent?: number;
+  s2RsiThreshold?: number;
+  minEntryPivotAtr?: number;
 }
 
 export interface ZigZagPoint {

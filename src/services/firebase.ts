@@ -277,6 +277,7 @@ export interface TestParameterConfigRecord {
   optMaxPositionToRiskRatio?: number;
   optMinAtrPercent?: number;
   optS2RsiThreshold?: number;
+  optMinEntryPivotAtr?: number;
   createdAt: string;
   updatedAt: string;
 }

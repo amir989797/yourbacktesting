@@ -1,5 +1,5 @@
 import { CandleData, Leg, ZigZagPoint as CryptoZigZagPoint } from '../types/crypto.ts';
-import { ZigZagLeg, ZigZagPoint, calculateRSI } from './indicators';
+import { ZigZagLeg, ZigZagPoint, calculateATR, calculateRSI } from './indicators';
 import { StrategyConfig, StrategyMetrics, StrategyTrade, TradeStatus, BacktestMetrics, StrategyParams, Trade } from '../types/strategy.ts';
 import { calculateExactTradeSizing } from './exchangePrecision.ts';
 
@@ -22,7 +22,8 @@ export function runStrategy1Backtest(
   candles: CandleData[],
   points: ZigZagPoint[],
   legs: ZigZagLeg[],
-  config: StrategyConfig
+  config: StrategyConfig,
+  atrValues?: number[]
 ): {
   trades: StrategyTrade[];
   metrics: StrategyMetrics;
@@ -50,6 +51,30 @@ export function runStrategy1Backtest(
     }
     return candles.length - 1;
   };
+
+  const rawMinAtr = config.minAtrPercent ?? config.optMinAtrPercent;
+  const effectiveMinAtrPct =
+    rawMinAtr !== undefined && rawMinAtr !== null && !isNaN(Number(rawMinAtr))
+      ? Math.max(0, Number(rawMinAtr))
+      : 0.25;
+  const rawRsi = config.s2RsiThreshold ?? config.optS2RsiThreshold;
+  const parsedRsi =
+    rawRsi !== undefined && rawRsi !== null && !isNaN(Number(rawRsi))
+      ? Number(rawRsi)
+      : 38;
+  const effectiveRsiThresh = parsedRsi > 0 && parsedRsi < 50 ? parsedRsi : 0;
+  const rawMinPivotAtr = config.minEntryPivotAtr ?? config.optMinEntryPivotAtr;
+  const effectiveMinPivotAtr =
+    rawMinPivotAtr !== undefined && rawMinPivotAtr !== null && !isNaN(Number(rawMinPivotAtr))
+      ? Math.max(0, Number(rawMinPivotAtr))
+      : 0;
+  const rsi14 = effectiveRsiThresh > 0 ? calculateRSI(candles, 14) : [];
+  const effectiveAtrValues =
+    atrValues && atrValues.length === candles.length
+      ? atrValues
+      : (effectiveMinAtrPct > 0 || effectiveMinPivotAtr > 0)
+      ? calculateATR(candles, config.atrPeriod || 14).atrValues
+      : undefined;
 
   // Find all complete cycles: A-B (Giant) -> C-D (Light Blue) -> E-F (Dark Blue)
   let currentGiant: ZigZagLeg | null = null;
@@ -141,6 +166,25 @@ export function runStrategy1Backtest(
 
           // عدم ورود به معامله جدید در صورت وجود پوزیشن باز
           if (config.noConcurrentPositions && entryCandleIdx <= lastTradeExitCandleIdx) {
+            break;
+          }
+
+          const entryCandleObj = candles[entryCandleIdx];
+          const entryAtr =
+            effectiveAtrValues && effectiveAtrValues[entryCandleIdx] > 0
+              ? effectiveAtrValues[entryCandleIdx]
+              : Math.max(0.0001, entryCandleObj.high - entryCandleObj.low);
+
+          if (effectiveMinAtrPct > 0 && (entryPrice <= 0 || (entryAtr / entryPrice) * 100 < effectiveMinAtrPct)) {
+            break;
+          }
+          if (effectiveRsiThresh > 0) {
+            const pivotRsi = rsi14[candleIdxF] ?? 50;
+            if (direction === 'BUY' ? pivotRsi > effectiveRsiThresh : pivotRsi < 100 - effectiveRsiThresh) {
+              break;
+            }
+          }
+          if (effectiveMinPivotAtr > 0 && (entryAtr <= 0 || stopDistance / entryAtr < effectiveMinPivotAtr)) {
             break;
           }
 
@@ -474,6 +518,11 @@ export function runStrategy2Backtest(
       ? Number(rawRsi)
       : 38;
   const effectiveRsiThresh = parsedRsi > 0 && parsedRsi < 50 ? parsedRsi : 0;
+  const rawMinPivotAtr = config.minEntryPivotAtr ?? config.optMinEntryPivotAtr;
+  const effectiveMinPivotAtr =
+    rawMinPivotAtr !== undefined && rawMinPivotAtr !== null && !isNaN(Number(rawMinPivotAtr))
+      ? Math.max(0, Number(rawMinPivotAtr))
+      : 0;
   const rsi14 = effectiveRsiThresh > 0 ? calculateRSI(candles, 14) : [];
 
   let currentGiant: ZigZagLeg | null = null;
@@ -544,6 +593,9 @@ export function runStrategy2Backtest(
               if (pivotRsi < 100 - effectiveRsiThresh) {
                 break;
               }
+            }
+            if (effectiveMinPivotAtr > 0 && (atr <= 0 || stopDistance / atr < effectiveMinPivotAtr)) {
+              break;
             }
 
             if (config.noConcurrentPositions && entryCandleIdx <= lastTradeExitCandleIdx) {
@@ -794,6 +846,9 @@ export function runStrategy2Backtest(
                 break;
               }
             }
+            if (effectiveMinPivotAtr > 0 && (atr <= 0 || stopDistance / atr < effectiveMinPivotAtr)) {
+              break;
+            }
 
             if (config.noConcurrentPositions && entryCandleIdx <= lastTradeExitCandleIdx) {
               break;
@@ -1018,210 +1073,485 @@ export function runStrategy2Backtest(
 }
 
 /**
- * Finds the exact candle index where ZigZag pivot B of a giant leg (A -> B)
- * is first confirmed by a reversal pullback of `atrMultiplier * ATR`.
- * Returns -1 if pivot B is still unconfirmed (e.g., trailing ongoing extreme).
+ * Finds the exact candle index where a ZigZag pivot `P1` is first causally formed/confirmed
+ * by a reversal move of at least `atrMultiplier * ATR` away from `P1.value`
+ * without breaking past `P1.value` before confirmation.
+ * Returns -1 if `P1` is still unconfirmed or was broken before confirmation.
  */
-export function findGiantLegConfirmCandleIdx(
+export function findPivotConfirmCandleIdx(
   candles: CandleData[],
-  leg: ZigZagLeg,
-  candleIdxB: number,
+  pivotP1: ZigZagPoint,
+  pivotIdxP1: number,
   atrValues?: number[],
   atrMultiplier: number = 3
 ): number {
   const effectiveAtrMult = atrMultiplier > 0 ? atrMultiplier : 3;
-  const priceB = leg.endPrice;
-  for (let cIdx = candleIdxB + 1; cIdx < candles.length; cIdx++) {
+  const priceP1 = pivotP1.value;
+  for (let cIdx = pivotIdxP1 + 1; cIdx < candles.length; cIdx++) {
     const c = candles[cIdx];
     const atr =
       atrValues && atrValues[cIdx] > 0
         ? atrValues[cIdx]
         : Math.max(0.0001, c.high - c.low);
     const th = atr * effectiveAtrMult;
-    if (leg.isUp) {
-      // Peak B: confirmed as soon as price drops by >= th from B without exceeding B first
-      if (c.high > priceB) return -1;
-      if (priceB - c.low >= th) return cIdx;
+    if (pivotP1.type === 'high') {
+      // Pivot 1 is a HIGH: confirmed once price drops by >= th from P1 without breaking above P1 first
+      if (c.high > priceP1) return -1;
+      if (priceP1 - c.low >= th) return cIdx;
     } else {
-      // Trough B: confirmed as soon as price bounces by >= th from B without breaking below B first
-      if (c.low < priceB) return -1;
-      if (c.high - priceB >= th) return cIdx;
+      // Pivot 1 is a LOW: confirmed once price bounces by >= th from P1 without breaking below P1 first
+      if (c.low < priceP1) return -1;
+      if (c.high - priceP1 >= th) return cIdx;
     }
   }
   return -1;
 }
 
 /**
- * Runs Backtest for Strategy 3 (Two Consecutive Giant Legs + Midpoint Limit):
- * Setups must be immediately consecutive giant legs (`legs[i]` and `legs[i + 1]`):
+ * Normalizes confirmed ZigZag pivots identically to `calculateAtrZigZag`'s post-filter
+ * using ONLY pivots already confirmed up to the current causal candle (zero future data).
+ */
+function normalizeConfirmedPivotsCausal(
+  rawPivots: ZigZagPoint[],
+  atrValues: number[] | undefined,
+  atrMultiplier: number,
+  effectiveMinCandles: number
+): ZigZagPoint[] {
+  if (rawPivots.length === 0) return [];
+  let pivots = rawPivots.map((p) => ({ ...p }));
+  let changed = true;
+  let passes = 0;
+  while (changed && passes < 10) {
+    changed = false;
+    passes++;
+    const next: ZigZagPoint[] = [];
+    for (let i = 0; i < pivots.length; i++) {
+      if (next.length >= 2) {
+        const pPrev2 = next[next.length - 2];
+        const pPrev1 = next[next.length - 1];
+        const pCurr = pivots[i];
+        const cDist = (pCurr.candleIndex ?? 0) - (pPrev1.candleIndex ?? 0);
+        const pDist = Math.abs(pCurr.value - pPrev1.value);
+        const refAtr =
+          atrValues && atrValues[pCurr.candleIndex ?? 0] > 0
+            ? atrValues[pCurr.candleIndex ?? 0]
+            : 1;
+        const pRatio = pDist / refAtr;
+
+        if (cDist < effectiveMinCandles || pRatio < atrMultiplier - 0.01) {
+          if (pCurr.type === pPrev2.type) {
+            if (pCurr.type === 'high' && pCurr.value >= pPrev2.value) {
+              next.pop();
+              next.pop();
+              next.push(pCurr);
+              changed = true;
+              continue;
+            }
+            if (pCurr.type === 'low' && pCurr.value <= pPrev2.value) {
+              next.pop();
+              next.pop();
+              next.push(pCurr);
+              changed = true;
+              continue;
+            }
+          }
+        }
+      }
+      next.push(pivots[i]);
+    }
+    pivots = next;
+  }
+
+  const cleanPivots: ZigZagPoint[] = [];
+  for (const p of pivots) {
+    if (cleanPivots.length === 0) {
+      cleanPivots.push(p);
+    } else {
+      const prev = cleanPivots[cleanPivots.length - 1];
+      if (p.type === prev.type) {
+        if (p.type === 'high' && p.value > prev.value) {
+          cleanPivots[cleanPivots.length - 1] = p;
+        } else if (p.type === 'low' && p.value < prev.value) {
+          cleanPivots[cleanPivots.length - 1] = p;
+        }
+      } else if ((p.candleIndex ?? 0) > (prev.candleIndex ?? 0)) {
+        cleanPivots.push(p);
+      }
+    }
+  }
+  return cleanPivots;
+}
+
+/**
+ * Runs Backtest for Strategy 3 (5-Consecutive-Pivot Pattern — Strictly Causal):
+ * Walks candles bar-by-bar using the exact `calculateAtrZigZag` state machine so that
+ * NO future candle can retroactively erase or relocate a failed pivot `P1` (zero repainting / look-ahead bias).
  *
- * Bearish Setup (SELL LIMIT):
- *   1. `AB green leg` (`legs[i]`: giant up leg from A_green to B_green)
- *   2. Immediately followed by `AB red leg` (`legs[i + 1]`: giant down leg from A_red to B_red)
- *   3. `B red breaks A green` (`B_red < A_green`)
- *   4. SELL LIMIT at 66% retracement of `AB red` (closer to reversal `A_red`): `B_red + 0.66 * (A_red - B_red)`, valid until `سقف کندل ورود` (`maxCandlesToEnter`)
- *   5. Stop Loss = `A red` (`legs[i + 1].startPrice`)
+ * At the exact candle `i` where a new pivot `P1` causally confirms via ATR-multiplier reversal,
+ * evaluates the 6 newest confirmed pivots ordered newest to oldest (`P1, P2, P3, P4, P5, P6`):
  *
- * Bullish Setup (BUY LIMIT):
- *   1. `AB red leg` (`legs[i]`: giant down leg from A_red to B_red)
- *   2. Immediately followed by `AB green leg` (`legs[i + 1]`: giant up leg from A_green to B_green)
- *   3. `B green breaks A red` (`B_green > A_red`)
- *   4. BUY LIMIT at 66% retracement of `AB green` (closer to reversal `A_green`): `B_green + 0.66 * (A_green - B_green)`, valid until `سقف کندل ورود` (`maxCandlesToEnter`)
- *   5. Stop Loss = `A green` (`legs[i + 1].startPrice`)
+ * Bullish Setup (BUY — پیوت اول کف است):
+ *   - P1 = low, P2 = high, P3 = low, P4 = high, P5 = low, P6 = high
+ *   - P1 < P3 (پیوت اول پایین‌تر از دو پیوت قبل)
+ *   - P2 > P4 (پیوت دوم بالاتر از دو پیوت قبل)
+ *   - P3 < P5 (پیوت سوم پایین‌تر از دو پیوت قبل)
+ *   - P4 > P6 (پیوت چهارم بالاتر از دو پیوت قبل)
  *
- * Take Profit = entryPrice +/- |entryPrice - stopLoss| * targetRR (supports any R:R > 0, e.g. 0.5 or 2).
+ * Bearish Setup (SELL — پیوت اول سقف است):
+ *   - P1 = high, P2 = low, P3 = high, P4 = low, P5 = high, P6 = low
+ *   - P1 > P3 (پیوت اول بالاتر از دو پیوت قبل)
+ *   - P2 < P4 (پیوت دوم پایین‌تر از دو پیوت قبل)
+ *   - P3 > P5 (پیوت سوم بالاتر از دو پیوت قبل)
+ *   - P4 < P6 (پیوت چهارم پایین‌تر از دو پیوت قبل)
+ *
+ * Entry & Risk Rules:
+ *   - Enter at Market at close of the causal confirmation candle `i` (or `i + 1` if `P1` formed on the same bar `i` and holds).
+ *   - Stop Loss = P1.value.
+ *   - Take Profit = entryPrice +/- |entryPrice - stopLoss| * targetRR.
  */
 export function runStrategy3Backtest(
   candles: CandleData[],
-  points: ZigZagPoint[],
-  legs: ZigZagLeg[],
+  _points: ZigZagPoint[],
+  _legs: ZigZagLeg[],
   config: StrategyConfig,
   atrValues?: number[],
   atrMultiplier: number = 3,
-  _minCandles: number = 3
+  minCandles: number = 3
 ): {
   trades: StrategyTrade[];
   metrics: StrategyMetrics;
 } {
   const trades: StrategyTrade[] = [];
-  if (candles.length === 0 || legs.length < 2 || points.length === 0) {
+  const n = candles.length;
+  if (n < 2) {
     return {
       trades: [],
       metrics: getEmptyMetrics(config.capital),
     };
   }
 
-  const timeToCandleIdx = new Map<number, number>();
-  for (let i = 0; i < candles.length; i++) {
-    timeToCandleIdx.set(candles[i].time, i);
-  }
-
-  const findCandleIndex = (timestamp: number): number => {
-    const direct = timeToCandleIdx.get(timestamp);
-    if (direct !== undefined) return direct;
-    for (let i = 0; i < candles.length; i++) {
-      if (candles[i].time >= timestamp) return i;
-    }
-    return candles.length - 1;
-  };
-
+  const effectiveMinCandles = Math.max(1, minCandles);
   const effectiveAtrMult = atrMultiplier > 0 ? atrMultiplier : 3;
-  const effectiveMaxCandles = Math.max(1, config.maxCandlesToEnter || 100);
   const targetRR = config.maxRiskReward > 0 ? config.maxRiskReward : 2.0;
 
-  let lastTradeExitCandleIdx = -1;
-  let rollingCapital = config.capital;
+  const rawMinAtr = config.minAtrPercent ?? config.optMinAtrPercent;
+  const effectiveMinAtrPct =
+    rawMinAtr !== undefined && rawMinAtr !== null && !isNaN(Number(rawMinAtr))
+      ? Math.max(0, Number(rawMinAtr))
+      : 0.25;
+  const rawRsi = config.s2RsiThreshold ?? config.optS2RsiThreshold;
+  const parsedRsi =
+    rawRsi !== undefined && rawRsi !== null && !isNaN(Number(rawRsi))
+      ? Number(rawRsi)
+      : 38;
+  const effectiveRsiThresh = parsedRsi > 0 && parsedRsi < 50 ? parsedRsi : 0;
+  const rawMinPivotAtr = config.minEntryPivotAtr ?? config.optMinEntryPivotAtr;
+  const effectiveMinPivotAtr =
+    rawMinPivotAtr !== undefined && rawMinPivotAtr !== null && !isNaN(Number(rawMinPivotAtr))
+      ? Math.max(0, Number(rawMinPivotAtr))
+      : 0;
+  const rsi14 = effectiveRsiThresh > 0 ? calculateRSI(candles, 14) : [];
+  const effectiveAtrValues =
+    atrValues && atrValues.length === candles.length
+      ? atrValues
+      : (effectiveMinAtrPct > 0 || effectiveMinPivotAtr > 0)
+      ? calculateATR(candles, config.atrPeriod || 14).atrValues
+      : atrValues;
 
-  for (let i = 0; i < legs.length - 1; i++) {
-    const leg1 = legs[i];
-    const leg2 = legs[i + 1];
-
-    // Both legs must be immediately consecutive giant legs (green/red)
-    if (!leg1.isGiantLeg || !leg2.isGiantLeg) {
-      continue;
-    }
-
-    const isBearishSetup =
-      leg1.color === 'green' &&
-      leg1.isUp &&
-      leg2.color === 'red' &&
-      !leg2.isUp &&
-      leg2.endPrice < leg1.startPrice; // B red breaks A green
-
-    const isBullishSetup =
-      leg1.color === 'red' &&
-      !leg1.isUp &&
-      leg2.color === 'green' &&
-      leg2.isUp &&
-      leg2.endPrice > leg1.startPrice; // B green breaks A red
-
-    if (!isBearishSetup && !isBullishSetup) {
-      continue;
-    }
-
-    const direction: 'BUY' | 'SELL' = isBullishSetup ? 'BUY' : 'SELL';
-    const cycleType: 'bullish' | 'bearish' = isBullishSetup ? 'bullish' : 'bearish';
-
-    // Entry at 66% retracement of the second AB leg (closer to reversal A2); Stop at A of the second AB leg
-    const leg2A = leg2.startPrice;
-    const leg2B = leg2.endPrice;
-    const entryPrice = leg2B + 0.66 * (leg2A - leg2B);
-    const stopLoss = leg2A;
-    const stopDistance = Math.abs(entryPrice - stopLoss);
-    if (stopDistance <= 0.000001) continue;
-
-    const takeProfit =
-      direction === 'BUY'
-        ? entryPrice + stopDistance * targetRR
-        : entryPrice - stopDistance * targetRR;
-
-    // Causal confirmation of leg2 pivot B (B red or B green)
-    const candleIdxB2 = points[leg2.endIndex]?.candleIndex ?? findCandleIndex(leg2.endTime);
-    const confirmIdx = findGiantLegConfirmCandleIdx(
-      candles,
-      leg2,
-      candleIdxB2,
-      atrValues,
-      effectiveAtrMult
-    );
-
-    if (confirmIdx < 0 || confirmIdx >= candles.length - 1) {
-      continue;
-    }
-
-    // Ensure stopLoss (A of leg2) was never breached between B2 and causal confirmation
-    let stopBreachedBeforeConfirm = false;
-    for (let s = candleIdxB2 + 1; s <= confirmIdx && s < candles.length; s++) {
-      const cs = candles[s];
-      if (direction === 'BUY' ? cs.low <= stopLoss : cs.high >= stopLoss) {
-        stopBreachedBeforeConfirm = true;
+  // 1. Causal initial trend setup (mirrors `calculateAtrZigZag` step 1)
+  let trend = 0; // 1 for UP (seeking peak), -1 for DOWN (seeking trough)
+  let startIdx = 0;
+  for (let i = 1; i < n; i++) {
+    const c = candles[i];
+    const atr = atrValues && atrValues[i] > 0 ? atrValues[i] : Math.max(0.0001, c.high - c.low);
+    const th = atr * effectiveAtrMult;
+    if (i >= effectiveMinCandles) {
+      if (c.high - candles[0].low >= th) {
+        trend = 1;
+        startIdx = i;
+        break;
+      } else if (candles[0].high - c.low >= th) {
+        trend = -1;
+        startIdx = i;
         break;
       }
     }
-    if (stopBreachedBeforeConfirm) {
-      continue;
-    }
+  }
 
-    const scanStart = confirmIdx + 1;
-    const scanEnd = Math.min(candles.length - 1, confirmIdx + effectiveMaxCandles);
+  if (trend === 0) {
+    return {
+      trades: [],
+      metrics: getEmptyMetrics(config.capital),
+    };
+  }
 
-    let entryCandleIdx: number | undefined;
-    let entryTime: number | undefined;
+  const rawPivots: ZigZagPoint[] = [];
+  if (trend === 1) {
+    rawPivots.push({
+      time: candles[0].time,
+      value: candles[0].low,
+      type: 'low',
+      atrAtPoint: atrValues?.[0] || candles[0].high - candles[0].low,
+      legPoints: 0,
+      legAtrRatio: 0,
+      candleIndex: 0,
+    });
+  } else {
+    rawPivots.push({
+      time: candles[0].time,
+      value: candles[0].high,
+      type: 'high',
+      atrAtPoint: atrValues?.[0] || candles[0].high - candles[0].low,
+      legPoints: 0,
+      legAtrRatio: 0,
+      candleIndex: 0,
+    });
+  }
 
-    for (let cIdx = scanStart; cIdx <= scanEnd; cIdx++) {
-      const c = candles[cIdx];
-      if (direction === 'BUY') {
-        if (c.open <= stopLoss) {
-          break;
-        }
-        if (c.low <= entryPrice) {
-          if (!(config.noConcurrentPositions && cIdx <= lastTradeExitCandleIdx)) {
-            entryCandleIdx = cIdx;
-            entryTime = c.time;
+  let curExtremeVal = trend === 1 ? candles[startIdx].high : candles[startIdx].low;
+  let curExtremeIdx = startIdx;
+
+  let lastTradeExitCandleIdx = -1;
+  let rollingCapital = config.capital;
+  // Deferred check for rare same-candle pinbar pivot confirmation (ensures entryCandleIdx > candleIdxF)
+  let pendingSameBarSetup: { p1: ZigZagPoint; p2: ZigZagPoint; p6: ZigZagPoint; direction: 'BUY' | 'SELL' } | null = null;
+
+  for (let i = startIdx; i < n; i++) {
+    const c = candles[i];
+    const atr = atrValues && atrValues[i] > 0 ? atrValues[i] : Math.max(0.0001, c.high - c.low);
+    const th = atr * effectiveAtrMult;
+    const lastPivot = rawPivots[rawPivots.length - 1];
+
+    let newlyConfirmedPivot: ZigZagPoint | null = null;
+
+    if (trend === 1) {
+      if (c.low < lastPivot.value) {
+        lastPivot.value = c.low;
+        lastPivot.time = c.time;
+        lastPivot.candleIndex = i;
+        curExtremeVal = c.high;
+        curExtremeIdx = i;
+        pendingSameBarSetup = null;
+        continue;
+      }
+
+      if (c.high > curExtremeVal) {
+        curExtremeVal = c.high;
+        curExtremeIdx = i;
+      }
+
+      const candleDist = curExtremeIdx - (lastPivot.candleIndex ?? 0);
+      const priceDist = curExtremeVal - lastPivot.value;
+      const peakAtr = atrValues && atrValues[curExtremeIdx] > 0 ? atrValues[curExtremeIdx] : atr;
+
+      if (candleDist >= effectiveMinCandles && priceDist >= effectiveAtrMult * peakAtr && curExtremeVal - c.low >= th) {
+        const confirmedPeakIdx = curExtremeIdx;
+        newlyConfirmedPivot = {
+          time: candles[confirmedPeakIdx].time,
+          value: curExtremeVal,
+          type: 'high',
+          candleIndex: confirmedPeakIdx,
+          atrAtPoint: peakAtr,
+          legPoints: priceDist,
+          legAtrRatio: peakAtr > 0 ? priceDist / peakAtr : 0,
+        };
+        rawPivots.push(newlyConfirmedPivot);
+
+        trend = -1;
+        curExtremeVal = c.low;
+        curExtremeIdx = i;
+        for (let k = confirmedPeakIdx + 1; k <= i; k++) {
+          if (candles[k].low < curExtremeVal) {
+            curExtremeVal = candles[k].low;
+            curExtremeIdx = k;
           }
-          break;
         }
-      } else {
-        if (c.open >= stopLoss) {
-          break;
-        }
-        if (c.high >= entryPrice) {
-          if (!(config.noConcurrentPositions && cIdx <= lastTradeExitCandleIdx)) {
-            entryCandleIdx = cIdx;
-            entryTime = c.time;
+      }
+    } else {
+      if (c.high > lastPivot.value) {
+        lastPivot.value = c.high;
+        lastPivot.time = c.time;
+        lastPivot.candleIndex = i;
+        curExtremeVal = c.low;
+        curExtremeIdx = i;
+        pendingSameBarSetup = null;
+        continue;
+      }
+
+      if (c.low < curExtremeVal) {
+        curExtremeVal = c.low;
+        curExtremeIdx = i;
+      }
+
+      const candleDist = curExtremeIdx - (lastPivot.candleIndex ?? 0);
+      const priceDist = lastPivot.value - curExtremeVal;
+      const troughAtr = atrValues && atrValues[curExtremeIdx] > 0 ? atrValues[curExtremeIdx] : atr;
+
+      if (candleDist >= effectiveMinCandles && priceDist >= effectiveAtrMult * troughAtr && c.high - curExtremeVal >= th) {
+        const confirmedTroughIdx = curExtremeIdx;
+        newlyConfirmedPivot = {
+          time: candles[confirmedTroughIdx].time,
+          value: curExtremeVal,
+          type: 'low',
+          candleIndex: confirmedTroughIdx,
+          atrAtPoint: troughAtr,
+          legPoints: priceDist,
+          legAtrRatio: troughAtr > 0 ? priceDist / troughAtr : 0,
+        };
+        rawPivots.push(newlyConfirmedPivot);
+
+        trend = 1;
+        curExtremeVal = c.high;
+        curExtremeIdx = i;
+        for (let k = confirmedTroughIdx + 1; k <= i; k++) {
+          if (candles[k].high > curExtremeVal) {
+            curExtremeVal = candles[k].high;
+            curExtremeIdx = k;
           }
-          break;
         }
       }
     }
 
-    if (entryCandleIdx === undefined || entryTime === undefined) {
+    // Evaluate either a deferred same-bar pivot (now at i = pivotIdx + 1) or a newly confirmed pivot
+    let triggerP1: ZigZagPoint | null = null;
+    let triggerP2: ZigZagPoint | null = null;
+    let triggerP6: ZigZagPoint | null = null;
+    let triggerDirection: 'BUY' | 'SELL' | null = null;
+
+    if (pendingSameBarSetup) {
+      const heldStop =
+        pendingSameBarSetup.direction === 'BUY'
+          ? c.low >= pendingSameBarSetup.p1.value && c.high - pendingSameBarSetup.p1.value >= th
+          : c.high <= pendingSameBarSetup.p1.value && pendingSameBarSetup.p1.value - c.low >= th;
+      if (heldStop && !newlyConfirmedPivot) {
+        triggerP1 = pendingSameBarSetup.p1;
+        triggerP2 = pendingSameBarSetup.p2;
+        triggerP6 = pendingSameBarSetup.p6;
+        triggerDirection = pendingSameBarSetup.direction;
+      }
+      pendingSameBarSetup = null;
+    }
+
+    if (newlyConfirmedPivot && rawPivots.length >= 6) {
+      const cleanPivots = normalizeConfirmedPivotsCausal(
+        rawPivots,
+        atrValues,
+        effectiveAtrMult,
+        effectiveMinCandles
+      );
+      if (cleanPivots.length >= 6) {
+        const len = cleanPivots.length;
+        const p1 = cleanPivots[len - 1]; // اولی (جدیدترین)
+        const p2 = cleanPivots[len - 2]; // دومی
+        const p3 = cleanPivots[len - 3]; // سومی
+        const p4 = cleanPivots[len - 4]; // چهارمی
+        const p5 = cleanPivots[len - 5]; // پنجمی
+        const p6 = cleanPivots[len - 6]; // ششمی (قدیمی‌ترین)
+
+        // Ensure the top pivot is indeed the one just confirmed at bar `i`
+        if ((p1.candleIndex ?? -1) === (newlyConfirmedPivot.candleIndex ?? -2) && p1.type === newlyConfirmedPivot.type) {
+          const isBullishSetup =
+            p1.type === 'low' &&
+            p2.type === 'high' &&
+            p3.type === 'low' &&
+            p4.type === 'high' &&
+            p5.type === 'low' &&
+            p6.type === 'high' &&
+            p1.value < p3.value &&
+            p2.value > p4.value &&
+            p3.value < p5.value &&
+            p4.value > p6.value;
+
+          const isBearishSetup =
+            p1.type === 'high' &&
+            p2.type === 'low' &&
+            p3.type === 'high' &&
+            p4.type === 'low' &&
+            p5.type === 'high' &&
+            p6.type === 'low' &&
+            p1.value > p3.value &&
+            p2.value < p4.value &&
+            p3.value > p5.value &&
+            p4.value < p6.value;
+
+          if (isBullishSetup || isBearishSetup) {
+            const dir: 'BUY' | 'SELL' = isBullishSetup ? 'BUY' : 'SELL';
+            if ((p1.candleIndex ?? i) === i) {
+              // Same-candle reversal: defer 1 candle so entryCandleIdx > candleIdxF and intra-bar order is unambiguous
+              pendingSameBarSetup = { p1, p2, p6, direction: dir };
+              continue;
+            }
+            triggerP1 = p1;
+            triggerP2 = p2;
+            triggerP6 = p6;
+            triggerDirection = dir;
+          }
+        }
+      }
+    }
+
+    if (!triggerP1 || !triggerP2 || !triggerP6 || !triggerDirection) {
+      continue;
+    }
+
+    const pivotIdxP1 = triggerP1.candleIndex ?? 0;
+    const entryCandleIdx = i;
+
+    if (entryCandleIdx <= pivotIdxP1) {
       continue;
     }
 
     if (config.noConcurrentPositions && entryCandleIdx <= lastTradeExitCandleIdx) {
       continue;
     }
+
+    const direction = triggerDirection;
+    const cycleType: 'bullish' | 'bearish' = direction === 'BUY' ? 'bullish' : 'bearish';
+    const entryCandle = candles[entryCandleIdx];
+    const entryTime = entryCandle.time;
+    const entryPrice = entryCandle.close;
+    const stopLoss = triggerP1.value;
+
+    // Ensure entry close is strictly on the valid side of Stop Loss (P1)
+    if (
+      !(entryPrice > 0) ||
+      !(stopLoss > 0) ||
+      (direction === 'BUY' ? entryPrice <= stopLoss : entryPrice >= stopLoss)
+    ) {
+      continue;
+    }
+
+    const stopDistance = Math.abs(entryPrice - stopLoss);
+    if (stopDistance <= 0.000001) {
+      continue;
+    }
+
+    const entryAtr =
+      effectiveAtrValues && effectiveAtrValues[entryCandleIdx] > 0
+        ? effectiveAtrValues[entryCandleIdx]
+        : Math.max(0.0001, entryCandle.high - entryCandle.low);
+
+    if (effectiveMinAtrPct > 0 && (entryPrice <= 0 || (entryAtr / entryPrice) * 100 < effectiveMinAtrPct)) {
+      continue;
+    }
+    if (effectiveRsiThresh > 0) {
+      const pivotRsi = rsi14[pivotIdxP1] ?? 50;
+      if (direction === 'BUY' ? pivotRsi > effectiveRsiThresh : pivotRsi < 100 - effectiveRsiThresh) {
+        continue;
+      }
+    }
+    if (effectiveMinPivotAtr > 0 && (entryAtr <= 0 || stopDistance / entryAtr < effectiveMinPivotAtr)) {
+      continue;
+    }
+
+    const takeProfit =
+      direction === 'BUY'
+        ? entryPrice + stopDistance * targetRR
+        : entryPrice - stopDistance * targetRR;
+    const p1 = triggerP1;
+    const p2 = triggerP2;
+    const p6 = triggerP6;
+    const idx = rawPivots.length - 1;
 
     const riskBudget =
       config.riskMode === 'fixed' && config.riskAmountFixed && config.riskAmountFixed > 0
@@ -1263,12 +1593,14 @@ export function runStrategy3Backtest(
       continue;
     }
 
-    const effectiveMaxRatio = config.maxPositionToRiskRatio !== undefined
-      ? config.maxPositionToRiskRatio
-      : (config.optMaxPositionToRiskRatio !== undefined ? config.optMaxPositionToRiskRatio : 300);
-    const posToRiskRatio = riskAmount > 0
-      ? parseFloat((positionValue / riskAmount).toFixed(2))
-      : 0;
+    const effectiveMaxRatio =
+      config.maxPositionToRiskRatio !== undefined
+        ? config.maxPositionToRiskRatio
+        : config.optMaxPositionToRiskRatio !== undefined
+        ? config.optMaxPositionToRiskRatio
+        : 300;
+    const posToRiskRatio =
+      riskAmount > 0 ? parseFloat((positionValue / riskAmount).toFixed(2)) : 0;
 
     if (effectiveMaxRatio > 0 && posToRiskRatio > effectiveMaxRatio) {
       continue;
@@ -1281,20 +1613,16 @@ export function runStrategy3Backtest(
     let pnl = 0;
     let reason: string | undefined = undefined;
 
-    for (let k = entryCandleIdx; k < candles.length; k++) {
+    // Entry occurs at close of entryCandleIdx; monitor TP/SL/Time-Stop from entryCandleIdx + 1 forward
+    for (let k = entryCandleIdx + 1; k < candles.length; k++) {
       const ck = candles[k];
-      // On the fill candle itself, only allow TP if candle opened already at/beyond limit price
-      // (prevents phantom same-candle intra-bar TP before touching midpoint)
-      const canHitTpOnThisCandle =
-        k > entryCandleIdx || (direction === 'BUY' ? ck.open <= entryPrice : ck.open >= entryPrice);
-
-      const hitTP =
-        canHitTpOnThisCandle && (direction === 'BUY' ? ck.high >= takeProfit : ck.low <= takeProfit);
+      const hitTP = direction === 'BUY' ? ck.high >= takeProfit : ck.low <= takeProfit;
       const hitSL = direction === 'BUY' ? ck.low <= stopLoss : ck.high >= stopLoss;
 
       if (hitTP && hitSL) {
         status = 'LOSS';
-        exitPrice = direction === 'BUY' ? stopLoss * (1 - slSlipRate) : stopLoss * (1 + slSlipRate);
+        exitPrice =
+          direction === 'BUY' ? stopLoss * (1 - slSlipRate) : stopLoss * (1 + slSlipRate);
         exitTime = ck.time;
         exitCandleIdx = k;
         const exitFee = positionSize * exitPrice * exitFeeRate;
@@ -1318,7 +1646,8 @@ export function runStrategy3Backtest(
         break;
       } else if (hitSL) {
         status = 'LOSS';
-        exitPrice = direction === 'BUY' ? stopLoss * (1 - slSlipRate) : stopLoss * (1 + slSlipRate);
+        exitPrice =
+          direction === 'BUY' ? stopLoss * (1 - slSlipRate) : stopLoss * (1 + slSlipRate);
         exitTime = ck.time;
         exitCandleIdx = k;
         const exitFee = positionSize * exitPrice * exitFeeRate;
@@ -1334,7 +1663,7 @@ export function runStrategy3Backtest(
         config.timeStopEnabled !== false &&
         typeof config.timeStopCandles === 'number' &&
         config.timeStopCandles > 0;
-      const candlesInTrade = k - entryCandleIdx + 1;
+      const candlesInTrade = k - entryCandleIdx;
       if (status === 'ACTIVE' && timeStopActive && candlesInTrade >= config.timeStopCandles) {
         exitPrice = ck.close;
         exitTime = ck.time;
@@ -1372,21 +1701,21 @@ export function runStrategy3Backtest(
     const netVal = grossVal - tradeTotalFee;
     const capitalBeforeTrade = parseFloat(rollingCapital.toFixed(4));
     const nextCap = Math.max(1, parseFloat((rollingCapital + netVal).toFixed(4)));
-    const waitCandles = entryCandleIdx - confirmIdx;
+    const waitCandles = entryCandleIdx - pivotIdxP1;
 
     trades.push({
-      id: `trade-s3-${trades.length + 1}-${leg2.index}`,
+      id: `trade-s3-${trades.length + 1}-${idx}`,
       strategyId: 'strategy_3_ab_midpoint',
       strategyName:
-        direction === 'SELL'
-          ? 'استراتژی ۳ (سبز←قرمز + شکست A / لیمیت ۶۶٪ قرمز)'
-          : 'استراتژی ۳ (قرمز←سبز + شکست A / لیمیت ۶۶٪ سبز)',
+        direction === 'BUY'
+          ? 'استراتژی ۳ (۶ پیوت متوالی - خرید)'
+          : 'استراتژی ۳ (۶ پیوت متوالی - فروش)',
       cycleIndex: trades.length + 1,
       attemptNumber: 1,
       direction,
       cycleType,
-      priceA: leg1.startPrice,
-      priceE: leg2.endPrice,
+      priceA: p6.value,
+      priceE: p2.value,
       priceF: stopLoss,
       entryPrice,
       stopLoss,
@@ -1400,15 +1729,15 @@ export function runStrategy3Backtest(
       positionValue: parseFloat(positionValue.toFixed(4)),
       positionToRiskRatio: posToRiskRatio,
       riskReward: parseFloat(targetRR.toFixed(2)),
-      timeF: candles[confirmIdx]?.time || leg2.endTime,
-      candleIdxF: confirmIdx,
+      timeF: p1.time,
+      candleIdxF: pivotIdxP1,
       entryTime,
       entryCandleIdx,
       exitTime,
       exitCandleIdx,
       exitPrice,
       candlesElapsedToEntry: waitCandles,
-      candlesRemainingToEnter: Math.max(0, effectiveMaxCandles - waitCandles),
+      candlesRemainingToEnter: 0,
       waitingForPostLeg: false,
       hasPostLeg: true,
       status,
@@ -1459,7 +1788,7 @@ export function runStrategyBacktest(
   } else if (config.selectedStrategyId === 'strategy_2_next_pivot') {
     return runStrategy2Backtest(candles, points, legs, config, atrValues, atrMultiplier, minCandles);
   } else if (config.selectedStrategyId === 'strategy_1_e_breakout') {
-    return runStrategy1Backtest(candles, points, legs, config);
+    return runStrategy1Backtest(candles, points, legs, config, atrValues);
   }
   return {
     trades: [],

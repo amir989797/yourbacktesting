@@ -205,7 +205,7 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                   استراتژی دوم: ورود با تشکیل نقطه بعد از F (استاپ F / تارگت حداکثر R:R)
                 </option>
                 <option value="strategy_3_ab_midpoint">
-                  استراتژی سوم: دو لگ بلند متوالی + شکست A و لیمیت ۶۶٪ AB دوم (استاپ A دوم / تارگت R:R)
+                  استراتژی سوم: الگوی ۶ پیوت متوالی (ورود با تشکیل پیوت اول / استاپ پیوت اول / تارگت R:R)
                 </option>
                 <option value="none">
                   -- غیرفعال کردن استراتژی --
@@ -254,7 +254,7 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                   {config.selectedStrategyId === 'strategy_2_next_pivot'
                     ? 'پارامترهای استراتژی ۲ (نقطه بعد از F)'
                     : config.selectedStrategyId === 'strategy_3_ab_midpoint'
-                    ? 'پارامترهای استراتژی ۳ (لیمیت ۶۶٪ AB)'
+                    ? 'پارامترهای استراتژی ۳ (۶ پیوت متوالی)'
                     : 'پارامترهای استراتژی ۱ (شکست E)'}
                 </span>
                 {/* Info Icon for Strategy Explanation */}
@@ -418,20 +418,20 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
               </div>
 
               {/* Max Candles / Entry Mode */}
-              {config.selectedStrategyId === 'strategy_2_next_pivot' ? (
+              {config.selectedStrategyId === 'strategy_2_next_pivot' || config.selectedStrategyId === 'strategy_3_ab_midpoint' ? (
                 <div className="bg-[#0e121a] p-2 rounded-lg border border-[#252f42] flex flex-col justify-between">
                   <div className="text-[10px] text-gray-300 font-semibold mb-1 flex items-center justify-between">
                     <span>ورود به معامله</span>
                     <span className="text-amber-400 font-mono text-[9px]">فوری</span>
                   </div>
                   <div className="py-1 text-[11px] font-bold text-center text-amber-300 bg-[#161c28] border border-amber-500/20 rounded">
-                    تک‌ورود بعد از F
+                    {config.selectedStrategyId === 'strategy_3_ab_midpoint' ? 'با تشکیل پیوت ۱' : 'تک‌ورود بعد از F'}
                   </div>
                 </div>
               ) : (
                 <div className="bg-[#0e121a] p-2 rounded-lg border border-[#252f42]">
                   <div className="text-[10px] text-gray-300 font-semibold mb-1 flex items-center justify-between">
-                    <span>{config.selectedStrategyId === 'strategy_3_ab_midpoint' ? 'انقضای لیمیت' : 'مهلت ورود'}</span>
+                    <span>مهلت ورود</span>
                     <span className="text-sky-400 font-mono text-[9px]">کندل</span>
                   </div>
                   <input
@@ -785,7 +785,7 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                     : 'text-gray-400 hover:text-white hover:bg-[#19202c]'
                 }`}
               >
-                استراتژی ۳ (لیمیت ۶۶٪ AB)
+                استراتژی ۳ (۶ پیوت متوالی)
               </button>
             </div>
 
@@ -890,35 +890,37 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                 <div className="flex items-start gap-2 bg-[#0e121a] p-2.5 rounded-xl border border-[#202738]">
                   <span className="text-amber-400 font-bold">•</span>
                   <div>
-                    <strong className="text-white">۱. شرط توالی بلافاصله دو لگ بلند:</strong> دو لگ بلند (سبز و قرمز) باید <strong>بلافاصله پشت‌سرهم</strong> (بدون هیچ لگ واسطه بین آن‌ها) تشکیل شوند.
-                  </div>
-                </div>
-                <div className="flex items-start gap-2 bg-[#0e121a] p-2.5 rounded-xl border border-[#202738]">
-                  <span className="text-rose-400 font-bold">•</span>
-                  <div>
-                    <strong className="text-white">۲. ستاپ فروش (SELL LIMIT):</strong>
-                    <div className="mt-1 text-gray-400 space-y-0.5">
-                      <div>- ابتدا یک لگ بلند <span className="text-emerald-400 font-bold">سبز (AB green)</span> و بلافاصله بعد از آن یک لگ بلند <span className="text-rose-400 font-bold">قرمز (AB red)</span> تشکیل شود.</div>
-                      <div>- انتهای لگ قرمز (<strong>B red</strong>) باید شروع لگ سبز قبلی (<strong>A green</strong>) را به پایین بشکند.</div>
-                      <div>- سفارش <strong>SELL LIMIT</strong> در ۶۶٪ اصلاح لگ قرمز (نزدیک‌تر به برگشت <strong className="font-mono">A red</strong>: <strong className="font-mono">B red + 0.66 × (A red - B red)</strong>) با استاپ روی <strong>A red</strong> تا سقف کندل ورود ثبت می‌شود.</div>
-                    </div>
+                    <strong className="text-white">۱. بررسی ۶ پیوت پشت‌سرهم (از جدیدترین به قدیمی‌ترین):</strong> ۶ پیوت متوالی زیگ‌زاگ از جدیدترین به قدیمی‌ترین شماره‌گذاری می‌شوند: پیوت <strong>اول (P1 - جدیدترین)</strong>، <strong>دوم (P2)</strong>، <strong>سوم (P3)</strong>، <strong>چهارم (P4)</strong>، <strong>پنجم (P5)</strong> و <strong>ششم (P6 - قدیمی‌ترین)</strong>.
                   </div>
                 </div>
                 <div className="flex items-start gap-2 bg-[#0e121a] p-2.5 rounded-xl border border-[#202738]">
                   <span className="text-emerald-400 font-bold">•</span>
                   <div>
-                    <strong className="text-white">۳. ستاپ خرید (BUY LIMIT):</strong>
+                    <strong className="text-white">۲. شرایط خرید (BUY / LONG — پیوت اول کف است):</strong>
                     <div className="mt-1 text-gray-400 space-y-0.5">
-                      <div>- ابتدا یک لگ بلند <span className="text-rose-400 font-bold">قرمز (AB red)</span> و بلافاصله بعد از آن یک لگ بلند <span className="text-emerald-400 font-bold">سبز (AB green)</span> تشکیل شود.</div>
-                      <div>- انتهای لگ سبز (<strong>B green</strong>) باید شروع لگ قرمز قبلی (<strong>A red</strong>) را به بالا بشکند.</div>
-                      <div>- سفارش <strong>BUY LIMIT</strong> در ۶۶٪ اصلاح لگ سبز (نزدیک‌تر به برگشت <strong className="font-mono">A green</strong>: <strong className="font-mono">B green + 0.66 × (A green - B green)</strong>) با استاپ روی <strong>A green</strong> تا سقف کندل ورود ثبت می‌شود.</div>
+                      <div>- پیوت <strong>اول (P1)</strong> پایین‌تر از دو پیوت قبل (<strong>P1 &lt; P3</strong>).</div>
+                      <div>- پیوت <strong>دوم (P2)</strong> بالاتر از دو پیوت قبل (<strong>P2 &gt; P4</strong>).</div>
+                      <div>- پیوت <strong>سوم (P3)</strong> پایین‌تر از دو پیوت قبل (<strong>P3 &lt; P5</strong>).</div>
+                      <div>- پیوت <strong>چهارم (P4)</strong> بالاتر از دو پیوت قبل (<strong>P4 &gt; P6</strong>).</div>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-start gap-2 bg-[#0e121a] p-2.5 rounded-xl border border-[#202738]">
+                  <span className="text-rose-400 font-bold">•</span>
+                  <div>
+                    <strong className="text-white">۳. شرایط فروش (SELL / SHORT — پیوت اول سقف است):</strong>
+                    <div className="mt-1 text-gray-400 space-y-0.5">
+                      <div>- پیوت <strong>اول (P1)</strong> بالاتر از دو پیوت قبل (<strong>P1 &gt; P3</strong>).</div>
+                      <div>- پیوت <strong>دوم (P2)</strong> پایین‌تر از دو پیوت قبل (<strong>P2 &lt; P4</strong>).</div>
+                      <div>- پیوت <strong>سوم (P3)</strong> بالاتر از دو پیوت قبل (<strong>P3 &gt; P5</strong>).</div>
+                      <div>- پیوت <strong>چهارم (P4)</strong> پایین‌تر از دو پیوت قبل (<strong>P4 &lt; P6</strong>).</div>
                     </div>
                   </div>
                 </div>
                 <div className="flex items-start gap-2 bg-[#0e121a] p-2.5 rounded-xl border border-[#202738]">
                   <span className="text-sky-400 font-bold">•</span>
                   <div>
-                    <strong className="text-white">۴. حد سود (Target) و انقضای لیمیت:</strong> تارگت بر اساس <strong>R:R</strong> انتخابی (از <strong className="font-mono">0.5</strong> به بالا) نسبت به فاصله نقطه ورود (۶۶٪ AB دوم) تا استاپ <strong>A</strong> لگ دوم محاسبه شده و سفارش در صورت عدم پر شدن تا «سقف کندل ورود» منقضی می‌شود.
+                    <strong className="text-white">۴. ورود، حد ضرر و حد سود:</strong> به محض <strong>تشکیل و تایید پیوت اول (P1)</strong> با قیمت بازار وارد معامله شده، حد ضرر دقیقاً روی قیمت <strong>پیوت اول (P1)</strong> قرار می‌گیرد و حد سود بر اساس <strong>R:R</strong> انتخابی محاسبه می‌شود.
                   </div>
                 </div>
               </div>

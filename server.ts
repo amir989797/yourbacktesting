@@ -3110,11 +3110,15 @@ function isExactStoredConfigMatch(
     candidate.s2RsiThreshold ?? baseConfig.s2RsiThreshold ?? 38,
     storedCfg.optS2RsiThreshold ?? storedCfg.s2RsiThreshold ?? 38
   );
+  const isMinPivotAtrMatch = numEq(
+    candidate.minEntryPivotAtr ?? baseConfig.minEntryPivotAtr ?? 0,
+    storedCfg.optMinEntryPivotAtr ?? storedCfg.minEntryPivotAtr ?? 0
+  );
 
   if (
     !isAtrMatch || !isAtrMultMatch || !isMinCandlesMatch || !isMinLongMatch || !isMinBlueMatch ||
     !isLongMultMatch || !isBlueMultMatch || !isBlueMatch || !isBreakoutMatch || !isRrMatch ||
-    !isTimeStopCandlesMatch || !isPosRatioMatch || !isMinAtrPctMatch || !isS2RsiMatch
+    !isTimeStopCandlesMatch || !isPosRatioMatch || !isMinAtrPctMatch || !isS2RsiMatch || !isMinPivotAtrMatch
   ) {
     return false;
   }
@@ -3408,12 +3412,16 @@ async function runServerBacktestCycle(params: {
   const s2RsiThreshold = rawS2Rsi !== undefined && rawS2Rsi !== null && !isNaN(Number(rawS2Rsi))
     ? Number(rawS2Rsi)
     : 38;
+  const rawMinPivotAtr = cfg.optMinEntryPivotAtr ?? cfg.minEntryPivotAtr;
+  const minEntryPivotAtr = rawMinPivotAtr !== undefined && rawMinPivotAtr !== null && !isNaN(Number(rawMinPivotAtr))
+    ? Math.max(0, Number(rawMinPivotAtr))
+    : 0;
 
   if (effectiveExchange === 'xt') {
     await getXtSymbolsOpenApiMap().catch(() => {});
   }
 
-  console.log(`[Server Backtest] 🚀 Starting cycle: Dataset=${datasetId}, Exchange=${effectiveExchange}, Mode=${incrementalSync ? 'INCREMENTAL_SYNC' : (forceRedownload ? 'FORCE_REDOWNLOAD' : 'SMART_DB')}, Strategy=${strategyId}, ATR=${atrPeriod}, Mult=${atrMultiplier}, minCandles=${minCandles}, minLong=${minCandlesForLongLeg}, minBlue=${minCandlesForBlueLeg}, longMult=${longLegAtrMultiplier}, blueMult=${blueLegAtrMultiplier}, blue%=${maxBlueLegPercent}, breakoutMult=${maxBreakoutAtrMultiplier}, RR=${maxRiskReward}, minATR%=${minAtrPercent}, s2RSI=${s2RsiThreshold}, slSlip=${slSlippagePercent}%, timeStop=${timeStopCandles}, maxPosRatio=${maxPositionToRiskRatio}, capital=${capital}, risk=${riskPercent}%`);
+  console.log(`[Server Backtest] 🚀 Starting cycle: Dataset=${datasetId}, Exchange=${effectiveExchange}, Mode=${incrementalSync ? 'INCREMENTAL_SYNC' : (forceRedownload ? 'FORCE_REDOWNLOAD' : 'SMART_DB')}, Strategy=${strategyId}, ATR=${atrPeriod}, Mult=${atrMultiplier}, minCandles=${minCandles}, minLong=${minCandlesForLongLeg}, minBlue=${minCandlesForBlueLeg}, longMult=${longLegAtrMultiplier}, blueMult=${blueLegAtrMultiplier}, blue%=${maxBlueLegPercent}, breakoutMult=${maxBreakoutAtrMultiplier}, RR=${maxRiskReward}, minATR%=${minAtrPercent}, RSI=${s2RsiThreshold}, minPivotATR=${minEntryPivotAtr}, slSlip=${slSlippagePercent}%, timeStop=${timeStopCandles}, maxPosRatio=${maxPositionToRiskRatio}, capital=${capital}, risk=${riskPercent}%`);
 
   const processSymbolStrategy = (pair: { symbol: string; baseAsset: string; quoteAsset: string }, candles: CandleData[]) => {
     if (!candles || candles.length < 50) return null;
@@ -3450,6 +3458,8 @@ async function runServerBacktestCycle(params: {
       optMinAtrPercent: minAtrPercent,
       s2RsiThreshold,
       optS2RsiThreshold: s2RsiThreshold,
+      minEntryPivotAtr,
+      optMinEntryPivotAtr: minEntryPivotAtr,
     };
 
     let backtestRes: any;
@@ -3458,7 +3468,7 @@ async function runServerBacktestCycle(params: {
     } else if (strategyId === 'strategy_2_next_pivot') {
       backtestRes = runStrategy2Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, atrMultiplier, minCandles);
     } else {
-      backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig);
+      backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues);
     }
 
     const { trades, metrics } = backtestRes;
@@ -4038,6 +4048,8 @@ async function runServerBacktestCycle(params: {
         optMinAtrPercent: minAtrPercent,
         s2RsiThreshold,
         optS2RsiThreshold: s2RsiThreshold,
+        minEntryPivotAtr,
+        optMinEntryPivotAtr: minEntryPivotAtr,
         startTime: toMsSafe(startTime),
         endTime: toMsSafe(endTime),
         symbolsSignature: computeSymbolsSignature(symbols),
@@ -4669,6 +4681,7 @@ interface ServerOptimizerTrial {
   maxPositionToRiskRatio?: number;
   minAtrPercent?: number;
   s2RsiThreshold?: number;
+  minEntryPivotAtr?: number;
   totalTrades: number;
   winTrades: number;
   lossTrades: number;
@@ -4722,6 +4735,7 @@ const ALLOWED_OPTIMIZER_SORT_COLUMNS = new Set([
   'maxPositionToRiskRatio',
   'minAtrPercent',
   's2RsiThreshold',
+  'minEntryPivotAtr',
   'totalFees',
   'qualityScore',
 ]);
@@ -4776,8 +4790,9 @@ function generateConfigHash(p: {
   maxPositionToRiskRatio?: number;
   minAtrPercent?: number;
   s2RsiThreshold?: number;
+  minEntryPivotAtr?: number;
 }): string {
-  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.minCandlesForBlueLeg ?? 3}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.blueLegAtrMultiplier ?? 3}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxCandlesToEnter ?? 100}_${p.maxRiskReward}_${p.timeStopCandles || 80}_${p.maxPositionToRiskRatio ?? 300}_${p.minAtrPercent ?? 0.25}_${p.s2RsiThreshold ?? 38}`;
+  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.minCandlesForBlueLeg ?? 3}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.blueLegAtrMultiplier ?? 3}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxCandlesToEnter ?? 100}_${p.maxRiskReward}_${p.timeStopCandles || 80}_${p.maxPositionToRiskRatio ?? 300}_${p.minAtrPercent ?? 0.25}_${p.s2RsiThreshold ?? 38}_${p.minEntryPivotAtr ?? 0}`;
 }
 
 function calculateQualityScore(trial: {
@@ -4841,6 +4856,7 @@ function refineAdaptiveRangesSmart(
     'maxPositionToRiskRatio',
     'minAtrPercent',
     's2RsiThreshold',
+    'minEntryPivotAtr',
   ];
 
   const lockKeyMap: Record<string, { lockProp: string; valProp: string }> = {
@@ -4859,6 +4875,7 @@ function refineAdaptiveRangesSmart(
     maxPositionToRiskRatio: { lockProp: 'lockMaxPositionToRiskRatio', valProp: 'optMaxPositionToRiskRatio' },
     minAtrPercent: { lockProp: 'lockMinAtrPercent', valProp: 'optMinAtrPercent' },
     s2RsiThreshold: { lockProp: 'lockS2RsiThreshold', valProp: 'optS2RsiThreshold' },
+    minEntryPivotAtr: { lockProp: 'lockMinEntryPivotAtr', valProp: 'optMinEntryPivotAtr' },
   };
 
   for (const key of keys) {
@@ -4994,6 +5011,7 @@ function getDefaultRangesForTimeframe(timeframe: string): any {
       maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
       minAtrPercent: makeRange(0.15, 0.55, 0.0, 1.5, 0.25, 0.05),
       s2RsiThreshold: makeRange(30, 44, 0, 49, 38, 2),
+      minEntryPivotAtr: makeRange(0.0, 3.0, 0.0, 8.0, 0.0, 0.25),
     };
   }
 
@@ -5014,6 +5032,7 @@ function getDefaultRangesForTimeframe(timeframe: string): any {
       maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
       minAtrPercent: makeRange(0.2, 0.8, 0.0, 2.0, 0.3, 0.05),
       s2RsiThreshold: makeRange(30, 44, 0, 49, 38, 2),
+      minEntryPivotAtr: makeRange(0.0, 3.0, 0.0, 8.0, 0.0, 0.25),
     };
   }
 
@@ -5033,6 +5052,7 @@ function getDefaultRangesForTimeframe(timeframe: string): any {
     maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
     minAtrPercent: makeRange(0.15, 0.65, 0.0, 1.5, 0.25, 0.05),
     s2RsiThreshold: makeRange(30, 44, 0, 49, 38, 2),
+    minEntryPivotAtr: makeRange(0.0, 3.0, 0.0, 8.0, 0.0, 0.25),
   };
 }
 
@@ -5110,6 +5130,7 @@ function getNextCandidateFromAdaptiveRanges(
       maxPositionToRiskRatio: sampleParam(ranges.maxPositionToRiskRatio, l.lockMaxPositionToRiskRatio, l.optMaxPositionToRiskRatio ?? 300),
       minAtrPercent: sampleParam(ranges.minAtrPercent, l.lockMinAtrPercent, l.optMinAtrPercent ?? 0.25),
       s2RsiThreshold: sampleParam(ranges.s2RsiThreshold, l.lockS2RsiThreshold, l.optS2RsiThreshold ?? 38),
+      minEntryPivotAtr: sampleParam(ranges.minEntryPivotAtr, l.lockMinEntryPivotAtr, l.optMinEntryPivotAtr ?? 0),
     };
 
     const hash = generateConfigHash(candidate);
@@ -5479,6 +5500,10 @@ async function streamEvaluateDatasetFromPostgres(
           candidate.s2RsiThreshold !== undefined && candidate.s2RsiThreshold !== null && !isNaN(Number(candidate.s2RsiThreshold))
             ? Number(candidate.s2RsiThreshold)
             : (baseConfig.s2RsiThreshold ?? 38),
+        minEntryPivotAtr:
+          candidate.minEntryPivotAtr !== undefined && candidate.minEntryPivotAtr !== null && !isNaN(Number(candidate.minEntryPivotAtr))
+            ? Math.max(0, Number(candidate.minEntryPivotAtr))
+            : (baseConfig.minEntryPivotAtr ?? 0),
       };
 
       let backtestRes: any;
@@ -5487,7 +5512,7 @@ async function streamEvaluateDatasetFromPostgres(
       } else if (strategyId === 'strategy_2_next_pivot') {
         backtestRes = runStrategy2Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, candidate.atrMultiplier, candidate.minCandles);
       } else {
-        backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig);
+        backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues);
       }
 
       const closed = (backtestRes.trades || [])
@@ -5521,6 +5546,7 @@ async function evaluateCombinationOnServer(
     maxPositionToRiskRatio?: number;
     minAtrPercent?: number;
     s2RsiThreshold?: number;
+    minEntryPivotAtr?: number;
   },
   entries: ServerCandleEntry[],
   strategyId: string,
@@ -5539,6 +5565,7 @@ async function evaluateCombinationOnServer(
     timeStopEnabled: boolean;
     minAtrPercent?: number;
     s2RsiThreshold?: number;
+    minEntryPivotAtr?: number;
   },
   constraints: {
     targetMaxDrawdown: number;
@@ -5606,6 +5633,10 @@ async function evaluateCombinationOnServer(
         params.s2RsiThreshold !== undefined && params.s2RsiThreshold !== null && !isNaN(Number(params.s2RsiThreshold))
           ? Number(params.s2RsiThreshold)
           : (baseConfig.s2RsiThreshold ?? 38),
+      minEntryPivotAtr:
+        params.minEntryPivotAtr !== undefined && params.minEntryPivotAtr !== null && !isNaN(Number(params.minEntryPivotAtr))
+          ? Math.max(0, Number(params.minEntryPivotAtr))
+          : (baseConfig.minEntryPivotAtr ?? 0),
     };
 
     let backtestRes: any;
@@ -5614,7 +5645,7 @@ async function evaluateCombinationOnServer(
     } else if (strategyId === 'strategy_2_next_pivot') {
       backtestRes = runStrategy2Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, params.atrMultiplier, params.minCandles);
     } else {
-      backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig);
+      backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues);
     }
 
     const closed = (backtestRes.trades || [])
@@ -5682,6 +5713,9 @@ async function runServerOptimizerLoop(
       s2RsiThreshold: locks?.optS2RsiThreshold !== undefined && locks?.optS2RsiThreshold !== null && !isNaN(Number(locks.optS2RsiThreshold))
         ? Number(locks.optS2RsiThreshold)
         : (baseConfig.s2RsiThreshold ?? 38),
+      minEntryPivotAtr: locks?.optMinEntryPivotAtr !== undefined && locks?.optMinEntryPivotAtr !== null && !isNaN(Number(locks.optMinEntryPivotAtr))
+        ? Math.max(0, Number(locks.optMinEntryPivotAtr))
+        : (baseConfig.minEntryPivotAtr ?? 0),
     };
 
     let manualEval: any = null;
@@ -5962,6 +5996,10 @@ app.post('/api/optimizer/start', async (req, res) => {
     const baseS2RsiThreshold = rawOptRsi !== undefined && rawOptRsi !== null && !isNaN(Number(rawOptRsi))
       ? Number(rawOptRsi)
       : 38;
+    const rawOptMinPivotAtr = cfg.optMinEntryPivotAtr ?? cfg.minEntryPivotAtr;
+    const baseMinEntryPivotAtr = rawOptMinPivotAtr !== undefined && rawOptMinPivotAtr !== null && !isNaN(Number(rawOptMinPivotAtr))
+      ? Math.max(0, Number(rawOptMinPivotAtr))
+      : 0;
 
     const baseConfig = {
       capital,
@@ -5978,6 +6016,7 @@ app.post('/api/optimizer/start', async (req, res) => {
       timeStopEnabled,
       minAtrPercent: baseMinAtrPercent,
       s2RsiThreshold: baseS2RsiThreshold,
+      minEntryPivotAtr: baseMinEntryPivotAtr,
       symbols: Array.isArray(symbols) ? symbols : [],
       startTime: startTime ? Number(startTime) : null,
       endTime: endTime ? Number(endTime) : null,
@@ -5991,6 +6030,7 @@ app.post('/api/optimizer/start', async (req, res) => {
 
     const rawLockMinAtr = locks?.optMinAtrPercent ?? cfg?.optMinAtrPercent ?? cfg?.minAtrPercent;
     const rawLockRsi = locks?.optS2RsiThreshold ?? cfg?.optS2RsiThreshold ?? cfg?.s2RsiThreshold;
+    const rawLockMinPivotAtr = locks?.optMinEntryPivotAtr ?? cfg?.optMinEntryPivotAtr ?? cfg?.minEntryPivotAtr;
     const effectiveLocks = {
       lockAtrPeriod: Boolean(locks?.lockAtrPeriod),
       lockMinCandles: Boolean(locks?.lockMinCandles),
@@ -6007,6 +6047,7 @@ app.post('/api/optimizer/start', async (req, res) => {
       lockMaxPositionToRiskRatio: Boolean(locks?.lockMaxPositionToRiskRatio),
       lockMinAtrPercent: Boolean(locks?.lockMinAtrPercent),
       lockS2RsiThreshold: Boolean(locks?.lockS2RsiThreshold),
+      lockMinEntryPivotAtr: Boolean(locks?.lockMinEntryPivotAtr),
       optAtrPeriod: Number(locks?.optAtrPeriod ?? cfg?.atrPeriod ?? cfg?.optAtrPeriod ?? 45),
       optMinCandles: Number(locks?.optMinCandles ?? cfg?.minCandles ?? cfg?.optMinCandles ?? 3),
       optMinCandlesLong: Number(locks?.optMinCandlesLong ?? cfg?.minCandlesForLongLeg ?? cfg?.optMinCandlesLong ?? 14),
@@ -6022,6 +6063,7 @@ app.post('/api/optimizer/start', async (req, res) => {
       optMaxPositionToRiskRatio: Number(locks?.optMaxPositionToRiskRatio ?? cfg?.maxPositionToRiskRatio ?? cfg?.optMaxPositionToRiskRatio ?? 300),
       optMinAtrPercent: rawLockMinAtr !== undefined && rawLockMinAtr !== null && !isNaN(Number(rawLockMinAtr)) ? Math.max(0, Number(rawLockMinAtr)) : 0.25,
       optS2RsiThreshold: rawLockRsi !== undefined && rawLockRsi !== null && !isNaN(Number(rawLockRsi)) ? Number(rawLockRsi) : 38,
+      optMinEntryPivotAtr: rawLockMinPivotAtr !== undefined && rawLockMinPivotAtr !== null && !isNaN(Number(rawLockMinPivotAtr)) ? Math.max(0, Number(rawLockMinPivotAtr)) : 0,
     };
 
     const defaultTfRanges = getDefaultRangesForTimeframe(timeframe);
@@ -6050,6 +6092,7 @@ app.post('/api/optimizer/start', async (req, res) => {
       'maxPositionToRiskRatio',
       'minAtrPercent',
       's2RsiThreshold',
+      'minEntryPivotAtr',
     ];
     for (const key of paramKeys) {
       if (initialRanges[key]) {
@@ -6089,6 +6132,7 @@ app.post('/api/optimizer/start', async (req, res) => {
       maxPositionToRiskRatio: { lockProp: 'lockMaxPositionToRiskRatio', valProp: 'optMaxPositionToRiskRatio' },
       minAtrPercent: { lockProp: 'lockMinAtrPercent', valProp: 'optMinAtrPercent' },
       s2RsiThreshold: { lockProp: 'lockS2RsiThreshold', valProp: 'optS2RsiThreshold' },
+      minEntryPivotAtr: { lockProp: 'lockMinEntryPivotAtr', valProp: 'optMinEntryPivotAtr' },
     };
 
     for (const [k, m] of Object.entries(lockKeyMap)) {
@@ -6302,6 +6346,7 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
       : (manualExchange === 'xt' ? 0.04 : 0);
     const rawEvalMinAtr = candidate?.minAtrPercent ?? cfg.optMinAtrPercent ?? cfg.minAtrPercent;
     const rawEvalRsi = candidate?.s2RsiThreshold ?? cfg.optS2RsiThreshold ?? cfg.s2RsiThreshold;
+    const rawEvalMinPivotAtr = candidate?.minEntryPivotAtr ?? cfg.optMinEntryPivotAtr ?? cfg.minEntryPivotAtr;
     const baseConfig = {
       capital: Number(cfg.capital) || 10000,
       riskMode: cfg.riskMode || 'percent',
@@ -6317,6 +6362,7 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
       timeStopEnabled: cfg.timeStopEnabled !== false && cfg.optTimeStopEnabled !== false,
       minAtrPercent: rawEvalMinAtr !== undefined && rawEvalMinAtr !== null && !isNaN(Number(rawEvalMinAtr)) ? Math.max(0, Number(rawEvalMinAtr)) : 0.25,
       s2RsiThreshold: rawEvalRsi !== undefined && rawEvalRsi !== null && !isNaN(Number(rawEvalRsi)) ? Number(rawEvalRsi) : 38,
+      minEntryPivotAtr: rawEvalMinPivotAtr !== undefined && rawEvalMinPivotAtr !== null && !isNaN(Number(rawEvalMinPivotAtr)) ? Math.max(0, Number(rawEvalMinPivotAtr)) : 0,
       symbols: Array.isArray(symbols) ? symbols : [],
       startTime: startTime ? Number(startTime) : null,
       endTime: endTime ? Number(endTime) : null,
@@ -6624,6 +6670,7 @@ interface ServerLiveScannerConfig {
   timeStopCandles?: number;
   minAtrPercent?: number;
   s2RsiThreshold?: number;
+  minEntryPivotAtr?: number;
   isLiveExecution?: boolean;
   userId: string;
 }
@@ -6752,6 +6799,7 @@ const serverScannerState = {
     timeStopCandles: 80,
     minAtrPercent: 0.25,
     s2RsiThreshold: 38,
+    minEntryPivotAtr: 0,
     isLiveExecution: false,
     userId: 'amir',
   } as ServerLiveScannerConfig,
@@ -7418,6 +7466,10 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
                       cfg.s2RsiThreshold !== undefined && cfg.s2RsiThreshold !== null && !isNaN(Number(cfg.s2RsiThreshold))
                         ? Number(cfg.s2RsiThreshold)
                         : 38,
+                    minEntryPivotAtr:
+                      cfg.minEntryPivotAtr !== undefined && cfg.minEntryPivotAtr !== null && !isNaN(Number(cfg.minEntryPivotAtr))
+                        ? Math.max(0, Number(cfg.minEntryPivotAtr))
+                        : 0,
                   },
                   availableBalance,
                   hasExistingPosition: false,

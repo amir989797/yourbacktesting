@@ -666,6 +666,18 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   });
   const [lockS2RsiThreshold, setLockS2RsiThreshold] = useState<boolean>(false);
 
+  const [optMinEntryPivotAtr, setOptMinEntryPivotAtr] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('backtest_opt_min_entry_pivot_atr');
+      if (saved !== null) {
+        const parsed = parseFloat(saved);
+        if (!isNaN(parsed)) return parsed;
+      }
+    } catch {}
+    return 0;
+  });
+  const [lockMinEntryPivotAtr, setLockMinEntryPivotAtr] = useState<boolean>(false);
+
   // همگام‌سازی اولیه یا به‌روزرسانی خارجی تنظیمات زیگ‌زاگ وارده توسط کاربر در چارت
   const prevZigzagSettingsRef = useRef<ZigZagSettings | undefined>(zigzagSettings);
   useEffect(() => {
@@ -681,6 +693,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       if (zigzagSettings.blueLegAtrMultiplier !== undefined && zigzagSettings.blueLegAtrMultiplier !== prev?.blueLegAtrMultiplier) setOptBlueLegAtrMult(zigzagSettings.blueLegAtrMultiplier);
       if (zigzagSettings.maxBlueLegPercent !== undefined && zigzagSettings.maxBlueLegPercent !== prev?.maxBlueLegPercent) setOptMaxBlueLegPercent(zigzagSettings.maxBlueLegPercent);
       if (zigzagSettings.maxBreakoutAtrMultiplier !== undefined && zigzagSettings.maxBreakoutAtrMultiplier !== prev?.maxBreakoutAtrMultiplier) setOptMaxBreakoutAtr(zigzagSettings.maxBreakoutAtrMultiplier);
+      if (zigzagSettings.minAtrPercent !== undefined && zigzagSettings.minAtrPercent !== prev?.minAtrPercent) setOptMinAtrPercent(zigzagSettings.minAtrPercent);
+      if (zigzagSettings.s2RsiThreshold !== undefined && zigzagSettings.s2RsiThreshold !== prev?.s2RsiThreshold) setOptS2RsiThreshold(zigzagSettings.s2RsiThreshold);
+      if (zigzagSettings.minEntryPivotAtr !== undefined && zigzagSettings.minEntryPivotAtr !== prev?.minEntryPivotAtr) setOptMinEntryPivotAtr(zigzagSettings.minEntryPivotAtr);
       prevZigzagSettingsRef.current = zigzagSettings;
     }
   }, [zigzagSettings]);
@@ -913,8 +928,11 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       if (typeof optS2RsiThreshold === 'number' && !isNaN(optS2RsiThreshold)) {
         localStorage.setItem('backtest_opt_s2_rsi_threshold', String(optS2RsiThreshold));
       }
+      if (typeof optMinEntryPivotAtr === 'number' && !isNaN(optMinEntryPivotAtr)) {
+        localStorage.setItem('backtest_opt_min_entry_pivot_atr', String(optMinEntryPivotAtr));
+      }
     } catch {}
-  }, [universeOption, riskMode, riskPercent, riskAmountFixed, entryCommissionPercent, exitCommissionPercent, commissionPercent, slSlippagePercent, optTimeStopEnabled, optTimeStopCandles, optMaxPositionToRiskRatio, optMinAtrPercent, optS2RsiThreshold]);
+  }, [universeOption, riskMode, riskPercent, riskAmountFixed, entryCommissionPercent, exitCommissionPercent, commissionPercent, slSlippagePercent, optTimeStopEnabled, optTimeStopCandles, optMaxPositionToRiskRatio, optMinAtrPercent, optS2RsiThreshold, optMinEntryPivotAtr]);
 
   // کنترل تایمر ۱۵ دقیقه‌ای پیوسته
   useEffect(() => {
@@ -1407,6 +1425,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             optMinAtrPercent: overrideConfig?.minAtrPercent !== undefined ? overrideConfig.minAtrPercent : optMinAtrPercent,
             s2RsiThreshold: overrideConfig?.s2RsiThreshold !== undefined ? overrideConfig.s2RsiThreshold : optS2RsiThreshold,
             optS2RsiThreshold: overrideConfig?.s2RsiThreshold !== undefined ? overrideConfig.s2RsiThreshold : optS2RsiThreshold,
+            minEntryPivotAtr: overrideConfig?.minEntryPivotAtr !== undefined ? overrideConfig.minEntryPivotAtr : optMinEntryPivotAtr,
+            optMinEntryPivotAtr: overrideConfig?.minEntryPivotAtr !== undefined ? overrideConfig.minEntryPivotAtr : optMinEntryPivotAtr,
           },
         }),
       });
@@ -1925,6 +1945,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         optMaxPositionToRiskRatio,
         optMinAtrPercent,
         optS2RsiThreshold,
+        optMinEntryPivotAtr,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -1989,6 +2010,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     if (config.optS2RsiThreshold !== undefined && !isNaN(Number(config.optS2RsiThreshold))) {
       setOptS2RsiThreshold(Number(config.optS2RsiThreshold));
     }
+    if (config.optMinEntryPivotAtr !== undefined && !isNaN(Number(config.optMinEntryPivotAtr))) {
+      setOptMinEntryPivotAtr(Number(config.optMinEntryPivotAtr));
+    }
 
     onUpdateZigZagSettings?.({
       atrPeriod: config.optAtrPeriod,
@@ -2004,6 +2028,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       maxPositionToRiskRatio: config.optMaxPositionToRiskRatio,
       ...(config.optMinAtrPercent !== undefined ? { minAtrPercent: Number(config.optMinAtrPercent) } : {}),
       ...(config.optS2RsiThreshold !== undefined ? { s2RsiThreshold: Number(config.optS2RsiThreshold) } : {}),
+      ...(config.optMinEntryPivotAtr !== undefined ? { minEntryPivotAtr: Number(config.optMinEntryPivotAtr) } : {}),
       ...(typeof config.optTimeStopEnabled === 'boolean' ? { timeStopEnabled: config.optTimeStopEnabled } : {}),
     });
 
@@ -2661,7 +2686,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         selectedStrategyId === 'strategy_1_e_breakout'
           ? 'استراتژی ۱: شکست نقطه E (تارگت A / استاپ F)'
           : selectedStrategyId === 'strategy_3_ab_midpoint'
-          ? 'استراتژی ۳: دو لگ بلند متوالی + شکست A و لیمیت ۶۶٪ AB دوم (استاپ A دوم / تارگت R:R)'
+          ? 'استراتژی ۳: الگوی ۶ پیوت متوالی (ورود با تشکیل پیوت اول / استاپ پیوت اول / تارگت R:R)'
           : 'استراتژی ۲: اولین تشکیل لگ بعد از F (تارگت R:R)';
       ctx.fillText(
         `${stratTitle}  |  تایم‌فریم: ${timeframe}  |  دامنه: فیوچرز  |  تاریخ: ${new Date().toLocaleDateString('fa-IR')} ${new Date().toLocaleTimeString('fa-IR')}`,
@@ -2905,6 +2930,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       timeStopCandles?: number;
       minAtrPercent?: number;
       s2RsiThreshold?: number;
+      minEntryPivotAtr?: number;
     },
     overrideNoConcurrent?: boolean
   ) => {
@@ -2997,6 +3023,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         timeStopCandles: params.timeStopCandles || optTimeStopCandles || 80,
         minAtrPercent: params.minAtrPercent !== undefined ? params.minAtrPercent : optMinAtrPercent,
         s2RsiThreshold: params.s2RsiThreshold !== undefined ? params.s2RsiThreshold : optS2RsiThreshold,
+        minEntryPivotAtr: params.minEntryPivotAtr !== undefined ? params.minEntryPivotAtr : optMinEntryPivotAtr,
       };
 
       let res;
@@ -3021,7 +3048,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           params.minCandles
         );
       } else {
-        res = runStrategy1Backtest(candles, points, legs, tempConfig);
+        res = runStrategy1Backtest(candles, points, legs, tempConfig, atrMetrics.atrValues);
       }
 
       const closed = (res.trades || [])
@@ -3180,6 +3207,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       timeStopCandles: optTimeStopCandles,
       minAtrPercent: optMinAtrPercent,
       s2RsiThreshold: optS2RsiThreshold,
+      minEntryPivotAtr: optMinEntryPivotAtr,
     };
     try {
       showToast('⏳ در حال ارزیابی مستقیم کانفیگ در بک‌اند سرور با دیتابیس PostgreSQL...');
@@ -3217,6 +3245,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             optMinAtrPercent,
             s2RsiThreshold: optS2RsiThreshold,
             optS2RsiThreshold,
+            minEntryPivotAtr: optMinEntryPivotAtr,
+            optMinEntryPivotAtr,
           },
           constraints: {
             targetMaxDrawdown,
@@ -3271,6 +3301,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     timeStopCandles: number;
     minAtrPercent: number;
     s2RsiThreshold: number;
+    minEntryPivotAtr: number;
   } | null => {
     const sampleParam = (r: ParameterRange, isLocked: boolean, lockedVal: number) => {
       const numLocked = Number(lockedVal);
@@ -3338,6 +3369,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         timeStopCandles: sampleParam(ranges.timeStopCandles, lockTimeStopCandles, optTimeStopCandles),
         minAtrPercent: sampleParam(ranges.minAtrPercent, lockMinAtrPercent, optMinAtrPercent),
         s2RsiThreshold: sampleParam(ranges.s2RsiThreshold, lockS2RsiThreshold, optS2RsiThreshold),
+        minEntryPivotAtr: sampleParam(ranges.minEntryPivotAtr, lockMinEntryPivotAtr, optMinEntryPivotAtr),
       };
 
       const hash = generateConfigHash(candidate);
@@ -3439,6 +3471,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           optMinAtrPercent,
           s2RsiThreshold: optS2RsiThreshold,
           optS2RsiThreshold,
+          minEntryPivotAtr: optMinEntryPivotAtr,
+          optMinEntryPivotAtr,
         },
         constraints: {
           targetMaxDrawdown,
@@ -3462,6 +3496,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           lockTimeStopCandles,
           lockMinAtrPercent,
           lockS2RsiThreshold,
+          lockMinEntryPivotAtr,
           optAtrPeriod: Number(optAtrPeriod),
           optMinCandles: Number(optMinCandles),
           optMinCandlesLong: Number(optMinCandlesLong),
@@ -3477,6 +3512,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           optTimeStopCandles: Number(optTimeStopCandles),
           optMinAtrPercent: Number(optMinAtrPercent),
           optS2RsiThreshold: Number(optS2RsiThreshold),
+          optMinEntryPivotAtr: Number(optMinEntryPivotAtr),
         },
         datasetId: activeSessionDatasetId || rangeStatus?.datasetId || `range_${(selectedExchange || 'xt').toLowerCase()}_${timeframe}_${timeRangeStartMs || 0}_${timeRangeEndMs || 0}`,
         autoAdaptiveEnabled,
@@ -3581,6 +3617,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     if (trial.s2RsiThreshold !== undefined && !isNaN(Number(trial.s2RsiThreshold))) {
       setOptS2RsiThreshold(Number(trial.s2RsiThreshold));
     }
+    if (trial.minEntryPivotAtr !== undefined && !isNaN(Number(trial.minEntryPivotAtr))) {
+      setOptMinEntryPivotAtr(Number(trial.minEntryPivotAtr));
+    }
     if (onUpdateZigZagSettings) {
       onUpdateZigZagSettings({
         atrPeriod: trial.atrPeriod,
@@ -3594,6 +3633,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         maxBreakoutAtrMultiplier: trial.maxBreakoutAtrMultiplier,
         ...(trial.maxCandlesToEnter !== undefined && trial.maxCandlesToEnter > 0 ? { maxCandlesToEnter: trial.maxCandlesToEnter } : {}),
         maxPositionToRiskRatio: trial.maxPositionToRiskRatio || 300,
+        ...(trial.minAtrPercent !== undefined ? { minAtrPercent: trial.minAtrPercent } : {}),
+        ...(trial.s2RsiThreshold !== undefined ? { s2RsiThreshold: trial.s2RsiThreshold } : {}),
+        ...(trial.minEntryPivotAtr !== undefined ? { minEntryPivotAtr: trial.minEntryPivotAtr } : {}),
       });
     }
     if (andNotify) {
@@ -3632,6 +3674,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         maxPositionToRiskRatio: trial.maxPositionToRiskRatio ?? optMaxPositionToRiskRatio,
         minAtrPercent: trial.minAtrPercent !== undefined ? trial.minAtrPercent : optMinAtrPercent,
         s2RsiThreshold: trial.s2RsiThreshold !== undefined ? trial.s2RsiThreshold : optS2RsiThreshold,
+        minEntryPivotAtr: trial.minEntryPivotAtr !== undefined ? trial.minEntryPivotAtr : optMinEntryPivotAtr,
       });
     }, 200);
   };
@@ -4029,6 +4072,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setOptMinAtrPercent={setOptMinAtrPercent}
             optS2RsiThreshold={optS2RsiThreshold}
             setOptS2RsiThreshold={setOptS2RsiThreshold}
+            optMinEntryPivotAtr={optMinEntryPivotAtr}
+            setOptMinEntryPivotAtr={setOptMinEntryPivotAtr}
             onUpdateZigZagSettings={onUpdateZigZagSettings}
             zigzagSettings={zigzagSettings}
             scanWorkersCount={scanWorkersCount}
@@ -4202,6 +4247,10 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             setOptS2RsiThreshold={setOptS2RsiThreshold}
             lockS2RsiThreshold={lockS2RsiThreshold}
             setLockS2RsiThreshold={setLockS2RsiThreshold}
+            optMinEntryPivotAtr={optMinEntryPivotAtr}
+            setOptMinEntryPivotAtr={setOptMinEntryPivotAtr}
+            lockMinEntryPivotAtr={lockMinEntryPivotAtr}
+            setLockMinEntryPivotAtr={setLockMinEntryPivotAtr}
             onEvaluateCurrentManualConfig={handleEvaluateCurrentManualConfig}
             onApplyTrialToManualScan={applyTrialToManualInputs}
             onRunTrialInManualScan={handleRunTrialInManualScan}
@@ -4300,6 +4349,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           optMaxBlueLegPercent={optMaxBlueLegPercent}
           optMinAtrPercent={optMinAtrPercent}
           optS2RsiThreshold={optS2RsiThreshold}
+          optMinEntryPivotAtr={optMinEntryPivotAtr}
         />
 
         <LoadConfigModal

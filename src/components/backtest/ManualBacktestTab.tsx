@@ -111,6 +111,8 @@ export interface ManualBacktestTabProps {
   setOptMinAtrPercent?: (val: number) => void;
   optS2RsiThreshold?: number;
   setOptS2RsiThreshold?: (val: number) => void;
+  optMinEntryPivotAtr?: number;
+  setOptMinEntryPivotAtr?: (val: number) => void;
   onUpdateZigZagSettings?: (settings: Partial<ZigZagSettings>) => void;
   zigzagSettings?: ZigZagSettings;
   scanWorkersCount: number;
@@ -247,6 +249,8 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
   setOptMinAtrPercent,
   optS2RsiThreshold = 38,
   setOptS2RsiThreshold,
+  optMinEntryPivotAtr = 0,
+  setOptMinEntryPivotAtr,
   onUpdateZigZagSettings,
   zigzagSettings,
   scanWorkersCount,
@@ -318,7 +322,7 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                   >
                     <option value="strategy_1_e_breakout">استراتژی ۱: شکست نقطه E (تارگت A / استاپ F)</option>
                     <option value="strategy_2_next_pivot">استراتژی ۲: اولین تشکیل لگ بعد از F (تارگت R:R)</option>
-                    <option value="strategy_3_ab_midpoint">استراتژی ۳: دو لگ بلند متوالی + شکست A و لیمیت ۶۶٪ AB دوم (استاپ A دوم / تارگت R:R)</option>
+                    <option value="strategy_3_ab_midpoint">استراتژی ۳: الگوی ۶ پیوت متوالی (ورود با تشکیل پیوت اول / استاپ پیوت اول / تارگت R:R)</option>
                   </select>
                 </div>
 
@@ -718,7 +722,7 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                     </button>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-9 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-12 gap-2">
                   <div>
                     <label className="text-[9px] text-gray-400 block mb-0.5">دوره ATR:</label>
                     <input
@@ -906,84 +910,110 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400"
                     />
                   </div>
-                </div>
-
-                {/* فیلترهای اختصاصی استراتژی ۲: حداقل نوسان ATR% و آستانه RSI(14) روی پیوت F */}
-                <div className={`mt-2.5 pt-2.5 border-t border-[#1e2738] flex flex-wrap items-center justify-between gap-2.5 rounded-lg p-2 ${
-                  selectedStrategyId === 'strategy_2_next_pivot'
-                    ? 'bg-emerald-950/20 border border-emerald-500/30'
-                    : 'bg-[#101520]/70 border border-[#1f293b] opacity-80'
-                }`}>
-                  <div className="flex items-center gap-2 text-[10px]">
-                    <Filter className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                    <span className="font-bold text-emerald-300">فیلترهای کیفیت سیگنال استراتژی ۲:</span>
-                    <span className="text-gray-400 hidden md:inline">(برای غیرفعال‌سازی هر فیلتر مقدار آن را ۰ بگذارید)</span>
+                  <div>
+                    <label
+                      className="text-[9px] text-gray-400 block mb-0.5 truncate"
+                      title="حداقل درصد ATR به قیمت ورود در کندل سیگنال برای همه استراتژی‌ها (۰ = خاموش)"
+                    >
+                      حداقل ATR (%):
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={5}
+                      step={0.05}
+                      value={optMinAtrPercent === 0 || optMinAtrPercent ? optMinAtrPercent : ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        const num = v === '' ? ('' as any) : parseFloat(v);
+                        setOptMinAtrPercent?.(num);
+                        if (typeof num === 'number' && !isNaN(num)) onUpdateZigZagSettings?.({ ...zigzagSettings, minAtrPercent: num });
+                      }}
+                      onBlur={() => {
+                        if (
+                          optMinAtrPercent === ('' as any) ||
+                          optMinAtrPercent === null ||
+                          optMinAtrPercent === undefined ||
+                          isNaN(Number(optMinAtrPercent))
+                        ) {
+                          setOptMinAtrPercent?.(0.25);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, minAtrPercent: 0.25 });
+                        }
+                      }}
+                      disabled={isScanning}
+                      className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400 disabled:opacity-50"
+                      title="حداقل نوسان ATR بر حسب درصد از قیمت در لحظه ورود (پیش‌فرض ۰.۲۵٪ — ۰ = خاموش)"
+                    />
                   </div>
-                  <div className="flex flex-wrap items-center gap-3">
-                    <div className="flex items-center gap-1.5">
-                      <label
-                        className="text-[10px] text-emerald-300 font-semibold whitespace-nowrap"
-                        title="حداقل درصد ATR به قیمت ورود در کندل سیگنال (پیش‌فرض ۰.۲۵٪ — عدد ۰ فیلتر را غیرفعال می‌کند)"
-                      >
-                        حداقل ATR (%):
-                      </label>
-                      <input
-                        type="number"
-                        min={0}
-                        max={5}
-                        step={0.05}
-                        value={optMinAtrPercent === 0 || optMinAtrPercent ? optMinAtrPercent : ''}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          setOptMinAtrPercent?.(v === '' ? ('' as any) : parseFloat(v));
-                        }}
-                        onBlur={() => {
-                          if (
-                            optMinAtrPercent === ('' as any) ||
-                            optMinAtrPercent === null ||
-                            optMinAtrPercent === undefined ||
-                            isNaN(Number(optMinAtrPercent))
-                          ) {
-                            setOptMinAtrPercent?.(0.25);
-                          }
-                        }}
-                        disabled={isScanning}
-                        className="w-20 px-1.5 py-1 bg-[#171d28] border border-emerald-500/40 rounded text-emerald-300 text-xs font-mono font-bold text-center focus:outline-none focus:border-emerald-400 disabled:opacity-50"
-                        title="حداقل نوسان ATR بر حسب درصد از قیمت در لحظه ورود (پیش‌فرض ۰.۲۵٪، ۰ = خاموش)"
-                      />
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <label
-                        className="text-[10px] text-sky-300 font-semibold whitespace-nowrap"
-                        title="آستانه RSI(14) روی پیوت F: در لانگ RSI <= آستانه و در شورت RSI >= (100 - آستانه) — عدد ۰ فیلتر را غیرفعال می‌کند"
-                      >
-                        RSI پیوت F:
-                      </label>
-                      <input
-                        type="number"
-                        min={0}
-                        max={49}
-                        step={1}
-                        value={optS2RsiThreshold === 0 || optS2RsiThreshold ? optS2RsiThreshold : ''}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          setOptS2RsiThreshold?.(v === '' ? ('' as any) : parseFloat(v));
-                        }}
-                        onBlur={() => {
-                          if (
-                            optS2RsiThreshold === ('' as any) ||
-                            optS2RsiThreshold === null ||
-                            optS2RsiThreshold === undefined ||
-                            isNaN(Number(optS2RsiThreshold))
-                          ) {
-                            setOptS2RsiThreshold?.(38);
-                          }
-                        }}
-                        disabled={isScanning}
-                        className="w-20 px-1.5 py-1 bg-[#171d28] border border-sky-500/40 rounded text-sky-300 text-xs font-mono font-bold text-center focus:outline-none focus:border-sky-400 disabled:opacity-50"
-                        title="RSI(14) روی کندل پیوت F: لانگ ≤ آستانه، شورت ≥ (100 - آستانه)؛ پیش‌فرض ۳۸ (شورت ≥ ۶۲) و ۰ = خاموش"
-                      />
-                    </div>
+                  <div>
+                    <label
+                      className="text-[9px] text-gray-400 block mb-0.5 truncate"
+                      title="آستانه RSI(14) روی کندل پیوت مرجع برای همه استراتژی‌ها: در لانگ RSI <= آستانه و در شورت RSI >= (100 - آستانه)؛ ۰ = خاموش"
+                    >
+                      آستانه RSI پیوت:
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={49}
+                      step={1}
+                      value={optS2RsiThreshold === 0 || optS2RsiThreshold ? optS2RsiThreshold : ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        const num = v === '' ? ('' as any) : parseFloat(v);
+                        setOptS2RsiThreshold?.(num);
+                        if (typeof num === 'number' && !isNaN(num)) onUpdateZigZagSettings?.({ ...zigzagSettings, s2RsiThreshold: num });
+                      }}
+                      onBlur={() => {
+                        if (
+                          optS2RsiThreshold === ('' as any) ||
+                          optS2RsiThreshold === null ||
+                          optS2RsiThreshold === undefined ||
+                          isNaN(Number(optS2RsiThreshold))
+                        ) {
+                          setOptS2RsiThreshold?.(38);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, s2RsiThreshold: 38 });
+                        }
+                      }}
+                      disabled={isScanning}
+                      className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400 disabled:opacity-50"
+                      title="RSI(14) روی کندل پیوت: لانگ ≤ آستانه، شورت ≥ (100 - آستانه)؛ پیش‌فرض ۳۸ و ۰ = خاموش"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      className="text-[9px] text-cyan-300 block mb-0.5 truncate"
+                      title="حداقل فاصله قیمت ورود تا پیوت قبلی بر حسب ضریب ATR در همه استراتژی‌ها (۰ = خاموش)"
+                    >
+                      فاصله پیوت ATR:
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={20}
+                      step={0.25}
+                      value={optMinEntryPivotAtr === 0 || optMinEntryPivotAtr ? optMinEntryPivotAtr : ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        const num = v === '' ? ('' as any) : parseFloat(v);
+                        setOptMinEntryPivotAtr?.(num);
+                        if (typeof num === 'number' && !isNaN(num)) onUpdateZigZagSettings?.({ ...zigzagSettings, minEntryPivotAtr: num });
+                      }}
+                      onBlur={() => {
+                        if (
+                          optMinEntryPivotAtr === ('' as any) ||
+                          optMinEntryPivotAtr === null ||
+                          optMinEntryPivotAtr === undefined ||
+                          isNaN(Number(optMinEntryPivotAtr))
+                        ) {
+                          setOptMinEntryPivotAtr?.(0);
+                          onUpdateZigZagSettings?.({ ...zigzagSettings, minEntryPivotAtr: 0 });
+                        }
+                      }}
+                      disabled={isScanning}
+                      className="w-full px-1.5 py-1 bg-[#171d28] border border-[#2a364a] rounded text-white text-xs font-mono text-center focus:outline-none focus:border-amber-400 disabled:opacity-50"
+                      title="حداقل فاصله بین قیمت ورود و پیوت قبلی بر حسب چند ATR (پیش‌فرض ۰ = خاموش)"
+                    />
                   </div>
                 </div>
               </div>

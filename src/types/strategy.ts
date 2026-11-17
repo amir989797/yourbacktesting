@@ -47,10 +47,12 @@ export interface StrategyParams {
   xtContractSize?: number;
   xtMinNotional?: number;
   slSlippagePercent?: number; // درصد اسلیپیج احتمالی استاپ مارکت در صرافی (پیش‌فرض ۰.۰۴٪ برای XT)
-  minAtrPercent?: number; // فیلتر حداقل نوسان ATR نسبت به قیمت ورود به درصد (پیش‌فرض ۰.۲۵٪، صفر=غیرفعال)
+  minAtrPercent?: number; // فیلتر حداقل نوسان ATR نسبت به قیمت ورود به درصد برای همه استراتژی‌ها (پیش‌فرض ۰.۲۵٪، صفر=غیرفعال)
   optMinAtrPercent?: number;
-  s2RsiThreshold?: number; // فیلتر آستانه RSI(14) روی پیوت F: لانگ <= آستانه، شورت >= 100 - آستانه (پیش‌فرض ۳۸، صفر=غیرفعال)
+  s2RsiThreshold?: number; // فیلتر آستانه RSI(14) روی پیوت مبنا برای همه استراتژی‌ها: لانگ <= آستانه، شورت >= 100 - آستانه (پیش‌فرض ۳۸، صفر=غیرفعال)
   optS2RsiThreshold?: number;
+  minEntryPivotAtr?: number; // حداقل فاصله ورود با پیوت قبلش بر حسب ATR برای همه استراتژی‌ها (صفر=غیرفعال)
+  optMinEntryPivotAtr?: number;
 }
 
 export type StrategyConfig = StrategyParams;
@@ -76,6 +78,7 @@ export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
   slSlippagePercent: 0.04,
   minAtrPercent: 0.25,
   s2RsiThreshold: 38,
+  minEntryPivotAtr: 0,
 };
 
 export type TradeStatus = 'PENDING' | 'ACTIVE' | 'WIN' | 'LOSS' | 'BREAKEVEN' | 'EXPIRED' | 'OPEN';

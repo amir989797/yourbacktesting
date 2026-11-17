@@ -8,7 +8,7 @@
 import { CandleData, ZigZagPoint, Leg } from '../types/crypto';
 import { StrategyConfig, DEFAULT_STRATEGY_CONFIG, Trade } from '../types/strategy';
 import { calculateATR, calculateAtrZigZag, analyzeZigZagLegs } from '../utils/indicators';
-import { runStrategy1Backtest, runStrategy2Backtest, runStrategy3Backtest, findGiantLegConfirmCandleIdx } from '../utils/strategyEngine';
+import { runStrategy1Backtest, runStrategy2Backtest, runStrategy3Backtest, findPivotConfirmCandleIdx } from '../utils/strategyEngine';
 import {
   calculateExactTradeSizing,
   calculateXtContractQuantity,
@@ -24,7 +24,7 @@ export {
   runStrategy1Backtest,
   runStrategy2Backtest,
   runStrategy3Backtest,
-  findGiantLegConfirmCandleIdx,
+  findPivotConfirmCandleIdx,
   calculateExactTradeSizing,
   calculateXtContractQuantity,
   calculateXtRiskBudgetedOrder,
@@ -61,6 +61,7 @@ export interface ServerStrategyConfig {
   timeStopCandles?: number;
   minAtrPercent?: number;
   s2RsiThreshold?: number;
+  minEntryPivotAtr?: number;
 }
 
 export interface CandidateSignal {
@@ -243,173 +244,27 @@ export function evaluateSymbolForLiveSignal(params: {
       config.s2RsiThreshold !== undefined && config.s2RsiThreshold !== null && !isNaN(Number(config.s2RsiThreshold))
         ? Number(config.s2RsiThreshold)
         : 38,
+    minEntryPivotAtr:
+      config.minEntryPivotAtr !== undefined && config.minEntryPivotAtr !== null && !isNaN(Number(config.minEntryPivotAtr))
+        ? Math.max(0, Number(config.minEntryPivotAtr))
+        : 0,
     symbol,
   };
 
-  // 3. Special Live Signal Mode for Strategy 3 (Two Consecutive Giant Legs + Midpoint LIMIT Order)
-  if (config.strategyId === 'strategy_3_ab_midpoint') {
-    const effAtrMult = config.atrMultiplier || 2.0;
-    let matchedLeg2: (typeof analyzedLegs)[number] | null = null;
-    let matchedDirection: 'BUY' | 'SELL' | null = null;
-
-    for (let li = analyzedLegs.length - 1; li >= 1; li--) {
-      const leg2 = analyzedLegs[li];
-      const leg1 = analyzedLegs[li - 1];
-
-      if (!leg1.isGiantLeg || !leg2.isGiantLeg) continue;
-
-      const isBearishSetup =
-        leg1.color === 'green' &&
-        leg1.isUp &&
-        leg2.color === 'red' &&
-        !leg2.isUp &&
-        leg2.endPrice < leg1.startPrice; // B red breaks A green
-
-      const isBullishSetup =
-        leg1.color === 'red' &&
-        !leg1.isUp &&
-        leg2.color === 'green' &&
-        leg2.isUp &&
-        leg2.endPrice > leg1.startPrice; // B green breaks A red
-
-      if (!isBearishSetup && !isBullishSetup) continue;
-
-      const candleIdxB2 = zzResult.points[leg2.endIndex]?.candleIndex ?? Math.max(0, candles.length - 1);
-      const confirmIdx = findGiantLegConfirmCandleIdx(candles, leg2, candleIdxB2, atrValues, effAtrMult);
-
-      if (confirmIdx === candles.length - 1) {
-        // Verify SL (A of leg2) was never breached since B2 up to confirmIdx
-        const stopLossA2 = leg2.startPrice;
-        let slBreached = false;
-        for (let s = candleIdxB2 + 1; s <= confirmIdx; s++) {
-          if (isBullishSetup ? candles[s].low <= stopLossA2 : candles[s].high >= stopLossA2) {
-            slBreached = true;
-            break;
-          }
-        }
-        if (slBreached) break;
-
-        matchedLeg2 = leg2;
-        matchedDirection = isBullishSetup ? 'BUY' : 'SELL';
-        break;
-      }
-
-      if (confirmIdx >= 0 && confirmIdx < candles.length - 1) {
-        break; // Most recent valid consecutive giant-leg pair was already confirmed on an older candle
-      }
-    }
-
-    if (!matchedLeg2 || !matchedDirection) return null;
-
-    const leg2A = matchedLeg2.startPrice;
-    const leg2B = matchedLeg2.endPrice;
-    const limitEntryPrice = leg2B + 0.66 * (leg2A - leg2B);
-    const stopLoss = leg2A;
-    const stopDistance = Math.abs(limitEntryPrice - stopLoss);
-    const curPrice = candles[candles.length - 1].close;
-    const targetRR = config.riskRewardRatio && config.riskRewardRatio > 0 ? config.riskRewardRatio : 2.0;
-
-    if (!(curPrice > 0) || !(limitEntryPrice > 0) || !(stopLoss > 0) || stopDistance <= 0.000001) {
-      return null;
-    }
-
-    const side: 'BUY' | 'SELL' = matchedDirection;
-    const posSide: 'LONG' | 'SHORT' = matchedDirection === 'BUY' ? 'LONG' : 'SHORT';
-
-    // Reject if price already broke stop A of second leg
-    if (posSide === 'LONG' ? curPrice <= stopLoss : curPrice >= stopLoss) {
-      return null;
-    }
-
-    const takeProfit = posSide === 'LONG'
-      ? limitEntryPrice + stopDistance * targetRR
-      : limitEntryPrice - stopDistance * targetRR;
-
-    // For a pending LIMIT pullback order, takeProfit must be valid relative to limitEntryPrice
-    if (posSide === 'LONG' ? takeProfit <= limitEntryPrice : takeProfit >= limitEntryPrice) {
-      return null;
-    }
-
-    const maxLev = getMaxLeverageForSymbol(symbol);
-    const riskBudgetUsdt = config.riskMode === 'fixed' && config.riskAmountFixed && config.riskAmountFixed > 0
-      ? config.riskAmountFixed
-      : availableBalance * ((config.riskPercent || 1) / 100);
-    const entryFeeRate = entryFeePct / 100;
-    const exitFeeRate = exitFeePct / 100;
-    const effectiveExchange = config.exchange ?? 'xt';
-    const slSlipRate = (config.slSlippagePercent ?? (effectiveExchange === 'xt' ? 0.04 : 0)) / 100;
-    const effectiveEntryRef = posSide === 'LONG' ? Math.min(limitEntryPrice, curPrice) : Math.max(limitEntryPrice, curPrice);
-
-    const sizing = calculateExactTradeSizing(
-      riskBudgetUsdt,
-      effectiveEntryRef,
-      stopLoss,
-      takeProfit,
-      entryFeeRate,
-      exitFeeRate,
-      symbol,
-      {
-        exchange: effectiveExchange,
-        contractSize: config.xtContractSize,
-        minNotional: config.xtMinNotional,
-        riskCushion: effectiveExchange === 'xt' ? 0.92 : 1.0,
-        slSlippageRate: slSlipRate,
-      }
-    );
-
-    const contractQty = sizing.contractQty ?? sizing.quantizedPositionSize;
-    const notionalUsdt = sizing.positionValue;
-    const requiredMargin = parseFloat((notionalUsdt / maxLev).toFixed(2));
-    const actualRiskUsdt = sizing.actualLossAtSL;
-
-    if (sizing.exceedsRiskBudget || sizing.quantizedPositionSize <= 0 || notionalUsdt <= 0) {
-      return null;
-    }
-
-    const totalRoundTripFeeAtSL = sizing.totalFeesAtSL || (sizing.entryFee + sizing.exitFeeAtSL);
-    const feeToRiskRatio = riskBudgetUsdt > 0 ? totalRoundTripFeeAtSL / riskBudgetUsdt : 0;
-    const maxPosRatio = config.maxPositionToRiskRatio !== undefined ? config.maxPositionToRiskRatio : 300;
-    const posToRiskRatio = riskBudgetUsdt > 0 ? parseFloat((notionalUsdt / riskBudgetUsdt).toFixed(2)) : 0;
-
-    if (maxPosRatio > 0 && posToRiskRatio > maxPosRatio) {
-      return null;
-    }
-
-    return {
-      symbol,
-      posSide,
-      side,
-      orderType: 'LIMIT',
-      limitEntryPrice,
-      curPrice: limitEntryPrice,
-      stopLoss,
-      takeProfit,
-      signalEntryPrice: limitEntryPrice,
-      signalTakeProfit: takeProfit,
-      signalStopDist: stopDistance,
-      entryCandleTime: candles[candles.length - 1]?.time,
-      feeToRiskRatio: parseFloat(feeToRiskRatio.toFixed(4)),
-      riskReward: targetRR,
-      contractQty,
-      stepSize: sizing.stepSize,
-      qtyPrecision: sizing.qtyPrecision,
-      maxLeverage: maxLev,
-      requiredMargin,
-      notionalUsdt: parseFloat(notionalUsdt.toFixed(2)),
-      riskUsdt: parseFloat(actualRiskUsdt.toFixed(2)),
-      positionToRiskRatio: posToRiskRatio,
-      targetRiskUsdt: parseFloat(riskBudgetUsdt.toFixed(2)),
-      strategyName:
-        matchedDirection === 'SELL'
-          ? 'استراتژی ۳ (سبز←قرمز + شکست A / لیمیت ۶۶٪ قرمز)'
-          : 'استراتژی ۳ (قرمز←سبز + شکست A / لیمیت ۶۶٪ سبز)',
-      discoveredAt: new Date().toISOString(),
-    };
-  }
-
-  // Run Strategy 1 or Strategy 2 Backtest Engine on closed candles
+  // Run Strategy 1, Strategy 2, or Strategy 3 Backtest Engine on closed candles
   let evalTrades: any[] = [];
-  if (config.strategyId === 'strategy_2_next_pivot') {
+  if (config.strategyId === 'strategy_3_ab_midpoint') {
+    const res = runStrategy3Backtest(
+      candles,
+      zzResult.points,
+      analyzedLegs,
+      stratConfig,
+      atrValues,
+      config.atrMultiplier || 2.0,
+      config.minCandles || 5
+    );
+    evalTrades = res.trades;
+  } else if (config.strategyId === 'strategy_2_next_pivot') {
     const res = runStrategy2Backtest(
       candles,
       zzResult.points,
@@ -421,7 +276,7 @@ export function evaluateSymbolForLiveSignal(params: {
     );
     evalTrades = res.trades;
   } else {
-    const res = runStrategy1Backtest(candles, zzResult.points, analyzedLegs, stratConfig);
+    const res = runStrategy1Backtest(candles, zzResult.points, analyzedLegs, stratConfig, atrValues);
     evalTrades = res.trades;
   }
 
@@ -562,7 +417,12 @@ export function evaluateSymbolForLiveSignal(params: {
     riskUsdt: parseFloat(actualRiskUsdt.toFixed(2)),
     positionToRiskRatio: posToRiskRatio,
     targetRiskUsdt: parseFloat(riskBudgetUsdt.toFixed(2)),
-    strategyName: config.strategyId === 'strategy_2_next_pivot' ? 'استراتژی ۲ (Next-Pivot)' : 'استراتژی ۱ (E-Breakout)',
+    strategyName:
+      config.strategyId === 'strategy_3_ab_midpoint'
+        ? 'استراتژی ۳ (۶ پیوت متوالی)'
+        : config.strategyId === 'strategy_2_next_pivot'
+        ? 'استراتژی ۲ (Next-Pivot)'
+        : 'استراتژی ۱ (E-Breakout)',
     discoveredAt: new Date().toISOString(),
   };
 }

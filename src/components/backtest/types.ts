@@ -51,8 +51,9 @@ export interface OptimizationTrial {
   maxRiskReward: number;
   timeStopCandles?: number;
   maxPositionToRiskRatio?: number; // حداکثر نسبت ارزش پوزیشن به ریسک (پیش‌فرض 300)
-  minAtrPercent?: number; // حداقل نوسان ATR% نسبت به قیمت ورود (پیش‌فرض ۰.۲۵٪، صفر=غیرفعال)
-  s2RsiThreshold?: number; // آستانه RSI پیوت F در استراتژی ۲ (پیش‌فرض ۳۸، صفر=غیرفعال)
+  minAtrPercent?: number; // حداقل نوسان ATR% نسبت به قیمت ورود برای همه استراتژی‌ها (پیش‌فرض ۰.۲۵٪، صفر=غیرفعال)
+  s2RsiThreshold?: number; // آستانه RSI پیوت مبنا برای همه استراتژی‌ها (پیش‌فرض ۳۸، صفر=غیرفعال)
+  minEntryPivotAtr?: number; // حداقل فاصله ورود با پیوت قبلش بر حسب ATR برای همه استراتژی‌ها (صفر=غیرفعال)
   // خروجی‌های شبیه‌سازی
   totalTrades: number;
   winTrades: number;
@@ -100,6 +101,7 @@ export interface AdaptiveRanges {
   maxPositionToRiskRatio: ParameterRange;
   minAtrPercent: ParameterRange;
   s2RsiThreshold: ParameterRange;
+  minEntryPivotAtr: ParameterRange;
 }
 
 export type SortDirection = 'asc' | 'desc';
@@ -175,6 +177,7 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
       maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
       minAtrPercent: makeRange(0.15, 0.55, 0.0, 1.5, 0.25, 0.05),
       s2RsiThreshold: makeRange(30, 44, 0, 49, 38, 2),
+      minEntryPivotAtr: makeRange(0.0, 3.0, 0.0, 8.0, 0.0, 0.25),
     };
   }
 
@@ -195,6 +198,7 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
       maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
       minAtrPercent: makeRange(0.2, 0.8, 0.0, 2.0, 0.3, 0.05),
       s2RsiThreshold: makeRange(30, 44, 0, 49, 38, 2),
+      minEntryPivotAtr: makeRange(0.0, 3.0, 0.0, 8.0, 0.0, 0.25),
     };
   }
 
@@ -215,6 +219,7 @@ export function getDefaultRangesForContext(timeframe: Timeframe, strategyId: str
     maxPositionToRiskRatio: makeRange(50, 600, 20, 1000, 300, 50),
     minAtrPercent: makeRange(0.15, 0.65, 0.0, 1.5, 0.25, 0.05),
     s2RsiThreshold: makeRange(30, 44, 0, 49, 38, 2),
+    minEntryPivotAtr: makeRange(0.0, 3.0, 0.0, 8.0, 0.0, 0.25),
   };
 }
 
@@ -280,6 +285,7 @@ export function refineAdaptiveRangesSmart(
     'maxPositionToRiskRatio',
     'minAtrPercent',
     's2RsiThreshold',
+    'minEntryPivotAtr',
   ];
 
   for (const key of keys) {
@@ -353,6 +359,7 @@ export function generateConfigHash(p: {
   maxPositionToRiskRatio?: number;
   minAtrPercent?: number;
   s2RsiThreshold?: number;
+  minEntryPivotAtr?: number;
 }): string {
-  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.minCandlesForBlueLeg ?? 3}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.blueLegAtrMultiplier ?? 3}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxCandlesToEnter ?? 100}_${p.maxRiskReward}_${p.timeStopCandles || 80}_${p.maxPositionToRiskRatio ?? 300}_${p.minAtrPercent ?? 0.25}_${p.s2RsiThreshold ?? 38}`;
+  return `${p.atrPeriod}_${p.minCandles}_${p.minCandlesForLongLeg}_${p.minCandlesForBlueLeg ?? 3}_${p.atrMultiplier}_${p.longLegAtrMultiplier}_${p.blueLegAtrMultiplier ?? 3}_${p.maxBlueLegPercent}_${p.maxBreakoutAtrMultiplier}_${p.maxCandlesToEnter ?? 100}_${p.maxRiskReward}_${p.timeStopCandles || 80}_${p.maxPositionToRiskRatio ?? 300}_${p.minAtrPercent ?? 0.25}_${p.s2RsiThreshold ?? 38}_${p.minEntryPivotAtr ?? 0}`;
 }

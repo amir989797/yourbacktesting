@@ -110,6 +110,7 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
     const finalMaxCandles = Math.max(1, parseInt(String(maxCandlesToEnter), 10) || 35);
 
     onSave({
+      ...settings,
       atrPeriod: finalAtrPeriod,
       minCandles: finalMinCandles,
       minCandlesForLongLeg: finalMinCandlesLong,

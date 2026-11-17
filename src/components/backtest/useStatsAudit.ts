@@ -2456,7 +2456,7 @@ export function useStatsAudit(props: UseStatsAuditProps) {
 گزارش جامع ۱۳ جدول ممیزی، صحه‌گذاری و اعتبارسنجی بک‌تست (13-Table Complete Audit & Validation)
 زمان صدور گزارش: ${new Date().toISOString()}
 تایم‌فریم انتخابی: ${timeframe}
-استراتژی انتخابی: ${selectedStrategyId === 'strategy_1_e_breakout' ? 'استراتژی ۱ (شکست سطح E با فیبوناچی)' : selectedStrategyId === 'strategy_3_ab_midpoint' ? 'استراتژی ۳ (دو لگ بلند متوالی + شکست A و لیمیت ۶۶٪ AB دوم)' : 'استراتژی ۲'}
+استراتژی انتخابی: ${selectedStrategyId === 'strategy_1_e_breakout' ? 'استراتژی ۱ (شکست سطح E با فیبوناچی)' : selectedStrategyId === 'strategy_3_ab_midpoint' ? 'استراتژی ۳ (الگوی ۶ پیوت متوالی)' : 'استراتژی ۲'}
 مرحله ارزیابی پورتفوی: [FINAL / POST-CONCURRENCY] (کلیه شاخص‌های نهایی بر مبنای معاملات فیلترشده سبد محاسبه شده‌اند)
 وضعیت کلی ممیزی سیستم: [${baselineReconstruction.consistencyAudit.overallStatus === 'PASS' ? '✅ PASS (تایید کامل)' : baselineReconstruction.consistencyAudit.overallStatus === 'WARN' ? '⚠️ WARN (هشدار متدولوژی/سایزینگ)' : '❌ FAIL (دارای خطای ریاضی)'}]
 =====================================================

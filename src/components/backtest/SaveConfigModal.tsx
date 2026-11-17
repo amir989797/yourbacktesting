@@ -25,6 +25,7 @@ export interface SaveConfigModalProps {
   optMaxBlueLegPercent: number;
   optMinAtrPercent?: number;
   optS2RsiThreshold?: number;
+  optMinEntryPivotAtr?: number;
 }
 
 export const SaveConfigModal: React.FC<SaveConfigModalProps> = ({
@@ -51,6 +52,7 @@ export const SaveConfigModal: React.FC<SaveConfigModalProps> = ({
   optMaxBlueLegPercent,
   optMinAtrPercent = 0.25,
   optS2RsiThreshold = 38,
+  optMinEntryPivotAtr = 0,
 }) => {
   if (!isOpen) return null;
 
@@ -110,7 +112,7 @@ export const SaveConfigModal: React.FC<SaveConfigModalProps> = ({
               <span>پارامترهای موجود در این کانفیگ:</span>
             </div>
             <div className="grid grid-cols-2 gap-2 text-[11px] text-gray-300 font-mono">
-              <div>استراتژی: <strong className="text-white font-sans">{selectedStrategyId === 'strategy_1_e_breakout' ? 'استراتژی ۱' : selectedStrategyId === 'strategy_3_ab_midpoint' ? 'استراتژی ۳ (لیمیت ۶۶٪ AB)' : 'استراتژی ۲'}</strong></div>
+              <div>استراتژی: <strong className="text-white font-sans">{selectedStrategyId === 'strategy_1_e_breakout' ? 'استراتژی ۱' : selectedStrategyId === 'strategy_3_ab_midpoint' ? 'استراتژی ۳ (۶ پیوت متوالی)' : 'استراتژی ۲'}</strong></div>
               <div>تایم‌فریم: <strong className="text-cyan-300">{timeframe}</strong></div>
               <div>سرمایه اولیه: <strong className="text-white">${capital.toLocaleString()}</strong></div>
               <div>درصد ریسک: <strong className="text-rose-400">{riskPercent}%</strong></div>
@@ -124,8 +126,9 @@ export const SaveConfigModal: React.FC<SaveConfigModalProps> = ({
               <div>کندل لگ CD,EF: <strong className="text-cyan-300">{optMinCandlesBlue}</strong></div>
               <div>ضریب لگ CD,EF: <strong className="text-blue-300">{optBlueLegAtrMult}×</strong></div>
               <div>سقف لگ آبی: <strong className="text-white">{optMaxBlueLegPercent}%</strong></div>
-              <div>حداقل ATR% (S2): <strong className="text-emerald-300">{optMinAtrPercent === 0 ? 'خاموش' : `${optMinAtrPercent}%`}</strong></div>
-              <div>RSI پیوت F (S2): <strong className="text-sky-300">{optS2RsiThreshold === 0 ? 'خاموش' : optS2RsiThreshold}</strong></div>
+              <div>حداقل ATR%: <strong className="text-emerald-300">{optMinAtrPercent === 0 ? 'خاموش' : `${optMinAtrPercent}%`}</strong></div>
+              <div>آستانه RSI پیوت: <strong className="text-sky-300">{optS2RsiThreshold === 0 ? 'خاموش' : optS2RsiThreshold}</strong></div>
+              <div>حداقل فاصله پیوت (ATR): <strong className="text-cyan-300">{optMinEntryPivotAtr === 0 ? 'خاموش' : `${optMinEntryPivotAtr}×`}</strong></div>
             </div>
             <div className="text-[10px] text-gray-400 border-t border-[#1e2838] pt-2 font-sans flex items-center gap-1">
               <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />

@@ -726,6 +726,16 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     } catch {}
     return 38;
   });
+  const [minEntryPivotAtr, setMinEntryPivotAtr] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('livetrade_min_entry_pivot_atr');
+      if (saved !== null) {
+        const parsed = parseFloat(saved);
+        if (!isNaN(parsed)) return parsed;
+      }
+    } catch {}
+    return 0;
+  });
 
   // 5. 5-Minute Auto-Scanner Loop State
   const [isAutoScanning, setIsAutoScanning] = useState<boolean>(false);
@@ -878,6 +888,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
             setS2RsiThreshold(Number(best.s2RsiThreshold));
             try { localStorage.setItem('livetrade_s2_rsi_threshold', String(best.s2RsiThreshold)); } catch {}
           }
+          if (best.minEntryPivotAtr !== undefined && !isNaN(Number(best.minEntryPivotAtr))) {
+            setMinEntryPivotAtr(Number(best.minEntryPivotAtr));
+            try { localStorage.setItem('livetrade_min_entry_pivot_atr', String(best.minEntryPivotAtr)); } catch {}
+          }
 
           addLog('success', `🎯 بهترین کانفیگ بهینه‌ساز با وین‌ریت ${best.winRate}% و سود ${best.netProfit}% بارگذاری شد.`);
           return;
@@ -900,6 +914,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       setMaxPositionToRiskRatio(300);
       setMinAtrPercent(0.25);
       setS2RsiThreshold(38);
+      setMinEntryPivotAtr(0);
       setRiskRewardRatio(3.0);
       addLog('info', '⚡ کانفیگ کالیبره‌شده اسکلپ ۵ دقیقه‌ای با موفقیت بارگذاری شد.');
     } catch {
@@ -951,6 +966,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         if (typeof cfg.s2RsiThreshold === 'number') {
           setS2RsiThreshold(cfg.s2RsiThreshold);
           try { localStorage.setItem('livetrade_s2_rsi_threshold', String(cfg.s2RsiThreshold)); } catch {}
+        }
+        if (typeof cfg.minEntryPivotAtr === 'number') {
+          setMinEntryPivotAtr(cfg.minEntryPivotAtr);
+          try { localStorage.setItem('livetrade_min_entry_pivot_atr', String(cfg.minEntryPivotAtr)); } catch {}
         }
       }
 
@@ -1024,12 +1043,16 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
       setS2RsiThreshold(Number(cfg.optS2RsiThreshold));
       try { localStorage.setItem('livetrade_s2_rsi_threshold', String(cfg.optS2RsiThreshold)); } catch {}
     }
+    if (cfg.optMinEntryPivotAtr !== undefined && !isNaN(Number(cfg.optMinEntryPivotAtr))) {
+      setMinEntryPivotAtr(Number(cfg.optMinEntryPivotAtr));
+      try { localStorage.setItem('livetrade_min_entry_pivot_atr', String(cfg.optMinEntryPivotAtr)); } catch {}
+    }
 
     setIsLoadConfigModalOpen(false);
     showToast(`✅ کانفیگ «${cfg.name}» با موفقیت در اتاق ترید اعمال شد!`);
     addLog(
       'success',
-      `⚡ کانفیگ «${cfg.name}» (استراتژی: ${cfg.selectedStrategyId === 'strategy_1_e_breakout' ? 'E-Breakout' : cfg.selectedStrategyId === 'strategy_3_ab_midpoint' ? 'AB-Midpoint Limit' : 'Next-Pivot'}، تایم‌فریم: ${cfg.timeframe || '5m'}، دوره ATR: ${cfg.optAtrPeriod}) بارگذاری شد.`
+      `⚡ کانفیگ «${cfg.name}» (استراتژی: ${cfg.selectedStrategyId === 'strategy_1_e_breakout' ? 'E-Breakout' : cfg.selectedStrategyId === 'strategy_3_ab_midpoint' ? '6-Pivot (۳)' : 'Next-Pivot'}، تایم‌فریم: ${cfg.timeframe || '5m'}، دوره ATR: ${cfg.optAtrPeriod}) بارگذاری شد.`
     );
   };
 
@@ -1087,6 +1110,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         optMaxPositionToRiskRatio: maxPositionToRiskRatio,
         optMinAtrPercent: minAtrPercent,
         optS2RsiThreshold: s2RsiThreshold,
+        optMinEntryPivotAtr: minEntryPivotAtr,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -1205,6 +1229,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
             if (typeof config.timeStopCandles === 'number') setTimeStopCandles(config.timeStopCandles);
             if (typeof config.minAtrPercent === 'number') setMinAtrPercent(config.minAtrPercent);
             if (typeof config.s2RsiThreshold === 'number') setS2RsiThreshold(config.s2RsiThreshold);
+            if (typeof config.minEntryPivotAtr === 'number') setMinEntryPivotAtr(config.minEntryPivotAtr);
           }
         }
 
@@ -1376,6 +1401,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         timeStopCandles,
         minAtrPercent,
         s2RsiThreshold,
+        minEntryPivotAtr,
       });
     }, 800);
     return () => clearTimeout(timer);
@@ -1409,6 +1435,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     timeStopCandles,
     minAtrPercent,
     s2RsiThreshold,
+    minEntryPivotAtr,
     syncConfigToServer,
   ]);
 
@@ -1528,6 +1555,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           timeStopCandles,
           minAtrPercent,
           s2RsiThreshold,
+          minEntryPivotAtr,
           userId: currentUser || 'amir',
         };
 
@@ -1845,17 +1873,14 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 <div className="text-[11px] text-gray-400 flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 font-mono">
                   <span>صرافی: <strong className="text-white uppercase">{serverActiveConfig.exchange || exchange}</strong></span>
                   <span>• تایم‌فریم‌ها: <strong className="text-cyan-300">{(serverActiveConfig.timeframes && serverActiveConfig.timeframes.length > 0 ? serverActiveConfig.timeframes : [serverActiveConfig.timeframe || tradeTimeframe]).join(', ')}</strong></span>
-                  <span>• استراتژی: <strong className="text-amber-300">{serverActiveConfig.strategyId === 'strategy_2_next_pivot' ? 'Next-Pivot (۲)' : serverActiveConfig.strategyId === 'strategy_3_ab_midpoint' ? 'AB-Midpoint Limit (۳)' : 'E-Breakout (۱)'}</strong></span>
+                  <span>• استراتژی: <strong className="text-amber-300">{serverActiveConfig.strategyId === 'strategy_2_next_pivot' ? 'Next-Pivot (۲)' : serverActiveConfig.strategyId === 'strategy_3_ab_midpoint' ? '6-Pivot (۳)' : 'E-Breakout (۱)'}</strong></span>
                   <span>• بودجه ریسک: <strong className="text-emerald-300">{serverActiveConfig.riskMode === 'fixed' ? `$${serverActiveConfig.riskAmountFixed || 50} ثابت (با احتساب اعشار و کارمزد صرافی)` : `${serverActiveConfig.riskPercent || 1}% بالانس`}</strong></span>
                   <span>• وضعیت همزمانی: <strong className="text-amber-300">{serverActiveConfig.noConcurrentPositions !== false ? 'تک‌پوزیشن کل (حداکثر ۱ معامله باز)' : 'هم‌زمان (حداکثر ۱ معامله در هر تایم‌فریم)'}</strong></span>
                   <span>• سقف ورود: <strong className="text-cyan-300">{serverActiveConfig.maxCandlesToEnter ?? 35}c</strong></span>
                   <span>• Time-Stop: <strong className="text-cyan-300">{serverActiveConfig.timeStopEnabled !== false ? `${serverActiveConfig.timeStopCandles ?? 80}c` : 'خاموش'}</strong></span>
-                  {serverActiveConfig.strategyId === 'strategy_2_next_pivot' && (
-                    <>
-                      <span>• حداقل ATR: <strong className="text-emerald-300">{(serverActiveConfig.minAtrPercent ?? 0.25) === 0 ? 'خاموش' : `${serverActiveConfig.minAtrPercent ?? 0.25}%`}</strong></span>
-                      <span>• RSI پیوت F: <strong className="text-sky-300">{(serverActiveConfig.s2RsiThreshold ?? 38) === 0 ? 'خاموش' : (serverActiveConfig.s2RsiThreshold ?? 38)}</strong></span>
-                    </>
-                  )}
+                  <span>• حداقل ATR: <strong className="text-emerald-300">{(serverActiveConfig.minAtrPercent ?? 0.25) === 0 ? 'خاموش' : `${serverActiveConfig.minAtrPercent ?? 0.25}%`}</strong></span>
+                  <span>• RSI پیوت: <strong className="text-sky-300">{(serverActiveConfig.s2RsiThreshold ?? 38) === 0 ? 'خاموش' : (serverActiveConfig.s2RsiThreshold ?? 38)}</strong></span>
+                  <span>• فاصله پیوت ATR: <strong className="text-cyan-300">{(serverActiveConfig.minEntryPivotAtr ?? 0) === 0 ? 'خاموش' : `${serverActiveConfig.minEntryPivotAtr}×`}</strong></span>
                   <span>• واچ‌لیست: <strong className="text-cyan-300">{serverActiveConfig.symbols?.length || selectedSymbols?.length || 0} جفت‌ارز</strong></span>
                 </div>
                 {activeDbTrades.length > 0 && (
@@ -2145,7 +2170,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 >
                   <option value="strategy_2_next_pivot">استراتژی ۲: ستاپ پیوت بعدی (Next-Pivot / تاییدیه پولبک) [پیش‌فرض]</option>
                   <option value="strategy_1_e_breakout">استراتژی ۱: شکست نقطه E (E-Breakout)</option>
-                  <option value="strategy_3_ab_midpoint">استراتژی ۳: دو لگ بلند متوالی + شکست A و لیمیت ۶۶٪ AB دوم (Limit + انقضای کندلی)</option>
+                  <option value="strategy_3_ab_midpoint">استراتژی ۳: الگوی ۶ پیوت متوالی (ورود با تشکیل پیوت اول / استاپ پیوت اول)</option>
                 </select>
               </div>
 
@@ -2500,7 +2525,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
               </div>
 
               <div className="bg-[#141924] p-2.5 rounded-xl border border-emerald-500/40">
-                <span className="text-[10px] text-emerald-300 block font-bold" title="حداقل درصد ATR به قیمت ورود در استراتژی ۲ (۰ = خاموش)">۱۳. حداقل ATR% (S2):</span>
+                <span className="text-[10px] text-emerald-300 block font-bold" title="حداقل درصد ATR به قیمت ورود در همه استراتژی‌ها (۰ = خاموش)">۱۳. حداقل ATR (%):</span>
                 <input
                   type="number"
                   min={0}
@@ -2531,12 +2556,12 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                     }
                   }}
                   className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-emerald-500/30 rounded text-emerald-300 font-mono text-center font-bold text-xs"
-                  title="حداقل نوسان ATR بر حسب درصد از قیمت در لحظه ورود برای استراتژی ۲ (پیش‌فرض ۰.۲۵٪ — ۰ = خاموش)"
+                  title="حداقل نوسان ATR بر حسب درصد از قیمت در لحظه ورود برای همه استراتژی‌ها (پیش‌فرض ۰.۲۵٪ — ۰ = خاموش)"
                 />
               </div>
 
               <div className="bg-[#141924] p-2.5 rounded-xl border border-sky-500/40">
-                <span className="text-[10px] text-sky-300 block font-bold" title="آستانه RSI(14) روی پیوت F در استراتژی ۲ (لانگ <= آستانه، شورت >= 100-آستانه — ۰ = خاموش)">۱۴. RSI پیوت F (S2):</span>
+                <span className="text-[10px] text-sky-300 block font-bold" title="آستانه RSI(14) روی پیوت در همه استراتژی‌ها (لانگ <= آستانه، شورت >= 100-آستانه — ۰ = خاموش)">۱۴. آستانه RSI پیوت:</span>
                 <input
                   type="number"
                   min={0}
@@ -2567,7 +2592,43 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                     }
                   }}
                   className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-sky-500/30 rounded text-sky-300 font-mono text-center font-bold text-xs"
-                  title="آستانه RSI(14) روی کندل پیوت F برای استراتژی ۲: لانگ ≤ آستانه و شورت ≥ (100 - آستانه)؛ پیش‌فرض ۳۸ (۰ = خاموش)"
+                  title="آستانه RSI(14) روی کندل پیوت برای همه استراتژی‌ها: لانگ ≤ آستانه و شورت ≥ (100 - آستانه)؛ پیش‌فرض ۳۸ (۰ = خاموش)"
+                />
+              </div>
+
+              <div className="bg-[#141924] p-2.5 rounded-xl border border-cyan-500/40">
+                <span className="text-[10px] text-cyan-300 block font-bold" title="حداقل فاصله قیمت ورود تا پیوت قبلی بر حسب ضریب ATR (۰ = خاموش)">۱۵. فاصله ورود تا پیوت (ATR):</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={20}
+                  step={0.25}
+                  value={minEntryPivotAtr === 0 || minEntryPivotAtr ? minEntryPivotAtr : ''}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    if (raw === '') {
+                      setMinEntryPivotAtr('' as any);
+                      return;
+                    }
+                    const parsed = parseFloat(raw);
+                    if (!isNaN(parsed) && parsed >= 0) {
+                      setMinEntryPivotAtr(parsed);
+                      try { localStorage.setItem('livetrade_min_entry_pivot_atr', String(parsed)); } catch {}
+                    }
+                  }}
+                  onBlur={() => {
+                    if (
+                      minEntryPivotAtr === ('' as any) ||
+                      minEntryPivotAtr === null ||
+                      minEntryPivotAtr === undefined ||
+                      isNaN(Number(minEntryPivotAtr))
+                    ) {
+                      setMinEntryPivotAtr(0);
+                      try { localStorage.setItem('livetrade_min_entry_pivot_atr', '0'); } catch {}
+                    }
+                  }}
+                  className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-cyan-500/30 rounded text-cyan-300 font-mono text-center font-bold text-xs"
+                  title="حداقل فاصله بین قیمت ورود و پیوت قبلی بر حسب چند ATR برای همه استراتژی‌ها (پیش‌فرض ۰ = خاموش)"
                 />
               </div>
             </div>
@@ -3786,10 +3847,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
 
               <div className="p-3 rounded-xl bg-[#131926] border border-[#232f44] text-[11px] font-mono space-y-1 text-gray-300">
                 <div className="text-amber-400 font-bold font-sans">پارامترهای در حال ذخیره:</div>
-                <div>استراتژی: {selectedStrategy === 'strategy_1_e_breakout' ? 'شکست E (E-Breakout)' : selectedStrategy === 'strategy_3_ab_midpoint' ? 'دو لگ متوالی + لیمیت ۶۶٪ AB (استراتژی ۳)' : 'پیوت بعدی (Next-Pivot)'}</div>
+                <div>استراتژی: {selectedStrategy === 'strategy_1_e_breakout' ? 'شکست E (E-Breakout)' : selectedStrategy === 'strategy_3_ab_midpoint' ? 'الگوی ۶ پیوت متوالی (استراتژی ۳)' : 'پیوت بعدی (Next-Pivot)'}</div>
                 <div>تایم‌فریم: {tradeTimeframe} | دوره ATR: {atrPeriod} | ضریب: {atrMultiplier}</div>
                 <div>حداقل کندل: {minCandles} | اهرم: بیشترین اهرم مجاز (Max) | R:R: {riskRewardRatio}</div>
-                <div>حداقل ATR% (S2): {minAtrPercent === 0 ? 'خاموش' : `${minAtrPercent}%`} | RSI پیوت F (S2): {s2RsiThreshold === 0 ? 'خاموش' : s2RsiThreshold}</div>
+                <div>حداقل ATR%: {minAtrPercent === 0 ? 'خاموش' : `${minAtrPercent}%`} | آستانه RSI پیوت: {s2RsiThreshold === 0 ? 'خاموش' : s2RsiThreshold} | فاصله پیوت ATR: {minEntryPivotAtr === 0 ? 'خاموش' : `${minEntryPivotAtr}×`}</div>
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-2">

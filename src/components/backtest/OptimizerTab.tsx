@@ -128,6 +128,10 @@ export interface OptimizerTabProps {
   setOptS2RsiThreshold?: (val: number) => void;
   lockS2RsiThreshold?: boolean;
   setLockS2RsiThreshold?: (val: boolean) => void;
+  optMinEntryPivotAtr?: number;
+  setOptMinEntryPivotAtr?: (val: number) => void;
+  lockMinEntryPivotAtr?: boolean;
+  setLockMinEntryPivotAtr?: (val: boolean) => void;
   onEvaluateCurrentManualConfig?: () => void;
   onApplyTrialToManualScan?: (trial: OptimizationTrial) => void;
   onRunTrialInManualScan?: (trial: OptimizationTrial) => void;
@@ -261,6 +265,10 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
   setOptS2RsiThreshold,
   lockS2RsiThreshold = false,
   setLockS2RsiThreshold,
+  optMinEntryPivotAtr = 0,
+  setOptMinEntryPivotAtr,
+  lockMinEntryPivotAtr = false,
+  setLockMinEntryPivotAtr,
   onEvaluateCurrentManualConfig,
   onApplyTrialToManualScan,
   onRunTrialInManualScan,
@@ -280,7 +288,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                       {selectedStrategyId === 'strategy_1_e_breakout'
                         ? 'استراتژی ۱: شکست نقطه E (تارگت A / استاپ F)'
                         : selectedStrategyId === 'strategy_3_ab_midpoint'
-                        ? 'استراتژی ۳: دو لگ بلند متوالی + شکست A و لیمیت ۶۶٪ AB دوم (استاپ A دوم / تارگت R:R)'
+                        ? 'استراتژی ۳: الگوی ۶ پیوت متوالی (ورود با تشکیل پیوت اول / استاپ پیوت اول / تارگت R:R)'
                         : 'استراتژی ۲: اولین تشکیل لگ بعد از F (تارگت R:R)'}
                     </span>
                   </div>
@@ -317,7 +325,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                 >
                   <option value="strategy_1_e_breakout">تغییر استراتژی به: شکست نقطه E</option>
                   <option value="strategy_2_next_pivot">تغییر استراتژی به: تشکیل لگ بعد از F</option>
-                  <option value="strategy_3_ab_midpoint">تغییر استراتژی به: دو لگ متوالی + لیمیت ۶۶٪ AB (استراتژی ۳)</option>
+                  <option value="strategy_3_ab_midpoint">تغییر استراتژی به: الگوی ۶ پیوت متوالی (استراتژی ۳)</option>
                 </select>
 
                 <button
@@ -941,7 +949,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   </div>
                 </div>
 
-                {/* ۱۱. حداقل نوسان ATR% (استراتژی ۲) */}
+                {/* ۱۱. حداقل نوسان ATR% */}
                 <div className="bg-[#0e121a] p-2.5 rounded-xl border border-emerald-500/40 space-y-1.5 shadow-sm">
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] font-bold text-emerald-300" title="حداقل درصد ATR نسبت به قیمت ورود (0 = خاموش)">۱۱. حداقل نوسان ATR (%)</span>
@@ -989,10 +997,10 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   </div>
                 </div>
 
-                {/* ۱۲. آستانه RSI(14) روی پیوت F (استراتژی ۲) */}
+                {/* ۱۲. آستانه RSI(14) روی پیوت */}
                 <div className="bg-[#0e121a] p-2.5 rounded-xl border border-sky-500/40 space-y-1.5 shadow-sm">
                   <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-bold text-sky-300" title="RSI(14) روی پیوت F — لانگ <= آستانه، شورت >= 100-آستانه (0 = خاموش)">۱۲. آستانه RSI پیوت F</span>
+                    <span className="text-[11px] font-bold text-sky-300" title="RSI(14) روی کندل پیوت — لانگ <= آستانه، شورت >= 100-آستانه (0 = خاموش)">۱۲. آستانه RSI پیوت</span>
                     <span className="text-[10px] font-mono text-sky-400 bg-sky-950/60 px-1.5 py-0.5 rounded">
                       همگرایی {adaptiveRanges.s2RsiThreshold?.convergence ?? 50}%
                     </span>
@@ -1034,6 +1042,54 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5 border-t border-[#1a2230]">
                     <span>بهترین مقدار: <strong className="text-amber-300 font-mono">{adaptiveRanges.s2RsiThreshold?.bestVal ?? 38}</strong></span>
                     <span className="text-sky-400 font-mono font-bold">گام: {adaptiveRanges.s2RsiThreshold?.step ?? 2}</span>
+                  </div>
+                </div>
+
+                {/* ۱۳. حداقل فاصله ورود تا پیوت قبلی (ATR) */}
+                <div className="bg-[#0e121a] p-2.5 rounded-xl border border-cyan-500/40 space-y-1.5 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-cyan-300" title="حداقل فاصله قیمت ورود تا پیوت قبلی بر حسب ضریب ATR (0 = خاموش)">۱۳. فاصله پیوت (ATR)</span>
+                    <span className="text-[10px] font-mono text-cyan-400 bg-cyan-950/60 px-1.5 py-0.5 rounded">
+                      همگرایی {adaptiveRanges.minEntryPivotAtr?.convergence ?? 50}%
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-1 text-[10px] text-gray-400">
+                    <div className="flex items-center gap-1">
+                      <span>حداقل:</span>
+                      <input
+                        type="number"
+                        step={adaptiveRanges.minEntryPivotAtr?.step ?? 0.25}
+                        min={0}
+                        max={20}
+                        value={adaptiveRanges.minEntryPivotAtr?.min ?? 0}
+                        disabled={isOptimizing || lockMinEntryPivotAtr}
+                        onChange={(e) => {
+                          const p = parseFloat(e.target.value);
+                          handleUpdateParamRange('minEntryPivotAtr', 'min', isNaN(p) ? 0 : p);
+                        }}
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span>حداکثر:</span>
+                      <input
+                        type="number"
+                        step={adaptiveRanges.minEntryPivotAtr?.step ?? 0.25}
+                        min={0}
+                        max={20}
+                        value={adaptiveRanges.minEntryPivotAtr?.max ?? 3}
+                        disabled={isOptimizing || lockMinEntryPivotAtr}
+                        onChange={(e) => {
+                          const p = parseFloat(e.target.value);
+                          handleUpdateParamRange('minEntryPivotAtr', 'max', isNaN(p) ? 0 : p);
+                        }}
+                        className="w-16 px-1 py-0.5 bg-[#141a24] border border-[#263346] rounded text-cyan-300 font-mono text-xs text-center focus:outline-none focus:border-cyan-400"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5 border-t border-[#1a2230]">
+                    <span>بهترین مقدار: <strong className="text-amber-300 font-mono">{adaptiveRanges.minEntryPivotAtr?.bestVal ?? 0}×</strong></span>
+                    <span className="text-cyan-400 font-mono font-bold">گام: {adaptiveRanges.minEntryPivotAtr?.step ?? 0.25}</span>
                   </div>
                 </div>
               </div>
@@ -1507,7 +1563,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   />
                 </div>
 
-                {/* ۱۱. قفل/تنظیم دستی حداقل نوسان ATR% (استراتژی ۲) */}
+                {/* ۱۱. قفل/تنظیم دستی حداقل نوسان ATR% */}
                 <div className={`p-2 rounded-xl border transition-all ${lockMinAtrPercent ? 'bg-emerald-950/30 border-emerald-400/80 shadow-sm shadow-emerald-500/10' : 'bg-[#171e2b] border-emerald-500/30'}`}>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[10px] font-semibold text-emerald-300" title="حداقل ATR% در کندل ورود (۰ = خاموش)">۱۱. حداقل ATR%</label>
@@ -1547,10 +1603,10 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   />
                 </div>
 
-                {/* ۱۲. قفل/تنظیم دستی آستانه RSI(14) پیوت F (استراتژی ۲) */}
+                {/* ۱۲. قفل/تنظیم دستی آستانه RSI(14) پیوت */}
                 <div className={`p-2 rounded-xl border transition-all ${lockS2RsiThreshold ? 'bg-sky-950/30 border-sky-400/80 shadow-sm shadow-sky-500/10' : 'bg-[#171e2b] border-sky-500/30'}`}>
                   <div className="flex items-center justify-between mb-1">
-                    <label className="text-[10px] font-semibold text-sky-300" title="RSI(14) روی پیوت F: لانگ <= آستانه و شورت >= 100-آستانه (۰ = خاموش)">۱۲. RSI پیوت F</label>
+                    <label className="text-[10px] font-semibold text-sky-300" title="RSI(14) روی پیوت: لانگ <= آستانه و شورت >= 100-آستانه (۰ = خاموش)">۱۲. RSI پیوت</label>
                     <label className="flex items-center gap-1 text-[10px] text-sky-400 cursor-pointer">
                       <input
                         type="checkbox"
@@ -1583,7 +1639,47 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                       }
                     }}
                     className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockS2RsiThreshold ? 'border-sky-400/80 text-sky-300 font-bold' : 'border-[#2e3a4e] text-sky-300'} disabled:bg-[#1b202c] disabled:text-gray-500`}
-                    title="آستانه RSI(14) پیوت F (پیش‌فرض ۳۸ یعنی لانگ ≤ ۳۸ و شورت ≥ ۶۲ — ۰ = خاموش)"
+                    title="آستانه RSI(14) پیوت (پیش‌فرض ۳۸ یعنی لانگ ≤ ۳۸ و شورت ≥ ۶۲ — ۰ = خاموش)"
+                  />
+                </div>
+
+                {/* ۱۳. قفل/تنظیم دستی حداقل فاصله ورود تا پیوت قبلی (ATR) */}
+                <div className={`p-2 rounded-xl border transition-all ${lockMinEntryPivotAtr ? 'bg-cyan-950/30 border-cyan-400/80 shadow-sm shadow-cyan-500/10' : 'bg-[#171e2b] border-cyan-500/30'}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] font-semibold text-cyan-300" title="حداقل فاصله قیمت ورود تا پیوت قبلی بر حسب ضریب ATR (۰ = خاموش)">۱۳. فاصله پیوت ATR</label>
+                    <label className="flex items-center gap-1 text-[10px] text-cyan-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={lockMinEntryPivotAtr}
+                        onChange={(e) => setLockMinEntryPivotAtr?.(e.target.checked)}
+                        className="rounded bg-[#0d1017] border-gray-600 text-cyan-500 focus:ring-0 cursor-pointer"
+                      />
+                      <span className={lockMinEntryPivotAtr ? 'font-bold text-cyan-300' : ''}>{lockMinEntryPivotAtr ? '🔒 قفل' : 'آزاد'}</span>
+                    </label>
+                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    max={20}
+                    step={0.25}
+                    value={optMinEntryPivotAtr === 0 || optMinEntryPivotAtr ? optMinEntryPivotAtr : ''}
+                    disabled={isOptimizing}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setOptMinEntryPivotAtr?.(v === '' ? ('' as any) : parseFloat(v));
+                    }}
+                    onBlur={() => {
+                      if (
+                        optMinEntryPivotAtr === ('' as any) ||
+                        optMinEntryPivotAtr === null ||
+                        optMinEntryPivotAtr === undefined ||
+                        isNaN(Number(optMinEntryPivotAtr))
+                      ) {
+                        setOptMinEntryPivotAtr?.(0);
+                      }
+                    }}
+                    className={`w-full px-2 py-1 bg-[#0f131c] border rounded-lg font-mono text-xs text-center transition-colors ${lockMinEntryPivotAtr ? 'border-cyan-400/80 text-cyan-300 font-bold' : 'border-[#2e3a4e] text-cyan-300'} disabled:bg-[#1b202c] disabled:text-gray-500`}
+                    title="حداقل فاصله قیمت ورود تا پیوت قبلی بر حسب چند ATR (پیش‌فرض ۰ = خاموش)"
                   />
                 </div>
               </div>
@@ -1787,7 +1883,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   </div>
 
                   <div className="text-[11px] text-gray-400 font-mono bg-[#0d1017] px-3 py-1.5 rounded-xl border border-[#232c3d]">
-                    ATR:{bestWinningRow.atrPeriod} | MinC:{bestWinningRow.minCandles} | MinLong:{bestWinningRow.minCandlesForLongLeg} | BlueC:{bestWinningRow.minCandlesForBlueLeg ?? 3} | Mult:{bestWinningRow.atrMultiplier}x | LongMult:{bestWinningRow.longLegAtrMultiplier}x | BlueMult:{bestWinningRow.blueLegAtrMultiplier ?? 3}x | Blue%:{bestWinningRow.maxBlueLegPercent}% | Break:{bestWinningRow.maxBreakoutAtrMultiplier}x | MaxWait:{bestWinningRow.maxCandlesToEnter ?? 100}c | R:R:{bestWinningRow.maxRiskReward} | Pos/Risk:{bestWinningRow.maxPositionToRiskRatio ?? 300}x | TimeStop:{bestWinningRow.timeStopCandles || 80}c | ATR%:{bestWinningRow.minAtrPercent ?? 0.25}% | RSI(F):{bestWinningRow.s2RsiThreshold ?? 38}
+                    ATR:{bestWinningRow.atrPeriod} | MinC:{bestWinningRow.minCandles} | MinLong:{bestWinningRow.minCandlesForLongLeg} | BlueC:{bestWinningRow.minCandlesForBlueLeg ?? 3} | Mult:{bestWinningRow.atrMultiplier}x | LongMult:{bestWinningRow.longLegAtrMultiplier}x | BlueMult:{bestWinningRow.blueLegAtrMultiplier ?? 3}x | Blue%:{bestWinningRow.maxBlueLegPercent}% | Break:{bestWinningRow.maxBreakoutAtrMultiplier}x | MaxWait:{bestWinningRow.maxCandlesToEnter ?? 100}c | R:R:{bestWinningRow.maxRiskReward} | Pos/Risk:{bestWinningRow.maxPositionToRiskRatio ?? 300}x | TimeStop:{bestWinningRow.timeStopCandles || 80}c | ATR%:{bestWinningRow.minAtrPercent ?? 0.25}% | RSI:{bestWinningRow.s2RsiThreshold ?? 38} | PivotATR:{bestWinningRow.minEntryPivotAtr ?? 0}x
                   </div>
                 </div>
 
@@ -1914,7 +2010,8 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                       maxCandlesToEnter: 'سقف کندل ورود',
                       timeStopCandles: 'Time-Stop',
                       minAtrPercent: 'حداقل ATR%',
-                      s2RsiThreshold: 'RSI پیوت F',
+                      s2RsiThreshold: 'RSI پیوت',
+                      minEntryPivotAtr: 'فاصله پیوت ATR',
                     };
                     const colLabel = colLabels[String(optSortColumn)] || String(optSortColumn);
                     const dirLabel = optSortDirection === 'desc' ? 'بیشترین' : 'کمترین';
@@ -1954,11 +2051,14 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                         R:R {renderOptSortArrow('maxRiskReward')}
                       </th>
                       <th className="py-2.5 px-2 text-center text-cyan-300">Time-Stop</th>
-                      <th className="py-2.5 px-2 text-center text-emerald-300 cursor-pointer" onClick={() => handleOptSort('minAtrPercent')} title="حداقل نوسان ATR% در کندل ورود (استراتژی ۲)">
+                      <th className="py-2.5 px-2 text-center text-emerald-300 cursor-pointer" onClick={() => handleOptSort('minAtrPercent')} title="حداقل نوسان ATR% در کندل ورود (۰ = خاموش)">
                         حداقل ATR% {renderOptSortArrow('minAtrPercent')}
                       </th>
-                      <th className="py-2.5 px-2 text-center text-sky-300 cursor-pointer" onClick={() => handleOptSort('s2RsiThreshold')} title="آستانه RSI(14) پیوت F (استراتژی ۲)">
-                        RSI پیوت F {renderOptSortArrow('s2RsiThreshold')}
+                      <th className="py-2.5 px-2 text-center text-sky-300 cursor-pointer" onClick={() => handleOptSort('s2RsiThreshold')} title="آستانه RSI(14) پیوت (۰ = خاموش)">
+                        RSI پیوت {renderOptSortArrow('s2RsiThreshold')}
+                      </th>
+                      <th className="py-2.5 px-2 text-center text-cyan-300 cursor-pointer" onClick={() => handleOptSort('minEntryPivotAtr')} title="حداقل فاصله قیمت ورود تا پیوت قبلی بر حسب ضریب ATR (۰ = خاموش)">
+                        فاصله پیوت ATR {renderOptSortArrow('minEntryPivotAtr')}
                       </th>
                       <th className="py-2.5 px-2.5 text-center cursor-pointer text-emerald-400 font-bold" onClick={() => handleOptSort('netProfit')}>
                         سود خالص (USDT) {renderOptSortArrow('netProfit')}
@@ -1985,7 +2085,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   <tbody className="divide-y divide-[#1e2736] font-mono text-[11px]">
                     {sortedTop10.length === 0 ? (
                       <tr>
-                        <td colSpan={23} className="py-8 text-center text-gray-500 font-sans">
+                        <td colSpan={24} className="py-8 text-center text-gray-500 font-sans">
                           هنوز آزمایشی ثبت نشده است. با زدن «شروع بهینه‌سازی رنج‌محور»، تست‌ها شروع شده و ۱۰ ترکیب برتر اینجا نمایش داده می‌شوند.
                         </td>
                       </tr>
@@ -2026,6 +2126,9 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                             </td>
                             <td className="py-2 px-2 text-center font-bold text-sky-300">
                               {row.s2RsiThreshold === 0 ? 'خاموش' : (row.s2RsiThreshold ?? 38)}
+                            </td>
+                            <td className="py-2 px-2 text-center font-bold text-cyan-300">
+                              {!row.minEntryPivotAtr || row.minEntryPivotAtr === 0 ? 'خاموش' : `${row.minEntryPivotAtr}×`}
                             </td>
                             <td className={`py-2 px-2.5 text-center font-extrabold ${row.netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                               {row.netProfit >= 0 ? '+' : ''}{row.netProfit.toLocaleString()}
