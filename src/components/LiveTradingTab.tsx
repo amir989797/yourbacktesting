@@ -621,9 +621,12 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     return order.timestamp || '---';
   };
 
-  // فرمت کوتاه ستون استراتژی صرفاً به صورت «استراتژی ۱» یا «استراتژی ۲»
+  // فرمت کوتاه ستون استراتژی
   const formatStrategyShort = (strategyName?: string, matchedName?: string): string => {
     const combined = `${strategyName || ''} ${matchedName || ''}`.toLowerCase();
+    if (combined.includes('3') || combined.includes('پیوت متوالی') || combined.includes('midpoint')) {
+      return 'استراتژی ۳';
+    }
     if (combined.includes('1') || combined.includes('breakout') || combined.includes('شکست')) {
       return 'استراتژی ۱';
     }
@@ -656,6 +659,11 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                                (typeof orderData.time === 'number' ? orderData.time : undefined) ||
                                (typeof orderData.timestamp === 'number' ? orderData.timestamp : undefined);
 
+      const resolvedPosSide = String(
+        orderData.positionSide || (String(orderData.side || '').toUpperCase() === 'SELL' ? 'SHORT' : 'LONG')
+      ).toUpperCase() as 'LONG' | 'SHORT';
+      const resolvedEntrySide = resolvedPosSide === 'SHORT' ? 'SELL' : 'BUY';
+
       onSelectLiveOrder({
         ...orderData,
         symbol: clean,
@@ -663,8 +671,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         price: orderData.price || orderData.entryPrice || 0,
         stopLossPrice: orderData.stopLossPrice || orderData.stopLoss || 0,
         takeProfitPrice: orderData.takeProfitPrice || orderData.takeProfit || 0,
-        side: orderData.side || orderData.positionSide || 'BUY',
-        positionSide: orderData.positionSide || orderData.side || 'LONG',
+        side: resolvedEntrySide,
+        positionSide: resolvedPosSide,
         tradeTimeMs: tradeTimestampMs,
         entryTime: tradeTimestampMs || orderData.entryTime || orderData.time || orderData.timestamp,
         time: tradeTimestampMs || orderData.time || orderData.timestamp,
@@ -792,13 +800,13 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
 
   const addLog = useCallback((type: 'info' | 'success' | 'warning' | 'trade', message: string, symbol?: string) => {
     const item: ScanLogItem = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: `local_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       time: new Date().toLocaleTimeString('fa-IR'),
       type,
       message,
       symbol,
     };
-    setScanLogs((prev) => [item, ...prev.slice(0, 49)]);
+    setScanLogs((prev) => [item, ...prev.slice(0, 149)]);
   }, []);
 
   // Save Trade History
@@ -1249,13 +1257,12 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           }
         } catch {}
 
-        // Sync and append logs from server
-        if (Array.isArray(logs) && logs.length > 0) {
+        // Sync logs authoritatively from server (keeping any recent local-only UI logs without duplicating or reordering old server items)
+        if (Array.isArray(logs)) {
           setScanLogs((prev) => {
-            const existingIds = new Set(prev.map((l) => l.id));
-            const newLogs = logs.filter((l: any) => !existingIds.has(l.id));
-            if (newLogs.length === 0) return prev;
-            return [...newLogs, ...prev].slice(0, 150);
+            const serverIds = new Set(logs.map((l: any) => l.id));
+            const localOnly = prev.filter((l) => String(l.id || '').startsWith('local_') && !serverIds.has(l.id)).slice(0, 20);
+            return [...localOnly, ...logs].slice(0, 150);
           });
         }
       }
@@ -1287,10 +1294,9 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           }
           if (Array.isArray(data.state.logs)) {
             setScanLogs((prev) => {
-              const existingIds = new Set(prev.map((l) => l.id));
-              const newLogs = data.state.logs.filter((l: any) => !existingIds.has(l.id));
-              if (newLogs.length === 0) return prev;
-              return [...newLogs, ...prev].slice(0, 150);
+              const serverIds = new Set(data.state.logs.map((l: any) => l.id));
+              const localOnly = prev.filter((l) => String(l.id || '').startsWith('local_') && !serverIds.has(l.id)).slice(0, 20);
+              return [...localOnly, ...data.state.logs].slice(0, 150);
             });
           }
         }
@@ -1370,6 +1376,14 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     if (!hasInitializedConfigFromServer.current) {
       return;
     }
+    // Skip sync while any numeric filter input is temporarily blank during typing
+    if (
+      String(minAtrPercent as any) === '' ||
+      String(s2RsiThreshold as any) === '' ||
+      String(minEntryPivotAtr as any) === ''
+    ) {
+      return;
+    }
     const timer = setTimeout(() => {
       syncConfigToServer({
         strategyId: selectedStrategy,
@@ -1399,9 +1413,9 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         maxPositionToRiskRatio,
         timeStopEnabled,
         timeStopCandles,
-        minAtrPercent,
-        s2RsiThreshold,
-        minEntryPivotAtr,
+        minAtrPercent: Number(minAtrPercent),
+        s2RsiThreshold: Number(s2RsiThreshold),
+        minEntryPivotAtr: Number(minEntryPivotAtr),
       });
     }, 800);
     return () => clearTimeout(timer);
@@ -1576,10 +1590,12 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           setServerStartedAt(started);
           setElapsedActiveSeconds(data.state?.elapsedSeconds || 0);
           setScanSecondsLeft(data.state?.secondsUntilNextRun || 300);
-          setIsScanningNow(true);
+          setIsScanningNow(Boolean(data.state?.isScanning ?? true));
+          if (Array.isArray(data.state?.logs)) {
+            setScanLogs(data.state.logs.slice(0, 150));
+          }
           broadcastScannerState(true);
           showToast('🚀 اتوپایلوت مداوم سرور فعال شد: اسکن و بررسی خودکار در پس‌زمینه سرور Node.js آغاز گردید.');
-          addLog('success', `🚀 اتوپایلوت سرور فعال شد: اسکن مداوم ${targetSymbols.length} ارز در سرور به راه افتاد (پایدار حتی با بستن مرورگر).`);
         } else {
           showToast('❌ خطا در فعال‌سازی اسکنر سرور.');
         }
@@ -1592,14 +1608,17 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         });
 
         if (res.ok) {
+          const data = await res.json().catch(() => null);
           statusEpochRef.current += 1;
           setIsAutoScanning(false);
           setIsScanningNow(false);
           setServerStartedAt(null);
           setElapsedActiveSeconds(0);
+          if (Array.isArray(data?.state?.logs)) {
+            setScanLogs(data.state.logs.slice(0, 150));
+          }
           broadcastScannerState(false);
           showToast('⏸️ اسکنر پس‌زمینه سرور متوقف گردید.');
-          addLog('warning', '⏸️ اتوپایلوت سرور متوقف شد.');
         } else {
           showToast('❌ خطا در متوقف‌سازی اسکنر سرور.');
         }
@@ -1649,7 +1668,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           id: `close-${Date.now()}`,
           exchange: pos.exchange,
           symbol: pos.symbol,
-          side: pos.side === 'LONG' ? 'SELL' : 'BUY',
+          side: pos.side === 'LONG' ? 'BUY' : 'SELL',
           positionSide: pos.side,
           orderType: 'MARKET',
           price: pos.markPrice,
@@ -3682,15 +3701,22 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                           </span>
                         </td>
                         <td className="py-2.5 px-3 text-center">
-                          <span
-                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                              order.positionSide === 'LONG' || order.side === 'BUY'
-                                ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-500/40'
-                                : 'bg-rose-950/80 text-rose-400 border border-rose-500/40'
-                            }`}
-                          >
-                            {order.positionSide || order.side}
-                          </span>
+                          {(() => {
+                            const isLong = order.positionSide
+                              ? String(order.positionSide).toUpperCase() === 'LONG'
+                              : String(order.side || '').toUpperCase() === 'BUY';
+                            return (
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                  isLong
+                                    ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-500/40'
+                                    : 'bg-rose-950/80 text-rose-400 border border-rose-500/40'
+                                }`}
+                              >
+                                {order.positionSide || order.side}
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td className="py-2.5 px-3 text-center">
                           <span className="px-2 py-0.5 rounded-md text-[10px] font-bold font-sans bg-cyan-950/70 text-cyan-300 border border-cyan-500/30">
@@ -3709,7 +3735,9 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                             const tpDist = (entryP > 0 && tpP > 0) ? Math.abs(tpP - entryP) : 0;
                             const calculatedRR = slDist > 0 ? parseFloat((tpDist / slDist).toFixed(2)) : (order.riskReward || (matchedDb?.risk_reward ? Number(matchedDb.risk_reward) : null));
                             const exitP = Number(order.exitPrice) || 0;
-                            const isLong = order.positionSide === 'LONG' || order.side === 'BUY';
+                            const isLong = order.positionSide
+                              ? String(order.positionSide).toUpperCase() === 'LONG'
+                              : String(order.side || '').toUpperCase() === 'BUY';
                             let realizedR: number | null = null;
                             if (slDist > 0 && exitP > 0) {
                               realizedR = parseFloat(((exitP - entryP) * (isLong ? 1 : -1) / slDist).toFixed(2));

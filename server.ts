@@ -30,6 +30,7 @@ import {
   getAllLiveTradesFromDb,
 } from './src/db/index';
 import { isXtExcludedSymbol } from './src/types/crypto.ts';
+import { quantizeXtPrice } from './src/utils/exchangePrecision';
 
 dotenv.config();
 
@@ -320,8 +321,22 @@ async function fetchServerPairs(
   return sortedPairs;
 }
 
-// Fast In-Memory Server Kline Cache (15-minute TTL)
+// Fast In-Memory Server Kline Cache (bounded max 400 entries, TTL-pruned)
 const SERVER_KLINE_CACHE = new Map<string, { candles: CandleData[]; timestamp: number }>();
+function setBoundedKlineCache(key: string, candles: CandleData[]) {
+  const now = Date.now();
+  if (SERVER_KLINE_CACHE.size >= 400) {
+    for (const [k, v] of SERVER_KLINE_CACHE.entries()) {
+      if (now - v.timestamp > 30 * 60 * 1000) SERVER_KLINE_CACHE.delete(k);
+    }
+    while (SERVER_KLINE_CACHE.size >= 400) {
+      const oldestKey = SERVER_KLINE_CACHE.keys().next().value;
+      if (!oldestKey) break;
+      SERVER_KLINE_CACHE.delete(oldestKey);
+    }
+  }
+  SERVER_KLINE_CACHE.set(key, { candles, timestamp: now });
+}
 
 function timeframeToMs(tf: string): number {
   const num = parseInt(tf, 10) || 1;
@@ -495,7 +510,7 @@ async function fetchServerKlines(
           if (!startTime || startTime <= 0) {
             sorted = sorted.slice(-targetLimit);
           }
-          SERVER_KLINE_CACHE.set(cacheKey, { candles: sorted, timestamp: Date.now() });
+          setBoundedKlineCache(cacheKey, sorted);
           return sorted;
         }
       } catch {}
@@ -506,7 +521,7 @@ async function fetchServerKlines(
   try {
     const xtCandles = await fetchXtServerKlines(symbol, timeframe, Math.min(targetLimit, 1000));
     if (xtCandles && xtCandles.length >= 50) {
-      SERVER_KLINE_CACHE.set(cacheKey, { candles: xtCandles, timestamp: Date.now() });
+      setBoundedKlineCache(cacheKey, xtCandles);
       return xtCandles;
     }
   } catch {}
@@ -753,7 +768,7 @@ async function getXtSymbolsOpenApiMap(): Promise<Map<string, XtSymbolMeta>> {
   }
   try {
     const url = `https://${XT_FAPI_HOST}/future/market/v1/public/symbol/list`;
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) return xtSymbolsMetaCache;
     const data = await res.json();
     const symbols = data?.result?.symbols || data?.result || [];
@@ -946,13 +961,15 @@ app.get('/api/xt/positions', async (req, res) => {
           (h.triggerProfitPrice || h.triggerStopPrice)
       );
 
-      // 3. Match server scanner execution records
+      // 3. Match server scanner execution records (exclude FAILED entries)
       let matchExec: any = null;
       try {
         const stateObj = (global as any).serverScannerState || serverScannerState;
         if (stateObj && Array.isArray(stateObj.executionLogs)) {
           matchExec = stateObj.executionLogs.find(
-            (ex: any) => (ex.symbol === item.symbol || toXtSymbol(ex.symbol) === item.symbol) &&
+            (ex: any) =>
+              ex.status !== 'FAILED' &&
+              (ex.symbol === item.symbol || toXtSymbol(ex.symbol) === item.symbol) &&
               ex.posSide === item.positionSide
           );
         }
@@ -1011,16 +1028,24 @@ app.get('/api/xt/positions', async (req, res) => {
       const notionalUsdt = parseFloat((coinQty * markPrice).toFixed(2));
 
       const cleanSym = (item.symbol || '').toLowerCase().replace(/[-_]/g, '');
-      const matchDbTrade = Array.isArray(activeDbTrades) ? activeDbTrades.find(
-        (d: any) => (d.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym
-      ) : null;
-      const posTimeframe = matchExec?.timeframe || matchDbTrade?.timeframe || '5m';
+      const matchDbTrade = Array.isArray(activeDbTrades)
+        ? (activeDbTrades.find(
+            (d: any) =>
+              (d.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym &&
+              (!d.pos_side || String(d.pos_side).toUpperCase() === item.positionSide)
+          ) ||
+          activeDbTrades.find(
+            (d: any) => (d.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym
+          ))
+        : null;
+      const posTimeframe = matchDbTrade?.timeframe || matchExec?.timeframe || '5m';
 
       // Time-Stop remaining candles calculation
+      const execTsRaw = matchExec?.timestamp || matchExec?.time;
       const openTimeMs = matchDbTrade?.created_at
         ? new Date(matchDbTrade.created_at).getTime()
-        : (matchExec?.timestamp
-            ? new Date(matchExec.timestamp).getTime()
+        : (execTsRaw
+            ? new Date(execTsRaw).getTime()
             : Number(item.openTime || item.ctime || item.mtime || Date.now()));
       const tfMs = getTimeframeMs(posTimeframe);
       const candlesElapsed = Math.max(0, Math.floor((Date.now() - openTimeMs) / tfMs));
@@ -1133,6 +1158,14 @@ async function closePositionOnExchange(
     };
     orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', closePayload, apiKey, secretKey);
     if (orderRes?.returnCode === 0) {
+      try {
+        const cleanXt = xtSymbol.toLowerCase().replace(/[-_]/g, '');
+        const activeDb = await getActiveLiveTradesFromDb();
+        const matchingIds = activeDb
+          .filter((d: any) => (d.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanXt && (!d.pos_side || String(d.pos_side).toUpperCase() === positionSide))
+          .map((d: any) => d.id);
+        if (matchingIds.length > 0) await markLiveTradesClosedInDb(matchingIds);
+      } catch {}
       addServerScannerLog('info', `✅ پوزیشن ${xtSymbol.toUpperCase()} با موفقیت با قیمت مارکت در صرافی بسته شد (حجم: ${qtyToClose} قرارداد).`, xtSymbol);
       return { success: true, result: orderRes.result, message: 'پوزیشن با موفقیت بسته شد' };
     }
@@ -1141,6 +1174,14 @@ async function closePositionOnExchange(
   // 4. Native Close: XT official close-all endpoint
   const closeAllRes = await requestXtApi('POST', '/future/user/v1/position/close-all', 'application/x-www-form-urlencoded', { symbol: xtSymbol }, apiKey, secretKey);
   if (closeAllRes?.returnCode === 0) {
+    try {
+      const cleanXt = xtSymbol.toLowerCase().replace(/[-_]/g, '');
+      const activeDb = await getActiveLiveTradesFromDb();
+      const matchingIds = activeDb
+        .filter((d: any) => (d.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanXt && (!d.pos_side || String(d.pos_side).toUpperCase() === positionSide))
+        .map((d: any) => d.id);
+      if (matchingIds.length > 0) await markLiveTradesClosedInDb(matchingIds);
+    } catch {}
     addServerScannerLog('info', `✅ پوزیشن ${xtSymbol.toUpperCase()} از طریق اندپوینت رسمی close-all صرافی با موفقیت بسته شد.`, xtSymbol);
     return { success: true, result: closeAllRes.result, message: 'پوزیشن با موفقیت در صرافی بسته شد' };
   }
@@ -1192,6 +1233,11 @@ app.post('/api/xt/position/close-all', async (req, res) => {
     // 2. Trigger native XT Close All Positions
     const result = await requestXtApi('POST', '/future/user/v1/position/close-all', 'application/x-www-form-urlencoded', {}, apiKey, secretKey);
     if (result?.returnCode === 0) {
+      try {
+        const activeDb = await getActiveLiveTradesFromDb();
+        const activeIds = activeDb.map((d: any) => d.id);
+        if (activeIds.length > 0) await markLiveTradesClosedInDb(activeIds);
+      } catch {}
       addServerScannerLog('info', '✅ تمام پوزیشن‌های باز با قیمت مارکت در صرافی XT بسته شدند.');
       return res.json({ returnCode: 0, success: true, message: 'تمام پوزیشن‌ها با موفقیت در صرافی بسته شدند', result: result.result });
     }
@@ -1365,6 +1411,10 @@ async function fetchXtAuxOrderAndProfitHistory(
   ).catch(() => null);
 
   const profits: any[] = profRes?.result?.items || [];
+  if (xtAuxHistoryCache.size >= 50) {
+    const oldest = xtAuxHistoryCache.keys().next().value;
+    if (oldest) xtAuxHistoryCache.delete(oldest);
+  }
   xtAuxHistoryCache.set(cacheKey, { orders: allOrders, profits, timestamp: Date.now() });
   return { orders: allOrders, profits };
 }
@@ -1420,17 +1470,19 @@ async function getEnrichedXtPositionHistory(
     const entryTimeMs = Number(item.openTime || item.ctime || item.closeTime || Date.now());
     const exitTimeMs = Number(item.closeTime || item.mtime || item.ctime || Date.now());
 
-    // 1. Match closest execution log (within 30 min of entryTimeMs)
+    // 1. Match closest valid execution log (within 30 min of entryTimeMs)
     const candidateExecs = execLogs.filter(
       (ex: any) =>
+        ex.status !== 'FAILED' &&
         (ex.symbol === sym || toXtSymbol(ex.symbol) === sym || (ex.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym) &&
         (!ex.posSide || String(ex.posSide).toUpperCase() === posSide)
     );
     let matchExec: any = null;
     let bestExecDiff = 30 * 60 * 1000;
     for (const ex of candidateExecs) {
-      const exTs = ex.timestamp ? new Date(ex.timestamp).getTime() : 0;
-      const diff = exTs > 0 ? Math.abs(exTs - entryTimeMs) : Infinity;
+      const exTsRaw = ex.timestamp || ex.time;
+      const exTs = exTsRaw ? new Date(exTsRaw).getTime() : 0;
+      const diff = Number.isFinite(exTs) && exTs > 0 ? Math.abs(exTs - entryTimeMs) : Infinity;
       if (diff < bestExecDiff) {
         bestExecDiff = diff;
         matchExec = ex;
@@ -1581,9 +1633,9 @@ async function getEnrichedXtPositionHistory(
       exchange: 'xt',
       symbol: sym,
       timeframe: historyTimeframe,
-      side: exitSide,
+      side: entryOrderSide,
       positionSide: posSide,
-      orderType: 'MARKET',
+      orderType: String(matchOrder?.orderType || matchExec?.orderType || 'MARKET').toUpperCase(),
       price: entryPrice,
       exitPrice,
       amount,
@@ -1611,6 +1663,10 @@ async function getEnrichedXtPositionHistory(
     };
   });
 
+  if (xtHistoryResponseCache.size >= 50) {
+    const oldest = xtHistoryResponseCache.keys().next().value;
+    if (oldest) xtHistoryResponseCache.delete(oldest);
+  }
   xtHistoryResponseCache.set(cacheKey, { data: formatted, timestamp: Date.now() });
   return formatted;
 }
@@ -2109,10 +2165,7 @@ app.post('/api/xt/order/create', async (req, res) => {
       clientOrderId,
     } = req.body;
 
-    let xtSymbol = (symbol || 'btc_usdt').toLowerCase();
-    if (!xtSymbol.includes('_') && xtSymbol.endsWith('usdt')) {
-      xtSymbol = xtSymbol.slice(0, -4) + '_usdt';
-    }
+    const xtSymbol = toXtSymbol(symbol || 'btc_usdt');
 
     const orderPayload: any = {
       orderSide,
@@ -2122,15 +2175,17 @@ app.post('/api/xt/order/create', async (req, res) => {
       symbol: xtSymbol,
     };
 
+    if (xtSymbolsMetaCache.size === 0) {
+      await getXtSymbolsOpenApiMap().catch(() => null);
+    }
     const symMeta = getXtSymbolMeta(xtSymbol);
-    const pDec = symMeta.pricePrecision ?? 3;
 
-    if (price && Number(price) > 0) orderPayload.price = parseFloat(Number(price).toFixed(pDec));
+    if (price && Number(price) > 0) orderPayload.price = quantizeXtPrice(Number(price), symMeta);
     if (triggerProfitPrice && Number(triggerProfitPrice) > 0) {
-      orderPayload.triggerProfitPrice = parseFloat(Number(triggerProfitPrice).toFixed(pDec));
+      orderPayload.triggerProfitPrice = quantizeXtPrice(Number(triggerProfitPrice), symMeta);
     }
     if (triggerStopPrice && Number(triggerStopPrice) > 0) {
-      orderPayload.triggerStopPrice = parseFloat(Number(triggerStopPrice).toFixed(pDec));
+      orderPayload.triggerStopPrice = quantizeXtPrice(Number(triggerStopPrice), symMeta);
     }
     if (clientOrderId) orderPayload.clientOrderId = clientOrderId;
 
@@ -6720,6 +6775,10 @@ interface PersistentLiveScannerData {
 
 let serverScannerTimer: NodeJS.Timeout | null = null;
 const lastScannedCandleCloseByTf = new Map<string, number>();
+let scanRunSeq = 0;
+let activeScanRunId = 0;
+let activeScanPromise: Promise<void> | null = null;
+let scanEpoch = 0;
 
 function clearServerScannerTimer() {
   if (serverScannerTimer) {
@@ -6738,22 +6797,22 @@ function getNextAlignedBoundaryMs(intervalMs: number): number {
 
 function scheduleNextAlignedScannerRun(overrideIntervalMs?: number) {
   clearServerScannerTimer();
-  if (!serverScannerState.isRunning) return;
+  if (!serverScannerState.isRunning || manualStopRequested) return;
   const interval = overrideIntervalMs || serverScannerState.config.intervalMs || getShortestIntervalMs(serverScannerState.config.timeframes, serverScannerState.config.timeframe || '5m');
   serverScannerState.config.intervalMs = interval;
   const nextRunMs = getNextAlignedBoundaryMs(interval);
   const delayMs = Math.max(2500, nextRunMs - Date.now());
   serverScannerState.nextRunAt = new Date(nextRunMs).toISOString();
+  const scheduledEpoch = scanEpoch;
 
   serverScannerTimer = setTimeout(async () => {
-    if (!serverScannerState.isRunning) return;
+    if (!serverScannerState.isRunning || manualStopRequested || scheduledEpoch !== scanEpoch) return;
     try {
       await runServerScannerCycle(false);
     } catch (err: any) {
       addServerScannerLog('error', `خطا در اجرای اسکن دوره‌ای سرور: ${err.message}`);
-      serverScannerState.isScanning = false;
     } finally {
-      if (serverScannerState.isRunning) {
+      if (serverScannerState.isRunning && !manualStopRequested && scheduledEpoch === scanEpoch) {
         scheduleNextAlignedScannerRun();
       }
     }
@@ -6950,7 +7009,7 @@ function saveLiveConfigToDisk() {
       lastRunAt: serverScannerState.lastRunAt,
       totalRunsCount: serverScannerState.totalRunsCount,
       logs: serverScannerState.logs.slice(0, 100),
-      executionLogs: serverScannerState.executionLogs.slice(0, 50),
+      executionLogs: serverScannerState.executionLogs.slice(0, 100),
       updatedAt: new Date().toISOString(),
     };
     fs.writeFileSync(CONFIG_FILE_PATH, JSON.stringify(data, null, 2), 'utf-8');
@@ -7027,7 +7086,7 @@ function getScannerPublicState() {
     lastResult: serverScannerState.lastResult,
     activeSignals: serverScannerState.activeSignals,
     logs: serverScannerState.logs.slice(0, 100),
-    executionLogs: serverScannerState.executionLogs.slice(0, 50),
+    executionLogs: serverScannerState.executionLogs.slice(0, 100),
   };
 }
 
@@ -7050,13 +7109,20 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
     } catch {}
   }
   if (serverScannerState.isScanning) {
-    addServerScannerLog('warning', '⚠️ اسکن قبلی هنوز در حال اجراست؛ از تداخل جلوگیری شد.');
+    if (!forceAllTimeframes) {
+      addServerScannerLog('warning', '⚠️ اسکن قبلی هنوز در حال اجراست؛ از تداخل جلوگیری شد.');
+    }
     return;
   }
 
+  const myRunId = ++scanRunSeq;
+  const myEpoch = scanEpoch;
+  activeScanRunId = myRunId;
   serverScannerState.isScanning = true;
   const startTime = Date.now();
   const cfg = serverScannerState.config;
+
+  const cyclePromise = (async () => {
   const targetSymbols = cfg.symbols && cfg.symbols.length > 0
     ? cfg.symbols
     : ['btc_usdt', 'eth_usdt', 'sol_usdt', 'xrp_usdt', 'doge_usdt'];
@@ -7084,14 +7150,22 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
     let availableBalance = cfg.capital || 1000;
     let openXtPositions: any[] = [];
     let openXtOrders: any[] = [];
+    let xtPositionsFetchOk = cfg.exchange !== 'xt';
+    let xtOrdersFetchOk = cfg.exchange !== 'xt';
 
     if (cfg.exchange === 'xt') {
       try {
-        const balRes = await requestXtApi('GET', '/future/user/v1/balance/detail', 'application/x-www-form-urlencoded');
+        const balRes = await requestXtApi('GET', '/future/user/v1/balance/list', 'application/json');
         if (balRes && balRes.returnCode === 0 && Array.isArray(balRes.result)) {
           const usdtBal = balRes.result.find((b: any) => (b.coin || '').toLowerCase() === 'usdt');
           if (usdtBal) {
             const avail = parseFloat(usdtBal.availableBalance || '0');
+            if (avail > 0) availableBalance = avail;
+          }
+        } else {
+          const detailRes = await requestXtApi('GET', '/future/user/v1/balance/detail', 'application/x-www-form-urlencoded', { coin: 'usdt' });
+          if (detailRes && detailRes.returnCode === 0 && detailRes.result) {
+            const avail = parseFloat(detailRes.result.availableBalance || '0');
             if (avail > 0) availableBalance = avail;
           }
         }
@@ -7102,20 +7176,36 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
       try {
         const posRes = await requestXtApi('GET', '/future/user/v1/position/list', 'application/x-www-form-urlencoded');
         if (posRes && posRes.returnCode === 0 && Array.isArray(posRes.result)) {
-          openXtPositions = posRes.result.filter((p: any) => parseFloat(p.positionSize || p.amount || '0') > 0);
+          xtPositionsFetchOk = true;
+          openXtPositions = posRes.result.filter(
+            (p: any) => parsePositiveNum(p.positionSize, p.holdAmount, p.availableCloseSize, p.amount) > 0
+          );
         }
       } catch (e) {
-        // ignore
+        // leave xtPositionsFetchOk = false
       }
 
       try {
         const ordRes = await requestXtApi('GET', '/future/trade/v1/order/list', 'application/x-www-form-urlencoded', { state: 'UNFINISHED', page: 1, size: 100 });
-        const rawItems = ordRes?.result?.items || (Array.isArray(ordRes?.result) ? ordRes.result : []);
+        const rawItems = ordRes?.result?.items || (Array.isArray(ordRes?.result) ? ordRes.result : null);
         if (ordRes && ordRes.returnCode === 0 && Array.isArray(rawItems)) {
+          xtOrdersFetchOk = true;
           openXtOrders = rawItems;
         }
       } catch (e) {
-        // ignore
+        // leave xtOrdersFetchOk = false
+      }
+
+      if (cfg.isLiveExecution && !xtPositionsFetchOk) {
+        addServerScannerLog(
+          'warning',
+          '⚠️ عدم دریافت پاسخ معتبر لیست پوزیشن‌ها از صرافی XT؛ این دور برای حفظ هماهنگی دیتابیس و جلوگیری از تداخل سفارش رد شد.'
+        );
+        serverScannerState.lastRunAt = new Date().toISOString();
+        serverScannerState.lastDurationMs = Date.now() - startTime;
+        serverScannerState.isScanning = false;
+        saveLiveConfigToDisk();
+        return;
       }
     }
 
@@ -7139,6 +7229,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
     }
 
     // Reconcile: identify positions/limit-orders closed or expired on exchange and mark them CLOSED in DB
+    // Only mark CLOSED when BOTH position/list and order/list succeeded from exchange (never on transient API failure!)
     const closedTradeIds: string[] = [];
     const activeTfToTradeMap = new Map<string, any>(); // timeframe -> active db trade
     const activePositionSymbols = new Set<string>(openXtSymbolsSet);
@@ -7220,9 +7311,13 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
           activeTfToTradeMap.set(tradeTf, dbTrade);
           activePositionSymbols.add(cleanDbSym);
         }
-      } else {
+      } else if (xtPositionsFetchOk && xtOrdersFetchOk) {
         // Position was closed on exchange (hit Take Profit, Stop Loss, or canceled manually)!
         closedTradeIds.push(dbTrade.id);
+      } else {
+        // Exchange order status uncertain; keep timeframe reserved to avoid duplicate orders or losing DB timeframe
+        activeTfToTradeMap.set(tradeTf, dbTrade);
+        activePositionSymbols.add(cleanDbSym);
       }
     }
 
@@ -7247,7 +7342,9 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
       }
       if (!alreadyMapped) {
         const matchExec = serverScannerState.executionLogs?.find(
-          (ex: any) => (ex.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym
+          (ex: any) =>
+            ex.status !== 'FAILED' &&
+            (ex.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym
         );
         const resolvedTf = matchExec?.timeframe || cfg.timeframe || '5m';
         if (!activeTfToTradeMap.has(resolvedTf)) {
@@ -7386,6 +7483,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
         );
 
         const tfCandidateSignals: ServerActiveSignal[] = [];
+        const tfRejectCounts = { sl_breach: 0, chase_guard: 0, risk_budget: 0, pos_ratio: 0 };
         let scannedCount = 0;
         let analyzedCount = 0;
         let wasAbortedByStopOrTimeout = false;
@@ -7399,7 +7497,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
         const evalNowMs = Date.now();
 
         for (let bIdx = 0; bIdx < eligibleSymbols.length; bIdx += BATCH_SIZE) {
-          if (manualStopRequested || (!forceAllTimeframes && !serverScannerState.isRunning)) {
+          if (manualStopRequested || scanEpoch !== myEpoch || (!forceAllTimeframes && !serverScannerState.isRunning)) {
             wasAbortedByStopOrTimeout = true;
             addServerScannerLog('info', `🛑 تایم‌فریم ${currentTf}: اسکن پس از بررسی ${analyzedCount} از ${eligibleSymbols.length} نماد به دلیل توقف کاربر متوقف شد (${formatElapsedFa(Date.now() - tfStartTime)}).`, undefined, currentTf);
             break;
@@ -7459,21 +7557,24 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
                     timeStopEnabled: cfg.timeStopEnabled !== false,
                     timeStopCandles: cfg.timeStopCandles ?? 80,
                     minAtrPercent:
-                      cfg.minAtrPercent !== undefined && cfg.minAtrPercent !== null && !isNaN(Number(cfg.minAtrPercent))
+                      cfg.minAtrPercent !== undefined && cfg.minAtrPercent !== null && String(cfg.minAtrPercent) !== '' && !isNaN(Number(cfg.minAtrPercent))
                         ? Math.max(0, Number(cfg.minAtrPercent))
                         : 0.25,
                     s2RsiThreshold:
-                      cfg.s2RsiThreshold !== undefined && cfg.s2RsiThreshold !== null && !isNaN(Number(cfg.s2RsiThreshold))
+                      cfg.s2RsiThreshold !== undefined && cfg.s2RsiThreshold !== null && String(cfg.s2RsiThreshold) !== '' && !isNaN(Number(cfg.s2RsiThreshold))
                         ? Number(cfg.s2RsiThreshold)
                         : 38,
                     minEntryPivotAtr:
-                      cfg.minEntryPivotAtr !== undefined && cfg.minEntryPivotAtr !== null && !isNaN(Number(cfg.minEntryPivotAtr))
+                      cfg.minEntryPivotAtr !== undefined && cfg.minEntryPivotAtr !== null && String(cfg.minEntryPivotAtr) !== '' && !isNaN(Number(cfg.minEntryPivotAtr))
                         ? Math.max(0, Number(cfg.minEntryPivotAtr))
                         : 0,
                   },
                   availableBalance,
                   hasExistingPosition: false,
                   nowMs: evalNowMs,
+                  onReject: (reason) => {
+                    tfRejectCounts[reason] = (tfRejectCounts[reason] || 0) + 1;
+                  },
                 });
               } catch {
                 return null;
@@ -7501,10 +7602,16 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
           `${currentTf}: ${analyzedCount}/${eligibleSymbols.length} نماد (${tfDurationStr}، ${tfCandidateSignals.length} سیگنال${wasAbortedByStopOrTimeout ? ' [ناقص]' : ''})`
         );
 
+        const totalGuardRejects =
+          tfRejectCounts.risk_budget + tfRejectCounts.pos_ratio + tfRejectCounts.chase_guard + tfRejectCounts.sl_breach;
+        const rejectSummaryNote = totalGuardRejects > 0
+          ? ` | فیلتر شده: ${totalGuardRejects} مورد (بودجه ریسک/حداقل سفارش: ${tfRejectCounts.risk_budget}، نسبت حجم/ریسک: ${tfRejectCounts.pos_ratio}، تعقیب/عبور SL: ${tfRejectCounts.chase_guard + tfRejectCounts.sl_breach})`
+          : '';
+
         if (tfCandidateSignals.length === 0) {
           addServerScannerLog(
             'info',
-            `✅ تایم‌فریم ${currentTf}: اسکن ${analyzedCount} نماد معتبر (از ${scannedCount} مورد) در مدت ${tfDurationStr} به پایان رسید و سیگنال معتبری شناسایی نشد.`,
+            `✅ تایم‌فریم ${currentTf}: اسکن ${analyzedCount} نماد معتبر (از ${scannedCount} مورد) در مدت ${tfDurationStr} به پایان رسید و سیگنال معتبری شناسایی نشد.${rejectSummaryNote}`,
             undefined,
             currentTf
           );
@@ -7548,7 +7655,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
 
         // Attempt order execution for candidate in this timeframe
         for (let candIdx = 0; candIdx < tfCandidateSignals.length; candIdx++) {
-          if (manualStopRequested || (!forceAllTimeframes && !serverScannerState.isRunning)) {
+          if (manualStopRequested || scanEpoch !== myEpoch || (!forceAllTimeframes && !serverScannerState.isRunning)) {
             break;
           }
           const chosen = tfCandidateSignals[candIdx];
@@ -7604,7 +7711,6 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
             addServerScannerLog('info', `🚀 در حال ارسال سفارش زنده فیوچرز به XT برای ${xtSymbol.toUpperCase()} در تایم‌فریم ${currentTf}...`, chosen.symbol, currentTf);
 
             const symMeta = getXtSymbolMeta(xtSymbol);
-            const priceDecimals = symMeta.pricePrecision ?? 3;
             const targetRR = cfg.riskRewardRatio && cfg.riskRewardRatio > 0 ? cfg.riskRewardRatio : 2.0;
 
             let livePrice = chosen.curPrice;
@@ -7619,12 +7725,12 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
 
             const isLimitOrderSignal = chosen.orderType === 'LIMIT' && (chosen.limitEntryPrice || chosen.curPrice) > 0;
             const targetLimitPrice = isLimitOrderSignal
-              ? parseFloat((chosen.limitEntryPrice || chosen.curPrice).toFixed(priceDecimals))
+              ? quantizeXtPrice(chosen.limitEntryPrice || chosen.curPrice, symMeta)
               : livePrice;
 
             // Calculate exact Stop Loss and verify SL Breach, Chase Guard, and Capped TP Parity
             const rawStopLoss = chosen.stopLoss;
-            const finalStopLoss = parseFloat(rawStopLoss.toFixed(priceDecimals));
+            const finalStopLoss = quantizeXtPrice(rawStopLoss, symMeta);
 
             if (chosen.posSide === 'LONG' ? livePrice <= finalStopLoss : livePrice >= finalStopLoss) {
               if (isSinglePositionMode) isPlacingGlobalOrder = false;
@@ -7682,7 +7788,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
               ? execEntryPrice + liveStopDist * targetRR
               : execEntryPrice - liveStopDist * targetRR;
 
-            const finalTakeProfit = parseFloat(rawTakeProfit.toFixed(priceDecimals));
+            const finalTakeProfit = quantizeXtPrice(rawTakeProfit, symMeta);
             const tpRefPrice = isLimitOrderSignal ? execEntryPrice : livePrice;
             if (chosen.posSide === 'LONG' ? finalTakeProfit <= tpRefPrice : finalTakeProfit >= tpRefPrice) {
               if (isSinglePositionMode) isPlacingGlobalOrder = false;
@@ -7784,6 +7890,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
 
             const execRecord: any = {
               id: `exec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+              timestamp: Date.now(),
               time: new Date().toISOString(),
               timeFa: new Date().toLocaleTimeString('fa-IR'),
               symbol: xtSymbol,
@@ -7801,7 +7908,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
               riskReward: targetRR,
               targetRiskUsdt,
               actualLossAtSL: xtSizing.actualLossAtSL,
-              positionToRiskRatio: chosen.positionToRiskRatio,
+              positionToRiskRatio: parseFloat(livePosToRisk.toFixed(2)),
               payload: orderPayload,
             };
 
@@ -7823,13 +7930,13 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
               if (orderRes && orderRes.returnCode !== 0 && isOpenApiError) {
                 if (isSinglePositionMode) isPlacingGlobalOrder = false;
                 unsupportedOpenApiXtSymbols.add(xtSymbol);
+                serverScannerState.executionLogs = [execRecord, ...serverScannerState.executionLogs].slice(0, 100);
                 addServerScannerLog(
                   'warning',
                   `⚠️ جفت‌ارز ${chosen.symbol.toUpperCase()} در صرافی XT برای معاملات خودکار API فعال نیست. انتقال به لیست سیاه و سوئیچ به سیگنال بعدی...`,
                   chosen.symbol,
                   currentTf
                 );
-                serverScannerState.executionLogs = [execRecord, ...serverScannerState.executionLogs].slice(0, 100);
                 continue;
               }
 
@@ -7839,7 +7946,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
                 let recordedTakeProfit = finalTakeProfit;
 
                 // Post-fill R:R precision sync for MARKET orders (adjust TP on XT if actual fill price drifted due to spread/slippage)
-                if (!isLimitOrderSignal && validTriggerProfitPrice) {
+                if (!isLimitOrderSignal) {
                   try {
                     await sleep(450);
                     const [posCheckRes, profitCheckRes] = await Promise.all([
@@ -7848,19 +7955,27 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
                     ]);
                     const posItems = Array.isArray(posCheckRes?.result) ? posCheckRes.result : [];
                     const openPos = posItems.find(
-                      (p: any) => p.symbol === xtSymbol && p.positionSide === chosen.posSide && parseFloat(p.positionSize || p.holdAmount || '0') > 0
+                      (p: any) =>
+                        p.symbol === xtSymbol &&
+                        p.positionSide === chosen.posSide &&
+                        parsePositiveNum(p.positionSize, p.holdAmount, p.availableCloseSize, p.amount) > 0
                     );
                     const actualFillEntry = openPos ? parseFloat(openPos.entryPrice || openPos.openPrice || '0') : 0;
+                    if (actualFillEntry > 0) {
+                      recordedEntryPrice = actualFillEntry;
+                      execRecord.curPrice = actualFillEntry;
+                    }
                     if (
+                      validTriggerProfitPrice &&
                       actualFillEntry > 0 &&
                       (chosen.posSide === 'LONG' ? actualFillEntry > finalStopLoss : actualFillEntry < finalStopLoss)
                     ) {
                       const actualSlDist = Math.abs(actualFillEntry - finalStopLoss);
-                      const syncedTp = parseFloat(
-                        (chosen.posSide === 'LONG'
+                      const syncedTp = quantizeXtPrice(
+                        chosen.posSide === 'LONG'
                           ? actualFillEntry + actualSlDist * targetRR
-                          : actualFillEntry - actualSlDist * targetRR
-                        ).toFixed(priceDecimals)
+                          : actualFillEntry - actualSlDist * targetRR,
+                        symMeta
                       );
                       const isTpValid = chosen.posSide === 'LONG' ? syncedTp > actualFillEntry : syncedTp < actualFillEntry;
                       if (isTpValid && Math.abs(syncedTp - finalTakeProfit) > 0) {
@@ -7881,9 +7996,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
                             triggerStopPrice: finalStopLoss,
                           });
                           if (updRes && updRes.returnCode === 0) {
-                            recordedEntryPrice = actualFillEntry;
                             recordedTakeProfit = syncedTp;
-                            execRecord.curPrice = actualFillEntry;
                             execRecord.takeProfit = syncedTp;
                             addServerScannerLog(
                               'info',
@@ -7900,6 +8013,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
 
                 execRecord.status = 'SUCCESS';
                 execRecord.orderId = orderId;
+                serverScannerState.executionLogs = [execRecord, ...serverScannerState.executionLogs].slice(0, 100);
                 const orderKindLabel = isLimitOrderSignal
                   ? `لیمیت (LIMIT در ${recordedEntryPrice} | انقضا: ${cfg.maxCandlesToEnter || 100} کندل)`
                   : `مارکت (MARKET در ${recordedEntryPrice})`;
@@ -7909,7 +8023,6 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
                   chosen.symbol,
                   currentTf
                 );
-                serverScannerState.executionLogs = [execRecord, ...serverScannerState.executionLogs].slice(0, 100);
 
                 // 🌟 Store Order ID, Timeframe, and exact Risk:Reward in PostgreSQL database!
                 await recordLiveTradeInDb({
@@ -7947,15 +8060,15 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
                   ? `${orderRes.error.code}${orderRes.error.msg ? ': ' + orderRes.error.msg : ''}`
                   : (orderRes?.msgInfo || orderRes?.msg || JSON.stringify(orderRes));
                 execRecord.error = errDetail;
-                addServerScannerLog('error', `❌ خطای صرافی XT در ثبت سفارش (${xtSymbol}) [${currentTf}]: ${errDetail}`, chosen.symbol, currentTf);
                 serverScannerState.executionLogs = [execRecord, ...serverScannerState.executionLogs].slice(0, 100);
+                addServerScannerLog('error', `❌ خطای صرافی XT در ثبت سفارش (${xtSymbol}) [${currentTf}]: ${errDetail}`, chosen.symbol, currentTf);
               }
             } catch (orderErr: any) {
               if (isSinglePositionMode) isPlacingGlobalOrder = false;
               execRecord.status = 'FAILED';
               execRecord.error = orderErr.message;
-              addServerScannerLog('error', `❌ استثنای شبکه در ارسال سفارش به صرافی XT: ${orderErr.message}`, chosen.symbol, currentTf);
               serverScannerState.executionLogs = [execRecord, ...serverScannerState.executionLogs].slice(0, 100);
+              addServerScannerLog('error', `❌ استثنای شبکه در ارسال سفارش به صرافی XT: ${orderErr.message}`, chosen.symbol, currentTf);
             }
           } else if (cfg.isLiveExecution && cfg.exchange === 'binance') {
             addServerScannerLog('info', `🚀 سفارش بایننس لایو برای ${chosen.symbol} در تایم‌فریم ${currentTf} محاسبه شد.`, chosen.symbol, currentTf);
@@ -8014,8 +8127,15 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
   } catch (error: any) {
     addServerScannerLog('error', `❌ خطای سراسری در چرخه اسکن سرور: ${error.message}`);
   } finally {
-    serverScannerState.isScanning = false;
+    if (activeScanRunId === myRunId) {
+      serverScannerState.isScanning = false;
+      activeScanPromise = null;
+    }
   }
+  })();
+
+  activeScanPromise = cyclePromise;
+  return cyclePromise;
 }
 
 // 7.1 Update and Persist Live Scanner Configuration
@@ -8028,6 +8148,10 @@ app.post('/api/live-scanner/config', async (req, res) => {
     });
 
     const userCfg = req.body?.config || req.body || {};
+    const prevIntervalMs = serverScannerState.config.intervalMs;
+    const prevTfsKey = JSON.stringify(serverScannerState.config.timeframes || [serverScannerState.config.timeframe]);
+    const prevStrategy = serverScannerState.config.strategyId;
+
     serverScannerState.config = {
       ...serverScannerState.config,
       ...userCfg,
@@ -8044,7 +8168,13 @@ app.post('/api/live-scanner/config', async (req, res) => {
     if (!userCfg.intervalMs) {
       serverScannerState.config.intervalMs = calculatedInterval;
     }
-    
+
+    const nextTfsKey = JSON.stringify(serverScannerState.config.timeframes || [serverScannerState.config.timeframe]);
+    const tfOrStrategyChanged =
+      prevTfsKey !== nextTfsKey ||
+      prevStrategy !== serverScannerState.config.strategyId ||
+      prevIntervalMs !== serverScannerState.config.intervalMs;
+
     // Immediately persist to disk and PostgreSQL
     saveLiveConfigToDisk();
     await syncLiveConfigToDatabase({
@@ -8054,14 +8184,16 @@ app.post('/api/live-scanner/config', async (req, res) => {
       lastRunAt: serverScannerState.lastRunAt,
       totalRunsCount: serverScannerState.totalRunsCount,
       logs: serverScannerState.logs.slice(0, 100),
-      executionLogs: serverScannerState.executionLogs.slice(0, 50),
+      executionLogs: serverScannerState.executionLogs.slice(0, 100),
       updatedAt: new Date().toISOString(),
     });
 
-    // If autopilot is actively running, clear dedup cache and update aligned timer interval
-    lastScannedCandleCloseByTf.clear();
-    if (serverScannerState.isRunning) {
-      scheduleNextAlignedScannerRun(serverScannerState.config.intervalMs);
+    // Only reset dedup / timer if schedule/strategy changed and no scan is currently unwinding
+    if (tfOrStrategyChanged) {
+      lastScannedCandleCloseByTf.clear();
+      if (serverScannerState.isRunning && !manualStopRequested && !serverScannerState.isScanning) {
+        scheduleNextAlignedScannerRun(serverScannerState.config.intervalMs);
+      }
     }
 
     addServerScannerLog('info', `💾 تنظیمات اسکنر و تایم‌فریم‌های [${(serverScannerState.config.timeframes || [serverScannerState.config.timeframe]).join(', ')}] در دیتابیس و دیسک سرور پایدار شد.`);
@@ -8086,6 +8218,16 @@ app.post('/api/live-scanner/start', async (req, res) => {
       'Expires': '0',
     });
 
+    // Invalidate any prior stopped loop or pending timer immediately before starting
+    scanEpoch += 1;
+    const startEpoch = scanEpoch;
+    clearServerScannerTimer();
+    lastScannedCandleCloseByTf.clear();
+
+    if (activeScanPromise && (manualStopRequested || !serverScannerState.isRunning)) {
+      await Promise.race([activeScanPromise.catch(() => {}), sleep(2500)]);
+    }
+
     const userCfg = req.body?.config || {};
     serverScannerState.config = {
       ...serverScannerState.config,
@@ -8104,13 +8246,11 @@ app.post('/api/live-scanner/start', async (req, res) => {
       serverScannerState.config.intervalMs = calculatedInterval;
     }
 
-    clearServerScannerTimer();
-    lastScannedCandleCloseByTf.clear();
-
     manualStopRequested = false;
     hasBootHydratedLiveConfig = true;
+    lastDbRunningCheckMs = Date.now();
     serverScannerState.isRunning = true;
-    serverScannerState.startedAt = serverScannerState.startedAt || new Date().toISOString();
+    serverScannerState.startedAt = new Date().toISOString();
     serverScannerState.nextRunAt = new Date(getNextAlignedBoundaryMs(serverScannerState.config.intervalMs)).toISOString();
 
     const tradeModeText = serverScannerState.config.isLiveExecution ? '⚡ معامله زنده صرافی (Real Orders)' : '📝 شبیه‌ساز (Paper Trading)';
@@ -8129,18 +8269,21 @@ app.post('/api/live-scanner/start', async (req, res) => {
       lastRunAt: serverScannerState.lastRunAt,
       totalRunsCount: serverScannerState.totalRunsCount,
       logs: serverScannerState.logs.slice(0, 100),
-      executionLogs: serverScannerState.executionLogs.slice(0, 50),
+      executionLogs: serverScannerState.executionLogs.slice(0, 100),
       updatedAt: new Date().toISOString(),
     });
 
-    // Setup candle-boundary aligned scheduler on Node backend
-    scheduleNextAlignedScannerRun(serverScannerState.config.intervalMs);
-
-    // Trigger immediate first run in background
-    runServerScannerCycle(true).catch((err) => {
-      addServerScannerLog('error', `خطا در اجرای اسکن اولیه: ${err.message}`);
-      serverScannerState.isScanning = false;
-    });
+    // Run initial scan immediately, and schedule the next aligned candle-boundary cycle ONLY AFTER it completes
+    // so starting near a candle boundary never triggers a self-overlap collision ("اسکن قبلی هنوز در حال اجراست").
+    runServerScannerCycle(true)
+      .catch((err) => {
+        addServerScannerLog('error', `خطا در اجرای اسکن اولیه: ${err.message}`);
+      })
+      .finally(() => {
+        if (serverScannerState.isRunning && !manualStopRequested && scanEpoch === startEpoch) {
+          scheduleNextAlignedScannerRun(serverScannerState.config.intervalMs);
+        }
+      });
 
     res.json({
       success: true,
@@ -8177,6 +8320,7 @@ app.post('/api/live-scanner/stop', async (_req, res) => {
       'Expires': '0',
     });
 
+    scanEpoch += 1;
     clearServerScannerTimer();
     lastScannedCandleCloseByTf.clear();
     manualStopRequested = true;
@@ -8184,7 +8328,9 @@ app.post('/api/live-scanner/stop', async (_req, res) => {
     serverScannerState.isRunning = false;
     serverScannerState.startedAt = null;
     serverScannerState.nextRunAt = null;
-    serverScannerState.isScanning = false;
+    if (!activeScanPromise) {
+      serverScannerState.isScanning = false;
+    }
 
     addServerScannerLog('warning', '⏸️ اتوپایلوت مداوم در پس‌زمینه سرور متوقف گردید.');
 
@@ -8197,7 +8343,7 @@ app.post('/api/live-scanner/stop', async (_req, res) => {
       lastRunAt: serverScannerState.lastRunAt,
       totalRunsCount: serverScannerState.totalRunsCount,
       logs: serverScannerState.logs.slice(0, 100),
-      executionLogs: serverScannerState.executionLogs.slice(0, 50),
+      executionLogs: serverScannerState.executionLogs.slice(0, 100),
       updatedAt: new Date().toISOString(),
     });
 
@@ -8233,20 +8379,26 @@ app.get('/api/live-scanner/status', async (_req, res) => {
     } catch (err: any) {
       console.warn('[ServerLiveScanner] Error verifying DB status in status endpoint:', err.message);
     }
-  } else if (serverScannerState.isRunning && Date.now() - lastDbRunningCheckMs > 5000) {
-    // Also cross-check PostgreSQL in case another server instance stopped the autopilot
-    lastDbRunningCheckMs = Date.now();
-    try {
-      const dbCheck = await pool.query('SELECT is_running FROM live_scanner_state WHERE id = $1', ['current']);
-      if (dbCheck.rows.length > 0 && dbCheck.rows[0].is_running === false) {
-        clearServerScannerTimer();
-        manualStopRequested = true;
-        serverScannerState.isRunning = false;
-        serverScannerState.startedAt = null;
-        serverScannerState.nextRunAt = null;
-        saveLiveConfigToDisk();
-      }
-    } catch {}
+  } else if (serverScannerState.isRunning && Date.now() - lastDbRunningCheckMs > 15000) {
+    // Wait until DB sync queue settles before cross-checking PostgreSQL for an external stop
+    const startedRecently = serverScannerState.startedAt
+      ? Date.now() - new Date(serverScannerState.startedAt).getTime() < 15000
+      : false;
+    if (!startedRecently) {
+      lastDbRunningCheckMs = Date.now();
+      try {
+        const dbCheck = await pool.query('SELECT is_running FROM live_scanner_state WHERE id = $1', ['current']);
+        if (dbCheck.rows.length > 0 && dbCheck.rows[0].is_running === false) {
+          scanEpoch += 1;
+          clearServerScannerTimer();
+          manualStopRequested = true;
+          serverScannerState.isRunning = false;
+          serverScannerState.startedAt = null;
+          serverScannerState.nextRunAt = null;
+          saveLiveConfigToDisk();
+        }
+      } catch {}
+    }
   }
 
   res.json({
@@ -8305,20 +8457,24 @@ app.post('/api/live-scanner/test-trade', async (req, res) => {
       curPrice = xtSymbol.startsWith('btc') ? 81500 : (xtSymbol.startsWith('eth') ? 2500 : 100);
     }
 
+    if (xtSymbolsMetaCache.size === 0) {
+      await getXtSymbolsOpenApiMap().catch(() => null);
+    }
     const symMeta = getXtSymbolMeta(xtSymbol);
-    const priceDecimals = symMeta.pricePrecision ?? 3;
     const targetRR = parseFloat(String(req.body?.riskRewardRatio || serverScannerState.config.riskRewardRatio || 2.0));
 
-    // 2. Exact SL (0.4% distance) and TP strictly according to configured targetRR
+    // 2. Exact SL (0.4% distance) and TP strictly according to configured targetRR, snapped to minStepPrice
     const slDistance = curPrice * 0.004;
     const tpDistance = slDistance * targetRR;
 
-    const stopLoss = posSide === 'LONG'
-      ? parseFloat((curPrice - slDistance).toFixed(priceDecimals))
-      : parseFloat((curPrice + slDistance).toFixed(priceDecimals));
-    const takeProfit = posSide === 'LONG'
-      ? parseFloat((curPrice + tpDistance).toFixed(priceDecimals))
-      : parseFloat((curPrice - tpDistance).toFixed(priceDecimals));
+    const stopLoss = quantizeXtPrice(
+      posSide === 'LONG' ? curPrice - slDistance : curPrice + slDistance,
+      symMeta
+    );
+    const takeProfit = quantizeXtPrice(
+      posSide === 'LONG' ? curPrice + tpDistance : curPrice - tpDistance,
+      symMeta
+    );
 
     // 3. Calculate minimum allowable contracts for XT (ensuring >= minNotional)
     const xtSizing = calculateXtContractQuantity(0, curPrice, xtSymbol, symMeta.minNotional);
@@ -8357,9 +8513,11 @@ app.post('/api/live-scanner/test-trade', async (req, res) => {
 
     const execRecord: any = {
       id: `test_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: Date.now(),
       time: new Date().toISOString(),
       timeFa: new Date().toLocaleTimeString('fa-IR'),
       symbol: xtSymbol,
+      timeframe: req.body?.timeframe || serverScannerState.config.timeframe || '5m',
       side,
       posSide,
       contractQty,
@@ -8414,6 +8572,7 @@ app.post('/api/live-scanner/test-trade', async (req, res) => {
     }
 
     serverScannerState.executionLogs = [execRecord, ...serverScannerState.executionLogs].slice(0, 100);
+    saveLiveConfigToDisk();
 
     const realOrderId = orderRes?.result?.orderId || (typeof orderRes?.result === 'string' || typeof orderRes?.result === 'number' ? String(orderRes.result) : null);
 

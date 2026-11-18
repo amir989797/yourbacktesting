@@ -378,8 +378,10 @@ export function runStrategy1Backtest(
           pnl = parseFloat(pnl.toFixed(4));
           pnlPercent = parseFloat(pnlPercent.toFixed(4));
 
-          // ارتقای بالانس پویا برای معامله بعدی
-          rollingCapital = Math.max(1, parseFloat((rollingCapital + pnl).toFixed(4)));
+          // ارتقای بالانس پویا برای معامله بعدی (در ارزیابی لایو ثابت روی بالانس فعلی می‌ماند)
+          if (!config.disableCapitalCompounding) {
+            rollingCapital = Math.max(1, parseFloat((rollingCapital + pnl).toFixed(4)));
+          }
 
           trades.push({
             id: `trade-${trades.length + 1}-${darkBlueLeg.index}-att${attempt}`,
@@ -800,7 +802,9 @@ export function runStrategy2Backtest(
                 reason: reason || (status === 'WIN' ? 'Take Profit' : status === 'LOSS' ? 'Stop Loss' : 'Active'),
               });
 
-              rollingCapital = nextCap;
+              if (!config.disableCapitalCompounding) {
+                rollingCapital = nextCap;
+              }
 
               lastTradeExitCandleIdx = Math.max(
                 lastTradeExitCandleIdx,
@@ -1052,7 +1056,9 @@ export function runStrategy2Backtest(
                 reason: reason || (status === 'WIN' ? 'Take Profit' : status === 'LOSS' ? 'Stop Loss' : 'Active'),
               });
 
-              rollingCapital = nextCap;
+              if (!config.disableCapitalCompounding) {
+                rollingCapital = nextCap;
+              }
 
               lastTradeExitCandleIdx = Math.max(
                 lastTradeExitCandleIdx,
@@ -1757,7 +1763,9 @@ export function runStrategy3Backtest(
       reason: reason || (status === 'WIN' ? 'Take Profit' : status === 'LOSS' ? 'Stop Loss' : 'Active'),
     });
 
-    rollingCapital = nextCap;
+    if (!config.disableCapitalCompounding) {
+      rollingCapital = nextCap;
+    }
     lastTradeExitCandleIdx = Math.max(
       lastTradeExitCandleIdx,
       exitCandleIdx !== undefined ? exitCandleIdx : candles.length

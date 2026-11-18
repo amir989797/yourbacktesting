@@ -178,8 +178,9 @@ export function evaluateSymbolForLiveSignal(params: {
   availableBalance: number;
   hasExistingPosition?: boolean;
   nowMs?: number;
+  onReject?: (reason: 'sl_breach' | 'chase_guard' | 'risk_budget' | 'pos_ratio', detail?: string) => void;
 }): CandidateSignal | null {
-  const { symbol, candles: rawCandles, config, availableBalance, hasExistingPosition, nowMs } = params;
+  const { symbol, candles: rawCandles, config, availableBalance, hasExistingPosition, nowMs, onReject } = params;
 
   const candles = stripFormingCandle(rawCandles, config.timeframe, nowMs ?? Date.now());
   if (!candles || candles.length < 50) {
@@ -237,17 +238,18 @@ export function evaluateSymbolForLiveSignal(params: {
     timeStopEnabled: config.timeStopEnabled !== false,
     timeStopCandles: config.timeStopCandles ?? 80,
     minAtrPercent:
-      config.minAtrPercent !== undefined && config.minAtrPercent !== null && !isNaN(Number(config.minAtrPercent))
+      config.minAtrPercent !== undefined && config.minAtrPercent !== null && String(config.minAtrPercent) !== '' && !isNaN(Number(config.minAtrPercent))
         ? Math.max(0, Number(config.minAtrPercent))
         : 0.25,
     s2RsiThreshold:
-      config.s2RsiThreshold !== undefined && config.s2RsiThreshold !== null && !isNaN(Number(config.s2RsiThreshold))
+      config.s2RsiThreshold !== undefined && config.s2RsiThreshold !== null && String(config.s2RsiThreshold) !== '' && !isNaN(Number(config.s2RsiThreshold))
         ? Number(config.s2RsiThreshold)
         : 38,
     minEntryPivotAtr:
-      config.minEntryPivotAtr !== undefined && config.minEntryPivotAtr !== null && !isNaN(Number(config.minEntryPivotAtr))
+      config.minEntryPivotAtr !== undefined && config.minEntryPivotAtr !== null && String(config.minEntryPivotAtr) !== '' && !isNaN(Number(config.minEntryPivotAtr))
         ? Math.max(0, Number(config.minEntryPivotAtr))
         : 0,
+    disableCapitalCompounding: true,
     symbol,
   };
 
@@ -305,11 +307,13 @@ export function evaluateSymbolForLiveSignal(params: {
   const stopLoss = lastTrade.stopLoss;
   // SL Breach Guard: reject if close already crossed Stop Loss
   if (posSide === 'LONG' ? curPrice <= stopLoss : curPrice >= stopLoss) {
+    onReject?.('sl_breach', `${symbol}: price=${curPrice}, sl=${stopLoss}`);
     return null;
   }
 
   const stopDistance = Math.abs(curPrice - stopLoss);
   if (stopDistance <= 0) {
+    onReject?.('sl_breach', `${symbol}: zero stopDistance`);
     return null;
   }
 
@@ -322,6 +326,7 @@ export function evaluateSymbolForLiveSignal(params: {
   // Chase Guard: reject if closed price already stretched >25% away from SL or covered >=35% to backtest TP
   if (signalStopDist > 0) {
     if (stopDistance > signalStopDist * 1.25) {
+      onReject?.('chase_guard', `${symbol}: SL stretched`);
       return null;
     }
     const signalTpDist = Math.abs(signalTakeProfit - signalEntryPrice);
@@ -330,6 +335,7 @@ export function evaluateSymbolForLiveSignal(params: {
         ? (curPrice - signalEntryPrice) / signalTpDist
         : (signalEntryPrice - curPrice) / signalTpDist;
       if (progressTowardTP >= 0.35) {
+        onReject?.('chase_guard', `${symbol}: progress ${(progressTowardTP * 100).toFixed(0)}%`);
         return null;
       }
     }
@@ -342,6 +348,7 @@ export function evaluateSymbolForLiveSignal(params: {
     : curPrice - stopDistance * targetRR;
 
   if (posSide === 'LONG' ? takeProfit <= curPrice : takeProfit >= curPrice) {
+    onReject?.('sl_breach', `${symbol}: invalid TP`);
     return null;
   }
 
@@ -379,6 +386,7 @@ export function evaluateSymbolForLiveSignal(params: {
   const actualRiskUsdt = sizing.actualLossAtSL;
 
   if (sizing.exceedsRiskBudget || sizing.quantizedPositionSize <= 0 || notionalUsdt <= 0) {
+    onReject?.('risk_budget', `${symbol}: budget=${riskBudgetUsdt.toFixed(2)}$`);
     return null;
   }
 
@@ -392,6 +400,7 @@ export function evaluateSymbolForLiveSignal(params: {
     : 0;
 
   if (maxPosRatio > 0 && posToRiskRatio > maxPosRatio) {
+    onReject?.('pos_ratio', `${symbol}: ratio=${posToRiskRatio}x > ${maxPosRatio}x`);
     return null;
   }
 

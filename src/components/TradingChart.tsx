@@ -955,7 +955,9 @@ export const TradingChart: React.FC<TradingChartProps> = ({
             entryPrice: visibleLiveOrder.price,
             stopLoss: visibleLiveOrder.stopLossPrice || null,
             takeProfit: visibleLiveOrder.takeProfitPrice || null,
-            side: visibleLiveOrder.side,
+            side: visibleLiveOrder.positionSide
+              ? (String(visibleLiveOrder.positionSide).toUpperCase() === 'LONG' ? 'BUY' : 'SELL')
+              : visibleLiveOrder.side,
             pnl: visibleLiveOrder.unrealizedPnl,
             pnlPercent: visibleLiveOrder.pnlPercent,
             rr: slDist > 0 ? parseFloat((tpDist / slDist).toFixed(2)) : 0,
@@ -997,7 +999,9 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       return;
     }
 
-    const isLong = visibleLiveOrder.side === 'BUY' || visibleLiveOrder.positionSide === 'LONG';
+    const isLong = visibleLiveOrder.positionSide
+      ? String(visibleLiveOrder.positionSide).toUpperCase() === 'LONG'
+      : String(visibleLiveOrder.side || '').toUpperCase() === 'BUY';
     const sideText = isLong ? 'خرید (LONG)' : 'فروش (SHORT)';
 
     try {
@@ -1048,7 +1052,9 @@ export const TradingChart: React.FC<TradingChartProps> = ({
           entryPrice: visibleLiveOrder.price,
           stopLoss: visibleLiveOrder.stopLossPrice || null,
           takeProfit: visibleLiveOrder.takeProfitPrice || null,
-          side: visibleLiveOrder.side,
+          side: visibleLiveOrder.positionSide
+            ? (String(visibleLiveOrder.positionSide).toUpperCase() === 'LONG' ? 'BUY' : 'SELL')
+            : visibleLiveOrder.side,
           pnl: visibleLiveOrder.unrealizedPnl,
           pnlPercent: visibleLiveOrder.pnlPercent,
           rr: slDist > 0 ? parseFloat((tpDist / slDist).toFixed(2)) : 0,
@@ -2412,15 +2418,22 @@ export const TradingChart: React.FC<TradingChartProps> = ({
               >
                 <div className="flex items-center justify-between pb-2 border-b border-[#212d3e] gap-3">
                   <div className="flex items-center gap-2">
-                    <span
-                      className={`px-2 py-0.5 rounded text-[10px] font-extrabold uppercase ${
-                        visibleLiveOrder.side === 'BUY' || visibleLiveOrder.positionSide === 'LONG'
-                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
-                          : 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
-                      }`}
-                    >
-                      {visibleLiveOrder.side === 'BUY' || visibleLiveOrder.positionSide === 'LONG' ? 'LONG 🟢' : 'SHORT 🔴'}
-                    </span>
+                    {(() => {
+                      const isHudLong = visibleLiveOrder.positionSide
+                        ? String(visibleLiveOrder.positionSide).toUpperCase() === 'LONG'
+                        : String(visibleLiveOrder.side || '').toUpperCase() === 'BUY';
+                      return (
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-extrabold uppercase ${
+                            isHudLong
+                              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                              : 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
+                          }`}
+                        >
+                          {isHudLong ? 'LONG 🟢' : 'SHORT 🔴'}
+                        </span>
+                      );
+                    })()}
                     <strong className="text-white text-xs font-sans font-bold">
                       {visibleLiveOrder.symbol.toUpperCase()}
                     </strong>
@@ -2466,7 +2479,9 @@ export const TradingChart: React.FC<TradingChartProps> = ({
                 {/* وضعیت و سود و زیان زنده */}
                 {(() => {
                   const lastC = candles.length > 0 ? candles[candles.length - 1].close : visibleLiveOrder.price;
-                  const isLong = visibleLiveOrder.side === 'BUY' || visibleLiveOrder.positionSide === 'LONG';
+                  const isLong = visibleLiveOrder.positionSide
+                    ? String(visibleLiveOrder.positionSide).toUpperCase() === 'LONG'
+                    : String(visibleLiveOrder.side || '').toUpperCase() === 'BUY';
                   const livePnlVal = visibleLiveOrder.unrealizedPnl !== undefined
                     ? visibleLiveOrder.unrealizedPnl
                     : (visibleLiveOrder.price > 0 ? (lastC - visibleLiveOrder.price) * (isLong ? 1 : -1) * (visibleLiveOrder.amount || 1) : 0);

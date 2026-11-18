@@ -53,6 +53,7 @@ export interface StrategyParams {
   optS2RsiThreshold?: number;
   minEntryPivotAtr?: number; // حداقل فاصله ورود با پیوت قبلش بر حسب ATR برای همه استراتژی‌ها (صفر=غیرفعال)
   optMinEntryPivotAtr?: number;
+  disableCapitalCompounding?: boolean; // در ارزیابی لایو، تغییر سرمایه شبیه‌سازی‌شده گذشته روی بالانس لحظه‌ای فعلی اثر نگذارد
 }
 
 export type StrategyConfig = StrategyParams;

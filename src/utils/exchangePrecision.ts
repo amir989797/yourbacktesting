@@ -522,3 +522,29 @@ export function calculateXtRiskBudgetedOrder(params: {
     pricePrecision,
   };
 }
+
+/**
+ * Snaps a price to XT exchange symbol's exact tick size (`minStepPrice`) and decimal precision (`pricePrecision`),
+ * preventing triggerStopPrice / triggerProfitPrice / limit price rejections on pairs whose minStepPrice is e.g. 0.005 or 0.5.
+ */
+export function quantizeXtPrice(
+  price: number,
+  meta: { pricePrecision?: number; minStepPrice?: number }
+): number {
+  if (!Number.isFinite(price) || price <= 0) return 0;
+  const pDec =
+    meta.pricePrecision !== undefined && Number.isFinite(meta.pricePrecision)
+      ? Math.max(0, Math.min(12, Math.floor(meta.pricePrecision)))
+      : 3;
+  const tickFloor = Math.pow(10, -pDec);
+  const step =
+    meta.minStepPrice !== undefined &&
+    Number.isFinite(meta.minStepPrice) &&
+    meta.minStepPrice > 0 &&
+    meta.minStepPrice >= tickFloor * 0.999
+      ? meta.minStepPrice
+      : tickFloor;
+  const snapped = Math.round(price / step) * step;
+  return parseFloat(snapped.toFixed(pDec));
+}
+
