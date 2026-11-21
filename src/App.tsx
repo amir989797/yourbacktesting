@@ -5,6 +5,7 @@ import { fetchXtKlines, toXtSymbol, fromXtSymbol } from './services/xt';
 import { calculateATR, calculateAtrZigZag, analyzeZigZagLegs } from './utils/indicators';
 import { StrategyConfig, DEFAULT_STRATEGY_CONFIG } from './types/strategy';
 import { runStrategyBacktest } from './utils/strategyEngine';
+import { setActiveMlModel } from './utils/zigzagMlEngine';
 import { Navbar } from './components/Navbar';
 import { TradingChart } from './components/TradingChart';
 import { CandleDataModal } from './components/CandleDataModal';
@@ -150,13 +151,20 @@ export default function App() {
       } catch {}
       return merged;
     });
-    setStrategyConfig((prev) => ({
-      ...prev,
-      ...(newSettings.maxPositionToRiskRatio ? { maxPositionToRiskRatio: newSettings.maxPositionToRiskRatio } : {}),
-      ...(newSettings.minAtrPercent !== undefined ? { minAtrPercent: newSettings.minAtrPercent } : {}),
-      ...(newSettings.s2RsiThreshold !== undefined ? { s2RsiThreshold: newSettings.s2RsiThreshold } : {}),
-      ...(newSettings.minEntryPivotAtr !== undefined ? { minEntryPivotAtr: newSettings.minEntryPivotAtr } : {}),
-    }));
+    setStrategyConfig((prev) => {
+      const next = {
+        ...prev,
+        ...(newSettings.maxPositionToRiskRatio !== undefined ? { maxPositionToRiskRatio: newSettings.maxPositionToRiskRatio } : {}),
+        ...(newSettings.maxCandlesToEnter !== undefined ? { maxCandlesToEnter: newSettings.maxCandlesToEnter } : {}),
+        ...(newSettings.minAtrPercent !== undefined ? { minAtrPercent: newSettings.minAtrPercent } : {}),
+        ...(newSettings.s2RsiThreshold !== undefined ? { s2RsiThreshold: newSettings.s2RsiThreshold } : {}),
+        ...(newSettings.minEntryPivotAtr !== undefined ? { minEntryPivotAtr: newSettings.minEntryPivotAtr } : {}),
+      };
+      try {
+        localStorage.setItem('trading_strategy_config', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
   };
 
   // Dynamic Hovered ATR state (مقادیر در لحظه موس برای تمام باکس‌ها)
@@ -296,13 +304,39 @@ export default function App() {
     zigzagSettings.maxBreakoutAtrMultiplier,
   ]);
 
-  // Run Strategy Backtest (Strategy 1 or Strategy 2)
+  const [mlModelVersion, setMlModelVersion] = useState<number>(0);
+
+  useEffect(() => {
+    fetch('/api/ml/active-model')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.success && data.activeModel) {
+          setActiveMlModel(data.activeModel);
+          setMlModelVersion((v) => v + 1);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // Run Strategy Backtest (Strategy 1, 2, 3, or 4 ML ZigZag)
   const strategyResult = useMemo(() => {
+    const effectiveConfig = {
+      ...strategyConfig,
+      atrPeriod: zigzagSettings.atrPeriod,
+      atrMultiplier: zigzagSettings.atrMultiplier,
+      minCandles: zigzagSettings.minCandles,
+      minCandlesForLongLeg: zigzagSettings.minCandlesForLongLeg,
+      longLegAtrMultiplier: zigzagSettings.longLegAtrMultiplier,
+      minCandlesForBlueLeg: zigzagSettings.minCandlesForBlueLeg,
+      blueLegAtrMultiplier: zigzagSettings.blueLegAtrMultiplier,
+      maxBlueLegPercent: zigzagSettings.maxBlueLegPercent,
+      maxBreakoutAtrMultiplier: zigzagSettings.maxBreakoutAtrMultiplier,
+    };
     return runStrategyBacktest(
       candles,
       zigzagData.points,
       zigzagData.legs,
-      strategyConfig,
+      effectiveConfig,
       atrMetrics.atrValues,
       zigzagSettings.atrMultiplier,
       zigzagSettings.minCandles
@@ -313,8 +347,8 @@ export default function App() {
     zigzagData.legs,
     strategyConfig,
     atrMetrics.atrValues,
-    zigzagSettings.atrMultiplier,
-    zigzagSettings.minCandles,
+    zigzagSettings,
+    mlModelVersion,
   ]);
 
   const handleSignOut = () => {
@@ -521,20 +555,34 @@ export default function App() {
         onClose={() => setIsBacktestModalOpen(false)}
         zigzagSettings={zigzagSettings}
         onUpdateZigZagSettings={(partial) => {
-          setZigzagSettings((prev) => ({ ...prev, ...partial }));
+          setZigzagSettings((prev) => {
+            const merged = { ...prev, ...partial };
+            try {
+              localStorage.setItem('strategy_zigzag_settings', JSON.stringify(merged));
+            } catch {}
+            return merged;
+          });
           if (
+            partial.maxCandlesToEnter !== undefined ||
             partial.minAtrPercent !== undefined ||
             partial.s2RsiThreshold !== undefined ||
             partial.minEntryPivotAtr !== undefined ||
             partial.maxPositionToRiskRatio !== undefined
           ) {
-            setStrategyConfig((prev) => ({
-              ...prev,
-              ...(partial.maxPositionToRiskRatio !== undefined ? { maxPositionToRiskRatio: partial.maxPositionToRiskRatio } : {}),
-              ...(partial.minAtrPercent !== undefined ? { minAtrPercent: partial.minAtrPercent } : {}),
-              ...(partial.s2RsiThreshold !== undefined ? { s2RsiThreshold: partial.s2RsiThreshold } : {}),
-              ...(partial.minEntryPivotAtr !== undefined ? { minEntryPivotAtr: partial.minEntryPivotAtr } : {}),
-            }));
+            setStrategyConfig((prev) => {
+              const next = {
+                ...prev,
+                ...(partial.maxPositionToRiskRatio !== undefined ? { maxPositionToRiskRatio: partial.maxPositionToRiskRatio } : {}),
+                ...(partial.maxCandlesToEnter !== undefined ? { maxCandlesToEnter: partial.maxCandlesToEnter } : {}),
+                ...(partial.minAtrPercent !== undefined ? { minAtrPercent: partial.minAtrPercent } : {}),
+                ...(partial.s2RsiThreshold !== undefined ? { s2RsiThreshold: partial.s2RsiThreshold } : {}),
+                ...(partial.minEntryPivotAtr !== undefined ? { minEntryPivotAtr: partial.minEntryPivotAtr } : {}),
+              };
+              try {
+                localStorage.setItem('trading_strategy_config', JSON.stringify(next));
+              } catch {}
+              return next;
+            });
           }
         }}
         currentTimeframe={timeframe}

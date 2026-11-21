@@ -45,8 +45,8 @@ import { Timeframe, ZigZagSettings } from '../../types/crypto';
 import { BacktestResultItem, GLOBAL_CANDLE_CACHE } from './types';
 
 export interface ManualBacktestTabProps {
-  selectedStrategyId: 'strategy_1_e_breakout' | 'strategy_2_next_pivot' | 'strategy_3_ab_midpoint';
-  setSelectedStrategyId: (val: 'strategy_1_e_breakout' | 'strategy_2_next_pivot' | 'strategy_3_ab_midpoint') => void;
+  selectedStrategyId: 'strategy_1_e_breakout' | 'strategy_2_next_pivot' | 'strategy_3_ab_midpoint' | 'strategy_4_ml_zigzag';
+  setSelectedStrategyId: (val: 'strategy_1_e_breakout' | 'strategy_2_next_pivot' | 'strategy_3_ab_midpoint' | 'strategy_4_ml_zigzag') => void;
   isScanning: boolean;
   selectedAllowedSymbols: string[];
   onOpenAllowedPairsModal: () => void;
@@ -323,7 +323,13 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                     <option value="strategy_1_e_breakout">استراتژی ۱: شکست نقطه E (تارگت A / استاپ F)</option>
                     <option value="strategy_2_next_pivot">استراتژی ۲: اولین تشکیل لگ بعد از F (تارگت R:R)</option>
                     <option value="strategy_3_ab_midpoint">استراتژی ۳: الگوی ۶ پیوت متوالی (ورود با تشکیل پیوت اول / استاپ پیوت اول / تارگت R:R)</option>
+                    <option value="strategy_4_ml_zigzag">استراتژی ۴: مدل یادگیری ماشین ZigZag ML (۴ لگ + هارمونیک + حجم — XT 5m)</option>
                   </select>
+                  {selectedStrategyId === 'strategy_4_ml_zigzag' && (
+                    <div className="mt-1.5 px-2 py-1 rounded bg-emerald-950/40 border border-emerald-500/30 text-[10px] text-emerald-300 leading-relaxed">
+                      تنظیمات زیگزاگ، حدضرر/تارگت (R:R)، خروج زمانی و فیلتر ATR/کشیدگی مستقیماً از مدل ML فعال خوانده می‌شوند؛ فقط سرمایه/ریسک، کارمزد/اسلیپیج، سقف حجم، تک‌پوزیشن و لیست ارزها از تنظیمات دستی اعمال می‌شوند.
+                    </div>
+                  )}
                 </div>
 
                 <div className="bg-[#0e121a] p-2 rounded-xl border border-[#283244]">

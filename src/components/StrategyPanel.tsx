@@ -207,6 +207,9 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                 <option value="strategy_3_ab_midpoint">
                   استراتژی سوم: الگوی ۶ پیوت متوالی (ورود با تشکیل پیوت اول / استاپ پیوت اول / تارگت R:R)
                 </option>
+                <option value="strategy_4_ml_zigzag">
+                  استراتژی چهارم: مدل یادگیری ماشین ZigZag ML (۴ لگ + هارمونیک + حجم — XT 5m)
+                </option>
                 <option value="none">
                   -- غیرفعال کردن استراتژی --
                 </option>
@@ -255,6 +258,8 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
                     ? 'پارامترهای استراتژی ۲ (نقطه بعد از F)'
                     : config.selectedStrategyId === 'strategy_3_ab_midpoint'
                     ? 'پارامترهای استراتژی ۳ (۶ پیوت متوالی)'
+                    : config.selectedStrategyId === 'strategy_4_ml_zigzag'
+                    ? 'پارامترهای استراتژی ۴ (هوش مصنوعی ZigZag ML)'
                     : 'پارامترهای استراتژی ۱ (شکست E)'}
                 </span>
                 {/* Info Icon for Strategy Explanation */}
@@ -314,7 +319,7 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
               {/* Max R:R */}
               <div className="bg-[#0e121a] p-2 rounded-lg border border-[#252f42]">
                 <div className="text-[10px] text-gray-300 font-semibold mb-1 flex items-center justify-between">
-                  <span>{config.selectedStrategyId === 'strategy_2_next_pivot' || config.selectedStrategyId === 'strategy_3_ab_midpoint' ? 'تارگت R:R' : 'حداکثر R:R'}</span>
+                  <span>{config.selectedStrategyId === 'strategy_2_next_pivot' || config.selectedStrategyId === 'strategy_3_ab_midpoint' || config.selectedStrategyId === 'strategy_4_ml_zigzag' ? 'تارگت R:R' : 'حداکثر R:R'}</span>
                   <span className="text-emerald-400 font-mono font-bold">R</span>
                 </div>
                 <input
@@ -418,14 +423,14 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
               </div>
 
               {/* Max Candles / Entry Mode */}
-              {config.selectedStrategyId === 'strategy_2_next_pivot' || config.selectedStrategyId === 'strategy_3_ab_midpoint' ? (
+              {config.selectedStrategyId === 'strategy_2_next_pivot' || config.selectedStrategyId === 'strategy_3_ab_midpoint' || config.selectedStrategyId === 'strategy_4_ml_zigzag' ? (
                 <div className="bg-[#0e121a] p-2 rounded-lg border border-[#252f42] flex flex-col justify-between">
                   <div className="text-[10px] text-gray-300 font-semibold mb-1 flex items-center justify-between">
                     <span>ورود به معامله</span>
                     <span className="text-amber-400 font-mono text-[9px]">فوری</span>
                   </div>
                   <div className="py-1 text-[11px] font-bold text-center text-amber-300 bg-[#161c28] border border-amber-500/20 rounded">
-                    {config.selectedStrategyId === 'strategy_3_ab_midpoint' ? 'با تشکیل پیوت ۱' : 'تک‌ورود بعد از F'}
+                    {config.selectedStrategyId === 'strategy_4_ml_zigzag' ? 'تایید مدل ML' : config.selectedStrategyId === 'strategy_3_ab_midpoint' ? 'با تشکیل پیوت ۱' : 'تک‌ورود بعد از F'}
                   </div>
                 </div>
               ) : (

@@ -21,6 +21,9 @@ export const DEFAULT_ZIGZAG_SETTINGS: ZigZagSettings = {
   maxBreakoutAtrMultiplier: 5,
   maxCandlesToEnter: 35,
   maxPositionToRiskRatio: 300,
+  minAtrPercent: 0.25,
+  s2RsiThreshold: 38,
+  minEntryPivotAtr: 0,
 };
 
 export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
@@ -61,6 +64,15 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
   const [maxCandlesToEnter, setMaxCandlesToEnter] = useState<number | string>(
     settings.maxCandlesToEnter ?? 35
   );
+  const [minAtrPercent, setMinAtrPercent] = useState<number | string>(
+    settings.minAtrPercent ?? 0.25
+  );
+  const [s2RsiThreshold, setS2RsiThreshold] = useState<number | string>(
+    settings.s2RsiThreshold ?? 38
+  );
+  const [minEntryPivotAtr, setMinEntryPivotAtr] = useState<number | string>(
+    settings.minEntryPivotAtr ?? 0
+  );
 
   // Sync state when opened or settings change
   useEffect(() => {
@@ -76,6 +88,9 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
       setMaxBlueLegPercent(settings.maxBlueLegPercent ?? 60);
       setMaxBreakoutAtrMultiplier(settings.maxBreakoutAtrMultiplier ?? 5);
       setMaxCandlesToEnter(settings.maxCandlesToEnter ?? 35);
+      setMinAtrPercent(settings.minAtrPercent ?? 0.25);
+      setS2RsiThreshold(settings.s2RsiThreshold ?? 38);
+      setMinEntryPivotAtr(settings.minEntryPivotAtr ?? 0);
     }
   }, [isOpen, settings]);
 
@@ -93,6 +108,9 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
     setMaxBlueLegPercent(DEFAULT_ZIGZAG_SETTINGS.maxBlueLegPercent ?? 60);
     setMaxBreakoutAtrMultiplier(DEFAULT_ZIGZAG_SETTINGS.maxBreakoutAtrMultiplier ?? 5);
     setMaxCandlesToEnter(DEFAULT_ZIGZAG_SETTINGS.maxCandlesToEnter ?? 35);
+    setMinAtrPercent(DEFAULT_ZIGZAG_SETTINGS.minAtrPercent ?? 0.25);
+    setS2RsiThreshold(DEFAULT_ZIGZAG_SETTINGS.s2RsiThreshold ?? 38);
+    setMinEntryPivotAtr(DEFAULT_ZIGZAG_SETTINGS.minEntryPivotAtr ?? 0);
   };
 
   const handleSave = (e: React.FormEvent) => {
@@ -109,6 +127,24 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
     const finalMaxBreakout = Math.max(0.5, parseFloat(String(maxBreakoutAtrMultiplier)) || 5);
     const finalMaxCandles = Math.max(1, parseInt(String(maxCandlesToEnter), 10) || 35);
 
+    const parsedMinAtrPct = parseFloat(String(minAtrPercent));
+    const finalMinAtrPercent =
+      String(minAtrPercent).trim() === '' || Number.isNaN(parsedMinAtrPct)
+        ? 0.25
+        : Math.max(0, parsedMinAtrPct);
+
+    const parsedRsi = parseFloat(String(s2RsiThreshold));
+    const finalS2RsiThreshold =
+      String(s2RsiThreshold).trim() === '' || Number.isNaN(parsedRsi)
+        ? 38
+        : Math.min(49, Math.max(0, parsedRsi));
+
+    const parsedMinEntryPivot = parseFloat(String(minEntryPivotAtr));
+    const finalMinEntryPivotAtr =
+      String(minEntryPivotAtr).trim() === '' || Number.isNaN(parsedMinEntryPivot)
+        ? 0
+        : Math.max(0, parsedMinEntryPivot);
+
     onSave({
       ...settings,
       atrPeriod: finalAtrPeriod,
@@ -122,6 +158,9 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
       maxBreakoutAtrMultiplier: finalMaxBreakout,
       maxCandlesToEnter: finalMaxCandles,
       maxPositionToRiskRatio: finalMaxRatio,
+      minAtrPercent: finalMinAtrPercent,
+      s2RsiThreshold: finalS2RsiThreshold,
+      minEntryPivotAtr: finalMinEntryPivotAtr,
     });
     onClose();
   };
@@ -564,6 +603,108 @@ export const ZigZagSettingsModal: React.FC<ZigZagSettingsModalProps> = ({
                     value={maxCandlesToEnter}
                     onChange={(e) => setMaxCandlesToEnter(e.target.value)}
                     className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-cyan-400 bg-[#10141c] border border-[#323d50] rounded-lg"
+                  />
+                </div>
+              </div>
+
+              {/* 11. Min ATR % Volatility Filter */}
+              <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-teal-500/40 transition-colors">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-teal-400" />
+                    حداقل نوسان ATR (%)
+                  </label>
+                  <span className="text-[11px] font-mono text-teal-400 font-bold">
+                    {Number(minAtrPercent) === 0 ? 'خاموش' : `${minAtrPercent}%`}
+                  </span>
+                </div>
+                <p className="text-[10px] text-gray-400 mb-1.5 leading-relaxed">حداقل نسبت ATR به قیمت ورود در تمام استراتژی‌ها (۰ = غیرفعال)</p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={0}
+                    max={5}
+                    step={0.05}
+                    value={Number.isFinite(Number(minAtrPercent)) ? Math.min(5, Math.max(0, Number(minAtrPercent))) : 0.25}
+                    onChange={(e) => setMinAtrPercent(Number(e.target.value))}
+                    className="flex-1 accent-teal-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    max={20}
+                    step="0.05"
+                    value={minAtrPercent}
+                    onChange={(e) => setMinAtrPercent(e.target.value)}
+                    className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-teal-400 bg-[#10141c] border border-[#323d50] rounded-lg"
+                  />
+                </div>
+              </div>
+
+              {/* 12. Pivot RSI Threshold */}
+              <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-fuchsia-500/40 transition-colors">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-fuchsia-400" />
+                    آستانه RSI پیوت
+                  </label>
+                  <span className="text-[11px] font-mono text-fuchsia-400 font-bold">
+                    {Number(s2RsiThreshold) === 0 ? 'خاموش' : `≤${s2RsiThreshold} / ≥${100 - Number(s2RsiThreshold)}`}
+                  </span>
+                </div>
+                <p className="text-[10px] text-gray-400 mb-1.5 leading-relaxed">فیلتر RSI(14) روی کندل پیوت مبنا برای همه استراتژی‌ها (۰ = غیرفعال)</p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={0}
+                    max={49}
+                    step={1}
+                    value={Number.isFinite(Number(s2RsiThreshold)) ? Math.min(49, Math.max(0, Number(s2RsiThreshold))) : 38}
+                    onChange={(e) => setS2RsiThreshold(Number(e.target.value))}
+                    className="flex-1 accent-fuchsia-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    max={49}
+                    step={1}
+                    value={s2RsiThreshold}
+                    onChange={(e) => setS2RsiThreshold(e.target.value)}
+                    className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-fuchsia-400 bg-[#10141c] border border-[#323d50] rounded-lg"
+                  />
+                </div>
+              </div>
+
+              {/* 13. Min Entry to Pivot Distance (ATR) */}
+              <div className="p-3 rounded-xl bg-[#171d29] border border-[#283244] hover:border-orange-500/40 transition-colors sm:col-span-2">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-orange-400" />
+                    فاصله ورود تا پیوت (ATR)
+                  </label>
+                  <span className="text-[11px] font-mono text-orange-400 font-bold">
+                    {Number(minEntryPivotAtr) === 0 ? 'خاموش' : `≥ ${minEntryPivotAtr}× ATR`}
+                  </span>
+                </div>
+                <p className="text-[10px] text-gray-400 mb-1.5 leading-relaxed">حداقل فاصله قیمتی ورود تا پیوت مرجع (استاپ) بر حسب ATR در تمام استراتژی‌ها (۰ = غیرفعال)</p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={0}
+                    max={10}
+                    step={0.25}
+                    value={Number.isFinite(Number(minEntryPivotAtr)) ? Math.min(10, Math.max(0, Number(minEntryPivotAtr))) : 0}
+                    onChange={(e) => setMinEntryPivotAtr(Number(e.target.value))}
+                    className="flex-1 accent-orange-400 cursor-pointer h-1.5 bg-[#252f40] rounded-lg"
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    max={20}
+                    step="0.1"
+                    value={minEntryPivotAtr}
+                    onChange={(e) => setMinEntryPivotAtr(e.target.value)}
+                    className="w-16 px-2 py-1 text-xs font-mono font-bold text-center text-orange-400 bg-[#10141c] border border-[#323d50] rounded-lg"
                   />
                 </div>
               </div>

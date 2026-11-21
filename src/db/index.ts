@@ -88,6 +88,18 @@ export async function initDatabase(): Promise<{ success: boolean; tablesCreated:
         execution_logs_json TEXT,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
+      CREATE TABLE IF NOT EXISTS ml_zigzag_models (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        exchange TEXT DEFAULT 'xt',
+        timeframe TEXT DEFAULT '5m',
+        dataset_id TEXT,
+        is_active BOOLEAN DEFAULT FALSE,
+        model_json TEXT NOT NULL,
+        metrics_json TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
       ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS timeframe TEXT DEFAULT '5m';
       ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS risk_reward DOUBLE PRECISION;
       CREATE INDEX IF NOT EXISTS idx_live_trades_timeframe ON live_trades(timeframe);

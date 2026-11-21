@@ -23,8 +23,8 @@ import {
 import { AdaptiveRanges, OptimizationTrial, OptSortCol } from './types';
 
 export interface OptimizerTabProps {
-  selectedStrategyId: 'strategy_1_e_breakout' | 'strategy_2_next_pivot' | 'strategy_3_ab_midpoint';
-  setSelectedStrategyId: (val: 'strategy_1_e_breakout' | 'strategy_2_next_pivot' | 'strategy_3_ab_midpoint') => void;
+  selectedStrategyId: 'strategy_1_e_breakout' | 'strategy_2_next_pivot' | 'strategy_3_ab_midpoint' | 'strategy_4_ml_zigzag';
+  setSelectedStrategyId: (val: 'strategy_1_e_breakout' | 'strategy_2_next_pivot' | 'strategy_3_ab_midpoint' | 'strategy_4_ml_zigzag') => void;
   isOptimizing: boolean;
   timeframe: string;
   riskMode: 'percent' | 'fixed';
@@ -289,6 +289,8 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                         ? 'استراتژی ۱: شکست نقطه E (تارگت A / استاپ F)'
                         : selectedStrategyId === 'strategy_3_ab_midpoint'
                         ? 'استراتژی ۳: الگوی ۶ پیوت متوالی (ورود با تشکیل پیوت اول / استاپ پیوت اول / تارگت R:R)'
+                        : selectedStrategyId === 'strategy_4_ml_zigzag'
+                        ? 'استراتژی ۴: مدل یادگیری ماشین ZigZag ML (GBDT علّی روی XT 5m)'
                         : 'استراتژی ۲: اولین تشکیل لگ بعد از F (تارگت R:R)'}
                     </span>
                   </div>
@@ -326,6 +328,7 @@ export const OptimizerTab: React.FC<OptimizerTabProps> = ({
                   <option value="strategy_1_e_breakout">تغییر استراتژی به: شکست نقطه E</option>
                   <option value="strategy_2_next_pivot">تغییر استراتژی به: تشکیل لگ بعد از F</option>
                   <option value="strategy_3_ab_midpoint">تغییر استراتژی به: الگوی ۶ پیوت متوالی (استراتژی ۳)</option>
+                  <option value="strategy_4_ml_zigzag">تغییر استراتژی به: یادگیری ماشین ZigZag ML (استراتژی ۴)</option>
                 </select>
 
                 <button

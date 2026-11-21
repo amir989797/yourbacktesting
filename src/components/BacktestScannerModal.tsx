@@ -34,6 +34,7 @@ import {
   CloudDownload,
   Loader2,
   Coins,
+  Brain,
 } from 'lucide-react';
 import { CryptoPair, CandleData, Timeframe, ZigZagSettings, ExchangeType, isXtExcludedSymbol } from '../types/crypto';
 import { StrategyConfig, StrategyTrade } from '../types/strategy';
@@ -45,7 +46,9 @@ import {
 } from '../services/binance';
 import { fetchXtPairs } from '../services/xt';
 import { calculateATR, calculateAtrZigZag, analyzeZigZagLegs } from '../utils/indicators';
-import { runStrategy1Backtest, runStrategy2Backtest, runStrategy3Backtest } from '../utils/strategyEngine';
+import { runStrategy1Backtest, runStrategy2Backtest, runStrategy3Backtest, runStrategy4MlBacktest } from '../utils/strategyEngine';
+import { setActiveMlModel, type ZigZagMlModel } from '../utils/zigzagMlEngine';
+import { MlStrategyTab } from './backtest/MlStrategyTab';
 import {
   saveTestConfigToFirestore,
   loadTestConfigsFromFirestore,
@@ -186,13 +189,26 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     } catch {}
   };
 
-  // Navigation Tabs: 'scanner' (اسکن دستی بازار) | 'optimizer' (بهینه‌ساز بیزی رنج‌محور) | 'stats' (آمار و اعتبارسنجی داده‌ها)
-  const [activeTab, setActiveTab] = useState<'scanner' | 'optimizer' | 'stats'>('scanner');
+  // Navigation Tabs: 'scanner' | 'optimizer' | 'ml' | 'stats'
+  const [activeTab, setActiveTab] = useState<'scanner' | 'optimizer' | 'ml' | 'stats'>('scanner');
 
   // Strategy selection (پیش‌فرض: استراتژی ۲ مطابق تنظیمات نهایی کاربر)
-  const [selectedStrategyId, setSelectedStrategyId] = useState<'strategy_1_e_breakout' | 'strategy_2_next_pivot' | 'strategy_3_ab_midpoint'>(
+  const [selectedStrategyId, setSelectedStrategyId] = useState<'strategy_1_e_breakout' | 'strategy_2_next_pivot' | 'strategy_3_ab_midpoint' | 'strategy_4_ml_zigzag'>(
     'strategy_2_next_pivot'
   );
+
+  // Sync active ML model from PostgreSQL backend so client-side Chart/Backtest match server 100%
+  useEffect(() => {
+    if (!isOpen) return;
+    fetch('/api/ml/active-model')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.success && data.activeModel) {
+          setActiveMlModel(data.activeModel);
+        }
+      })
+      .catch(() => {});
+  }, [isOpen]);
 
   // General Parameters
   const [capital, setCapital] = useState<number>(10000);
@@ -1605,8 +1621,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       const eA = a.entryTime || a.timeF || 0;
       const eB = b.entryTime || b.timeF || 0;
       if (eA !== eB) return eA - eB;
-      const sA = (a as any).score || (a as any).confidence || 0;
-      const sB = (b as any).score || (b as any).confidence || 0;
+      const sA = (a as any).score ?? (a as any).confidence ?? 0;
+      const sB = (b as any).score ?? (b as any).confidence ?? 0;
       if (sB !== sA) return sB - sA;
       return ((a as any).symbol || '').localeCompare((b as any).symbol || '');
     });
@@ -1897,6 +1913,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         ? 'استراتژی ۱'
         : selectedStrategyId === 'strategy_3_ab_midpoint'
         ? 'استراتژی ۳'
+        : selectedStrategyId === 'strategy_4_ml_zigzag'
+        ? 'استراتژی ۴ (ML)'
         : 'استراتژی ۲';
     const dateStr = new Date().toLocaleDateString('fa-IR');
     const timeStr = new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
@@ -2687,6 +2705,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           ? 'استراتژی ۱: شکست نقطه E (تارگت A / استاپ F)'
           : selectedStrategyId === 'strategy_3_ab_midpoint'
           ? 'استراتژی ۳: الگوی ۶ پیوت متوالی (ورود با تشکیل پیوت اول / استاپ پیوت اول / تارگت R:R)'
+          : selectedStrategyId === 'strategy_4_ml_zigzag'
+          ? 'استراتژی ۴: مدل یادگیری ماشین ZigZag ML (GBDT علّی روی XT 5m)'
           : 'استراتژی ۲: اولین تشکیل لگ بعد از F (تارگت R:R)';
       ctx.fillText(
         `${stratTitle}  |  تایم‌فریم: ${timeframe}  |  دامنه: فیوچرز  |  تاریخ: ${new Date().toLocaleDateString('fa-IR')} ${new Date().toLocaleTimeString('fa-IR')}`,
@@ -2981,25 +3001,30 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     const allTrades: StrategyTrade[] = [];
 
     // ۲. اجرای بک‌تست هر نماد با سرمایه اولیه ثابت (دقیقاً مشابه اسکن دستی سرور)
+    const isMlStrategy = selectedStrategyId === 'strategy_4_ml_zigzag';
     for (const item of cachedEntries) {
       const candles = item.candles;
-      const atrMetrics = calculateATR(candles, params.atrPeriod);
-      const { points } = calculateAtrZigZag(
-        candles,
-        atrMetrics.atrValues,
-        params.atrMultiplier,
-        params.minCandles
-      );
-      const legs = analyzeZigZagLegs(
-        points,
-        params.minCandlesForLongLeg,
-        params.longLegAtrMultiplier,
-        params.maxBlueLegPercent,
-        params.maxBreakoutAtrMultiplier,
-        candles,
-        params.minCandlesForBlueLeg ?? 1,
-        params.blueLegAtrMultiplier ?? 0.1
-      );
+      const atrMetrics = isMlStrategy ? { atrValues: [] as number[] } : calculateATR(candles, params.atrPeriod);
+      const { points } = isMlStrategy
+        ? { points: [] as any[] }
+        : calculateAtrZigZag(
+            candles,
+            atrMetrics.atrValues,
+            params.atrMultiplier,
+            params.minCandles
+          );
+      const legs = isMlStrategy
+        ? ([] as any[])
+        : analyzeZigZagLegs(
+            points,
+            params.minCandlesForLongLeg,
+            params.longLegAtrMultiplier,
+            params.maxBlueLegPercent,
+            params.maxBreakoutAtrMultiplier,
+            candles,
+            params.minCandlesForBlueLeg ?? 1,
+            params.blueLegAtrMultiplier ?? 0.1
+          );
 
       const tempConfig: StrategyConfig = {
         capital, // سرمایه ثابت اولیه، بدون تغییر ترتیبی بین ارزها
@@ -3016,18 +3041,29 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         maxCandlesToEnter: params.maxCandlesToEnter || maxCandlesToEnter,
         maxTradesPerLeg: 1,
         showOnChart: false,
-        noConcurrentPositions: true, // در سطح تک‌ارز: عدم ورود به معامله جدید تا خروج پوزیشن قبلی همان ارز
+        noConcurrentPositions: isMlStrategy ? false : true, // در استراتژی ML قفل تک‌پوزیشن سراسری روی کل بازار اعمال می‌شود (همگام با ترید زنده)
         symbol: item.pair.symbol,
         maxPositionToRiskRatio: params.maxPositionToRiskRatio !== undefined ? params.maxPositionToRiskRatio : optMaxPositionToRiskRatio,
         timeStopEnabled: optTimeStopEnabled,
         timeStopCandles: params.timeStopCandles || optTimeStopCandles || 80,
+        atrPeriod: params.atrPeriod,
+        atrMultiplier: params.atrMultiplier,
+        minCandles: params.minCandles,
+        minCandlesForLongLeg: params.minCandlesForLongLeg,
+        longLegAtrMultiplier: params.longLegAtrMultiplier,
+        minCandlesForBlueLeg: params.minCandlesForBlueLeg ?? 1,
+        blueLegAtrMultiplier: params.blueLegAtrMultiplier ?? 0.1,
+        maxBlueLegPercent: params.maxBlueLegPercent,
+        maxBreakoutAtrMultiplier: params.maxBreakoutAtrMultiplier,
         minAtrPercent: params.minAtrPercent !== undefined ? params.minAtrPercent : optMinAtrPercent,
         s2RsiThreshold: params.s2RsiThreshold !== undefined ? params.s2RsiThreshold : optS2RsiThreshold,
         minEntryPivotAtr: params.minEntryPivotAtr !== undefined ? params.minEntryPivotAtr : optMinEntryPivotAtr,
       };
 
       let res;
-      if (selectedStrategyId === 'strategy_3_ab_midpoint') {
+      if (isMlStrategy) {
+        res = runStrategy4MlBacktest(candles, tempConfig, atrMetrics.atrValues);
+      } else if (selectedStrategyId === 'strategy_3_ab_midpoint') {
         res = runStrategy3Backtest(
           candles,
           points,
@@ -3048,7 +3084,15 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           params.minCandles
         );
       } else {
-        res = runStrategy1Backtest(candles, points, legs, tempConfig, atrMetrics.atrValues);
+        res = runStrategy1Backtest(
+          candles,
+          points,
+          legs,
+          tempConfig,
+          atrMetrics.atrValues,
+          params.atrMultiplier,
+          params.minCandles
+        );
       }
 
       const closed = (res.trades || [])
@@ -3917,6 +3961,18 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               </button>
               <button
                 type="button"
+                onClick={() => setActiveTab('ml')}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                  activeTab === 'ml'
+                    ? 'bg-emerald-500 text-black shadow-md shadow-emerald-500/20'
+                    : 'text-emerald-300 hover:text-emerald-200'
+                }`}
+              >
+                <Brain className="w-3.5 h-3.5" />
+                <span>مدل یادگیری ماشین (ML)</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => setActiveTab('stats')}
                 className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
                   activeTab === 'stats'
@@ -4308,6 +4364,38 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             selectedStrategyId={selectedStrategyId}
             effectivePortfolioTrades={effectivePortfolioTrades}
           />
+        )}
+
+        {activeTab === 'ml' && (
+          <div className="flex-1 overflow-y-auto p-4 sm:p-5 bg-[#0b0e14]">
+            <MlStrategyTab
+              onApplyMlStrategyToScanner={(model: ZigZagMlModel) => {
+                setActiveMlModel(model);
+                setSelectedStrategyId('strategy_4_ml_zigzag');
+                setSelectedExchange('xt');
+                setTimeframe((model.timeframe as Timeframe) || '5m');
+                setOptAtrPeriod(model.zigzagParams.atrPeriod);
+                setOptMinCandles(model.zigzagParams.minCandles);
+                setOptAtrMultiplier(model.zigzagParams.atrMultiplier);
+                setOptMinCandlesLong(model.zigzagParams.minCandlesForLongLeg);
+                setOptLongLegAtrMult(model.zigzagParams.longLegAtrMultiplier);
+                setOptMinCandlesBlue(model.zigzagParams.minCandlesForBlueLeg);
+                setOptBlueLegAtrMult(model.zigzagParams.blueLegAtrMultiplier);
+                setOptMaxBlueLegPercent(model.zigzagParams.maxBlueLegPercent);
+                setOptMaxBreakoutAtr(model.zigzagParams.maxBreakoutAtrMultiplier);
+                setOptMaxRiskReward(
+                  model.targetRR && model.targetRR > 0
+                    ? Number(model.targetRR.toFixed(2))
+                    : (model.slAtrMult > 0 ? Number((model.tpAtrMult / model.slAtrMult).toFixed(2)) : 2)
+                );
+                setOptTimeStopEnabled(true);
+                setOptTimeStopCandles(model.timeStopCandles);
+                setOptMinAtrPercent(model.minAtrPct);
+                setActiveTab('scanner');
+                showToast(`مدل «${model.name}» روی استراتژی ۴ (XT.COM ${model.timeframe}) اعمال شد.`);
+              }}
+            />
+          </div>
         )}
 
         {/* Footer */}

@@ -18,7 +18,19 @@ import {
   runStrategy1Backtest,
   runStrategy2Backtest,
   runStrategy3Backtest,
+  runStrategy4MlBacktest,
 } from './src/server/engine';
+import {
+  extractCausalZigZagEvents,
+  simulateCausalOutcome,
+  trainZigZagMlModel,
+  getActiveMlModel,
+  setActiveMlModel,
+  type MlTrainingSample,
+  type ZigZagMlModel,
+  type ZigZagMlParams,
+} from './src/utils/zigzagMlEngine';
+import { PRETRAINED_XT_5M_ML_MODEL } from './src/utils/pretrainedZigZagMlModel';
 import {
   initDatabase,
   testDatabaseConnection,
@@ -1049,9 +1061,12 @@ app.get('/api/xt/positions', async (req, res) => {
             : Number(item.openTime || item.ctime || item.mtime || Date.now()));
       const tfMs = getTimeframeMs(posTimeframe);
       const candlesElapsed = Math.max(0, Math.floor((Date.now() - openTimeMs) / tfMs));
-      const maxTimeStopCandles = (serverScannerState.config?.timeStopCandles) || 80;
+      const isLiveMlStrategy = serverScannerState.config?.strategyId === 'strategy_4_ml_zigzag';
+      const maxTimeStopCandles = isLiveMlStrategy
+        ? (getActiveMlModel().timeStopCandles || 288)
+        : ((serverScannerState.config?.timeStopCandles) || 80);
       const candlesRemaining = Math.max(0, maxTimeStopCandles - candlesElapsed);
-      const timeStopEnabled = serverScannerState.config?.timeStopEnabled !== false;
+      const timeStopEnabled = isLiveMlStrategy ? true : serverScannerState.config?.timeStopEnabled !== false;
 
       return {
         ...item,
@@ -3481,9 +3496,10 @@ async function runServerBacktestCycle(params: {
   const processSymbolStrategy = (pair: { symbol: string; baseAsset: string; quoteAsset: string }, candles: CandleData[]) => {
     if (!candles || candles.length < 50) return null;
 
-    const atrResult = calculateATR(candles, atrPeriod);
-    const zzResult = calculateAtrZigZag(candles, atrResult.atrValues, atrMultiplier, minCandles);
-    const legs = analyzeZigZagLegs(zzResult.points, minCandlesForLongLeg, longLegAtrMultiplier, maxBlueLegPercent, maxBreakoutAtrMultiplier, candles, minCandlesForBlueLeg, blueLegAtrMultiplier);
+    const isMlStrategy = strategyId === 'strategy_4_ml_zigzag';
+    const atrResult = isMlStrategy ? { atrValues: [] as number[] } : calculateATR(candles, atrPeriod);
+    const zzResult = isMlStrategy ? { points: [] as any[] } : calculateAtrZigZag(candles, atrResult.atrValues, atrMultiplier, minCandles);
+    const legs = isMlStrategy ? ([] as any[]) : analyzeZigZagLegs(zzResult.points, minCandlesForLongLeg, longLegAtrMultiplier, maxBlueLegPercent, maxBreakoutAtrMultiplier, candles, minCandlesForBlueLeg, blueLegAtrMultiplier);
     const xtMeta = effectiveExchange === 'xt' ? getXtSymbolMeta(toXtSymbol(pair.symbol)) : undefined;
 
     const stratConfig: any = {
@@ -3503,10 +3519,19 @@ async function runServerBacktestCycle(params: {
       maxCandlesToEnter,
       maxTradesPerLeg: 1,
       showOnChart: true,
-      noConcurrentPositions: cfg.noConcurrentPositions !== false,
+      noConcurrentPositions: isMlStrategy ? false : cfg.noConcurrentPositions !== false,
       symbol: pair.symbol,
       timeStopEnabled,
       timeStopCandles,
+      atrPeriod,
+      atrMultiplier,
+      minCandles,
+      minCandlesForLongLeg,
+      longLegAtrMultiplier,
+      minCandlesForBlueLeg,
+      blueLegAtrMultiplier,
+      maxBlueLegPercent,
+      maxBreakoutAtrMultiplier,
       maxPositionToRiskRatio,
       optMaxPositionToRiskRatio: maxPositionToRiskRatio,
       minAtrPercent,
@@ -3518,12 +3543,14 @@ async function runServerBacktestCycle(params: {
     };
 
     let backtestRes: any;
-    if (strategyId === 'strategy_3_ab_midpoint') {
+    if (isMlStrategy) {
+      backtestRes = runStrategy4MlBacktest(candles, stratConfig, atrResult.atrValues);
+    } else if (strategyId === 'strategy_3_ab_midpoint') {
       backtestRes = runStrategy3Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, atrMultiplier, minCandles);
     } else if (strategyId === 'strategy_2_next_pivot') {
       backtestRes = runStrategy2Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, atrMultiplier, minCandles);
     } else {
-      backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues);
+      backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, atrMultiplier, minCandles);
     }
 
     const { trades, metrics } = backtestRes;
@@ -5207,8 +5234,8 @@ function processFilteredTrades(
     const eA = a.entryTime || a.timeF || 0;
     const eB = b.entryTime || b.timeF || 0;
     if (eA !== eB) return eA - eB;
-    const sA = (a as any).score || (a as any).confidence || 0;
-    const sB = (b as any).score || (b as any).confidence || 0;
+    const sA = (a as any).score ?? (a as any).confidence ?? 0;
+    const sB = (b as any).score ?? (b as any).confidence ?? 0;
     if (sB !== sA) return sB - sA;
     return ((a as any).symbol || '').localeCompare((b as any).symbol || '');
   });
@@ -5511,18 +5538,21 @@ async function streamEvaluateDatasetFromPostgres(
       checkStop: () => Boolean(checkStopCondition && serverOptimizerState.shouldStop),
     },
     (pair, candles) => {
-      const atrResult = calculateATR(candles, candidate.atrPeriod);
-      const zzResult = calculateAtrZigZag(candles, atrResult.atrValues, candidate.atrMultiplier, candidate.minCandles);
-      const legs = analyzeZigZagLegs(
-        zzResult.points,
-        candidate.minCandlesForLongLeg,
-        candidate.longLegAtrMultiplier,
-        candidate.maxBlueLegPercent,
-        candidate.maxBreakoutAtrMultiplier,
-        candles,
-        candidate.minCandlesForBlueLeg ?? 1,
-        candidate.blueLegAtrMultiplier ?? 0.1
-      );
+      const isMlStrategy = strategyId === 'strategy_4_ml_zigzag';
+      const atrResult = isMlStrategy ? { atrValues: [] as number[] } : calculateATR(candles, candidate.atrPeriod);
+      const zzResult = isMlStrategy ? { points: [] as any[] } : calculateAtrZigZag(candles, atrResult.atrValues, candidate.atrMultiplier, candidate.minCandles);
+      const legs = isMlStrategy
+        ? ([] as any[])
+        : analyzeZigZagLegs(
+            zzResult.points,
+            candidate.minCandlesForLongLeg,
+            candidate.longLegAtrMultiplier,
+            candidate.maxBlueLegPercent,
+            candidate.maxBreakoutAtrMultiplier,
+            candles,
+            candidate.minCandlesForBlueLeg ?? 1,
+            candidate.blueLegAtrMultiplier ?? 0.1
+          );
       const xtMeta = effExch === 'xt' ? getXtSymbolMeta(toXtSymbol(pair.symbol)) : undefined;
 
       const stratConfig: any = {
@@ -5542,10 +5572,19 @@ async function streamEvaluateDatasetFromPostgres(
         maxCandlesToEnter: candidate.maxCandlesToEnter || baseConfig.maxCandlesToEnter || 100,
         maxTradesPerLeg: 1,
         showOnChart: false,
-        noConcurrentPositions: baseConfig.noConcurrentPositions,
+        noConcurrentPositions: isMlStrategy ? false : baseConfig.noConcurrentPositions,
         symbol: pair.symbol,
         timeStopEnabled: baseConfig.timeStopEnabled,
         timeStopCandles: candidate.timeStopCandles || 80,
+        atrPeriod: candidate.atrPeriod,
+        atrMultiplier: candidate.atrMultiplier,
+        minCandles: candidate.minCandles,
+        minCandlesForLongLeg: candidate.minCandlesForLongLeg,
+        longLegAtrMultiplier: candidate.longLegAtrMultiplier,
+        minCandlesForBlueLeg: candidate.minCandlesForBlueLeg ?? 1,
+        blueLegAtrMultiplier: candidate.blueLegAtrMultiplier ?? 0.1,
+        maxBlueLegPercent: candidate.maxBlueLegPercent,
+        maxBreakoutAtrMultiplier: candidate.maxBreakoutAtrMultiplier,
         maxPositionToRiskRatio: candidate.maxPositionToRiskRatio || 300,
         minAtrPercent:
           candidate.minAtrPercent !== undefined && candidate.minAtrPercent !== null && !isNaN(Number(candidate.minAtrPercent))
@@ -5562,12 +5601,14 @@ async function streamEvaluateDatasetFromPostgres(
       };
 
       let backtestRes: any;
-      if (strategyId === 'strategy_3_ab_midpoint') {
+      if (isMlStrategy) {
+        backtestRes = runStrategy4MlBacktest(candles, stratConfig, atrResult.atrValues);
+      } else if (strategyId === 'strategy_3_ab_midpoint') {
         backtestRes = runStrategy3Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, candidate.atrMultiplier, candidate.minCandles);
       } else if (strategyId === 'strategy_2_next_pivot') {
         backtestRes = runStrategy2Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, candidate.atrMultiplier, candidate.minCandles);
       } else {
-        backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues);
+        backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, candidate.atrMultiplier, candidate.minCandles);
       }
 
       const closed = (backtestRes.trades || [])
@@ -5644,18 +5685,21 @@ async function evaluateCombinationOnServer(
       await new Promise((resolve) => setImmediate(resolve));
     }
 
-    const atrResult = calculateATR(candles, params.atrPeriod);
-    const zzResult = calculateAtrZigZag(candles, atrResult.atrValues, params.atrMultiplier, params.minCandles);
-    const legs = analyzeZigZagLegs(
-      zzResult.points,
-      params.minCandlesForLongLeg,
-      params.longLegAtrMultiplier,
-      params.maxBlueLegPercent,
-      params.maxBreakoutAtrMultiplier,
-      candles,
-      params.minCandlesForBlueLeg ?? 1,
-      params.blueLegAtrMultiplier ?? 0.1
-    );
+    const isMlStrategy = strategyId === 'strategy_4_ml_zigzag';
+    const atrResult = isMlStrategy ? { atrValues: [] as number[] } : calculateATR(candles, params.atrPeriod);
+    const zzResult = isMlStrategy ? { points: [] as any[] } : calculateAtrZigZag(candles, atrResult.atrValues, params.atrMultiplier, params.minCandles);
+    const legs = isMlStrategy
+      ? ([] as any[])
+      : analyzeZigZagLegs(
+          zzResult.points,
+          params.minCandlesForLongLeg,
+          params.longLegAtrMultiplier,
+          params.maxBlueLegPercent,
+          params.maxBreakoutAtrMultiplier,
+          candles,
+          params.minCandlesForBlueLeg ?? 1,
+          params.blueLegAtrMultiplier ?? 0.1
+        );
     const xtMeta = effExch === 'xt' ? getXtSymbolMeta(toXtSymbol(item.pair.symbol)) : undefined;
 
     const stratConfig: any = {
@@ -5675,10 +5719,19 @@ async function evaluateCombinationOnServer(
       maxCandlesToEnter: params.maxCandlesToEnter || baseConfig.maxCandlesToEnter || 100,
       maxTradesPerLeg: 1,
       showOnChart: false,
-      noConcurrentPositions: baseConfig.noConcurrentPositions,
+      noConcurrentPositions: isMlStrategy ? false : baseConfig.noConcurrentPositions,
       symbol: item.pair.symbol,
       timeStopEnabled: baseConfig.timeStopEnabled,
       timeStopCandles: params.timeStopCandles || 80,
+      atrPeriod: params.atrPeriod,
+      atrMultiplier: params.atrMultiplier,
+      minCandles: params.minCandles,
+      minCandlesForLongLeg: params.minCandlesForLongLeg,
+      longLegAtrMultiplier: params.longLegAtrMultiplier,
+      minCandlesForBlueLeg: params.minCandlesForBlueLeg ?? 1,
+      blueLegAtrMultiplier: params.blueLegAtrMultiplier ?? 0.1,
+      maxBlueLegPercent: params.maxBlueLegPercent,
+      maxBreakoutAtrMultiplier: params.maxBreakoutAtrMultiplier,
       maxPositionToRiskRatio: params.maxPositionToRiskRatio || 300,
       minAtrPercent:
         params.minAtrPercent !== undefined && params.minAtrPercent !== null && !isNaN(Number(params.minAtrPercent))
@@ -5695,12 +5748,14 @@ async function evaluateCombinationOnServer(
     };
 
     let backtestRes: any;
-    if (strategyId === 'strategy_3_ab_midpoint') {
+    if (isMlStrategy) {
+      backtestRes = runStrategy4MlBacktest(candles, stratConfig, atrResult.atrValues);
+    } else if (strategyId === 'strategy_3_ab_midpoint') {
       backtestRes = runStrategy3Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, params.atrMultiplier, params.minCandles);
     } else if (strategyId === 'strategy_2_next_pivot') {
       backtestRes = runStrategy2Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, params.atrMultiplier, params.minCandles);
     } else {
-      backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues);
+      backtestRes = runStrategy1Backtest(candles, zzResult.points, legs, stratConfig, atrResult.atrValues, params.atrMultiplier, params.minCandles);
     }
 
     const closed = (backtestRes.trades || [])
@@ -6689,6 +6744,7 @@ interface ServerActiveSignal {
   riskUsdt: number;
   positionToRiskRatio?: number;
   targetRiskUsdt?: number;
+  mlScore?: number;
   strategyName: string;
   discoveredAt: string;
 }
@@ -7243,10 +7299,13 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
 
       if (openXtSymbolsSet.has(cleanDbSym)) {
         // Position is actively open (filled) on exchange!
-        const maxTimeStopCandles = cfg.timeStopCandles || 80;
+        const isMlLive = cfg.strategyId === 'strategy_4_ml_zigzag';
+        const maxTimeStopCandles = isMlLive
+          ? (getActiveMlModel().timeStopCandles || 288)
+          : (cfg.timeStopCandles || 80);
 
         // Check if Time-Stop condition is triggered for this position
-        if (cfg.timeStopEnabled !== false && candlesElapsed >= maxTimeStopCandles) {
+        if ((isMlLive || cfg.timeStopEnabled !== false) && candlesElapsed >= maxTimeStopCandles) {
           addServerScannerLog(
             'trade',
             `⏰ فعال‌سازی خروج زمانی (Time-Stop) در تایم‌فریم ${tradeTf}: معامله ${dbTrade.symbol.toUpperCase()} به مدت ${candlesElapsed} کندل باز بوده است (سقف مجاز: ${maxTimeStopCandles} کندل). بستن خودکار پوزیشن در صرافی...`,
@@ -7618,8 +7677,14 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
           return;
         }
 
-        // Sort candidate signals by LOWEST positionToRiskRatio (نسبت حجم/ریسک)
+        // Sort candidate signals: for Strategy 4 (ML) prioritize HIGHEST ML score first (matching 1-POS backtest),
+        // then LOWEST positionToRiskRatio (نسبت حجم/ریسک)
         tfCandidateSignals.sort((a, b) => {
+          if (cfg.strategyId === 'strategy_4_ml_zigzag') {
+            const scoreA = typeof a.mlScore === 'number' ? a.mlScore : -999;
+            const scoreB = typeof b.mlScore === 'number' ? b.mlScore : -999;
+            if (scoreB !== scoreA) return scoreB - scoreA;
+          }
           const ratioA = (a.positionToRiskRatio !== undefined && a.positionToRiskRatio > 0)
             ? a.positionToRiskRatio
             : (a.riskUsdt > 0 ? a.notionalUsdt / a.riskUsdt : 999999);
@@ -8737,6 +8802,458 @@ wss.on('connection', (clientWs, request) => {
 });
 
 // =========================================================================
+// ZIGZAG MACHINE LEARNING (STRATEGY 4) — PERSISTENCE & TRAINING STUDIO API
+// =========================================================================
+
+interface MlTrainingJobState {
+  isRunning: boolean;
+  shouldStop: boolean;
+  stage: string;
+  progress: number;
+  symbolsProcessed: number;
+  totalSymbolsEstimate: number;
+  eventsExtracted: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+  logs: string[];
+  lastTrainedModelId: string | null;
+}
+
+const mlTrainingState: MlTrainingJobState = {
+  isRunning: false,
+  shouldStop: false,
+  stage: 'idle',
+  progress: 0,
+  symbolsProcessed: 0,
+  totalSymbolsEstimate: 0,
+  eventsExtracted: 0,
+  startedAt: null,
+  finishedAt: null,
+  error: null,
+  logs: [],
+  lastTrainedModelId: null,
+};
+
+function pushMlLog(msg: string) {
+  const ts = new Date().toLocaleTimeString('fa-IR', { hour12: false });
+  mlTrainingState.logs.unshift(`[${ts}] ${msg}`);
+  if (mlTrainingState.logs.length > 40) mlTrainingState.logs.length = 40;
+}
+
+async function hydrateActiveMlModelFromDatabase(): Promise<void> {
+  try {
+    const existing = await pool.query(
+      `SELECT id, is_active, model_json FROM ml_zigzag_models ORDER BY is_active DESC, created_at DESC LIMIT 30`
+    );
+
+    // Always ensure the latest embedded v2 champion model exists and is up-to-date in PostgreSQL
+    await pool.query(
+      `INSERT INTO ml_zigzag_models (id, name, exchange, timeframe, dataset_id, is_active, model_json, metrics_json, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, FALSE, $6, $7, NOW(), NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         name = EXCLUDED.name,
+         model_json = EXCLUDED.model_json,
+         metrics_json = EXCLUDED.metrics_json,
+         updated_at = NOW()`,
+      [
+        PRETRAINED_XT_5M_ML_MODEL.id,
+        PRETRAINED_XT_5M_ML_MODEL.name,
+        PRETRAINED_XT_5M_ML_MODEL.exchange,
+        PRETRAINED_XT_5M_ML_MODEL.timeframe,
+        PRETRAINED_XT_5M_ML_MODEL.datasetId,
+        JSON.stringify(PRETRAINED_XT_5M_ML_MODEL),
+        JSON.stringify(PRETRAINED_XT_5M_ML_MODEL.metrics),
+      ]
+    );
+
+    const activeRow = existing.rows.find((r: any) => r.is_active) || existing.rows[0];
+    const shouldPromoteDefault =
+      existing.rows.length === 0 ||
+      !activeRow ||
+      activeRow.id === 'pretrained_xt_5m_zigzag_gbdt_v1' ||
+      activeRow.id === 'pretrained_xt_5m_zigzag_gbdt_v2' ||
+      activeRow.id === PRETRAINED_XT_5M_ML_MODEL.id;
+
+    if (shouldPromoteDefault) {
+      await pool.query(`UPDATE ml_zigzag_models SET is_active = FALSE WHERE id <> $1`, [PRETRAINED_XT_5M_ML_MODEL.id]);
+      await pool.query(`UPDATE ml_zigzag_models SET is_active = TRUE, updated_at = NOW() WHERE id = $1`, [PRETRAINED_XT_5M_ML_MODEL.id]);
+      setActiveMlModel(PRETRAINED_XT_5M_ML_MODEL);
+      console.log(`[ML ZigZag] Activated embedded v${PRETRAINED_XT_5M_ML_MODEL.version} XT.COM 5m GBDT model (${PRETRAINED_XT_5M_ML_MODEL.id}).`);
+      return;
+    }
+
+    if (activeRow?.model_json) {
+      const parsed = typeof activeRow.model_json === 'string' ? JSON.parse(activeRow.model_json) : activeRow.model_json;
+      if (parsed && Array.isArray(parsed.trees) && parsed.trees.length > 0) {
+        setActiveMlModel(parsed as ZigZagMlModel);
+        console.log(`[ML ZigZag] Hydrated active model "${parsed.name}" (${parsed.id}) from PostgreSQL.`);
+      }
+    }
+  } catch (err: any) {
+    console.warn(`[ML ZigZag] Fallback to embedded pre-trained model:`, err?.message || err);
+    setActiveMlModel(PRETRAINED_XT_5M_ML_MODEL);
+  }
+}
+
+app.get('/api/ml/active-model', async (_req, res) => {
+  try {
+    const activeModel = getActiveMlModel();
+    let savedModels: any[] = [];
+    let datasets: any[] = [];
+    try {
+      const mRes = await pool.query(
+        `SELECT id, name, exchange, timeframe, dataset_id, is_active, metrics_json, created_at
+         FROM ml_zigzag_models
+         ORDER BY is_active DESC, created_at DESC
+         LIMIT 30`
+      );
+      savedModels = mRes.rows.map((r: any) => ({
+        id: r.id,
+        name: r.name,
+        exchange: r.exchange || 'xt',
+        timeframe: r.timeframe || '5m',
+        datasetId: r.dataset_id || '',
+        isActive: Boolean(r.is_active),
+        metrics: r.metrics_json ? (typeof r.metrics_json === 'string' ? JSON.parse(r.metrics_json) : r.metrics_json) : null,
+        createdAt: r.created_at,
+      }));
+
+      const dRes = await pool.query(
+        `SELECT cd.id, cd.name, cd.exchange, cd.timeframe, cd.symbol_count, cd.total_candles, cd.created_at,
+                (SELECT COUNT(*)::int FROM candle_chunks cc WHERE cc.dataset_id = cd.id) AS chunk_count
+         FROM candle_datasets cd
+         WHERE EXISTS (SELECT 1 FROM candle_chunks cc WHERE cc.dataset_id = cd.id)
+         ORDER BY (CASE WHEN cd.exchange = 'xt' AND cd.timeframe = '5m' THEN 0 ELSE 1 END), cd.total_candles DESC, cd.created_at DESC
+         LIMIT 20`
+      );
+      datasets = dRes.rows;
+    } catch (dbErr: any) {
+      console.warn('[ML API] DB list warning:', dbErr?.message);
+    }
+
+    res.json({
+      success: true,
+      activeModel,
+      savedModels,
+      datasets,
+      trainingStatus: mlTrainingState,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to load ML model' });
+  }
+});
+
+app.get('/api/ml/train-status', (_req, res) => {
+  res.json({ success: true, status: mlTrainingState });
+});
+
+app.post('/api/ml/train-stop', (_req, res) => {
+  if (mlTrainingState.isRunning) {
+    mlTrainingState.shouldStop = true;
+    pushMlLog('درخواست توقف آموزش ثبت شد؛ در حال خروج ایمن...');
+  }
+  res.json({ success: true });
+});
+
+app.post('/api/ml/activate-model', async (req, res) => {
+  try {
+    const { modelId } = req.body || {};
+    if (!modelId || typeof modelId !== 'string') {
+      return res.status(400).json({ success: false, error: 'شناسه مدل نامعتبر است.' });
+    }
+
+    if (modelId === PRETRAINED_XT_5M_ML_MODEL.id) {
+      await pool.query(`UPDATE ml_zigzag_models SET is_active = FALSE`);
+      await pool.query(
+        `INSERT INTO ml_zigzag_models (id, name, exchange, timeframe, dataset_id, is_active, model_json, metrics_json, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, TRUE, $6, $7, NOW(), NOW())
+         ON CONFLICT (id) DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
+        [
+          PRETRAINED_XT_5M_ML_MODEL.id,
+          PRETRAINED_XT_5M_ML_MODEL.name,
+          PRETRAINED_XT_5M_ML_MODEL.exchange,
+          PRETRAINED_XT_5M_ML_MODEL.timeframe,
+          PRETRAINED_XT_5M_ML_MODEL.datasetId,
+          JSON.stringify(PRETRAINED_XT_5M_ML_MODEL),
+          JSON.stringify(PRETRAINED_XT_5M_ML_MODEL.metrics),
+        ]
+      );
+      setActiveMlModel(PRETRAINED_XT_5M_ML_MODEL);
+      return res.json({ success: true, activeModel: PRETRAINED_XT_5M_ML_MODEL });
+    }
+
+    const rowRes = await pool.query(`SELECT model_json FROM ml_zigzag_models WHERE id = $1 LIMIT 1`, [modelId]);
+    if (rowRes.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'مدل مورد نظر در دیتابیس یافت نشد.' });
+    }
+    const parsed = typeof rowRes.rows[0].model_json === 'string'
+      ? JSON.parse(rowRes.rows[0].model_json)
+      : rowRes.rows[0].model_json;
+    await pool.query(`UPDATE ml_zigzag_models SET is_active = FALSE`);
+    await pool.query(`UPDATE ml_zigzag_models SET is_active = TRUE, updated_at = NOW() WHERE id = $1`, [modelId]);
+    setActiveMlModel(parsed as ZigZagMlModel);
+
+    res.json({ success: true, activeModel: parsed });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'خطا در فعال‌سازی مدل' });
+  }
+});
+
+app.post('/api/ml/delete-model', async (req, res) => {
+  try {
+    const { modelId } = req.body || {};
+    if (!modelId || modelId === PRETRAINED_XT_5M_ML_MODEL.id) {
+      return res.status(400).json({ success: false, error: 'مدل پیش‌فرض سیستم قابل حذف نیست.' });
+    }
+    const active = getActiveMlModel();
+    await pool.query(`DELETE FROM ml_zigzag_models WHERE id = $1`, [modelId]);
+    if (active.id === modelId) {
+      await pool.query(`UPDATE ml_zigzag_models SET is_active = TRUE WHERE id = $1`, [PRETRAINED_XT_5M_ML_MODEL.id]);
+      setActiveMlModel(PRETRAINED_XT_5M_ML_MODEL);
+    }
+    res.json({ success: true, activeModel: getActiveMlModel() });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'خطا در حذف مدل' });
+  }
+});
+
+app.post('/api/ml/train-start', async (req, res) => {
+  if (mlTrainingState.isRunning) {
+    return res.status(409).json({ success: false, error: 'یک فرآیند آموزش مدل هم‌اکنون در حال اجرا است.' });
+  }
+
+  const body = req.body || {};
+  const datasetId: string = String(body.datasetId || 'range_xt_5m_1779074700000_1786786200000');
+  const modelName: string = String(body.modelName || `مدل XT 5m ZigZag v2 سفارشی (${new Date().toLocaleDateString('fa-IR')})`).slice(0, 90);
+  const maxChunksToScan = Math.max(20, Math.min(1000, Number(body.maxChunks ?? 600)));
+  const zigzagParams: ZigZagMlParams = {
+    atrPeriod: Math.max(5, Math.min(50, Number(body.atrPeriod ?? 17))),
+    minCandles: Math.max(2, Math.min(30, Number(body.minCandles ?? 5))),
+    atrMultiplier: Math.max(0.5, Math.min(8.0, Number(body.atrMultiplier ?? 1.0))),
+    minCandlesForLongLeg: Math.max(4, Math.min(40, Number(body.minCandlesForLongLeg ?? 12))),
+    longLegAtrMultiplier: Math.max(4, Math.min(30, Number(body.longLegAtrMultiplier ?? 15))),
+    minCandlesForBlueLeg: Math.max(2, Math.min(25, Number(body.minCandlesForBlueLeg ?? 7))),
+    blueLegAtrMultiplier: Math.max(1.5, Math.min(15, Number(body.blueLegAtrMultiplier ?? 4.75))),
+    maxBlueLegPercent: Math.max(50, Math.min(120, Number(body.maxBlueLegPercent ?? 95))),
+    maxBreakoutAtrMultiplier: Math.max(1, Math.min(15, Number(body.maxBreakoutAtrMultiplier ?? 4))),
+  };
+  const slAtrMult = Math.max(1.5, Math.min(10, Number(body.slAtrMult ?? 5)));
+  const minSlPct = Math.max(0.5, Math.min(12.0, Number(body.minSlPct ?? 3.5)));
+  const hasExplicitRR = body.targetRR !== undefined && body.targetRR !== null && body.targetRR !== '' && !isNaN(Number(body.targetRR));
+  const rawTpAtrMult = Math.max(2.0, Math.min(40, Number(body.tpAtrMult ?? 10)));
+  const targetRR = hasExplicitRR
+    ? Math.max(0.5, Math.min(10.0, Number(body.targetRR)))
+    : (slAtrMult > 0 ? Math.max(0.5, Math.min(10.0, rawTpAtrMult / slAtrMult)) : 2.0);
+  const tpAtrMult = hasExplicitRR ? Number((slAtrMult * targetRR).toFixed(2)) : rawTpAtrMult;
+  const timeStopCandles = Math.max(20, Math.min(400, Number(body.timeStopCandles ?? 288)));
+  const minAtrPct = Math.max(0.1, Math.min(2.0, Number(body.minAtrPct ?? 0.25)));
+  const minStretchPct = Math.max(0, Math.min(15.0, Number(body.minStretchPct ?? 4.0)));
+  const numTrees = Math.max(15, Math.min(80, Number(body.numTrees ?? 40)));
+  const maxDepth = Math.max(1, Math.min(4, Number(body.maxDepth ?? 2)));
+  const l2Lambda = Math.max(50, Math.min(1000, Number(body.l2Lambda ?? 260)));
+  const topPercent = Math.max(1, Math.min(20, Number(body.topPercent ?? 5)));
+  const activateAfterTrain = body.activateAfterTrain !== false;
+
+  mlTrainingState.isRunning = true;
+  mlTrainingState.shouldStop = false;
+  mlTrainingState.stage = 'در حال بررسی دیتاست PostgreSQL...';
+  mlTrainingState.progress = 2;
+  mlTrainingState.symbolsProcessed = 0;
+  mlTrainingState.totalSymbolsEstimate = 0;
+  mlTrainingState.eventsExtracted = 0;
+  mlTrainingState.startedAt = new Date().toISOString();
+  mlTrainingState.finishedAt = null;
+  mlTrainingState.error = null;
+  mlTrainingState.logs = [];
+  mlTrainingState.lastTrainedModelId = null;
+  pushMlLog(`شروع آموزش مدل «${modelName}» روی دیتاست ${datasetId} (SL=max(${minSlPct}%, ${slAtrMult}A), R:R=${targetRR.toFixed(1)}, Stretch≥${minStretchPct}%, Top ${topPercent}%)`);
+
+  res.json({ success: true, message: 'آموزش مدل در پس‌زمینه آغاز شد.' });
+
+  // Run memory-safe streaming training job in background
+  (async () => {
+    try {
+      const metaRes = await pool.query(
+        `SELECT exchange, timeframe, symbol_count FROM candle_datasets WHERE id = $1 LIMIT 1`,
+        [datasetId]
+      );
+      const exchange = metaRes.rows[0]?.exchange || 'xt';
+      const timeframe = metaRes.rows[0]?.timeframe || '5m';
+
+      const idxRes = await pool.query(
+        `SELECT chunk_index FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC`,
+        [datasetId]
+      );
+      const allChunkIndices: number[] = idxRes.rows.map((r: any) => Number(r.chunk_index));
+      if (allChunkIndices.length === 0) {
+        throw new Error(`هیچ کندلی برای دیتاست ${datasetId} در PostgreSQL یافت نشد.`);
+      }
+
+      // Evenly sample chunks across the dataset to keep RAM strictly bounded (<120 MB)
+      const selectedChunks: number[] = [];
+      if (allChunkIndices.length <= maxChunksToScan) {
+        selectedChunks.push(...allChunkIndices);
+      } else {
+        const stride = allChunkIndices.length / maxChunksToScan;
+        for (let k = 0; k < maxChunksToScan; k++) {
+          selectedChunks.push(allChunkIndices[Math.floor(k * stride)]);
+        }
+      }
+
+      mlTrainingState.totalSymbolsEstimate = Math.max(selectedChunks.length, Math.round((metaRes.rows[0]?.symbol_count || selectedChunks.length) * (selectedChunks.length / allChunkIndices.length)));
+      mlTrainingState.stage = 'در حال استخراج ۳۴ ویژگی علّی زیگزاگ (بدون نگاه به آینده)...';
+      pushMlLog(`تعداد ${selectedChunks.length} بسته از ${allChunkIndices.length} بسته کندل ${exchange.toUpperCase()} (${timeframe}) برای آموزش انتخاب شد.`);
+
+      const samples: MlTrainingSample[] = [];
+      const MAX_SAMPLES = 115000;
+      const BATCH_CHUNKS = 10;
+      const excludeTail = Math.min(300, timeStopCandles + 5);
+
+      for (let b = 0; b < selectedChunks.length; b += BATCH_CHUNKS) {
+        if (mlTrainingState.shouldStop) {
+          throw new Error('آموزش توسط کاربر متوقف شد.');
+        }
+        const batch = selectedChunks.slice(b, b + BATCH_CHUNKS);
+        const chunkRows = await pool.query(
+          `SELECT items_json FROM candle_chunks WHERE dataset_id = $1 AND chunk_index = ANY($2::int[]) ORDER BY chunk_index ASC`,
+          [datasetId, batch]
+        );
+        for (const row of chunkRows.rows) {
+          if (mlTrainingState.shouldStop) break;
+          const rawItems = typeof row.items_json === 'string' ? JSON.parse(row.items_json) : row.items_json;
+          if (!Array.isArray(rawItems)) continue;
+          const items = [...rawItems].sort((a: any, b: any) =>
+            String(a?.symbol || '').localeCompare(String(b?.symbol || ''))
+          );
+          for (const item of items) {
+            mlTrainingState.symbolsProcessed++;
+            if (!Array.isArray(item.tuples) || item.tuples.length < 650) continue;
+            const symName = String(item.symbol || '');
+            const candles = item.tuples.map((t: number[]) => ({
+              time: t[0],
+              open: t[1],
+              high: t[2],
+              low: t[3],
+              close: t[4],
+              volume: t[5],
+            }));
+            const evs = extractCausalZigZagEvents(candles, zigzagParams, minAtrPct, undefined, excludeTail, minStretchPct);
+            for (const ev of evs) {
+              const side: 1 | -1 = ev.side === 'BUY' ? 1 : -1;
+              const slDist = Math.max(ev.close * (minSlPct / 100), slAtrMult * ev.atr);
+              const tpDist = slDist * targetRR;
+              const sim = simulateCausalOutcome(
+                candles,
+                ev.candleIndex,
+                side,
+                slDist,
+                tpDist,
+                timeStopCandles,
+                0.0006,
+                0.0006,
+                exchange === 'xt' ? 0.0004 : 0
+              );
+              samples.push({
+                symbol: symName,
+                time: ev.time,
+                exitTime: sim.exitTime,
+                side,
+                rMultiple: sim.rMultiple,
+                features: ev.features,
+              });
+              if (samples.length >= MAX_SAMPLES) break;
+            }
+            mlTrainingState.eventsExtracted = samples.length;
+            if (samples.length >= MAX_SAMPLES) break;
+          }
+          if (samples.length >= MAX_SAMPLES) break;
+        }
+        const pct = Math.min(75, Math.round(5 + ((b + batch.length) / selectedChunks.length) * 70));
+        mlTrainingState.progress = pct;
+        await new Promise((r) => setImmediate(r));
+        if (samples.length >= MAX_SAMPLES) {
+          pushMlLog(`سقف ایمن حافظه (${MAX_SAMPLES.toLocaleString('fa-IR')} رویداد علّی) تکمیل شد؛ ورود به مرحله آموزش درخت‌ها...`);
+          break;
+        }
+      }
+
+      if (mlTrainingState.shouldStop) {
+        throw new Error('آموزش توسط کاربر متوقف شد.');
+      }
+
+      mlTrainingState.stage = 'در حال آموزش مدل Gradient Boosted Trees (تقسیم ۴۵٪ آموزش / ۲۵٪ اعتبارسنجی / ۳۰٪ تست OOS)...';
+      mlTrainingState.progress = 80;
+      pushMlLog(`${samples.length.toLocaleString('fa-IR')} رویداد از ${mlTrainingState.symbolsProcessed} نماد استخراج شد. شروع آموزش ${numTrees} درخت تصمیم...`);
+      await new Promise((r) => setImmediate(r));
+
+      const trained = trainZigZagMlModel(samples, {
+        modelName,
+        exchange,
+        timeframe,
+        datasetId,
+        totalSymbols: mlTrainingState.symbolsProcessed,
+        zigzagParams,
+        slAtrMult,
+        minSlPct,
+        tpAtrMult,
+        targetRR,
+        timeStopCandles,
+        minAtrPct,
+        minStretchPct,
+        numTrees,
+        learningRate: 0.04,
+        maxDepth,
+        l2Lambda,
+        topPercent,
+      });
+      samples.length = 0;
+
+      mlTrainingState.stage = 'در حال ذخیره‌سازی مدل در دیتابیس PostgreSQL...';
+      mlTrainingState.progress = 94;
+
+      if (activateAfterTrain) {
+        await pool.query(`UPDATE ml_zigzag_models SET is_active = FALSE`);
+      }
+      await pool.query(
+        `INSERT INTO ml_zigzag_models (id, name, exchange, timeframe, dataset_id, is_active, model_json, metrics_json, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())`,
+        [
+          trained.id,
+          trained.name,
+          trained.exchange,
+          trained.timeframe,
+          trained.datasetId,
+          activateAfterTrain,
+          JSON.stringify(trained),
+          JSON.stringify(trained.metrics),
+        ]
+      );
+
+      if (activateAfterTrain) {
+        setActiveMlModel(trained);
+      }
+
+      mlTrainingState.lastTrainedModelId = trained.id;
+      mlTrainingState.progress = 100;
+      mlTrainingState.stage = 'تکمیل شد';
+      mlTrainingState.finishedAt = new Date().toISOString();
+      pushMlLog(
+        `آموزش با موفقیت پایان یافت! تست OOS: ${trained.metrics.oos.totalSignals} سیگنال | وین‌ریت ${trained.metrics.oos.winRate}% | PF=${trained.metrics.oos.profitFactor} | میانگین ${trained.metrics.oos.avgR >= 0 ? '+' : ''}${trained.metrics.oos.avgR}R`
+      );
+    } catch (err: any) {
+      mlTrainingState.error = err?.message || 'خطای نامشخص در آموزش مدل';
+      mlTrainingState.stage = 'خطا';
+      mlTrainingState.finishedAt = new Date().toISOString();
+      pushMlLog(`خطا: ${mlTrainingState.error}`);
+    } finally {
+      mlTrainingState.isRunning = false;
+      mlTrainingState.shouldStop = false;
+    }
+  })();
+});
+
+// =========================================================================
 // POSTGRESQL DATABASE HEALTH & AUTO-INIT
 // =========================================================================
 app.get('/api/db-test', async (_req, res) => {
@@ -8785,8 +9302,9 @@ async function startServer() {
         } else {
           console.warn(`[PostgreSQL] ⚠️ Database auto-init warning:`, dbInitResult.error);
         }
-        // Authoritatively hydrate live scanner state directly from PostgreSQL
+        // Authoritatively hydrate live scanner state and active ML model directly from PostgreSQL
         await loadLiveConfigFromDatabase();
+        await hydrateActiveMlModelFromDatabase();
       })
       .catch((dbErr: any) => {
         console.warn(`[PostgreSQL] ⚠️ Database startup warning:`, dbErr.message);

@@ -198,6 +198,8 @@ export interface StrategyTrade {
   rejectionReason?: string;
   stage?: 'RAW' | 'FINAL';
   competingSymbol?: string;
+  score?: number;
+  confidence?: number;
   reason?: string;
 }
 

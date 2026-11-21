@@ -8,7 +8,7 @@
 import { CandleData, ZigZagPoint, Leg } from '../types/crypto';
 import { StrategyConfig, DEFAULT_STRATEGY_CONFIG, Trade } from '../types/strategy';
 import { calculateATR, calculateAtrZigZag, analyzeZigZagLegs } from '../utils/indicators';
-import { runStrategy1Backtest, runStrategy2Backtest, runStrategy3Backtest, findPivotConfirmCandleIdx } from '../utils/strategyEngine';
+import { runStrategy1Backtest, runStrategy2Backtest, runStrategy3Backtest, runStrategy4MlBacktest, findPivotConfirmCandleIdx } from '../utils/strategyEngine';
 import {
   calculateExactTradeSizing,
   calculateXtContractQuantity,
@@ -24,6 +24,7 @@ export {
   runStrategy1Backtest,
   runStrategy2Backtest,
   runStrategy3Backtest,
+  runStrategy4MlBacktest,
   findPivotConfirmCandleIdx,
   calculateExactTradeSizing,
   calculateXtContractQuantity,
@@ -33,7 +34,7 @@ export {
 export type { XtRiskBudgetedResult };
 
 export interface ServerStrategyConfig {
-  strategyId: 'strategy_1_e_breakout' | 'strategy_2_next_pivot' | 'strategy_3_ab_midpoint';
+  strategyId: 'strategy_1_e_breakout' | 'strategy_2_next_pivot' | 'strategy_3_ab_midpoint' | 'strategy_4_ml_zigzag';
   timeframe: string;
   atrPeriod: number;
   atrMultiplier: number;
@@ -90,6 +91,7 @@ export interface CandidateSignal {
   targetRiskUsdt?: number;
   strategyName: string;
   timeframe?: string;
+  mlScore?: number;
   discoveredAt: string;
 }
 
@@ -193,26 +195,31 @@ export function evaluateSymbolForLiveSignal(params: {
   }
 
   // 1. Run technical indicators strictly on closed candles
-  const atrResult = calculateATR(candles, config.atrPeriod || 14);
+  const isMlStrategy = config.strategyId === 'strategy_4_ml_zigzag';
+  const atrResult = isMlStrategy ? { atrValues: [] as number[] } : calculateATR(candles, config.atrPeriod || 14);
   const atrValues = atrResult.atrValues;
 
-  const zzResult = calculateAtrZigZag(
-    candles,
-    atrValues,
-    config.atrMultiplier || 2.0,
-    config.minCandles || 5
-  );
+  const zzResult = isMlStrategy
+    ? { points: [] as ReturnType<typeof calculateAtrZigZag>['points'] }
+    : calculateAtrZigZag(
+        candles,
+        atrValues,
+        config.atrMultiplier || 2.0,
+        config.minCandles || 5
+      );
 
-  const analyzedLegs = analyzeZigZagLegs(
-    zzResult.points,
-    config.minCandlesForLongLeg || 5,
-    config.longLegAtrMultiplier || 3.0,
-    config.maxBlueLegPercent || 70,
-    config.maxBreakoutAtrMultiplier || 3.0,
-    candles,
-    config.minCandlesForBlueLeg ?? 1,
-    config.blueLegAtrMultiplier ?? 0.1
-  );
+  const analyzedLegs = isMlStrategy
+    ? ([] as ReturnType<typeof analyzeZigZagLegs>)
+    : analyzeZigZagLegs(
+        zzResult.points,
+        config.minCandlesForLongLeg || 5,
+        config.longLegAtrMultiplier || 3.0,
+        config.maxBlueLegPercent || 70,
+        config.maxBreakoutAtrMultiplier || 3.0,
+        candles,
+        config.minCandlesForBlueLeg ?? 1,
+        config.blueLegAtrMultiplier ?? 0.1
+      );
 
   // 2. Configure strategy parameters
   const entryFeePct = config.entryCommissionPercent ?? 0.06;
@@ -237,6 +244,15 @@ export function evaluateSymbolForLiveSignal(params: {
     slSlippagePercent: config.slSlippagePercent ?? ((config.exchange ?? 'xt') === 'xt' ? 0.04 : 0),
     timeStopEnabled: config.timeStopEnabled !== false,
     timeStopCandles: config.timeStopCandles ?? 80,
+    atrPeriod: config.atrPeriod || 14,
+    atrMultiplier: config.atrMultiplier || 2.0,
+    minCandles: config.minCandles || 5,
+    minCandlesForLongLeg: config.minCandlesForLongLeg || 5,
+    longLegAtrMultiplier: config.longLegAtrMultiplier || 3.0,
+    minCandlesForBlueLeg: config.minCandlesForBlueLeg ?? 1,
+    blueLegAtrMultiplier: config.blueLegAtrMultiplier ?? 0.1,
+    maxBlueLegPercent: config.maxBlueLegPercent || 70,
+    maxBreakoutAtrMultiplier: config.maxBreakoutAtrMultiplier || 3.0,
     minAtrPercent:
       config.minAtrPercent !== undefined && config.minAtrPercent !== null && String(config.minAtrPercent) !== '' && !isNaN(Number(config.minAtrPercent))
         ? Math.max(0, Number(config.minAtrPercent))
@@ -253,9 +269,12 @@ export function evaluateSymbolForLiveSignal(params: {
     symbol,
   };
 
-  // Run Strategy 1, Strategy 2, or Strategy 3 Backtest Engine on closed candles
+  // Run Strategy 1, Strategy 2, Strategy 3, or Strategy 4 (ML ZigZag) Backtest Engine on closed candles
   let evalTrades: any[] = [];
-  if (config.strategyId === 'strategy_3_ab_midpoint') {
+  if (isMlStrategy) {
+    const res = runStrategy4MlBacktest(candles, stratConfig, atrValues);
+    evalTrades = res.trades;
+  } else if (config.strategyId === 'strategy_3_ab_midpoint') {
     const res = runStrategy3Backtest(
       candles,
       zzResult.points,
@@ -278,7 +297,15 @@ export function evaluateSymbolForLiveSignal(params: {
     );
     evalTrades = res.trades;
   } else {
-    const res = runStrategy1Backtest(candles, zzResult.points, analyzedLegs, stratConfig, atrValues);
+    const res = runStrategy1Backtest(
+      candles,
+      zzResult.points,
+      analyzedLegs,
+      stratConfig,
+      atrValues,
+      config.atrMultiplier || 2.0,
+      config.minCandles || 5
+    );
     evalTrades = res.trades;
   }
 
@@ -298,7 +325,12 @@ export function evaluateSymbolForLiveSignal(params: {
   const side: 'BUY' | 'SELL' = lastTrade.direction === 'BUY' ? 'BUY' : 'SELL';
   const posSide: 'LONG' | 'SHORT' = lastTrade.direction === 'BUY' ? 'LONG' : 'SHORT';
   const curPrice = candles[candles.length - 1].close;
-  const targetRR = config.riskRewardRatio && config.riskRewardRatio > 0 ? config.riskRewardRatio : 2.0;
+  const targetRR =
+    config.strategyId === 'strategy_4_ml_zigzag' && Number(lastTrade.riskReward) > 0
+      ? Number(lastTrade.riskReward)
+      : config.riskRewardRatio && config.riskRewardRatio > 0
+      ? config.riskRewardRatio
+      : 2.0;
 
   if (!(curPrice > 0) || !(lastTrade.stopLoss > 0)) {
     return null;
@@ -427,11 +459,14 @@ export function evaluateSymbolForLiveSignal(params: {
     positionToRiskRatio: posToRiskRatio,
     targetRiskUsdt: parseFloat(riskBudgetUsdt.toFixed(2)),
     strategyName:
-      config.strategyId === 'strategy_3_ab_midpoint'
+      config.strategyId === 'strategy_4_ml_zigzag'
+        ? 'استراتژی ۴ (هوش مصنوعی ZigZag ML)'
+        : config.strategyId === 'strategy_3_ab_midpoint'
         ? 'استراتژی ۳ (۶ پیوت متوالی)'
         : config.strategyId === 'strategy_2_next_pivot'
         ? 'استراتژی ۲ (Next-Pivot)'
         : 'استراتژی ۱ (E-Breakout)',
+    mlScore: typeof lastTrade.score === 'number' ? lastTrade.score : undefined,
     discoveredAt: new Date().toISOString(),
   };
 }
