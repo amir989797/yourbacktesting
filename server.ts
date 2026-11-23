@@ -1063,7 +1063,7 @@ app.get('/api/xt/positions', async (req, res) => {
       const candlesElapsed = Math.max(0, Math.floor((Date.now() - openTimeMs) / tfMs));
       const isLiveMlStrategy = serverScannerState.config?.strategyId === 'strategy_4_ml_zigzag';
       const maxTimeStopCandles = isLiveMlStrategy
-        ? (getActiveMlModel().timeStopCandles || 288)
+        ? (getActiveMlModel().timeStopCandles || 144)
         : ((serverScannerState.config?.timeStopCandles) || 80);
       const candlesRemaining = Math.max(0, maxTimeStopCandles - candlesElapsed);
       const timeStopEnabled = isLiveMlStrategy ? true : serverScannerState.config?.timeStopEnabled !== false;
@@ -6744,6 +6744,7 @@ interface ServerActiveSignal {
   riskUsdt: number;
   positionToRiskRatio?: number;
   targetRiskUsdt?: number;
+  riskReward?: number;
   mlScore?: number;
   strategyName: string;
   discoveredAt: string;
@@ -7128,6 +7129,39 @@ function getScannerPublicState() {
   if (serverScannerState.isRunning && serverScannerState.startedAt) {
     elapsedSeconds = Math.max(0, Math.floor((now - new Date(serverScannerState.startedAt).getTime()) / 1000));
   }
+  let activeMlModelSummary: {
+    id: string;
+    name: string;
+    version: number;
+    targetRR: number;
+    slAtrMult: number;
+    minSlPct: number;
+    tpAtrMult: number;
+    timeStopCandles: number;
+    minAtrPct: number;
+    minStretchPct: number;
+    scoreThreshold: number;
+  } | null = null;
+  try {
+    const mlModel = getActiveMlModel();
+    const resolvedRR =
+      mlModel.targetRR && mlModel.targetRR > 0
+        ? mlModel.targetRR
+        : (mlModel.slAtrMult > 0 && mlModel.tpAtrMult > 0 ? Number((mlModel.tpAtrMult / mlModel.slAtrMult).toFixed(2)) : 1.5);
+    activeMlModelSummary = {
+      id: mlModel.id,
+      name: mlModel.name,
+      version: mlModel.version,
+      targetRR: resolvedRR,
+      slAtrMult: mlModel.slAtrMult,
+      minSlPct: mlModel.minSlPct ?? (mlModel.version >= 3 ? 3.0 : mlModel.version >= 2 ? 3.5 : 0),
+      tpAtrMult: mlModel.tpAtrMult,
+      timeStopCandles: mlModel.timeStopCandles || 144,
+      minAtrPct: mlModel.minAtrPct,
+      minStretchPct: mlModel.minStretchPct ?? (mlModel.version >= 3 ? 1.5 : mlModel.version >= 2 ? 4.0 : 0),
+      scoreThreshold: mlModel.scoreThreshold,
+    };
+  } catch {}
   return {
     serverTime: now,
     isRunning: serverScannerState.isRunning,
@@ -7135,6 +7169,7 @@ function getScannerPublicState() {
     startedAt: serverScannerState.startedAt,
     elapsedSeconds,
     config: serverScannerState.config,
+    activeMlModelSummary,
     lastRunAt: serverScannerState.lastRunAt,
     nextRunAt: serverScannerState.nextRunAt,
     secondsUntilNextRun,
@@ -7301,7 +7336,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
         // Position is actively open (filled) on exchange!
         const isMlLive = cfg.strategyId === 'strategy_4_ml_zigzag';
         const maxTimeStopCandles = isMlLive
-          ? (getActiveMlModel().timeStopCandles || 288)
+          ? (getActiveMlModel().timeStopCandles || 144)
           : (cfg.timeStopCandles || 80);
 
         // Check if Time-Stop condition is triggered for this position
@@ -7765,9 +7800,15 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
             ? chosen.positionToRiskRatio
             : (chosen.riskUsdt > 0 ? +(chosen.notionalUsdt / chosen.riskUsdt).toFixed(1) : 0);
 
+          const isLiveMlExec = cfg.strategyId === 'strategy_4_ml_zigzag';
+          const selectionNote =
+            isLiveMlExec && typeof chosen.mlScore === 'number'
+              ? `با بالاترین امتیاز هوش مصنوعی (ML Score: ${chosen.mlScore.toFixed(4)} | نسبت حجم/ریسک: ${chosenRatio})`
+              : `با کمترین نسبت حجم/ریسک (${chosenRatio})`;
+
           addServerScannerLog(
             'trade',
-            `⚡ [${currentTf}] سیگنال برگزیده ${chosen.posSide} برای ${chosen.symbol.toUpperCase()} با کمترین نسبت حجم/ریسک (${chosenRatio}) انتخاب شد. حجم: ${chosen.contractQty} (ارزش: $${chosen.notionalUsdt} | ریسک SL: $${chosen.riskUsdt} | اهرم: ${chosen.maxLeverage}x | مارجین: $${chosen.requiredMargin}) | استاپ: ${chosen.stopLoss} | تارگت: ${chosen.takeProfit}`,
+            `⚡ [${currentTf}] سیگنال برگزیده ${chosen.posSide} برای ${chosen.symbol.toUpperCase()} ${selectionNote} انتخاب شد. حجم: ${chosen.contractQty} (ارزش: $${chosen.notionalUsdt} | ریسک SL: $${chosen.riskUsdt} | اهرم: ${chosen.maxLeverage}x | مارجین: $${chosen.requiredMargin}) | استاپ: ${chosen.stopLoss} | تارگت: ${chosen.takeProfit}`,
             chosen.symbol,
             currentTf
           );
@@ -7776,7 +7817,17 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
             addServerScannerLog('info', `🚀 در حال ارسال سفارش زنده فیوچرز به XT برای ${xtSymbol.toUpperCase()} در تایم‌فریم ${currentTf}...`, chosen.symbol, currentTf);
 
             const symMeta = getXtSymbolMeta(xtSymbol);
-            const targetRR = cfg.riskRewardRatio && cfg.riskRewardRatio > 0 ? cfg.riskRewardRatio : 2.0;
+            const activeMlForExec = isLiveMlExec ? getActiveMlModel() : null;
+            const activeMlRR = activeMlForExec
+              ? (activeMlForExec.targetRR && activeMlForExec.targetRR > 0
+                  ? activeMlForExec.targetRR
+                  : (activeMlForExec.slAtrMult > 0 && activeMlForExec.tpAtrMult > 0
+                      ? Number((activeMlForExec.tpAtrMult / activeMlForExec.slAtrMult).toFixed(2))
+                      : 1.5))
+              : 0;
+            const targetRR = isLiveMlExec
+              ? (Number(chosen.riskReward) > 0 ? Number(chosen.riskReward) : activeMlRR)
+              : (cfg.riskRewardRatio && cfg.riskRewardRatio > 0 ? cfg.riskRewardRatio : 2.0);
 
             let livePrice = chosen.curPrice;
             try {

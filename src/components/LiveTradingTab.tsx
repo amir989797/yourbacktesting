@@ -758,6 +758,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   const [serverLastDurationMs, setServerLastDurationMs] = useState<number | null>(null);
   const [isTogglingServer, setIsTogglingServer] = useState<boolean>(false);
   const [serverActiveConfig, setServerActiveConfig] = useState<any | null>(null);
+  const [activeMlModelSummary, setActiveMlModelSummary] = useState<any | null>(null);
   const [serverExecutionLogs, setServerExecutionLogs] = useState<any[]>([]);
   const [serverActiveSignals, setServerActiveSignals] = useState<any[]>([]);
   const [activeLogTab, setActiveLogTab] = useState<'scanner' | 'execution' | 'signals'>('scanner');
@@ -1196,6 +1197,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
 
         if (Array.isArray(executionLogs)) {
           setServerExecutionLogs(executionLogs);
+        }
+
+        if (data.state.activeMlModelSummary) {
+          setActiveMlModelSummary(data.state.activeMlModelSummary);
         }
 
         if (config) {
@@ -1895,11 +1900,22 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                   <span>• استراتژی: <strong className="text-amber-300">{serverActiveConfig.strategyId === 'strategy_2_next_pivot' ? 'Next-Pivot (۲)' : serverActiveConfig.strategyId === 'strategy_3_ab_midpoint' ? '6-Pivot (۳)' : serverActiveConfig.strategyId === 'strategy_4_ml_zigzag' ? 'ZigZag ML (۴)' : 'E-Breakout (۱)'}</strong></span>
                   <span>• بودجه ریسک: <strong className="text-emerald-300">{serverActiveConfig.riskMode === 'fixed' ? `$${serverActiveConfig.riskAmountFixed || 50} ثابت (با احتساب اعشار و کارمزد صرافی)` : `${serverActiveConfig.riskPercent || 1}% بالانس`}</strong></span>
                   <span>• وضعیت همزمانی: <strong className="text-amber-300">{serverActiveConfig.noConcurrentPositions !== false ? 'تک‌پوزیشن کل (حداکثر ۱ معامله باز)' : 'هم‌زمان (حداکثر ۱ معامله در هر تایم‌فریم)'}</strong></span>
-                  <span>• سقف ورود: <strong className="text-cyan-300">{serverActiveConfig.maxCandlesToEnter ?? 35}c</strong></span>
-                  <span>• Time-Stop: <strong className="text-cyan-300">{serverActiveConfig.timeStopEnabled !== false ? `${serverActiveConfig.timeStopCandles ?? 80}c` : 'خاموش'}</strong></span>
-                  <span>• حداقل ATR: <strong className="text-emerald-300">{(serverActiveConfig.minAtrPercent ?? 0.25) === 0 ? 'خاموش' : `${serverActiveConfig.minAtrPercent ?? 0.25}%`}</strong></span>
-                  <span>• RSI پیوت: <strong className="text-sky-300">{(serverActiveConfig.s2RsiThreshold ?? 38) === 0 ? 'خاموش' : (serverActiveConfig.s2RsiThreshold ?? 38)}</strong></span>
-                  <span>• فاصله پیوت ATR: <strong className="text-cyan-300">{(serverActiveConfig.minEntryPivotAtr ?? 0) === 0 ? 'خاموش' : `${serverActiveConfig.minEntryPivotAtr}×`}</strong></span>
+                  {serverActiveConfig.strategyId === 'strategy_4_ml_zigzag' && activeMlModelSummary ? (
+                    <>
+                      <span>• R:R مدل ML: <strong className="text-emerald-300">1:{activeMlModelSummary.targetRR}</strong></span>
+                      <span>• SL مدل ML: <strong className="text-rose-300">max({activeMlModelSummary.minSlPct}%, {activeMlModelSummary.slAtrMult}×ATR)</strong></span>
+                      <span>• Time-Stop مدل ML: <strong className="text-cyan-300">{activeMlModelSummary.timeStopCandles}c</strong></span>
+                      <span>• حداقل ATR/کشیدگی: <strong className="text-emerald-300">{activeMlModelSummary.minAtrPct}% / {activeMlModelSummary.minStretchPct}%</strong></span>
+                    </>
+                  ) : (
+                    <>
+                      <span>• سقف ورود: <strong className="text-cyan-300">{serverActiveConfig.maxCandlesToEnter ?? 35}c</strong></span>
+                      <span>• Time-Stop: <strong className="text-cyan-300">{serverActiveConfig.timeStopEnabled !== false ? `${serverActiveConfig.timeStopCandles ?? 80}c` : 'خاموش'}</strong></span>
+                      <span>• حداقل ATR: <strong className="text-emerald-300">{(serverActiveConfig.minAtrPercent ?? 0.25) === 0 ? 'خاموش' : `${serverActiveConfig.minAtrPercent ?? 0.25}%`}</strong></span>
+                      <span>• RSI پیوت: <strong className="text-sky-300">{(serverActiveConfig.s2RsiThreshold ?? 38) === 0 ? 'خاموش' : (serverActiveConfig.s2RsiThreshold ?? 38)}</strong></span>
+                      <span>• فاصله پیوت ATR: <strong className="text-cyan-300">{(serverActiveConfig.minEntryPivotAtr ?? 0) === 0 ? 'خاموش' : `${serverActiveConfig.minEntryPivotAtr}×`}</strong></span>
+                    </>
+                  )}
                   <span>• واچ‌لیست: <strong className="text-cyan-300">{serverActiveConfig.symbols?.length || selectedSymbols?.length || 0} جفت‌ارز</strong></span>
                 </div>
                 {activeDbTrades.length > 0 && (
@@ -2373,18 +2389,21 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 />
               </div>
 
-              <div className="bg-[#141924] p-2.5 rounded-xl border border-[#242f42]">
-                <span className="text-[10px] text-gray-400 block">۹. ریسک به ریوارد (R:R):</span>
+              <div className={`bg-[#141924] p-2.5 rounded-xl border ${selectedStrategy === 'strategy_4_ml_zigzag' ? 'border-emerald-500/40 opacity-85' : 'border-[#242f42]'}`}>
+                <span className="text-[10px] text-gray-400 block">
+                  ۹. ریسک به ریوارد (R:R){selectedStrategy === 'strategy_4_ml_zigzag' ? ' — خودکار از مدل ML' : ''}:
+                </span>
                 <input
                   type="number"
                   min={0.1}
                   step={0.05}
-                  value={riskRewardRatio}
+                  disabled={selectedStrategy === 'strategy_4_ml_zigzag'}
+                  value={selectedStrategy === 'strategy_4_ml_zigzag' && activeMlModelSummary ? activeMlModelSummary.targetRR : riskRewardRatio}
                   onChange={(e) => {
                     const parsed = parseFloat(e.target.value);
                     if (!isNaN(parsed) && parsed > 0) setRiskRewardRatio(parsed);
                   }}
-                  className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-amber-300 font-mono text-center font-bold"
+                  className="w-full mt-1 px-2 py-0.5 bg-[#0e121a] border border-[#2c374c] rounded text-amber-300 font-mono text-center font-bold disabled:opacity-60 disabled:cursor-not-allowed"
                 />
               </div>
 
@@ -2715,7 +2734,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                   min={5}
                   max={500}
                   step={5}
-                  value={timeStopCandles}
+                  value={selectedStrategy === 'strategy_4_ml_zigzag' && activeMlModelSummary ? activeMlModelSummary.timeStopCandles : timeStopCandles}
                   onChange={(e) => {
                     const val = parseInt(e.target.value, 10) || 80;
                     setTimeStopCandles(val);
@@ -2724,15 +2743,18 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                     } catch {}
                     syncConfigToServer({ timeStopCandles: val });
                   }}
-                  disabled={!timeStopEnabled}
-                  className="w-20 px-2 py-1 bg-[#141a26] border border-[#2d384c] rounded-lg text-cyan-300 font-mono text-center font-bold text-xs disabled:opacity-40"
-                  title="حداکثر تعداد کندل ماندن در پوزیشن"
+                  disabled={selectedStrategy === 'strategy_4_ml_zigzag' || !timeStopEnabled}
+                  className="w-20 px-2 py-1 bg-[#141a26] border border-[#2d384c] rounded-lg text-cyan-300 font-mono text-center font-bold text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={selectedStrategy === 'strategy_4_ml_zigzag' ? 'در استراتژی ۴ مقدار خروج زمانی به صورت خودکار از مدل ML فعال خوانده می‌شود' : 'حداکثر تعداد کندل ماندن در پوزیشن'}
                 />
-                <span className="text-xs text-gray-400 font-sans">کندل</span>
-                <label className="flex items-center gap-2 cursor-pointer select-none px-3 py-1.5 rounded-xl bg-[#141a26] border border-[#2d384c] hover:border-cyan-500/40 transition-colors">
+                <span className="text-xs text-gray-400 font-sans">
+                  {selectedStrategy === 'strategy_4_ml_zigzag' ? 'کندل (از مدل ML)' : 'کندل'}
+                </span>
+                <label className={`flex items-center gap-2 select-none px-3 py-1.5 rounded-xl bg-[#141a26] border border-[#2d384c] transition-colors ${selectedStrategy === 'strategy_4_ml_zigzag' ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:border-cyan-500/40'}`}>
                   <input
                     type="checkbox"
-                    checked={timeStopEnabled}
+                    checked={selectedStrategy === 'strategy_4_ml_zigzag' ? true : timeStopEnabled}
+                    disabled={selectedStrategy === 'strategy_4_ml_zigzag'}
                     onChange={(e) => {
                       const val = e.target.checked;
                       setTimeStopEnabled(val);
@@ -2741,10 +2763,10 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                       } catch {}
                       syncConfigToServer({ timeStopEnabled: val });
                     }}
-                    className="w-4 h-4 rounded text-cyan-500 bg-[#171d28] border-[#2e394e] focus:ring-cyan-500 cursor-pointer"
+                    className="w-4 h-4 rounded text-cyan-500 bg-[#171d28] border-[#2e394e] focus:ring-cyan-500 cursor-pointer disabled:cursor-not-allowed"
                   />
-                  <span className={`text-xs font-bold font-mono ${timeStopEnabled ? 'text-cyan-300' : 'text-gray-400'}`}>
-                    {timeStopEnabled ? 'فعال' : 'غیرفعال'}
+                  <span className={`text-xs font-bold font-mono ${(selectedStrategy === 'strategy_4_ml_zigzag' || timeStopEnabled) ? 'text-cyan-300' : 'text-gray-400'}`}>
+                    {selectedStrategy === 'strategy_4_ml_zigzag' ? 'خودکار (ML)' : (timeStopEnabled ? 'فعال' : 'غیرفعال')}
                   </span>
                 </label>
               </div>

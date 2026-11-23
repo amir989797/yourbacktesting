@@ -919,80 +919,98 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
               </div>
             </label>
 
-            <label className="space-y-1">
-              <span className="text-[10px] text-slate-400">حد ضرر (SL × ATR / حداقل %)</span>
+            <div className="space-y-1">
+              <span className="text-[10px] text-slate-400">حد ضرر (SL)</span>
               <div className="grid grid-cols-2 gap-1">
-                <input
-                  type="number"
-                  step="0.5"
-                  value={slAtrMult}
-                  onChange={(e) => handleSlAtrChange(Number(e.target.value))}
-                  disabled={jobStatus.isRunning}
-                  title="ضریب SL برحسب ATR"
-                  className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-1.5 py-1.5 font-mono text-slate-100"
-                />
-                <input
-                  type="number"
-                  step="0.5"
-                  min={0.5}
-                  max={12}
-                  value={minSlPct}
-                  onChange={(e) => setMinSlPct(Number(e.target.value))}
-                  disabled={jobStatus.isRunning}
-                  title="حداقل درصد SL ضداسویپ (%)"
-                  className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-1.5 py-1.5 font-mono text-slate-100"
-                />
+                <div>
+                  <span className="block text-[9px] text-slate-500 mb-0.5">ضریب ATR</span>
+                  <input
+                    type="number"
+                    step="0.5"
+                    value={slAtrMult}
+                    onChange={(e) => handleSlAtrChange(Number(e.target.value))}
+                    disabled={jobStatus.isRunning}
+                    title="ضریب SL برحسب ATR"
+                    className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-1.5 py-1.5 font-mono text-slate-100"
+                  />
+                </div>
+                <div>
+                  <span className="block text-[9px] text-slate-500 mb-0.5">حداقل SL (%)</span>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min={0.5}
+                    max={12}
+                    value={minSlPct}
+                    onChange={(e) => setMinSlPct(Number(e.target.value))}
+                    disabled={jobStatus.isRunning}
+                    title="حداقل درصد SL ضداسویپ (%)"
+                    className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-1.5 py-1.5 font-mono text-slate-100"
+                  />
+                </div>
               </div>
-            </label>
-            <label className="space-y-1">
-              <span className="text-[10px] text-emerald-300 font-semibold">ریسک به ریوارد (R:R) / TP×ATR</span>
+            </div>
+            <div className="space-y-1">
+              <span className="text-[10px] text-emerald-300 font-semibold">تارگت سود (R:R و معادل ATR)</span>
               <div className="grid grid-cols-2 gap-1">
-                <input
-                  type="number"
-                  step="0.25"
-                  min={0.5}
-                  max={10}
-                  value={targetRR}
-                  onChange={(e) => handleTargetRRChange(Number(e.target.value))}
-                  disabled={jobStatus.isRunning}
-                  title="نسبت ریسک به ریوارد هدف (R:R) — تارگت = حدضرر × R:R"
-                  className="w-full rounded-lg bg-[#0b0e14] border border-emerald-500/50 px-1.5 py-1.5 font-mono text-emerald-300 font-semibold"
-                />
-                <input
-                  type="number"
-                  step="0.5"
-                  value={tpAtrMult}
-                  onChange={(e) => handleTpAtrChange(Number(e.target.value))}
-                  disabled={jobStatus.isRunning}
-                  title="حد سود معادل برحسب مضرب ATR (SL × R:R)"
-                  className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-1.5 py-1.5 font-mono text-slate-100"
-                />
+                <div>
+                  <span className="block text-[9px] text-emerald-400/90 mb-0.5">نسبت R:R</span>
+                  <input
+                    type="number"
+                    step="0.25"
+                    min={0.5}
+                    max={10}
+                    value={targetRR}
+                    onChange={(e) => handleTargetRRChange(Number(e.target.value))}
+                    disabled={jobStatus.isRunning}
+                    title="نسبت ریسک به ریوارد هدف (R:R) — تارگت = حدضرر × R:R"
+                    className="w-full rounded-lg bg-[#0b0e14] border border-emerald-500/50 px-1.5 py-1.5 font-mono text-emerald-300 font-semibold"
+                  />
+                </div>
+                <div>
+                  <span className="block text-[9px] text-slate-500 mb-0.5">معادل TP×ATR</span>
+                  <input
+                    type="number"
+                    step="0.5"
+                    value={tpAtrMult}
+                    onChange={(e) => handleTpAtrChange(Number(e.target.value))}
+                    disabled={jobStatus.isRunning}
+                    title="حد سود معادل برحسب مضرب ATR (حاصل‌ضرب SL×ATR در R:R)"
+                    className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-1.5 py-1.5 font-mono text-slate-100"
+                  />
+                </div>
               </div>
-            </label>
-            <label className="space-y-1">
-              <span className="text-[10px] text-slate-400">Time-Stop / کشیدگی (%)</span>
+            </div>
+            <div className="space-y-1">
+              <span className="text-[10px] text-slate-400">خروج زمانی و کشیدگی</span>
               <div className="grid grid-cols-2 gap-1">
-                <input
-                  type="number"
-                  value={timeStopCandles}
-                  onChange={(e) => setTimeStopCandles(Number(e.target.value))}
-                  disabled={jobStatus.isRunning}
-                  title="سقف کندل Time-Stop"
-                  className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-1.5 py-1.5 font-mono text-slate-100"
-                />
-                <input
-                  type="number"
-                  step="0.5"
-                  min={0}
-                  max={15}
-                  value={minStretchPct}
-                  onChange={(e) => setMinStretchPct(Number(e.target.value))}
-                  disabled={jobStatus.isRunning}
-                  title="حداقل کشیدگی پیوت از EMA200 یا ۴h (%)"
-                  className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-1.5 py-1.5 font-mono text-slate-100"
-                />
+                <div>
+                  <span className="block text-[9px] text-slate-500 mb-0.5">Time-Stop (کندل)</span>
+                  <input
+                    type="number"
+                    value={timeStopCandles}
+                    onChange={(e) => setTimeStopCandles(Number(e.target.value))}
+                    disabled={jobStatus.isRunning}
+                    title="سقف کندل Time-Stop"
+                    className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-1.5 py-1.5 font-mono text-slate-100"
+                  />
+                </div>
+                <div>
+                  <span className="block text-[9px] text-slate-500 mb-0.5">کشیدگی (%)</span>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min={0}
+                    max={15}
+                    value={minStretchPct}
+                    onChange={(e) => setMinStretchPct(Number(e.target.value))}
+                    disabled={jobStatus.isRunning}
+                    title="حداقل کشیدگی پیوت از EMA200 یا ۴h (%)"
+                    className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-1.5 py-1.5 font-mono text-slate-100"
+                  />
+                </div>
               </div>
-            </label>
+            </div>
             <label className="space-y-1">
               <span className="text-[10px] text-slate-400">فیلتر نخبگان (Top %)</span>
               <input
