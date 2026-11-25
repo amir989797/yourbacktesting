@@ -1,8 +1,8 @@
+import 'dotenv/config';
 import express from 'express';
 import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import dotenv from 'dotenv';
 import crypto from 'crypto';
 import https from 'https';
 import fs from 'fs';
@@ -33,6 +33,7 @@ import {
 import { PRETRAINED_XT_5M_ML_MODEL } from './src/utils/pretrainedZigZagMlModel';
 import {
   initDatabase,
+  ensureDatabaseInitialized,
   testDatabaseConnection,
   pool,
   db,
@@ -44,8 +45,6 @@ import {
 import { isXtExcludedSymbol } from './src/types/crypto.ts';
 import { quantizeXtPrice } from './src/utils/exchangePrecision';
 
-dotenv.config();
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -53,7 +52,7 @@ const app = express();
 const server = http.createServer(app);
 const portArgIdx = process.argv.indexOf('--port');
 const portArg = portArgIdx !== -1 ? parseInt(process.argv[portArgIdx + 1], 10) : NaN;
-const PORT = !isNaN(portArg) ? portArg : 3000;
+const PORT = !isNaN(portArg) ? portArg : (parseInt(process.env.PORT || '', 10) || 3000);
 
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
@@ -2626,8 +2625,10 @@ app.get('/api/market/server-buffer-data', (req, res) => {
 // 0. Remote PostgreSQL Status & Storage Capacity Diagnostics
 app.get('/api/cloudsql/status', async (req, res) => {
   try {
-    const { createPool } = await import('./src/db/index.ts');
+    const { createPool, getActiveDbHostPort } = await import('./src/db/index.ts');
     const pool = createPool();
+    const { host, port, fallbackWarning } = getActiveDbHostPort();
+    const serverHost = `${host}:${port}`;
 
     // Query DB size and counts
     const dbSizeRes = await pool.query(
@@ -2649,7 +2650,8 @@ app.get('/api/cloudsql/status', async (req, res) => {
     res.json({
       success: true,
       connected: true,
-      serverHost: '193.142.58.196:5432',
+      serverHost,
+      ...(fallbackWarning ? { fallbackWarning } : {}),
       databaseName: currentDbName,
       databaseUser: currentDbUser,
       dbSize,
@@ -2658,8 +2660,7 @@ app.get('/api/cloudsql/status', async (req, res) => {
       chunkCount,
       totalCandlesStored,
       hasAdequateSpace: true,
-      spaceNote:
-        'دیتابیس سرور PostgreSQL اختصاصی (193.142.58.196:5432) کاملاً متصل و پایدار است.',
+      spaceNote: `دیتابیس سرور PostgreSQL اختصاصی (${serverHost}) کاملاً متصل و پایدار است.`,
     });
   } catch (error: any) {
     console.error('[Remote PostgreSQL] status check error:', error);
@@ -2943,8 +2944,33 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ success: false, error: 'نام کاربری و رمز عبور الزامی است.' });
     }
 
-    // Query user record directly from PostgreSQL database
-    const userRes = await pool.query('SELECT * FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1;', [trimmedUser]);
+    // Ensure schema & users table exist (handles fresh DBs or boot-time races)
+    const initCheck = await ensureDatabaseInitialized();
+    if (!initCheck.success) {
+      return res.status(500).json({
+        success: false,
+        error: `خطا در آماده‌سازی جداول دیتابیس PostgreSQL: ${initCheck.error}`,
+      });
+    }
+
+    // Query user record directly from PostgreSQL database (auto-heal if relation "users" was missing)
+    let userRes;
+    try {
+      userRes = await pool.query('SELECT * FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1;', [trimmedUser]);
+    } catch (queryErr: any) {
+      if (queryErr?.code === '42P01' || String(queryErr?.message || '').includes('does not exist')) {
+        const reinit = await ensureDatabaseInitialized(true);
+        if (!reinit.success) {
+          return res.status(500).json({
+            success: false,
+            error: `جدول users در دیتابیس ساخته نشد: ${reinit.error}`,
+          });
+        }
+        userRes = await pool.query('SELECT * FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1;', [trimmedUser]);
+      } else {
+        throw queryErr;
+      }
+    }
     if (userRes.rows.length === 0) {
       // Auto-bootstrap amir if table was freshly created
       if (trimmedUser.toLowerCase() === 'amir' && (password === '!#@Amir' || password === (process.env.adminpass || '!#@Amir'))) {
@@ -3002,6 +3028,10 @@ app.post('/api/auth/change-password', async (req, res) => {
     const trimmedUser = typeof username === 'string' ? username.trim() : '';
     if (!trimmedUser || !newPassword) {
       return res.status(400).json({ success: false, error: 'اطلاعات ناقص است.' });
+    }
+    const initCheck = await ensureDatabaseInitialized();
+    if (!initCheck.success) {
+      return res.status(500).json({ success: false, error: `خطا در آماده‌سازی دیتابیس: ${initCheck.error}` });
     }
     const userRes = await pool.query('SELECT * FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1;', [trimmedUser]);
     if (userRes.rows.length === 0) {
@@ -7044,16 +7074,21 @@ async function loadLiveConfigFromDatabase(): Promise<boolean> {
         serverScannerState.config.intervalMs = interval;
         scheduleNextAlignedScannerRun(interval);
         console.log(`[ServerLiveScanner] 🚀 Autopilot candle-aligned background loop resumed via PostgreSQL (Interval: ${interval}ms, Next: ${serverScannerState.nextRunAt})`);
+      } else {
+        clearServerScannerTimer();
+        serverScannerState.nextRunAt = null;
       }
+      writeLiveConfigToDiskOnly();
       return true;
     }
+    hasBootHydratedLiveConfig = true;
   } catch (err: any) {
     console.warn('[ServerLiveScanner] Warning reading state from PostgreSQL:', err.message);
   }
   return false;
 }
 
-function saveLiveConfigToDisk() {
+function writeLiveConfigToDiskOnly(): PersistentLiveScannerData | null {
   try {
     const dataDir = path.dirname(CONFIG_FILE_PATH);
     if (!fs.existsSync(dataDir)) {
@@ -7070,13 +7105,21 @@ function saveLiveConfigToDisk() {
       updatedAt: new Date().toISOString(),
     };
     fs.writeFileSync(CONFIG_FILE_PATH, JSON.stringify(data, null, 2), 'utf-8');
-    syncLiveConfigToDatabase(data).catch(() => {});
+    return data;
   } catch (err: any) {
     console.error('[ServerLiveScanner] Failed to save live config to disk:', err.message);
+    return null;
   }
 }
 
-// Initial bootstrap from local disk if present (before DB connects)
+function saveLiveConfigToDisk() {
+  const data = writeLiveConfigToDiskOnly();
+  if (data) {
+    syncLiveConfigToDatabase(data).catch(() => {});
+  }
+}
+
+// Initial bootstrap from local disk if present (non-running config preview ONLY; PostgreSQL is authoritative for isRunning)
 const savedDiskData = loadLiveConfigFromDisk();
 if (savedDiskData) {
   serverScannerState.config = {
@@ -7086,8 +7129,8 @@ if (savedDiskData) {
   if (!serverScannerState.config.timeframes || !serverScannerState.config.timeframes.length) {
     serverScannerState.config.timeframes = [serverScannerState.config.timeframe || '5m'];
   }
-  serverScannerState.isRunning = !!savedDiskData.isRunning;
-  serverScannerState.startedAt = savedDiskData.startedAt || null;
+  serverScannerState.isRunning = false;
+  serverScannerState.startedAt = null;
   serverScannerState.lastRunAt = savedDiskData.lastRunAt || null;
   serverScannerState.totalRunsCount = savedDiskData.totalRunsCount || 0;
   if (Array.isArray(savedDiskData.logs) && savedDiskData.logs.length > 0) {
@@ -7096,7 +7139,7 @@ if (savedDiskData) {
   if (Array.isArray(savedDiskData.executionLogs) && savedDiskData.executionLogs.length > 0) {
     serverScannerState.executionLogs = savedDiskData.executionLogs;
   }
-  console.log(`[ServerLiveScanner] ✅ Pre-loaded fallback config from disk cache (Active: ${serverScannerState.isRunning}, Started: ${serverScannerState.startedAt || 'None'})`);
+  console.log(`[ServerLiveScanner] ✅ Pre-loaded fallback config from disk cache (awaiting authoritative PostgreSQL hydration...)`);
 }
 
 function addServerScannerLog(
@@ -8483,18 +8526,9 @@ app.get('/api/live-scanner/status', async (_req, res) => {
     'Surrogate-Control': 'no-store',
   });
 
-  // Only hydrate from PostgreSQL during initial cold-start before boot hydration completes
-  if (!serverScannerState.isRunning && !hasBootHydratedLiveConfig) {
-    try {
-      const dbCheck = await pool.query('SELECT is_running FROM live_scanner_state WHERE id = $1', ['current']);
-      if (dbCheck.rows.length > 0 && dbCheck.rows[0].is_running) {
-        await loadLiveConfigFromDatabase();
-      } else {
-        hasBootHydratedLiveConfig = true;
-      }
-    } catch (err: any) {
-      console.warn('[ServerLiveScanner] Error verifying DB status in status endpoint:', err.message);
-    }
+  // Always hydrate authoritative state from PostgreSQL before serving cached fallback
+  if (!hasBootHydratedLiveConfig) {
+    await loadLiveConfigFromDatabase();
   } else if (serverScannerState.isRunning && Date.now() - lastDbRunningCheckMs > 15000) {
     // Wait until DB sync queue settles before cross-checking PostgreSQL for an external stop
     const startedRecently = serverScannerState.startedAt
@@ -8511,7 +8545,7 @@ app.get('/api/live-scanner/status', async (_req, res) => {
           serverScannerState.isRunning = false;
           serverScannerState.startedAt = null;
           serverScannerState.nextRunAt = null;
-          saveLiveConfigToDisk();
+          writeLiveConfigToDiskOnly();
         }
       } catch {}
     }
@@ -9346,7 +9380,7 @@ async function startServer() {
     console.log(`⚡ Server-side crypto trading platform running on http://0.0.0.0:${PORT}`);
 
     // Run PostgreSQL database table verification asynchronously in background so port 3000 opens instantly
-    initDatabase()
+    ensureDatabaseInitialized()
       .then(async (dbInitResult) => {
         if (dbInitResult.success) {
           console.log(`[PostgreSQL] 🚀 Auto-initialized ${dbInitResult.tablesCreated.length} tables on remote database.`);

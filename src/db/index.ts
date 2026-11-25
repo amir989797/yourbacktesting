@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import crypto from 'crypto';
@@ -7,37 +8,105 @@ export function hashPassword(password: string, salt: string): string {
   return crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
 }
 
-export const PG_CONNECTION_STRING =
-  process.env.DATABASE_URL ||
+const DEFAULT_FALLBACK_PG_URL =
   'postgresql://admin:x3Yuxl6T89GaWF0y1R@193.142.58.196:5432/crypto_strategy_lab';
+
+export let PG_CONNECTION_STRING =
+  process.env.DATABASE_URL?.trim() || DEFAULT_FALLBACK_PG_URL;
+
+export let dbFallbackWarning: string | null = null;
+
+export function parseDbHostPort(connStr: string): { host: string; port: number } {
+  try {
+    const u = new URL(connStr);
+    return { host: u.hostname || 'localhost', port: Number(u.port) || 5432 };
+  } catch {
+    return { host: 'unknown', port: 5432 };
+  }
+}
+
+export function getActiveDbHostPort(): { host: string; port: number; fallbackWarning: string | null } {
+  const { host, port } = parseDbHostPort(PG_CONNECTION_STRING);
+  return { host, port, fallbackWarning: dbFallbackWarning };
+}
+
+function getDbHostPort(): { host: string; port: number } {
+  return parseDbHostPort(PG_CONNECTION_STRING);
+}
 
 declare global {
   var _postgresPool: Pool | undefined;
 }
 
+function buildPgPool(connectionString: string): Pool {
+  const p = new Pool({
+    connectionString,
+    ssl: false,
+    max: 20,
+    connectionTimeoutMillis: 15000,
+    idleTimeoutMillis: 20000,
+    statement_timeout: 30000,
+    query_timeout: 30000,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10000,
+  });
+
+  p.on('error', (err) => {
+    console.error('Unexpected error on idle SQL pool client:', err.message);
+  });
+  return p;
+}
+
 export const createPool = () => {
   if (!global._postgresPool) {
-    global._postgresPool = new Pool({
-      connectionString: PG_CONNECTION_STRING,
-      ssl: false,
-      max: 20,
-      connectionTimeoutMillis: 30000,
-      idleTimeoutMillis: 20000,
-      statement_timeout: 30000,
-      query_timeout: 30000,
-      keepAlive: true,
-      keepAliveInitialDelayMillis: 10000,
-    });
-
-    global._postgresPool.on('error', (err) => {
-      console.error('Unexpected error on idle SQL pool client:', err.message);
-    });
+    global._postgresPool = buildPgPool(PG_CONNECTION_STRING);
   }
   return global._postgresPool;
 };
 
-export const pool = createPool();
+// Proxy ensures Drizzle `db` and direct `pool` imports always target the active pool even after failover
+export const pool: Pool = new Proxy({} as Pool, {
+  get(_target, prop) {
+    const active = createPool() as any;
+    const value = active[prop];
+    return typeof value === 'function' ? value.bind(active) : value;
+  },
+});
+
 export const db = drizzle(pool, { schema });
+
+async function connectWithFailover() {
+  try {
+    return await createPool().connect();
+  } catch (err: any) {
+    const msg = String(err?.message || '').toLowerCase();
+    const isUnreachable =
+      err?.code === 'ECONNREFUSED' ||
+      err?.code === 'ENOTFOUND' ||
+      err?.code === 'ETIMEDOUT' ||
+      msg.includes('econnrefused') ||
+      msg.includes('enotfound') ||
+      msg.includes('timeout');
+
+    const primary = parseDbHostPort(PG_CONNECTION_STRING);
+    const isLocalPrimary =
+      primary.host === 'localhost' || primary.host === '127.0.0.1' || primary.host === '::1';
+
+    if (isUnreachable && !isLocalPrimary && PG_CONNECTION_STRING !== DEFAULT_FALLBACK_PG_URL) {
+      const fb = parseDbHostPort(DEFAULT_FALLBACK_PG_URL);
+      dbFallbackWarning = `Primary DATABASE_URL (${primary.host}:${primary.port}) was unreachable (${err.message}); automatically switched to ${fb.host}:${fb.port}.`;
+      console.warn(`[PostgreSQL] ⚠️ ${dbFallbackWarning}`);
+      const deadPool = global._postgresPool;
+      PG_CONNECTION_STRING = DEFAULT_FALLBACK_PG_URL;
+      global._postgresPool = buildPgPool(PG_CONNECTION_STRING);
+      if (deadPool) {
+        deadPool.end().catch(() => {});
+      }
+      return await global._postgresPool.connect();
+    }
+    throw err;
+  }
+}
 
 /**
  * Executes a database operation with automatic retry on transient connection timeouts
@@ -69,13 +138,48 @@ export async function withDbRetry<T>(fn: () => Promise<T>, retries = 2, delayMs 
   throw lastError;
 }
 
+let dbSchemaReady = false;
+let dbInitInFlight: Promise<{ success: boolean; tablesCreated: string[]; error?: string }> | null = null;
+
 /**
- * Auto-initialize all 7 application tables and indexes on server startup
+ * Ensures PostgreSQL schema is initialized (single-flight & auto-retried if boot init failed).
+ */
+export async function ensureDatabaseInitialized(
+  force = false
+): Promise<{ success: boolean; tablesCreated: string[]; error?: string }> {
+  if (dbSchemaReady && !force) {
+    return { success: true, tablesCreated: ['already_initialized'] };
+  }
+  if (dbInitInFlight && !force) {
+    return dbInitInFlight;
+  }
+  const run = initDatabase()
+    .then((res) => {
+      if (res.success) {
+        dbSchemaReady = true;
+      }
+      return res;
+    })
+    .finally(() => {
+      dbInitInFlight = null;
+    });
+  dbInitInFlight = run;
+  return run;
+}
+
+/**
+ * Auto-initialize all 9 application tables and indexes on server startup or first request
  */
 export async function initDatabase(): Promise<{ success: boolean; tablesCreated: string[]; error?: string }> {
-  const client = await pool.connect();
+  let client;
   try {
-    // Ensure live_scanner_state table always exists for persistent autopilot state
+    client = await connectWithFailover();
+  } catch (err: any) {
+    console.error('[PostgreSQL] ❌ Database connection failed during init:', err.message);
+    return { success: false, tablesCreated: [], error: err.message };
+  }
+  try {
+    // Ensure core persistent state & ML tables always exist first (safe on brand-new empty DBs)
     await client.query(`
       CREATE TABLE IF NOT EXISTS live_scanner_state (
         id VARCHAR(50) PRIMARY KEY DEFAULT 'current',
@@ -100,20 +204,33 @@ export async function initDatabase(): Promise<{ success: boolean; tablesCreated:
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
-      ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS timeframe TEXT DEFAULT '5m';
-      ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS risk_reward DOUBLE PRECISION;
-      CREATE INDEX IF NOT EXISTS idx_live_trades_timeframe ON live_trades(timeframe);
-      CREATE INDEX IF NOT EXISTS idx_live_trades_status ON live_trades(status);
     `);
 
-    // Quick existence check to prevent redundant DDL execution on every startup
-    const check = await client.query("SELECT to_regclass('public.candle_datasets') AS exists;");
-    if (check.rows[0]?.exists) {
-      console.log('[PostgreSQL] ✅ Remote database schema is already initialized. Skipping DDL migrations.');
-      return { success: true, tablesCreated: ['already_initialized', 'live_scanner_state'] };
+    // Quick existence check: only skip full DDL when ALL core tables already exist
+    const check = await client.query(`
+      SELECT
+        to_regclass('candle_datasets') AS has_ds,
+        to_regclass('candle_chunks') AS has_cc,
+        to_regclass('test_configs') AS has_tc,
+        to_regclass('live_signals') AS has_ls,
+        to_regclass('live_trades') AS has_lt,
+        to_regclass('allowed_pairs') AS has_ap,
+        to_regclass('users') AS has_u;
+    `);
+    const row = check.rows[0] || {};
+    if (row.has_ds && row.has_cc && row.has_tc && row.has_ls && row.has_lt && row.has_ap && row.has_u) {
+      await client.query(`
+        ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS timeframe TEXT DEFAULT '5m';
+        ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS risk_reward DOUBLE PRECISION;
+        CREATE INDEX IF NOT EXISTS idx_live_trades_timeframe ON live_trades(timeframe);
+        CREATE INDEX IF NOT EXISTS idx_live_trades_status ON live_trades(status);
+      `);
+      dbSchemaReady = true;
+      console.log('[PostgreSQL] ✅ Database schema is already initialized. Verified all 9 tables.');
+      return { success: true, tablesCreated: ['already_initialized', 'live_scanner_state', 'ml_zigzag_models'] };
     }
 
-    console.log('[PostgreSQL] 🔄 Initializing database schema on remote server...');
+    console.log('[PostgreSQL] 🔄 Initializing full database schema on PostgreSQL server...');
 
     // 1. Users Table (PostgreSQL persistent auth)
     await client.query(`
@@ -131,16 +248,17 @@ export async function initDatabase(): Promise<{ success: boolean; tablesCreated:
         last_login_at TIMESTAMP WITH TIME ZONE
       );
       ALTER TABLE users ALTER COLUMN uid DROP NOT NULL;
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(100) UNIQUE;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(100);
       ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS salt TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'admin';
       ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
       ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP WITH TIME ZONE;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_unique ON users(username);
     `);
 
     // Ensure initial admin user 'amir' exists in PostgreSQL
-    const existingUser = await client.query(`SELECT * FROM users WHERE username = $1 LIMIT 1;`, ['amir']);
+    const existingUser = await client.query(`SELECT * FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1;`, ['amir']);
     if (existingUser.rows.length === 0) {
       const salt = crypto.randomBytes(16).toString('hex');
       const hash = hashPassword('!#@Amir', salt);
@@ -293,7 +411,9 @@ export async function initDatabase(): Promise<{ success: boolean; tablesCreated:
     `);
 
     const tablesCreated = tablesRes.rows.map((r) => r.table_name);
-    console.log(`[PostgreSQL] ✅ Connected to 193.142.58.196:5432/crypto_strategy_lab. Found tables:`, tablesCreated);
+    const { host, port } = getDbHostPort();
+    dbSchemaReady = true;
+    console.log(`[PostgreSQL] ✅ Connected to ${host}:${port}. Found tables:`, tablesCreated);
 
     return { success: true, tablesCreated };
   } catch (err: any) {
@@ -308,7 +428,19 @@ export async function initDatabase(): Promise<{ success: boolean; tablesCreated:
  * Diagnostic test: connects, inserts a test record, reads it, deletes it, and lists all tables
  */
 export async function testDatabaseConnection() {
-  const client = await pool.connect();
+  const initRes = await ensureDatabaseInitialized();
+  if (!initRes.success) {
+    const { host, port, fallbackWarning } = getActiveDbHostPort();
+    return {
+      success: false,
+      status: 'SCHEMA_INIT_ERROR',
+      host,
+      port,
+      ...(fallbackWarning ? { fallbackWarning } : {}),
+      error: initRes.error || 'Database schema initialization failed',
+    };
+  }
+  const client = await connectWithFailover();
   const startTime = Date.now();
 
   try {
@@ -349,12 +481,14 @@ export async function testDatabaseConnection() {
     await client.query(`DELETE FROM test_configs WHERE id = $1;`, [testId]);
 
     const latencyMs = Date.now() - startTime;
+    const { host, port, fallbackWarning } = getActiveDbHostPort();
 
     return {
       success: true,
       status: 'CONNECTED',
-      host: '193.142.58.196',
-      port: 5432,
+      host,
+      port,
+      ...(fallbackWarning ? { fallbackWarning } : {}),
       database: serverInfo.current_database,
       user: serverInfo.current_user,
       serverVersion: serverInfo.version,
@@ -368,11 +502,12 @@ export async function testDatabaseConnection() {
       },
     };
   } catch (err: any) {
+    const { host, port } = getDbHostPort();
     return {
       success: false,
       status: 'CONNECTION_ERROR',
-      host: '193.142.58.196',
-      port: 5432,
+      host,
+      port,
       error: err.message,
       latencyMs: Date.now() - startTime,
     };
