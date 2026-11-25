@@ -226,10 +226,10 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Training Studio form state (synced automatically with the currently active ML model)
-  const [datasetId, setDatasetId] = useState('range_xt_5m_1779074700000_1786786200000');
-  const [modelName, setModelName] = useState('مدل XT 5m ZigZag v2 سفارشی');
+  const [datasetId, setDatasetId] = useState('');
+  const [modelName, setModelName] = useState('مدل XT 5m ZigZag v3 سفارشی');
   const [atrPeriod, setAtrPeriod] = useState(17);
-  const [minCandles, setMinCandles] = useState(5);
+  const [minCandles, setMinCandles] = useState(9);
   const [atrMultiplier, setAtrMultiplier] = useState(1.0);
   const [minCandlesForLongLeg, setMinCandlesForLongLeg] = useState(12);
   const [longLegAtrMultiplier, setLongLegAtrMultiplier] = useState(15);
@@ -237,17 +237,20 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
   const [blueLegAtrMultiplier, setBlueLegAtrMultiplier] = useState(4.75);
   const [maxBlueLegPercent, setMaxBlueLegPercent] = useState(95);
   const [maxBreakoutAtrMultiplier, setMaxBreakoutAtrMultiplier] = useState(4);
-  const [slAtrMult, setSlAtrMult] = useState(5);
-  const [minSlPct, setMinSlPct] = useState(3.5);
-  const [targetRR, setTargetRR] = useState(2.0);
-  const [tpAtrMult, setTpAtrMult] = useState(10);
-  const [timeStopCandles, setTimeStopCandles] = useState(288);
+  const [slAtrMult, setSlAtrMult] = useState(4.5);
+  const [minSlPct, setMinSlPct] = useState(3.0);
+  const [targetRR, setTargetRR] = useState(1.5);
+  const [tpAtrMult, setTpAtrMult] = useState(6.75);
+  const [timeStopCandles, setTimeStopCandles] = useState(144);
   const [minAtrPct, setMinAtrPct] = useState(0.25);
-  const [minStretchPct, setMinStretchPct] = useState(4.0);
-  const [numTrees, setNumTrees] = useState(40);
+  const [minStretchPct, setMinStretchPct] = useState(1.5);
+  const [numTrees, setNumTrees] = useState(55);
+  const [learningRate, setLearningRate] = useState(0.05);
   const [maxDepth, setMaxDepth] = useState(2);
-  const [l2Lambda, setL2Lambda] = useState(260);
-  const [topPercent, setTopPercent] = useState(5);
+  const [l2Lambda, setL2Lambda] = useState(240);
+  const [topPercent, setTopPercent] = useState(8);
+  const [objective, setObjective] = useState<'blended' | 'expected_r' | 'win_prob'>('blended');
+  const [sideFilter, setSideFilter] = useState<'BOTH' | 'SELL' | 'BUY'>('BOTH');
   const [maxChunks, setMaxChunks] = useState(600);
   const [activateAfterTrain, setActivateAfterTrain] = useState(true);
 
@@ -297,17 +300,22 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
     setMinSlPct(model.minSlPct ?? 3.5);
     setTargetRR(nextRR);
     setTpAtrMult(nextTp);
-    setTimeStopCandles(model.timeStopCandles ?? 288);
+    setTimeStopCandles(model.timeStopCandles ?? 144);
     setMinAtrPct(model.minAtrPct ?? 0.25);
-    setMinStretchPct(model.minStretchPct ?? 0);
-    setNumTrees(Array.isArray(model.trees) && model.trees.length > 0 ? model.trees.length : 40);
+    setMinStretchPct(model.minStretchPct ?? 1.5);
+    setNumTrees(Array.isArray(model.trees) && model.trees.length > 0 ? model.trees.length : 55);
+    setLearningRate(model.learningRate ?? 0.05);
     setMaxDepth(inferModelMaxDepth(model));
-    setL2Lambda(model.l2Lambda ?? (model.version >= 2 ? 260 : 350));
-    setTopPercent(model.topPercent ?? 5);
+    setL2Lambda(model.l2Lambda ?? (model.version >= 3 ? 240 : 260));
+    setTopPercent(model.topPercent ?? 8);
+    setObjective(model.objective ?? 'blended');
+    setSideFilter(model.sideFilter ?? 'BOTH');
 
     const dsList = availableDatasets && availableDatasets.length > 0 ? availableDatasets : datasetsRef.current;
     if (model.datasetId && dsList.some((d) => d.id === model.datasetId)) {
       setDatasetId(model.datasetId);
+    } else if (dsList.length > 0) {
+      setDatasetId(dsList[0].id);
     }
     lastSyncedModelIdRef.current = model.id;
   }, []);
@@ -403,6 +411,13 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
 
   const handleStartTraining = async () => {
     setFeedback(null);
+    if (!datasetId || datasets.length === 0) {
+      setFeedback({
+        type: 'error',
+        text: 'هیچ دیتاست کندلی در PostgreSQL ذخیره نشده است. ابتدا در تب «اسکن دستی» کندل‌ها را دانلود و ذخیره کنید.',
+      });
+      return;
+    }
     try {
       const resp = await fetch('/api/ml/train-start', {
         method: 'POST',
@@ -427,9 +442,12 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
           minAtrPct,
           minStretchPct,
           numTrees,
+          learningRate,
           maxDepth,
           l2Lambda,
           topPercent,
+          objective,
+          sideFilter,
           maxChunks,
           activateAfterTrain,
         }),
@@ -611,9 +629,10 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
             </div>
           </div>
           <div className="bg-[#0b0e14] rounded-lg px-3 py-2 border border-slate-800/70">
-            <div className="text-[10px] text-slate-500">ساختار درخت GBDT</div>
+            <div className="text-[10px] text-slate-500">ساختار درخت GBDT / جهت</div>
             <div className="font-mono tabular-nums text-slate-200 mt-0.5">
-              {activeModel.trees.length} درخت ({activeModel.featureNames?.length || 34} ویژگی) • آستانه {activeModel.scoreThreshold.toFixed(4)}
+              {activeModel.trees.length} درخت ({activeModel.featureNames?.length || 46} ویژگی) •{' '}
+              {activeModel.sideFilter === 'SELL' ? 'فقط شورت' : activeModel.sideFilter === 'BUY' ? 'فقط لانگ' : 'دوجهته'} • آستانه {activeModel.scoreThreshold.toFixed(4)}
             </div>
           </div>
           <div className="bg-[#0b0e14] rounded-lg px-3 py-2 border border-slate-800/70">
@@ -817,7 +836,7 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h4 className="text-xs font-bold text-slate-200 flex items-center gap-2">
               <Sliders className="w-4 h-4 text-emerald-400" />
-              استودیوی آموزش مدل جدید روی دیتای PostgreSQL (تایم‌فریم ۵m صرافی XT)
+              استودیوی آموزش مدل جدید روی دیتای PostgreSQL
             </h4>
             <button
               type="button"
@@ -836,11 +855,11 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
               <select
                 value={datasetId}
                 onChange={(e) => setDatasetId(e.target.value)}
-                disabled={jobStatus.isRunning}
-                className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-2.5 py-2 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+                disabled={jobStatus.isRunning || datasets.length === 0}
+                className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-2.5 py-2 text-xs text-slate-100 focus:outline-none focus:border-emerald-500 disabled:opacity-60"
               >
                 {datasets.length === 0 ? (
-                  <option value={datasetId}>{datasetId} (XT • 5m)</option>
+                  <option value="">هیچ دیتاست کندلی در دیتابیس ذخیره نشده است</option>
                 ) : (
                   datasets.map((d) => (
                     <option key={d.id} value={d.id}>
@@ -862,6 +881,11 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
               />
             </label>
           </div>
+          {datasets.length === 0 && (
+            <div className="rounded-lg bg-amber-950/25 border border-amber-500/35 px-3 py-2 text-[11px] text-amber-200 leading-relaxed">
+              برای آموزش مدل جدید، ابتدا از تب <strong>اسکن دستی</strong> یک دیتاست کندل (مثلاً XT • ۵m) دانلود و در PostgreSQL ذخیره کنید. مدل آماده فعلی (<span className="font-mono">v3</span>) بدون نیاز به دیتاست کندل در ترید زنده و بکتست کار می‌کند.
+            </div>
+          )}
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
             <label className="space-y-1">
@@ -1069,6 +1093,58 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
                 className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-2 py-1.5 font-mono text-slate-100"
               />
             </label>
+            <label className="space-y-1">
+              <span className="text-[10px] text-slate-400">جهت معاملات مدل</span>
+              <select
+                value={sideFilter}
+                onChange={(e) => setSideFilter(e.target.value as 'BOTH' | 'SELL' | 'BUY')}
+                disabled={jobStatus.isRunning}
+                className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-2 py-1.5 text-xs text-slate-100"
+              >
+                <option value="BOTH">هر دو جهت (Long + Short)</option>
+                <option value="SELL">فقط شورت (Short Only)</option>
+                <option value="BUY">فقط لانگ (Long Only)</option>
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="text-[10px] text-slate-400">تابع هدف آموزش (Objective)</span>
+              <select
+                value={objective}
+                onChange={(e) => setObjective(e.target.value as 'blended' | 'expected_r' | 'win_prob')}
+                disabled={jobStatus.isRunning}
+                className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-2 py-1.5 text-xs text-slate-100"
+              >
+                <option value="blended">ترکیبی (WR + Expected R)</option>
+                <option value="expected_r">میانگین سود (Expected R)</option>
+                <option value="win_prob">احتمال برد (Win Prob)</option>
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="text-[10px] text-slate-400">حداقل نوسان ATR (%)</span>
+              <input
+                type="number"
+                step="0.05"
+                min={0.1}
+                max={2}
+                value={minAtrPct}
+                onChange={(e) => setMinAtrPct(Number(e.target.value))}
+                disabled={jobStatus.isRunning}
+                className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-2 py-1.5 font-mono text-slate-100"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-[10px] text-slate-400">نرخ یادگیری (LR)</span>
+              <input
+                type="number"
+                step="0.01"
+                min={0.01}
+                max={0.2}
+                value={learningRate}
+                onChange={(e) => setLearningRate(Number(e.target.value))}
+                disabled={jobStatus.isRunning}
+                className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-2 py-1.5 font-mono text-slate-100"
+              />
+            </label>
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
@@ -1097,7 +1173,8 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
                 <button
                   type="button"
                   onClick={handleStartTraining}
-                  className="px-4 py-2 rounded-lg text-xs font-bold bg-sky-600 hover:bg-sky-500 text-white flex items-center gap-1.5 cursor-pointer"
+                  disabled={datasets.length === 0}
+                  className="px-4 py-2 rounded-lg text-xs font-bold bg-sky-600 hover:bg-sky-500 text-white flex items-center gap-1.5 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
                 >
                   <Play className="w-3.5 h-3.5" />
                   شروع آموزش مدل جدید (ML)

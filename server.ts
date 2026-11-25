@@ -6803,6 +6803,8 @@ interface ServerLiveScannerConfig {
   riskPercent: number;
   capital: number;
   noConcurrentPositions: boolean;
+  allowMultiplePerTimeframe?: boolean;
+  maxTradesPerTimeframe?: number;
   maxCandlesToEnter?: number;
   maxPositionToRiskRatio?: number;
   entryCommissionPercent?: number;
@@ -6936,6 +6938,8 @@ const serverScannerState = {
     riskPercent: 1.0,
     capital: 1000,
     noConcurrentPositions: true,
+    allowMultiplePerTimeframe: false,
+    maxTradesPerTimeframe: 3,
     maxCandlesToEnter: 35,
     maxPositionToRiskRatio: 300,
     entryCommissionPercent: 0.06,
@@ -7365,7 +7369,14 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
     // Reconcile: identify positions/limit-orders closed or expired on exchange and mark them CLOSED in DB
     // Only mark CLOSED when BOTH position/list and order/list succeeded from exchange (never on transient API failure!)
     const closedTradeIds: string[] = [];
-    const activeTfToTradeMap = new Map<string, any>(); // timeframe -> active db trade
+    const activeTfToTradeMap = new Map<string, any>(); // timeframe -> first active db trade
+    const activeTradesByTf = new Map<string, any[]>(); // timeframe -> all active db trades
+    const pushActiveTfTrade = (tf: string, trade: any) => {
+      if (!activeTfToTradeMap.has(tf)) activeTfToTradeMap.set(tf, trade);
+      const list = activeTradesByTf.get(tf) || [];
+      list.push(trade);
+      activeTradesByTf.set(tf, list);
+    };
     const activePositionSymbols = new Set<string>(openXtSymbolsSet);
 
     for (const dbTrade of activeDbTrades) {
@@ -7377,13 +7388,16 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
 
       if (openXtSymbolsSet.has(cleanDbSym)) {
         // Position is actively open (filled) on exchange!
-        const isMlLive = cfg.strategyId === 'strategy_4_ml_zigzag';
-        const maxTimeStopCandles = isMlLive
+        // Always honor the strategy that opened this trade (fallback to current scanner strategy)
+        const isMlTrade =
+          dbTrade.strategy_name === 'strategy_4_ml_zigzag' ||
+          (!dbTrade.strategy_name && cfg.strategyId === 'strategy_4_ml_zigzag');
+        const maxTimeStopCandles = isMlTrade
           ? (getActiveMlModel().timeStopCandles || 144)
           : (cfg.timeStopCandles || 80);
 
         // Check if Time-Stop condition is triggered for this position
-        if ((isMlLive || cfg.timeStopEnabled !== false) && candlesElapsed >= maxTimeStopCandles) {
+        if ((isMlTrade || cfg.timeStopEnabled !== false) && candlesElapsed >= maxTimeStopCandles) {
           addServerScannerLog(
             'trade',
             `⏰ فعال‌سازی خروج زمانی (Time-Stop) در تایم‌فریم ${tradeTf}: معامله ${dbTrade.symbol.toUpperCase()} به مدت ${candlesElapsed} کندل باز بوده است (سقف مجاز: ${maxTimeStopCandles} کندل). بستن خودکار پوزیشن در صرافی...`,
@@ -7391,32 +7405,48 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
             tradeTf
           );
 
+          let closedOk = true;
           if (cfg.exchange === 'xt' && cfg.isLiveExecution) {
             try {
               const resolvedPosSide: 'LONG' | 'SHORT' = dbTrade.pos_side
                 ? (String(dbTrade.pos_side).toUpperCase() === 'SHORT' ? 'SHORT' : 'LONG')
                 : (String(dbTrade.side || '').toUpperCase() === 'SELL' ? 'SHORT' : 'LONG');
-              await closePositionOnExchange(
+              const closeRes = await closePositionOnExchange(
                 dbTrade.symbol,
                 resolvedPosSide,
                 parseFloat(dbTrade.amount || '0')
               );
+              closedOk = Boolean(closeRes?.success);
+              if (!closedOk) {
+                addServerScannerLog(
+                  'warning',
+                  `⚠️ بستن خودکار Time-Stop برای ${dbTrade.symbol.toUpperCase()} در صرافی ناموفق بود (${closeRes?.error || closeRes?.message || 'خطای ناشناخته'})؛ در دور بعد مجدداً تلاش می‌شود.`,
+                  dbTrade.symbol,
+                  tradeTf
+                );
+              }
             } catch (closeErr: any) {
+              closedOk = false;
               console.warn('[ServerLiveScanner] Error closing position on time-stop:', closeErr.message);
             }
           }
-          openXtSymbolsSet.delete(cleanDbSym);
-          activePositionSymbols.delete(cleanDbSym);
 
-          closedTradeIds.push(dbTrade.id);
-          addServerScannerLog(
-            'success',
-            `✅ پوزیشن ${dbTrade.symbol.toUpperCase()} در تایم‌فریم ${tradeTf} به دلیل خروج زمانی (Time-Stop پس از ${candlesElapsed} کندل) با موفقیت بسته شد و تایم‌فریم برای معاملات جدید آزاد گردید.`,
-            dbTrade.symbol,
-            tradeTf
-          );
+          if (closedOk) {
+            openXtSymbolsSet.delete(cleanDbSym);
+            activePositionSymbols.delete(cleanDbSym);
+            closedTradeIds.push(dbTrade.id);
+            addServerScannerLog(
+              'success',
+              `✅ پوزیشن ${dbTrade.symbol.toUpperCase()} در تایم‌فریم ${tradeTf} به دلیل خروج زمانی (Time-Stop پس از ${candlesElapsed} کندل) با موفقیت بسته شد و ظرفیت تایم‌فریم آزاد گردید.`,
+              dbTrade.symbol,
+              tradeTf
+            );
+          } else {
+            pushActiveTfTrade(tradeTf, dbTrade);
+            activePositionSymbols.add(cleanDbSym);
+          }
         } else {
-          activeTfToTradeMap.set(tradeTf, dbTrade);
+          pushActiveTfTrade(tradeTf, dbTrade);
           activePositionSymbols.add(cleanDbSym);
         }
       } else if (
@@ -7445,7 +7475,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
             tradeTf
           );
         } else {
-          activeTfToTradeMap.set(tradeTf, dbTrade);
+          pushActiveTfTrade(tradeTf, dbTrade);
           activePositionSymbols.add(cleanDbSym);
         }
       } else if (xtPositionsFetchOk && xtOrdersFetchOk) {
@@ -7453,7 +7483,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
         closedTradeIds.push(dbTrade.id);
       } else {
         // Exchange order status uncertain; keep timeframe reserved to avoid duplicate orders or losing DB timeframe
-        activeTfToTradeMap.set(tradeTf, dbTrade);
+        pushActiveTfTrade(tradeTf, dbTrade);
         activePositionSymbols.add(cleanDbSym);
       }
     }
@@ -7462,7 +7492,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
       await markLiveTradesClosedInDb(closedTradeIds);
       addServerScannerLog(
         'info',
-        `🔄 همگام‌سازی دیتابیس با صرافی: ${closedTradeIds.length} معامله/سفارش پایان‌یافته در دیتابیس بسته شد و تایم‌فریم آنها آزاد گردید.`
+        `🔄 همگام‌سازی دیتابیس با صرافی: ${closedTradeIds.length} معامله/سفارش پایان‌یافته در دیتابیس بسته شد و ظرفیت تایم‌فریم آنها آزاد گردید.`
       );
     }
 
@@ -7471,8 +7501,8 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
       const cleanSym = (pos.symbol || '').toLowerCase().replace(/[-_]/g, '');
       activePositionSymbols.add(cleanSym);
       let alreadyMapped = false;
-      for (const [_, tr] of activeTfToTradeMap.entries()) {
-        if ((tr.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym) {
+      for (const tradesList of activeTradesByTf.values()) {
+        if (tradesList.some((tr) => (tr.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym)) {
           alreadyMapped = true;
           break;
         }
@@ -7484,14 +7514,12 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
             (ex.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym
         );
         const resolvedTf = matchExec?.timeframe || cfg.timeframe || '5m';
-        if (!activeTfToTradeMap.has(resolvedTf)) {
-          activeTfToTradeMap.set(resolvedTf, {
-            symbol: pos.symbol,
-            timeframe: resolvedTf,
-            id: pos.positionId || cleanSym,
-            amount: pos.positionSize || pos.amount || '0',
-          });
-        }
+        pushActiveTfTrade(resolvedTf, {
+          symbol: pos.symbol,
+          timeframe: resolvedTf,
+          id: pos.positionId || cleanSym,
+          amount: pos.positionSize || pos.amount || '0',
+        });
       }
     }
 
@@ -7499,12 +7527,21 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
       ? `${Math.floor(ms / 60000)}دق و ${((ms % 60000) / 1000).toFixed(1)}ث`
       : `${(ms / 1000).toFixed(1)}ث`;
 
-    // Global Single-Position mode (noConcurrentPositions !== false): if ANY position is open in ANY timeframe or on exchange, skip all scanning!
+    // Concurrency Modes:
+    // 1. Global Single-Position (noConcurrentPositions !== false): max 1 trade across entire account
+    // 2. One-Per-Timeframe (noConcurrentPositions === false && !allowMultiplePerTimeframe): max 1 trade per timeframe
+    // 3. Multi-Per-Timeframe (noConcurrentPositions === false && allowMultiplePerTimeframe): up to maxTradesPerTimeframe (0 = unlimited) per timeframe
     const isSinglePositionMode = cfg.noConcurrentPositions !== false;
-    const totalActivePositionsCount = Math.max(activeTfToTradeMap.size, openXtPositions.length);
+    const allowMultiplePerTimeframe = !isSinglePositionMode && Boolean(cfg.allowMultiplePerTimeframe);
+    const maxTradesPerTimeframe = allowMultiplePerTimeframe
+      ? Math.max(0, Number(cfg.maxTradesPerTimeframe ?? 3))
+      : 1;
+
+    const totalMappedTrades = Array.from(activeTradesByTf.values()).reduce((sum, arr) => sum + arr.length, 0);
+    const totalActivePositionsCount = Math.max(totalMappedTrades, openXtPositions.length);
     if (isSinglePositionMode && totalActivePositionsCount > 0) {
-      const activeList = Array.from(activeTfToTradeMap.entries())
-        .map(([tf, tr]) => `${tf}:${(tr?.symbol || '').toUpperCase()}`)
+      const activeList = Array.from(activeTradesByTf.entries())
+        .map(([tf, arr]) => `${tf}:${arr.map((tr) => (tr?.symbol || '').toUpperCase()).join('+')}`)
         .join(', ');
       const skipRoundNum = (serverScannerState.totalRunsCount || 0) + 1;
       const skipDur = formatElapsedFa(Date.now() - startTime);
@@ -7521,28 +7558,40 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
       return;
     }
 
-    // Separate occupied vs available timeframes
-    const activeTimeframesWithPosition = targetTimeframes.filter((tf) => activeTfToTradeMap.has(tf));
-    const availableTimeframesToScan = targetTimeframes.filter((tf) => !activeTfToTradeMap.has(tf));
+    const isTimeframeAtCapacity = (tf: string) => {
+      const count = (activeTradesByTf.get(tf) || []).length;
+      if (allowMultiplePerTimeframe) {
+        return maxTradesPerTimeframe > 0 && count >= maxTradesPerTimeframe;
+      }
+      return count >= 1;
+    };
+
+    // Separate at-capacity vs available timeframes
+    const activeTimeframesWithPosition = targetTimeframes.filter((tf) => isTimeframeAtCapacity(tf));
+    const availableTimeframesToScan = targetTimeframes.filter((tf) => !isTimeframeAtCapacity(tf));
 
     if (activeTimeframesWithPosition.length > 0) {
       const occupiedDetails = activeTimeframesWithPosition
-        .map((tf) => `${tf}: ${(activeTfToTradeMap.get(tf)?.symbol || '').toUpperCase()}`)
+        .map((tf) => {
+          const list = activeTradesByTf.get(tf) || [];
+          const syms = list.map((t) => (t?.symbol || '').toUpperCase()).join('، ');
+          return `${tf}: ${syms} (${list.length}${maxTradesPerTimeframe > 0 ? `/${maxTradesPerTimeframe}` : ''})`;
+        })
         .join(' | ');
       addServerScannerLog(
         'info',
-        `⏳ پوزیشن‌های فعال در تایم‌فریم‌ها: [${occupiedDetails}]. اسکن برای این تایم‌فریم‌ها کاملاً رد شد تا پوزیشن در جریان بماند.`
+        `⏳ تایم‌فریم‌های تکمیل‌ظرفیت: [${occupiedDetails}]. اسکن برای این تایم‌فریم‌ها رد شد.`
       );
     }
 
-    // If ALL target timeframes have an open position, do NOT scan any coins at all!
+    // If ALL target timeframes are at capacity, do NOT scan any coins at all!
     if (availableTimeframesToScan.length === 0) {
       const skipRoundNum = (serverScannerState.totalRunsCount || 0) + 1;
       const skipDur = formatElapsedFa(Date.now() - startTime);
-      const tfZeroBreakdown = targetTimeframes.map((tf) => `${tf}: ۰ نماد (قفل معامله باز)`).join(' | ');
+      const tfZeroBreakdown = targetTimeframes.map((tf) => `${tf}: ۰ نماد (تکمیل ظرفیت)`).join(' | ');
       addServerScannerLog(
         'info',
-        `⏸️ دور #${skipRoundNum} (${skipDur}) | تمام تایم‌فریم‌های انتخابی [${activeTimeframesWithPosition.join(', ')}] دارای پوزیشن فعال هستند | [${tfZeroBreakdown}]`
+        `⏸️ دور #${skipRoundNum} (${skipDur}) | تمام تایم‌فریم‌های انتخابی [${activeTimeframesWithPosition.join(', ')}] به سقف پوزیشن باز رسیده‌اند | [${tfZeroBreakdown}]`
       );
       serverScannerState.lastRunAt = new Date().toISOString();
       serverScannerState.totalRunsCount = skipRoundNum;
@@ -7563,7 +7612,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
     if (timeframesDueThisCycle.length === 0) {
       const skipDur = formatElapsedFa(Date.now() - startTime);
       const tfZeroBreakdown = targetTimeframes
-        .map((tf) => activeTfToTradeMap.has(tf) ? `${tf}: ۰ نماد (معامله باز)` : `${tf}: ۰ نماد (کندل بسته نشده)`)
+        .map((tf) => isTimeframeAtCapacity(tf) ? `${tf}: ۰ نماد (تکمیل ظرفیت)` : `${tf}: ۰ نماد (کندل بسته نشده)`)
         .join(' | ');
       addServerScannerLog(
         'info',
@@ -7578,8 +7627,9 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
 
     const tfCycleSummaryMap = new Map<string, string>();
     for (const tf of activeTimeframesWithPosition) {
-      const symName = (activeTfToTradeMap.get(tf)?.symbol || '').toUpperCase();
-      tfCycleSummaryMap.set(tf, `${tf}: قفل معامله باز (${symName || 'فعال'})`);
+      const list = activeTradesByTf.get(tf) || [];
+      const symName = list.map((t) => (t?.symbol || '').toUpperCase()).join('+') || 'فعال';
+      tfCycleSummaryMap.set(tf, `${tf}: تکمیل ظرفیت (${symName})`);
     }
     for (const tf of availableTimeframesToScan) {
       if (!timeframesDueThisCycle.includes(tf)) {
@@ -7595,14 +7645,22 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
       );
     }
 
+    const multiModeBadge = allowMultiplePerTimeframe
+      ? ` [چندمعامله در هر TF: ${maxTradesPerTimeframe > 0 ? `سقف ${maxTradesPerTimeframe}` : 'نامحدود'}]`
+      : '';
     addServerScannerLog(
       'info',
-      `🔍 شروع اسکن موازی بسته‌ای (۱۰۰۰ کندل بسته) روی ${activeTargetSymbols.length} ارز در تایم‌فریم‌های [${timeframesDueThisCycle.join(', ')}] (${cfg.exchange.toUpperCase()})...`
+      `🔍 شروع اسکن موازی بسته‌ای (۱۰۰۰ کندل بسته) روی ${activeTargetSymbols.length} ارز در تایم‌فریم‌های [${timeframesDueThisCycle.join(', ')}] (${cfg.exchange.toUpperCase()})${multiModeBadge}...`
     );
 
     let isGlobalPositionSlotTaken = isSinglePositionMode && totalActivePositionsCount > 0;
     let isPlacingGlobalOrder = false;
+    let remainingFreeBalance = availableBalance;
     const inFlightOrderSymbols = new Set<string>();
+    const tfOpenCountMap = new Map<string, number>();
+    for (const tf of targetTimeframes) {
+      tfOpenCountMap.set(tf, (activeTradesByTf.get(tf) || []).length);
+    }
 
     // Process ONLY available due timeframes IN PARALLEL at the beginning of each cycle
     await Promise.all(
@@ -7780,7 +7838,10 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
             const ratio = (c.positionToRiskRatio !== undefined && c.positionToRiskRatio > 0)
               ? c.positionToRiskRatio
               : (c.riskUsdt > 0 ? +(c.notionalUsdt / c.riskUsdt).toFixed(1) : 0);
-            return `${c.symbol.toUpperCase()} (حجم/ریسک: ${ratio} | ارزش: $${c.notionalUsdt} | ریسک SL: $${c.riskUsdt} | مارجین: $${c.requiredMargin})`;
+            const mlTag = cfg.strategyId === 'strategy_4_ml_zigzag' && typeof c.mlScore === 'number'
+              ? `ML: ${c.mlScore.toFixed(4)} | `
+              : '';
+            return `${c.symbol.toUpperCase()} (${mlTag}حجم/ریسک: ${ratio} | ارزش: $${c.notionalUsdt} | ریسک SL: $${c.riskUsdt} | مارجین: $${c.requiredMargin})`;
           })
           .join(' ، ');
 
@@ -7788,19 +7849,38 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
         const optimalRatio = (chosenOptimal.positionToRiskRatio !== undefined && chosenOptimal.positionToRiskRatio > 0)
           ? chosenOptimal.positionToRiskRatio
           : (chosenOptimal.riskUsdt > 0 ? +(chosenOptimal.notionalUsdt / chosenOptimal.riskUsdt).toFixed(1) : 0);
+        const optimalHighlight =
+          cfg.strategyId === 'strategy_4_ml_zigzag' && typeof chosenOptimal.mlScore === 'number'
+            ? `ML Score: ${chosenOptimal.mlScore.toFixed(4)} | حجم/ریسک: ${optimalRatio}`
+            : `حجم/ریسک: ${optimalRatio}`;
 
         addServerScannerLog(
           'info',
-          `🎯 تایم‌فریم ${currentTf}: اسکن ${analyzedCount} نماد معتبر (از ${scannedCount} مورد) در مدت ${tfDurationStr} تمام شد و ${tfCandidateSignals.length} فرصت یافت شد: [${descList}]. منتخب: ${chosenOptimal.symbol.toUpperCase()} (حجم/ریسک: ${optimalRatio})`,
+          `🎯 تایم‌فریم ${currentTf}: اسکن ${analyzedCount} نماد معتبر (از ${scannedCount} مورد) در مدت ${tfDurationStr} تمام شد و ${tfCandidateSignals.length} فرصت یافت شد: [${descList}]. منتخب: ${chosenOptimal.symbol.toUpperCase()} (${optimalHighlight})`,
           undefined,
           currentTf
         );
 
-        // Attempt order execution for candidate in this timeframe
+        // Attempt order execution for candidates in this timeframe
         for (let candIdx = 0; candIdx < tfCandidateSignals.length; candIdx++) {
           if (manualStopRequested || scanEpoch !== myEpoch || (!forceAllTimeframes && !serverScannerState.isRunning)) {
             break;
           }
+          // Enforce per-timeframe capacity cap
+          const currentTfOpen = tfOpenCountMap.get(currentTf) || 0;
+          if (!allowMultiplePerTimeframe && currentTfOpen >= 1) {
+            break;
+          }
+          if (allowMultiplePerTimeframe && maxTradesPerTimeframe > 0 && currentTfOpen >= maxTradesPerTimeframe) {
+            addServerScannerLog(
+              'info',
+              `🔒 [${currentTf}] سقف ${maxTradesPerTimeframe} معامله همزمان در این تایم‌فریم تکمیل شد.`,
+              undefined,
+              currentTf
+            );
+            break;
+          }
+
           const chosen = tfCandidateSignals[candIdx];
           const xtSymbol = toXtSymbol(chosen.symbol);
           const cleanSymNorm = xtSymbol.toLowerCase().replace(/[-_]/g, '');
@@ -7829,10 +7909,10 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
             continue;
           }
 
-          if (availableBalance < chosen.requiredMargin) {
+          if (remainingFreeBalance < chosen.requiredMargin) {
             addServerScannerLog(
               'warning',
-              `⚠️ [${currentTf}] موجودی آزاد ناکافی برای ${chosen.symbol.toUpperCase()}: مارجین ${chosen.requiredMargin}$ > موجودی آزاد ${availableBalance.toFixed(2)}$`,
+              `⚠️ [${currentTf}] موجودی آزاد ناکافی برای ${chosen.symbol.toUpperCase()}: مارجین ${chosen.requiredMargin}$ > موجودی آزاد ${remainingFreeBalance.toFixed(2)}$`,
               chosen.symbol,
               currentTf
             );
@@ -8205,13 +8285,18 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
                 });
 
                 // Register this timeframe and coin as occupied so no duplicate trades open
-                activeTfToTradeMap.set(currentTf, { symbol: xtSymbol, order_id: orderId, timeframe: currentTf });
+                pushActiveTfTrade(currentTf, { symbol: xtSymbol, order_id: orderId, timeframe: currentTf });
+                tfOpenCountMap.set(currentTf, (tfOpenCountMap.get(currentTf) || 0) + 1);
                 activePositionSymbols.add(cleanSymNorm);
+                remainingFreeBalance = Math.max(0, remainingFreeBalance - chosen.requiredMargin);
                 if (isSinglePositionMode) {
                   isGlobalPositionSlotTaken = true;
                   isPlacingGlobalOrder = false;
+                  break;
                 }
-                break; // ONLY 1 trade per timeframe!
+                if (!allowMultiplePerTimeframe || (maxTradesPerTimeframe > 0 && (tfOpenCountMap.get(currentTf) || 0) >= maxTradesPerTimeframe)) {
+                  break;
+                }
               } else {
                 if (isSinglePositionMode) isPlacingGlobalOrder = false;
                 execRecord.status = 'FAILED';
@@ -8231,22 +8316,32 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
             }
           } else if (cfg.isLiveExecution && cfg.exchange === 'binance') {
             addServerScannerLog('info', `🚀 سفارش بایننس لایو برای ${chosen.symbol} در تایم‌فریم ${currentTf} محاسبه شد.`, chosen.symbol, currentTf);
-            activeTfToTradeMap.set(currentTf, { symbol: chosen.symbol, timeframe: currentTf });
+            pushActiveTfTrade(currentTf, { symbol: chosen.symbol, timeframe: currentTf });
+            tfOpenCountMap.set(currentTf, (tfOpenCountMap.get(currentTf) || 0) + 1);
             activePositionSymbols.add(cleanSymNorm);
+            remainingFreeBalance = Math.max(0, remainingFreeBalance - chosen.requiredMargin);
             if (isSinglePositionMode) {
               isGlobalPositionSlotTaken = true;
               isPlacingGlobalOrder = false;
+              break;
             }
-            break;
+            if (!allowMultiplePerTimeframe || (maxTradesPerTimeframe > 0 && (tfOpenCountMap.get(currentTf) || 0) >= maxTradesPerTimeframe)) {
+              break;
+            }
           } else {
             addServerScannerLog('info', `📝 معامله در حالت شبیه‌ساز (Paper Trading) در تایم‌فریم ${currentTf} برای ${chosen.symbol} ثبت شد.`, chosen.symbol, currentTf);
-            activeTfToTradeMap.set(currentTf, { symbol: chosen.symbol, timeframe: currentTf });
+            pushActiveTfTrade(currentTf, { symbol: chosen.symbol, timeframe: currentTf });
+            tfOpenCountMap.set(currentTf, (tfOpenCountMap.get(currentTf) || 0) + 1);
             activePositionSymbols.add(cleanSymNorm);
+            remainingFreeBalance = Math.max(0, remainingFreeBalance - chosen.requiredMargin);
             if (isSinglePositionMode) {
               isGlobalPositionSlotTaken = true;
               isPlacingGlobalOrder = false;
+              break;
             }
-            break;
+            if (!allowMultiplePerTimeframe || (maxTradesPerTimeframe > 0 && (tfOpenCountMap.get(currentTf) || 0) >= maxTradesPerTimeframe)) {
+              break;
+            }
           }
           } finally {
             inFlightOrderSymbols.delete(cleanSymNorm);
@@ -9134,10 +9229,15 @@ app.post('/api/ml/train-start', async (req, res) => {
   const timeStopCandles = Math.max(20, Math.min(400, Number(body.timeStopCandles ?? 288)));
   const minAtrPct = Math.max(0.1, Math.min(2.0, Number(body.minAtrPct ?? 0.25)));
   const minStretchPct = Math.max(0, Math.min(15.0, Number(body.minStretchPct ?? 4.0)));
-  const numTrees = Math.max(15, Math.min(80, Number(body.numTrees ?? 40)));
+  const numTrees = Math.max(15, Math.min(80, Number(body.numTrees ?? 55)));
+  const learningRate = Math.max(0.01, Math.min(0.2, Number(body.learningRate ?? 0.05)));
   const maxDepth = Math.max(1, Math.min(4, Number(body.maxDepth ?? 2)));
-  const l2Lambda = Math.max(50, Math.min(1000, Number(body.l2Lambda ?? 260)));
-  const topPercent = Math.max(1, Math.min(20, Number(body.topPercent ?? 5)));
+  const l2Lambda = Math.max(50, Math.min(1000, Number(body.l2Lambda ?? 240)));
+  const topPercent = Math.max(1, Math.min(20, Number(body.topPercent ?? 8)));
+  const objective: 'blended' | 'expected_r' | 'win_prob' =
+    body.objective === 'expected_r' || body.objective === 'win_prob' ? body.objective : 'blended';
+  const sideFilter: 'BOTH' | 'BUY' | 'SELL' =
+    body.sideFilter === 'BUY' || body.sideFilter === 'SELL' ? body.sideFilter : 'BOTH';
   const activateAfterTrain = body.activateAfterTrain !== false;
 
   mlTrainingState.isRunning = true;
@@ -9187,7 +9287,7 @@ app.post('/api/ml/train-start', async (req, res) => {
       }
 
       mlTrainingState.totalSymbolsEstimate = Math.max(selectedChunks.length, Math.round((metaRes.rows[0]?.symbol_count || selectedChunks.length) * (selectedChunks.length / allChunkIndices.length)));
-      mlTrainingState.stage = 'در حال استخراج ۳۴ ویژگی علّی زیگزاگ (بدون نگاه به آینده)...';
+      mlTrainingState.stage = 'در حال استخراج ۴۶ ویژگی علّی زیگزاگ (بدون نگاه به آینده)...';
       pushMlLog(`تعداد ${selectedChunks.length} بسته از ${allChunkIndices.length} بسته کندل ${exchange.toUpperCase()} (${timeframe}) برای آموزش انتخاب شد.`);
 
       const samples: MlTrainingSample[] = [];
@@ -9287,10 +9387,12 @@ app.post('/api/ml/train-start', async (req, res) => {
         minAtrPct,
         minStretchPct,
         numTrees,
-        learningRate: 0.04,
+        learningRate,
         maxDepth,
         l2Lambda,
         topPercent,
+        objective,
+        sideFilter,
       });
       samples.length = 0;
 

@@ -221,7 +221,7 @@ export function describeMatchedPattern(f: Float32Array, l1Color: string): string
   if (f[16] < 0.40) return 'ساختار هارمونیک در ناحیه اشباع';
   if ((f[18] < 0.75 || f[21] > 1.8) && f[22] === 1) return 'تخلیه/کلایمکس حجم + شکست P3';
   if (f[7] >= 3 && f[26] > 0) return 'توالی سفید + واگرایی RSI';
-  return 'ترکیب چندعاملی ZigZag ML v2';
+  return 'ترکیب چندعاملی ZigZag ML v3';
 }
 
 /**
@@ -988,6 +988,7 @@ export function trainZigZagMlModel(
   const w = new Float64Array(n);
   let sumWY = 0;
   let sumW = 0;
+  const maxClipR = Math.max(1.8, (options.targetRR ?? (options.slAtrMult > 0 ? options.tpAtrMult / options.slAtrMult : 1.5)) * 1.15);
   for (let i = 0; i < n; i++) {
     const h = Math.floor(train[i].time / hourDiv);
     const wi = 1 / Math.sqrt(hourCounts.get(h) || 1);
@@ -997,10 +998,10 @@ export function trainZigZagMlModel(
       y[i] = r > 0 ? 1 : 0;
     } else if (objective === 'blended') {
       const winFlag = r > 0 ? 1 : 0;
-      const clippedR = Math.max(-1.2, Math.min(1.8, r));
+      const clippedR = Math.max(-1.2, Math.min(maxClipR, r));
       y[i] = 0.6 * winFlag + 0.4 * clippedR;
     } else {
-      y[i] = Math.max(-1.4, Math.min(2.2, r));
+      y[i] = Math.max(-1.4, Math.min(Math.max(2.2, maxClipR), r));
     }
     sumWY += wi * y[i];
     sumW += wi;

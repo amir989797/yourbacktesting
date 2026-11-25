@@ -559,13 +559,34 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     showToast(`🎯 ${count} ارز برتر مارکت انتخاب شدند.`);
   };
 
-  // چک‌باکس: عدم ورود به معامله جدید در صورت وجود پوزیشن باز (تک‌پوزیشن)
+  // چک‌باکس: عدم ورود به معامله جدید در صورت وجود پوزیشن باز (تک‌پوزیشن کل)
   const [noConcurrentPositions, setNoConcurrentPositions] = useState<boolean>(() => {
     try {
       const saved = localStorage.getItem('livetrade_no_concurrent_positions');
       return saved !== null ? saved === 'true' : true;
     } catch {
       return true;
+    }
+  });
+
+  // چک‌باکس: اجازه باز شدن چند معامله همزمان در یک تایم‌فریم
+  const [allowMultiplePerTimeframe, setAllowMultiplePerTimeframe] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('livetrade_allow_multiple_per_tf');
+      return saved === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  // سقف تعداد معاملات همزمان در هر تایم‌فریم (۰ = نامحدود)
+  const [maxTradesPerTimeframe, setMaxTradesPerTimeframe] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('livetrade_max_trades_per_tf');
+      const parsed = saved !== null ? parseInt(saved, 10) : 3;
+      return isNaN(parsed) ? 3 : Math.max(0, Math.min(20, parsed));
+    } catch {
+      return 3;
     }
   });
 
@@ -1223,6 +1244,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
             if (typeof config.riskPercent === 'number') setRiskPercent(config.riskPercent);
             if (typeof config.riskRewardRatio === 'number') setRiskRewardRatio(config.riskRewardRatio);
             if (typeof config.noConcurrentPositions === 'boolean') setNoConcurrentPositions(config.noConcurrentPositions);
+            if (typeof config.allowMultiplePerTimeframe === 'boolean') setAllowMultiplePerTimeframe(config.allowMultiplePerTimeframe);
+            if (typeof config.maxTradesPerTimeframe === 'number') setMaxTradesPerTimeframe(config.maxTradesPerTimeframe);
             if (typeof config.isLiveExecution === 'boolean') setIsLiveExecution(config.isLiveExecution);
             if (typeof config.atrPeriod === 'number') setAtrPeriod(config.atrPeriod);
             if (typeof config.atrMultiplier === 'number') setAtrMultiplier(config.atrMultiplier);
@@ -1401,6 +1424,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
         riskPercent,
         riskRewardRatio,
         noConcurrentPositions,
+        allowMultiplePerTimeframe,
+        maxTradesPerTimeframe,
         isLiveExecution,
         atrPeriod,
         atrMultiplier,
@@ -1435,6 +1460,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
     riskPercent,
     riskRewardRatio,
     noConcurrentPositions,
+    allowMultiplePerTimeframe,
+    maxTradesPerTimeframe,
     isLiveExecution,
     atrPeriod,
     atrMultiplier,
@@ -1568,6 +1595,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
           slSlippagePercent,
           capital: balance.availableBalance > 0 ? balance.availableBalance : 1000,
           noConcurrentPositions,
+          allowMultiplePerTimeframe,
+          maxTradesPerTimeframe,
           isLiveExecution,
           maxPositionToRiskRatio,
           timeStopEnabled,
@@ -1899,7 +1928,13 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                   <span>• تایم‌فریم‌ها: <strong className="text-cyan-300">{(serverActiveConfig.timeframes && serverActiveConfig.timeframes.length > 0 ? serverActiveConfig.timeframes : [serverActiveConfig.timeframe || tradeTimeframe]).join(', ')}</strong></span>
                   <span>• استراتژی: <strong className="text-amber-300">{serverActiveConfig.strategyId === 'strategy_2_next_pivot' ? 'Next-Pivot (۲)' : serverActiveConfig.strategyId === 'strategy_3_ab_midpoint' ? '6-Pivot (۳)' : serverActiveConfig.strategyId === 'strategy_4_ml_zigzag' ? 'ZigZag ML (۴)' : 'E-Breakout (۱)'}</strong></span>
                   <span>• بودجه ریسک: <strong className="text-emerald-300">{serverActiveConfig.riskMode === 'fixed' ? `$${serverActiveConfig.riskAmountFixed || 50} ثابت (با احتساب اعشار و کارمزد صرافی)` : `${serverActiveConfig.riskPercent || 1}% بالانس`}</strong></span>
-                  <span>• وضعیت همزمانی: <strong className="text-amber-300">{serverActiveConfig.noConcurrentPositions !== false ? 'تک‌پوزیشن کل (حداکثر ۱ معامله باز)' : 'هم‌زمان (حداکثر ۱ معامله در هر تایم‌فریم)'}</strong></span>
+                  <span>• وضعیت همزمانی: <strong className="text-amber-300">
+                    {serverActiveConfig.noConcurrentPositions !== false
+                      ? 'تک‌پوزیشن کل (حداکثر ۱ معامله باز)'
+                      : serverActiveConfig.allowMultiplePerTimeframe
+                      ? `چندمعامله در هر تایم‌فریم (${Number(serverActiveConfig.maxTradesPerTimeframe ?? 3) > 0 ? `سقف ${serverActiveConfig.maxTradesPerTimeframe ?? 3}` : 'نامحدود'})`
+                      : 'تک‌پوزیشن در هر تایم‌فریم (حداکثر ۱ معامله در هر TF)'}
+                  </strong></span>
                   {serverActiveConfig.strategyId === 'strategy_4_ml_zigzag' && activeMlModelSummary ? (
                     <>
                       <span>• R:R مدل ML: <strong className="text-emerald-300">1:{activeMlModelSummary.targetRR}</strong></span>
@@ -2220,7 +2255,8 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                 <div className="flex flex-wrap gap-1 p-1 bg-[#141924] border border-[#283346] rounded-xl">
                   {(['1m', '3m', '5m', '15m', '30m', '1h', '4h'] as Timeframe[]).map((tf) => {
                     const isSelected = selectedTimeframes.includes(tf);
-                    const activeTrade = activeDbTrades.find((t) => t.timeframe === tf);
+                    const tfTrades = activeDbTrades.filter((t) => t.timeframe === tf);
+                    const activeCount = tfTrades.length;
                     return (
                       <button
                         key={tf}
@@ -2232,15 +2268,19 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                             : 'bg-[#0f141e] text-gray-400 hover:text-gray-200 border border-transparent'
                         }`}
                         title={
-                          activeTrade
-                            ? `تایم‌فریم ${tf}: دارای معامله باز (${activeTrade.symbol?.toUpperCase()} | Order: ${activeTrade.order_id || activeTrade.id})`
+                          activeCount > 0
+                            ? `تایم‌فریم ${tf}: دارای ${activeCount} معامله باز (${tfTrades.map((t) => t.symbol?.toUpperCase()).join('، ')})`
                             : `تایم‌فریم ${tf} (کلیک برای فعال/غیرفعال کردن)`
                         }
                       >
                         <span>{tf}</span>
-                        {activeTrade && (
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" title="پوزیشن باز" />
-                        )}
+                        {activeCount > 1 ? (
+                          <span className="px-1 rounded bg-emerald-500/25 text-emerald-300 text-[10px] leading-tight" title={`${activeCount} پوزیشن باز`}>
+                            {activeCount}
+                          </span>
+                        ) : activeCount === 1 ? (
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" title="۱ پوزیشن باز" />
+                        ) : null}
                       </button>
                     );
                   })}
@@ -2678,38 +2718,173 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
               </div>
             </div>
 
-            {/* چک‌باکس عدم ورود به معامله جدید در صورت وجود پوزیشن باز (تک‌پوزیشن) */}
-            <div className="flex flex-wrap items-center justify-between p-3 rounded-xl bg-[#0d1119] border border-[#242f42] gap-2 mt-3">
-              <div className="flex items-center gap-2.5">
-                <div className="w-7 h-7 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
-                  <ShieldAlert className="w-4 h-4" />
-                </div>
-                <div>
-                  <div className="text-xs font-extrabold text-white">مدیریت معاملات همزمان (تک‌پوزیشن):</div>
-                  <div className="text-[11px] text-gray-400">
-                    {noConcurrentPositions
-                      ? 'فعال (تک‌پوزیشن کل): با وجود یک پوزیشن باز در هر تایم‌فریم، اسکن و معامله در سایر تایم‌فریم‌ها نیز متوقف می‌شود.'
-                      : 'غیرفعال (تک‌پوزیشن در هر تایم‌فریم): فقط تایم‌فریمِ دارای معامله باز قفل می‌شود و سایر تایم‌فریم‌ها همچنان اسکن و معامله می‌شوند.'}
+            {/* مدیریت معاملات همزمان (۳ حالت شفاف: تک‌پوزیشن کل / تک‌پوزیشن در هر تایم‌فریم / چند معامله در یک تایم‌فریم) */}
+            <div className="p-3.5 rounded-xl bg-[#0d1119] border border-[#242f42] mt-3 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5">
+                  <div className={`w-7 h-7 rounded-lg flex items-center justify-center border ${
+                    noConcurrentPositions
+                      ? 'bg-amber-500/15 border-amber-500/35 text-amber-400'
+                      : allowMultiplePerTimeframe
+                      ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-400'
+                      : 'bg-cyan-500/15 border-cyan-500/35 text-cyan-400'
+                  }`}>
+                    <ShieldAlert className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="text-xs font-extrabold text-white">مدیریت معاملات همزمان</div>
+                    <div className="text-[11px] text-gray-400">
+                      {noConcurrentPositions
+                        ? 'حالت فعال: فقط ۱ پوزیشن باز در کل حساب (امن‌ترین حالت؛ با باز شدن یک معامله، کل اسکن متوقف می‌شود)'
+                        : allowMultiplePerTimeframe
+                        ? `حالت فعال: چند معامله همزمان در هر تایم‌فریم (${maxTradesPerTimeframe > 0 ? `حداکثر ${maxTradesPerTimeframe} معامله در هر TF` : 'بدون سقف تعدادی'} — بدون تکرار روی یک ارز)`
+                        : 'حالت فعال: حداکثر ۱ پوزیشن باز در هر تایم‌فریم (سایر تایم‌فریم‌ها آزاد می‌مانند)'}
+                    </div>
                   </div>
                 </div>
-              </div>
-              <label className="flex items-center gap-2.5 cursor-pointer select-none px-3 py-1.5 rounded-xl bg-[#141a26] border border-[#2d384c] hover:border-amber-500/40 transition-colors">
-                <input
-                  type="checkbox"
-                  checked={noConcurrentPositions}
-                  onChange={(e) => {
-                    const val = e.target.checked;
-                    setNoConcurrentPositions(val);
-                    try {
-                      localStorage.setItem('livetrade_no_concurrent_positions', String(val));
-                    } catch {}
-                  }}
-                  className="w-4 h-4 rounded text-amber-500 bg-[#171d28] border-[#2e394e] focus:ring-amber-500 cursor-pointer"
-                />
-                <span className={`text-xs font-bold font-mono ${noConcurrentPositions ? 'text-amber-300' : 'text-gray-400'}`}>
-                  {noConcurrentPositions ? 'فعال (تک‌پوزیشن)' : 'غیرفعال (همزمان)'}
+                <span className={`px-2.5 py-1 rounded-lg text-[11px] font-bold font-mono border ${
+                  noConcurrentPositions
+                    ? 'bg-amber-950/50 border-amber-500/40 text-amber-300'
+                    : allowMultiplePerTimeframe
+                    ? 'bg-emerald-950/50 border-emerald-500/40 text-emerald-300'
+                    : 'bg-cyan-950/50 border-cyan-500/40 text-cyan-300'
+                }`}>
+                  {noConcurrentPositions
+                    ? 'تک‌پوزیشن کل (۱)'
+                    : allowMultiplePerTimeframe
+                    ? (maxTradesPerTimeframe > 0 ? `چندتایی در TF (تا ${maxTradesPerTimeframe})` : 'چندتایی در TF (نامحدود)')
+                    : '۱ معامله در هر TF'}
                 </span>
-              </label>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                {/* چک‌باکس ۱: تک‌پوزیشن کل حساب */}
+                <label
+                  className={`flex items-start gap-2.5 p-2.5 rounded-xl border cursor-pointer select-none transition-all ${
+                    noConcurrentPositions
+                      ? 'bg-amber-950/25 border-amber-500/50'
+                      : 'bg-[#121824] border-[#263144] hover:border-amber-500/35'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={noConcurrentPositions}
+                    onChange={(e) => {
+                      const val = e.target.checked;
+                      setNoConcurrentPositions(val);
+                      if (val && allowMultiplePerTimeframe) {
+                        setAllowMultiplePerTimeframe(false);
+                        try {
+                          localStorage.setItem('livetrade_allow_multiple_per_tf', 'false');
+                        } catch {}
+                      }
+                      try {
+                        localStorage.setItem('livetrade_no_concurrent_positions', String(val));
+                      } catch {}
+                    }}
+                    className="mt-0.5 w-4 h-4 rounded accent-amber-500 cursor-pointer shrink-0"
+                  />
+                  <div className="min-w-0">
+                    <div className={`text-xs font-bold ${noConcurrentPositions ? 'text-amber-300' : 'text-gray-200'}`}>
+                      تک‌پوزیشن کل حساب (قفل سراسری)
+                    </div>
+                    <div className="text-[11px] text-gray-400 mt-0.5 leading-snug">
+                      تا زمان بسته شدن معامله باز، هیچ سفارش جدیدی در هیچ تایم‌فریمی باز نشود.
+                    </div>
+                  </div>
+                </label>
+
+                {/* چک‌باکس ۲: اجازه چند معامله همزمان در یک تایم‌فریم */}
+                <label
+                  className={`flex items-start gap-2.5 p-2.5 rounded-xl border cursor-pointer select-none transition-all ${
+                    !noConcurrentPositions && allowMultiplePerTimeframe
+                      ? 'bg-emerald-950/25 border-emerald-500/50'
+                      : 'bg-[#121824] border-[#263144] hover:border-emerald-500/35'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={!noConcurrentPositions && allowMultiplePerTimeframe}
+                    onChange={(e) => {
+                      const val = e.target.checked;
+                      setAllowMultiplePerTimeframe(val);
+                      if (val && noConcurrentPositions) {
+                        setNoConcurrentPositions(false);
+                        try {
+                          localStorage.setItem('livetrade_no_concurrent_positions', 'false');
+                        } catch {}
+                      }
+                      try {
+                        localStorage.setItem('livetrade_allow_multiple_per_tf', String(val));
+                      } catch {}
+                    }}
+                    className="mt-0.5 w-4 h-4 rounded accent-emerald-500 cursor-pointer shrink-0"
+                  />
+                  <div className="min-w-0">
+                    <div className={`text-xs font-bold ${!noConcurrentPositions && allowMultiplePerTimeframe ? 'text-emerald-300' : 'text-gray-200'}`}>
+                      اجازه چند معامله همزمان در یک تایم‌فریم
+                    </div>
+                    <div className="text-[11px] text-gray-400 mt-0.5 leading-snug">
+                      امکان باز شدن چند معامله روی ارزهای مختلف در یک تایم‌فریم (مثلاً چند ارز همزمان روی ۵m).
+                    </div>
+                  </div>
+                </label>
+              </div>
+
+              {/* تنظیم سقف معاملات در هر تایم‌فریم هنگام فعال بودن حالت چندتایی */}
+              {!noConcurrentPositions && allowMultiplePerTimeframe && (
+                <div className="flex flex-wrap items-center justify-between gap-2.5 px-3 py-2 rounded-lg bg-[#121824] border border-emerald-500/30">
+                  <div className="text-[11px] text-gray-300">
+                    <span className="font-bold text-emerald-300">سقف معاملات همزمان در هر تایم‌فریم:</span>{' '}
+                    <span className="text-gray-400">(معامله تکراری روی یک ارز هرگز باز نمی‌شود)</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {[2, 3, 5, 10, 0].map((cap) => {
+                      const active = maxTradesPerTimeframe === cap;
+                      return (
+                        <button
+                          key={cap}
+                          type="button"
+                          onClick={() => {
+                            setMaxTradesPerTimeframe(cap);
+                            try {
+                              localStorage.setItem('livetrade_max_trades_per_tf', String(cap));
+                            } catch {}
+                          }}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold transition-colors cursor-pointer border ${
+                            active
+                              ? 'bg-emerald-500/25 border-emerald-400/60 text-emerald-200'
+                              : 'bg-[#0d1119] border-[#283346] text-gray-400 hover:text-gray-200'
+                          }`}
+                        >
+                          {cap === 0 ? 'نامحدود' : `${cap} معامله`}
+                        </button>
+                      );
+                    })}
+                    <input
+                      type="number"
+                      min={0}
+                      max={20}
+                      value={maxTradesPerTimeframe}
+                      onChange={(e) => {
+                        const v = Math.max(0, Math.min(20, parseInt(e.target.value, 10) || 0));
+                        setMaxTradesPerTimeframe(v);
+                        try {
+                          localStorage.setItem('livetrade_max_trades_per_tf', String(v));
+                        } catch {}
+                      }}
+                      title="عدد دلخواه (۰ = نامحدود)"
+                      className="w-14 px-2 py-1 bg-[#0d1119] border border-[#2d384c] rounded-lg text-emerald-300 font-mono text-center text-[11px] font-bold"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {selectedStrategy === 'strategy_4_ml_zigzag' && !noConcurrentPositions && (
+                <div className="text-[11px] text-amber-300/90 bg-amber-950/20 border border-amber-500/25 rounded-lg px-2.5 py-1.5">
+                  نکته برای استراتژی ۴ (ML v3): بالاترین وین‌ریت و پروفیت فکتور مدل v3 در تست OOS روی حالت <strong>تک‌پوزیشن کل</strong> (WR 67.6% / PF 2.50) به‌دست آمده است؛ در حالت چندمعامله، مارجین آزاد بین پوزیشن‌ها تقسیم می‌شود.
+                </div>
+              )}
             </div>
 
             {/* حد زمان ماندن در معامله (Time-Stop بر مبنای تعداد کندل) */}
