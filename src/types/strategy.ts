@@ -54,6 +54,7 @@ export interface StrategyParams {
   minEntryPivotAtr?: number; // حداقل فاصله ورود با پیوت قبلش بر حسب ATR برای همه استراتژی‌ها (صفر=غیرفعال)
   optMinEntryPivotAtr?: number;
   disableCapitalCompounding?: boolean; // در ارزیابی لایو، تغییر سرمایه شبیه‌سازی‌شده گذشته روی بالانس لحظه‌ای فعلی اثر نگذارد
+  timeframe?: string; // تایم‌فریم فعال (5m, 15m, 1h, 4h) برای تطبیق خودکار مقیاس تایم‌بالاتر در استراتژی ML
 }
 
 export type StrategyConfig = StrategyParams;

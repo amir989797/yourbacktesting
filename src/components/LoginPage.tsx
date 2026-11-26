@@ -1,24 +1,21 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   TrendingUp,
   Shield,
-  Zap,
   BarChart2,
   Database,
-  ArrowRight,
-  CheckCircle,
   Lock,
   User,
   Sliders,
   Cpu,
   Eye,
   EyeOff,
-  Sparkles,
   ShieldCheck,
   AlertCircle,
   Mail,
   CheckCircle2,
   ChevronDown,
+  KeyRound,
 } from 'lucide-react';
 
 interface LoginPageProps {
@@ -26,17 +23,78 @@ interface LoginPageProps {
 }
 
 export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
-  const [username, setUsername] = useState<string>('');
+  const [username, setUsername] = useState<string>('amir');
   const [password, setPassword] = useState<string>('');
+  const [confirmPassword, setConfirmPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [showFeatures, setShowFeatures] = useState<boolean>(false);
+  const [needsInitialSetup, setNeedsInitialSetup] = useState<boolean>(false);
 
   // Forgot password sub-state
   const [isForgotPasswordOpen, setIsForgotPasswordOpen] = useState<boolean>(false);
   const [forgotPassSubmitted, setForgotPassSubmitted] = useState<boolean>(false);
   const [forgotPassLoading, setForgotPassLoading] = useState<boolean>(false);
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/auth/status')
+      .then((r) => r.json())
+      .then((data) => {
+        if (!active || !data?.success) return;
+        if (data.needsInitialSetup) {
+          setNeedsInitialSetup(true);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleSetupAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg('');
+
+    const trimmedUser = username.trim();
+    if (!trimmedUser || trimmedUser.length < 2) {
+      setErrorMsg('نام کاربری باید حداقل ۲ کاراکتر باشد.');
+      return;
+    }
+    if (password.length < 6) {
+      setErrorMsg('رمز عبور مدیر باید حداقل ۶ کاراکتر باشد.');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setErrorMsg('تکرار رمز عبور با رمز عبور واردشده مطابقت ندارد.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const resp = await fetch('/api/auth/setup-admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: trimmedUser, password }),
+      });
+
+      const data = await resp.json().catch(() => null);
+      if (resp.ok && data && data.success) {
+        onLoginSuccess(data.user || trimmedUser);
+      } else if (resp.status === 409) {
+        setNeedsInitialSetup(false);
+        setConfirmPassword('');
+        setErrorMsg(data?.error || 'حساب مدیر قبلاً تنظیم شده است. لطفاً وارد شوید.');
+      } else {
+        setErrorMsg(data?.error || 'خطا در تنظیم حساب مدیر.');
+      }
+    } catch {
+      setErrorMsg('خطا در برقراری ارتباط با سرور.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -50,7 +108,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
 
     setIsSubmitting(true);
     try {
-      // Authenticate directly against the server PostgreSQL database
       const resp = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -61,11 +118,15 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
 
       if (resp.ok && data && data.success) {
         onLoginSuccess(data.user || trimmedUser);
+      } else if (data?.needsInitialSetup) {
+        setNeedsInitialSetup(true);
+        setConfirmPassword('');
+        setErrorMsg(data.error || 'لطفاً ابتدا رمز عبور مدیر را تعریف کنید.');
       } else {
         setErrorMsg(data?.error || 'نام کاربری یا رمز عبور اشتباه است.');
       }
     } catch {
-      setErrorMsg('خطا در برقراری ارتباط با سرور و پایگاه داده.');
+      setErrorMsg('خطا در برقراری ارتباط با سرور.');
     } finally {
       setIsSubmitting(false);
     }
@@ -106,11 +167,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
           </div>
 
           <div className="flex items-center gap-3">
-            <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#141b27] border border-[#232e42] text-xs text-gray-300">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span>دیتابیس سرور PostgreSQL متصل</span>
-            </div>
-
             <button
               type="button"
               onClick={() => setShowFeatures(!showFeatures)}
@@ -130,9 +186,127 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
 
         <div className="w-full max-w-md relative z-10">
           <div className="bg-[#0f141f]/95 backdrop-blur-xl border border-[#232f45] rounded-3xl shadow-2xl p-6 sm:p-8 space-y-6">
-            {!isForgotPasswordOpen ? (
+            {needsInitialSetup ? (
               /* ========================================= */
-              /* FORM: SIGN IN ONLY (ورود کاربر amir) */
+              /* FORM: FIRST-RUN ADMIN SETUP */
+              /* ========================================= */
+              <div className="space-y-6">
+                <div className="text-center space-y-2">
+                  <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-emerald-500 via-teal-400 to-cyan-300 flex items-center justify-center mx-auto text-black shadow-xl shadow-emerald-500/25">
+                    <KeyRound className="w-7 h-7 stroke-[2.5]" />
+                  </div>
+                  <h1 className="text-2xl font-black text-white tracking-tight">تنظیم حساب مدیر</h1>
+                  <p className="text-xs text-gray-400 leading-relaxed">
+                    هنوز رمز عبور مدیر تعریف نشده است. نام کاربری و رمز عبور دلخواه خود را برای اولین ورود تعیین کنید.
+                  </p>
+                </div>
+
+                {errorMsg && (
+                  <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-500/40 text-rose-300 text-xs flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+                    <span>{errorMsg}</span>
+                  </div>
+                )}
+
+                <form onSubmit={handleSetupAdmin} className="space-y-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-gray-300 block">
+                      نام کاربری مدیر (Username):
+                    </label>
+                    <div className="relative">
+                      <div className="absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
+                        <User className="w-4 h-4" />
+                      </div>
+                      <input
+                        type="text"
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        placeholder="amir"
+                        autoFocus
+                        className="w-full pr-10 pl-3 py-3 bg-[#141b27] border border-[#28354c] rounded-xl text-white text-xs font-mono focus:outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400/40 transition-colors"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-gray-300 block">
+                      رمز عبور جدید (حداقل ۶ کاراکتر):
+                    </label>
+                    <div className="relative">
+                      <div className="absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
+                        <Lock className="w-4 h-4" />
+                      </div>
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="••••••••"
+                        minLength={6}
+                        className="w-full pr-10 pl-10 py-3 bg-[#141b27] border border-[#28354c] rounded-xl text-white text-xs font-mono focus:outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400/40 transition-colors"
+                        required
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((prev) => !prev)}
+                        className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-200 cursor-pointer p-1"
+                        tabIndex={-1}
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-gray-300 block">
+                      تکرار رمز عبور:
+                    </label>
+                    <div className="relative">
+                      <div className="absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
+                        <Lock className="w-4 h-4" />
+                      </div>
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        placeholder="••••••••"
+                        minLength={6}
+                        className="w-full pr-10 pl-3 py-3 bg-[#141b27] border border-[#28354c] rounded-xl text-white text-xs font-mono focus:outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400/40 transition-colors"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="w-full py-3.5 rounded-xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 hover:from-emerald-300 hover:to-cyan-300 text-black font-black text-sm flex items-center justify-center gap-2 shadow-xl shadow-emerald-500/20 transition-all cursor-pointer disabled:opacity-50 mt-2"
+                  >
+                    <ShieldCheck className="w-4 h-4 stroke-[2.5]" />
+                    <span>{isSubmitting ? 'در حال ثبت و ورود...' : 'ذخیره رمز مدیر و ورود'}</span>
+                  </button>
+                </form>
+
+                <div className="pt-3 border-t border-[#1a2333] flex items-center justify-between text-[11px] text-gray-400">
+                  <div className="flex items-center gap-1.5">
+                    <Shield className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>تنظیم امن یک‌باره</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNeedsInitialSetup(false);
+                      setErrorMsg('');
+                    }}
+                    className="text-amber-400 hover:text-amber-300 cursor-pointer"
+                  >
+                    ورود با حساب موجود
+                  </button>
+                </div>
+              </div>
+            ) : !isForgotPasswordOpen ? (
+              /* ========================================= */
+              /* FORM: SIGN IN */
               /* ========================================= */
               <div className="space-y-6">
                 <div className="text-center space-y-2">
@@ -228,9 +402,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
                 <div className="pt-3 border-t border-[#1a2333] flex items-center justify-between text-[11px] text-gray-400">
                   <div className="flex items-center gap-1.5">
                     <Shield className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>امنیت ابری Firebase</span>
+                    <span>احراز هویت امن سرور</span>
                   </div>
-                  <span className="font-mono text-gray-500">کاربر مجاز: amir</span>
+                  <span className="font-mono text-gray-500">Crypto Strategy Lab</span>
                 </div>
               </div>
             ) : (

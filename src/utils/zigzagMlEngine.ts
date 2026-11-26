@@ -55,24 +55,38 @@ export const ML_FEATURES_META: MlFeatureMeta[] = [
   { index: 26, key: 'rsi_div', labelFa: 'واگرایی RSI بین P1 و P3', category: 'structure', descriptionFa: 'اختلاف مومنتوم RSI بین پیوت جدید و پیوت هم‌نوع قبلی' },
   { index: 27, key: 'ema50_ext_pct', labelFa: 'کشیدگی درصدی از EMA50 (%)', category: 'structure', descriptionFa: 'درصد فاصله قیمت از میانگین متحرک ۵۰ در جهت اشباع' },
   { index: 28, key: 'ema200_ext_pct', labelFa: 'کشیدگی درصدی از EMA200 (%)', category: 'structure', descriptionFa: 'درصد فاصله قیمت از میانگین متحرک ۲۰۰ (فیلتر کشیدگی میان‌مدت)' },
-  { index: 29, key: 'ema600_ext_pct', labelFa: 'کشیدگی درصدی از EMA600 (%)', category: 'structure', descriptionFa: 'درصد فاصله قیمت از روند ۵۰ ساعته EMA600 برای نقاط برگشتی عمیق' },
-  { index: 30, key: 'ema600_slope_dir', labelFa: 'شیب روند کلان EMA600 (ضد سقوط آزاد)', category: 'structure', descriptionFa: 'هم‌راستایی شیب ۵۰ ساعته بازار با جهت معامله برای جلوگیری از خرید در ریزش آزاد' },
-  { index: 31, key: 'ret4h_stretch', labelFa: 'کشیدگی حرکت ۴ ساعته (%)', category: 'structure', descriptionFa: 'درصد پامپ یا دامپ ۴ ساعت اخیر پیش از تشکیل پیوت' },
-  { index: 32, key: 'ret24h_stretch', labelFa: 'کشیدگی حرکت ۲۴ ساعته (%)', category: 'structure', descriptionFa: 'درصد حرکت ۲۴ ساعت اخیر برای تشخیص نقاط تخلیه شدید' },
+  { index: 29, key: 'ema600_ext_pct', labelFa: 'کشیدگی درصدی از EMA600 (روند کلان ۶۰۰×TF)', category: 'structure', descriptionFa: 'درصد فاصله قیمت از میانگین متحرک ۶۰۰ کندلی (۵۰h در ۵m، ۶.۲۵d در ۱۵m، ۲۵d در ۱h، ۱۰۰d در ۴h)' },
+  { index: 30, key: 'ema600_slope_dir', labelFa: 'شیب روند کلان EMA600 (ضد سقوط آزاد)', category: 'structure', descriptionFa: 'هم‌راستایی شیب EMA600 در ۴۸ کندل اخیر با جهت معامله در تایم‌فریم فعال' },
+  { index: 31, key: 'ret4h_stretch', labelFa: 'کشیدگی تایم‌بالاتر ۴۸×TF (۴h در ۵m)', category: 'structure', descriptionFa: 'درصد پامپ یا دامپ ۴۸ کندل اخیر (۴h در ۵m، ۱۲h در ۱۵m، ۲d در ۱h، ۸d در ۴h)' },
+  { index: 32, key: 'ret24h_stretch', labelFa: 'کشیدگی تایم‌بالاتر ۲۸۸×TF (۲۴h در ۵m)', category: 'structure', descriptionFa: 'درصد حرکت ۲۸۸ کندل اخیر (۲۴h در ۵m، ۳d در ۱۵m، ۱۲d در ۱h، ۴۸d در ۴h)' },
   { index: 33, key: 'atr_expansion', labelFa: 'انبساط نوسان (ATR17 / ATR100)', category: 'structure', descriptionFa: 'نسبت نوسان کوتاه‌مدت به بلندمدت جهت تشخیص شکست رژیم نوسانی' },
-  // v3 Causal Extensions (indices 34..45; 100% backward-compatible with v1/v2 34-feature models)
+  // v3/v4 Causal Extensions (indices 34..45; 100% backward-compatible with v1/v2 34-feature models)
   { index: 34, key: 'isLong', labelFa: 'جهت معامله (لانگ / شورت)', category: 'structure', descriptionFa: 'تمایز الگوی بازگشت شورت پس از پامپ (۰) از بازگشت لانگ پس از ریزش (۱)' },
-  { index: 35, key: 'ret15m_stretch', labelFa: 'کشیدگی ۱۵ دقیقه‌ای (%)', category: 'structure', descriptionFa: 'شتاب قیمتی کوتاه‌مدت ۳ کندل اخیر در جهت اشباع پیش از پیوت' },
-  { index: 36, key: 'ret1h_stretch', labelFa: 'کشیدگی ۱ ساعته (%)', category: 'structure', descriptionFa: 'شتاب قیمتی ۱۲ کندل اخیر پیش از تایید بازگشت پیوت' },
+  { index: 35, key: 'ret15m_stretch', labelFa: 'کشیدگی تایم‌بالاتر ۳×TF (۱۵m در ۵m)', category: 'structure', descriptionFa: 'شتاب قیمتی ۳ کندل اخیر (۱۵m در ۵m، ۴۵m در ۱۵m، ۳h در ۱h، ۱۲h در ۴h)' },
+  { index: 36, key: 'ret1h_stretch', labelFa: 'کشیدگی تایم‌بالاتر ۱۲×TF (۱h در ۵m)', category: 'structure', descriptionFa: 'شتاب قیمتی ۱۲ کندل اخیر (۱h در ۵m، ۳h در ۱۵m، ۱۲h در ۱h، ۲d در ۴h)' },
   { index: 37, key: 'wick_for', labelFa: 'شدو بازگشتی موافق (Rejection Wick)', category: 'structure', descriptionFa: 'نسبت سایه کندل تایید در جهت رد قیمت و حمایت از بازگشت' },
   { index: 38, key: 'wick_against', labelFa: 'شدو مخالف جهت ورود', category: 'structure', descriptionFa: 'نسبت سایه مخالف روی کندل تایید جهت تشخیص ضعف مومنتوم' },
   { index: 39, key: 'confirm_vol_ratio', labelFa: 'نسبت حجم کندل تایید به میانگین ۲۰', category: 'volume', descriptionFa: 'قدرت حجم لحظه تایید پیوت نسبت به میانگین حجم ۲۰ کندل اخیر' },
-  { index: 40, key: 'range_pos_24h', labelFa: 'موقعیت در رنج ۲۴ ساعته', category: 'structure', descriptionFa: 'جایگاه قیمت در محدوده سقف و کف ۲۴ ساعته در جهت اشباع' },
-  { index: 41, key: 'range_width_24h_pct', labelFa: 'عرض نوسان ۲۴ ساعته (%)', category: 'structure', descriptionFa: 'درصد دامنه کل نوسان ۲۴ ساعت گذشته نماد' },
-  { index: 42, key: 'dollar_vol_log', labelFa: 'لگاریتم نقدشوندگی دلاری ۲۴h', category: 'volume', descriptionFa: 'شاخص عمق بازار و نقدشوندگی ۲۴ ساعته نماد برای جلوگیری از اسلیپیج' },
+  { index: 40, key: 'range_pos_24h', labelFa: 'موقعیت در رنج ۲۸۸×TF', category: 'structure', descriptionFa: 'جایگاه قیمت در محدوده سقف و کف ۲۸۸ کندل اخیر در جهت اشباع' },
+  { index: 41, key: 'range_width_24h_pct', labelFa: 'عرض نوسان ۲۸۸×TF (%)', category: 'structure', descriptionFa: 'درصد دامنه کل نوسان ۲۸۸ کندل گذشته نماد' },
+  { index: 42, key: 'dollar_vol_log', labelFa: 'لگاریتم نقدشوندگی دلاری ۲۸۸×TF', category: 'volume', descriptionFa: 'شاخص عمق بازار و نقدشوندگی ۲۸۸ کندل اخیر برای جلوگیری از اسلیپیج' },
   { index: 43, key: 'bb_z_signed', labelFa: 'انحراف معیار بولینگر (BB Z-Score)', category: 'structure', descriptionFa: 'فاصله قیمت از میانگین ۲۰ کندل برحسب انحراف معیار در جهت اشباع' },
   { index: 44, key: 'rebound_ratio', labelFa: 'نسبت بازگشت انجام‌شده از پیوت', category: 'structure', descriptionFa: 'درصد حرکت انجام‌شده از P1 تا کندل تایید نسبت به کل کشیدگی' },
   { index: 45, key: 'rsi_cool', labelFa: 'تخلیه RSI از پیوت تا کندل تایید', category: 'structure', descriptionFa: 'میزان خروج RSI از ناحیه اشباع بین کندل پیوت P1 و کندل تایید' },
+  // v4 Scale-Invariant & ContractSize-Free Causal Extensions (indices 46..51; backward-compatible with v1..v3)
+  { index: 46, key: 'ema200_ext_atr', labelFa: 'کشیدگی نرمال‌شده از EMA200 (واحد ATR)', category: 'structure', descriptionFa: 'فاصله قیمت از EMA200 برحسب مضرب ATR (مستقل از درصد نوسان ارز و تایم‌فریم)' },
+  { index: 47, key: 'ema600_ext_atr', labelFa: 'کشیدگی نرمال‌شده از EMA600 (واحد ATR)', category: 'structure', descriptionFa: 'فاصله قیمت از روند کلان EMA600 برحسب مضرب ATR برای تشخیص اشباع واقعی' },
+  { index: 48, key: 'vol_surge_4h_24h', labelFa: 'جهش حجم ۴۸×TF نسبت به ۲۸۸×TF', category: 'volume', descriptionFa: 'نسبت میانگین حجم ۴۸ کندل اخیر به ۲۸۸ کندل اخیر (مستقل از contractSize صرافی)' },
+  { index: 49, key: 'active_bar_ratio_48', labelFa: 'شاخص سلامت و نقدشوندگی بازار (۴۸ کندل)', category: 'volume', descriptionFa: 'درصد کندل‌های فعال و باحجم در ۴۸ کندل اخیر برای حذف بازارهای مرده و نیمه‌تعطیل' },
+  { index: 50, key: 'ema50_200_spread_atr', labelFa: 'فاصله EMA50 از EMA200 (واحد ATR)', category: 'structure', descriptionFa: 'شدت واگرایی روند میان‌مدت از بلندمدت در جهت اشباع برای تشخیص پامپ‌های فرسوده' },
+  { index: 51, key: 'p1_to_ema50_atr', labelFa: 'کشیدگی پیوت P1 از EMA50 (واحد ATR)', category: 'structure', descriptionFa: 'اوج کشیدگی نقطه پیوت P1 نسبت به EMA50 برحسب ATR در لحظه سقف/کف' },
+  // v4.5 Causal Market-Regime & Trend-vs-Chop Extensions (indices 52..57; 100% backward-compatible)
+  { index: 52, key: 'er_48', labelFa: 'کارایی روند کافمن ۴۸×TF (روند یا رنج)', category: 'structure', descriptionFa: 'نسبت حرکت خالص به کل نوسان ۴۸ کندل اخیر (۰=بازار رنج و نوسانی، ۱=روند قدرتمند و یک‌طرفه)' },
+  { index: 53, key: 'er_288', labelFa: 'کارایی روند کلان ۲۸۸×TF (۲۴h در ۵m)', category: 'structure', descriptionFa: 'تشخیص رژیم کلان ۲۴ ساعته: روند پایدار در مقابل بازار رنج جهت جلوگیری از معامله خلاف روند قوی' },
+  { index: 54, key: 'ema200_slope_dir', labelFa: 'شیب روند میان‌مدت EMA200 هم‌جهت ورود', category: 'structure', descriptionFa: 'درصد شیب EMA200 در ۴۸ کندل اخیر در جهت معامله (مثبت=پولبک هم‌جهت روند، منفی=خلاف روند)' },
+  { index: 55, key: 'trend_bar_ratio_48', labelFa: 'پایداری کندل‌های هم‌جهت (۴۸ کندل)', category: 'structure', descriptionFa: 'توازن تعداد کندل‌های صعودی و نزولی ۴۸ کندل اخیر در جهت ورود برای تشخیص مومنتوم واقعی' },
+  { index: 56, key: 'pullback_vs_stretch', labelFa: 'امتیاز رژیم پولبک هم‌روند در برابر اشباع', category: 'structure', descriptionFa: 'ترکیب فاصله از EMA200 و کارایی روند برای تفکیک پولبک رونددار از فید کردن روند پرقدرت' },
+  { index: 57, key: 'dist_from_ema50_signed_atr', labelFa: 'موقعیت ورود نسبت به EMA50 (واحد ATR)', category: 'structure', descriptionFa: 'فاصله جهت‌دار قیمت ورود تا EMA50 برحسب ATR جهت ورود نزدیک به ناحیه ارزش' },
 ];
 
 export const ML_FEATURE_NAMES = ML_FEATURES_META.map(m => m.key);
@@ -221,12 +235,60 @@ export function describeMatchedPattern(f: Float32Array, l1Color: string): string
   if (f[16] < 0.40) return 'ساختار هارمونیک در ناحیه اشباع';
   if ((f[18] < 0.75 || f[21] > 1.8) && f[22] === 1) return 'تخلیه/کلایمکس حجم + شکست P3';
   if (f[7] >= 3 && f[26] > 0) return 'توالی سفید + واگرایی RSI';
-  return 'ترکیب چندعاملی ZigZag ML v3';
+  return 'ترکیب چندعاملی ZigZag ML v4';
+}
+
+export function parseTimeframeMinutes(timeframe?: string): number {
+  if (!timeframe) return 5;
+  const tf = String(timeframe).trim().toLowerCase();
+  const m = tf.match(/^(\d+)([mhdw])$/);
+  if (!m) return 5;
+  const val = Number(m[1]);
+  const unit = m[2];
+  if (unit === 'm') return val;
+  if (unit === 'h') return val * 60;
+  if (unit === 'd') return val * 1440;
+  if (unit === 'w') return val * 10080;
+  return 5;
+}
+
+export function getTimeframeVolatilityScale(activeTimeframe?: string, modelTimeframe?: string): number {
+  const activeMin = parseTimeframeMinutes(activeTimeframe);
+  const modelMin = parseTimeframeMinutes(modelTimeframe);
+  if (activeMin <= 0 || modelMin <= 0 || activeMin === modelMin) return 1.0;
+  const ratio = activeMin / modelMin;
+  return Math.max(0.4, Math.min(4.5, Math.sqrt(ratio)));
+}
+
+const PCT_SCALED_FEATURE_INDICES = [0, 9, 27, 28, 29, 30, 31, 32, 35, 36, 41, 54];
+
+export function normalizeMlFeaturesForTimeframe(
+  features: Float32Array,
+  activeTimeframe?: string,
+  modelTimeframe?: string
+): Float32Array {
+  const activeMin = parseTimeframeMinutes(activeTimeframe);
+  const modelMin = parseTimeframeMinutes(modelTimeframe);
+  if (!activeTimeframe || !modelTimeframe || activeMin === modelMin) {
+    return features;
+  }
+  const volScale = getTimeframeVolatilityScale(activeTimeframe, modelTimeframe);
+  const logVolShift = Math.log10(Math.max(0.05, activeMin / modelMin));
+  const out = new Float32Array(features);
+  for (let idx = 0; idx < PCT_SCALED_FEATURE_INDICES.length; idx++) {
+    const f = PCT_SCALED_FEATURE_INDICES[idx];
+    if (f < out.length) out[f] = out[f] / volScale;
+  }
+  if (42 < out.length) {
+    out[42] = Math.max(0, out[42] - logVolShift);
+  }
+  return out;
 }
 
 /**
- * Strictly causal bar-by-bar ZigZag pivot confirmation and 34-feature extractor.
+ * Strictly causal bar-by-bar ZigZag pivot confirmation and 46-feature extractor.
  * Identical logic is used during ML training, Backtesting, Chart visualization, and Live Trading.
+ * Higher-timeframe features scale proportionally with the active timeframe (3×TF, 12×TF, 48×TF, 288×TF, EMA600).
  * Zero lookahead: features at bar `i` depend ONLY on candles `0..i`.
  */
 export function extractCausalZigZagEvents(
@@ -235,11 +297,24 @@ export function extractCausalZigZagEvents(
   minAtrPct = 0.25,
   precomputedAtr?: number[],
   excludeTailBars = 0,
-  minStretchPct = 4.0
+  minStretchPct = 4.0,
+  _timeframe?: string
 ): CausalZigZagEvent[] {
   const n = candles.length;
   const events: CausalZigZagEvent[] = [];
-  const minWarmup = minStretchPct > 0 ? 610 : 210;
+  const tfMin = parseTimeframeMinutes(_timeframe);
+  const rawBaseWarmup = minStretchPct > 0 ? 610 : 210;
+  // Keep full 610-bar warmup on 5m (matches live 1000-candle & pre-trained v4 parity),
+  // and scale cleanly for higher timeframes (15m/30m/1h/4h) so 1-month HTF backtests never starve.
+  const baseWarmup =
+    tfMin >= 240 ? Math.min(rawBaseWarmup, 65) :
+    tfMin >= 60 ? Math.min(rawBaseWarmup, 160) :
+    tfMin >= 30 ? Math.min(rawBaseWarmup, 210) :
+    tfMin >= 15 ? Math.min(rawBaseWarmup, 300) :
+    rawBaseWarmup;
+  const minWarmup = n >= baseWarmup + 40
+    ? baseWarmup
+    : Math.max(55, Math.min(baseWarmup, Math.floor(n * 0.25)));
   if (n < minWarmup + 5) return events;
 
   const atrValues =
@@ -395,6 +470,16 @@ export function extractCausalZigZagEvents(
     const atrPct = (atr / entry) * 100;
     if (atrPct < minAtrPct) continue;
 
+    // Strictly causal dead-market / off-hours tokenized-stock filter (past 48 bars only)
+    let flatBars48 = 0;
+    const fbStart = Math.max(0, i - 47);
+    const fbLen = i - fbStart + 1;
+    for (let k = fbStart; k <= i; k++) {
+      const ck = candles[k];
+      if (ck.high <= ck.low || !(ck.volume > 0)) flatBars48++;
+    }
+    if (fbLen >= 20 && flatBars48 / fbLen > 0.25) continue;
+
     const latestP = rawPivots[rawPivots.length - 1];
     const isBuy = latestP.type === 'low';
     const revSide: 1 | -1 = isBuy ? 1 : -1;
@@ -531,6 +616,43 @@ export function extractCausalZigZagEvents(
     const rsiSignedP1 = isBuy ? 100 - rsiP1 : rsiP1;
     const rsiCool = rsiSignedP1 - rsiSignedConf;
 
+    // v4 Scale-Invariant & ContractSize-Free Causal Features (indices 46..51)
+    const ema200ExtAtr = Math.max(-30, Math.min(50, ((entry - ema200[i]) / atr) * (-revSide)));
+    const ema600ExtAtr = Math.max(-40, Math.min(60, ((entry - ema600[i]) / atr) * (-revSide)));
+    let vol48Sum = 0;
+    for (let k = fbStart; k <= i; k++) vol48Sum += candles[k].volume || 0;
+    let vol288Sum = 0;
+    for (let k = d24Start; k <= i; k++) vol288Sum += candles[k].volume || 0;
+    const avgVol48 = vol48Sum / Math.max(1, fbLen);
+    const avgVol288 = Math.max(eps, vol288Sum / Math.max(1, i - d24Start + 1));
+    const volSurge4h24h = Math.min(10, avgVol48 / avgVol288);
+    const activeBarRatio48 = 1 - flatBars48 / Math.max(1, fbLen);
+    const ema50200SpreadAtr = Math.max(-25, Math.min(40, ((ema50[i] - ema200[i]) / atr) * (-revSide)));
+    const p1ToEma50Atr = Math.max(-25, Math.min(40, ((P1.value - ema50[p1i]) / atr) * (-revSide)));
+
+    // v4.5 Causal Market-Regime & Trend-vs-Chop Features (indices 52..57, strictly candles 0..i)
+    let path48 = 0;
+    let dirBars48 = 0;
+    const er48Start = Math.max(1, i - 48);
+    for (let k = er48Start; k <= i; k++) {
+      const diff = candles[k].close - candles[k - 1].close;
+      path48 += Math.abs(diff);
+      if (diff * revSide > 0) dirBars48++;
+      else if (diff * revSide < 0) dirBars48--;
+    }
+    const er48 = path48 > eps ? Math.min(1, Math.abs(entry - candles[er48Start - 1].close) / path48) : 0;
+    let path288 = 0;
+    const er288Start = Math.max(1, i - 288);
+    for (let k = er288Start; k <= i; k++) {
+      path288 += Math.abs(candles[k].close - candles[k - 1].close);
+    }
+    const er288 = path288 > eps ? Math.min(1, Math.abs(entry - candles[er288Start - 1].close) / path288) : 0;
+    const ema200Prev = ema200[Math.max(0, i - 48)];
+    const ema200SlopeDir = ema200Prev > 0 ? Math.max(-20, Math.min(20, ((ema200[i] - ema200Prev) / ema200Prev) * 100 * revSide)) : 0;
+    const trendBarRatio48 = dirBars48 / Math.max(1, i - er48Start + 1);
+    const pullbackVsStretch = Math.max(-25, Math.min(25, (-ema200ExtAtr) * er48));
+    const distFromEma50SignedAtr = Math.max(-25, Math.min(25, ((entry - ema50[i]) / atr) * revSide));
+
     const features = new Float32Array([
       atrPct,
       Math.abs(entry - P1.value) / atr,
@@ -578,6 +700,18 @@ export function extractCausalZigZagEvents(
       bbZSigned,
       reboundRatio,
       rsiCool,
+      ema200ExtAtr,
+      ema600ExtAtr,
+      volSurge4h24h,
+      activeBarRatio48,
+      ema50200SpreadAtr,
+      p1ToEma50Atr,
+      er48,
+      er288,
+      ema200SlopeDir,
+      trendBarRatio48,
+      pullbackVsStretch,
+      distFromEma50SignedAtr,
     ]);
 
     events.push({
@@ -805,7 +939,7 @@ function evaluateSplitSamples(arr: MlTrainingSample[]): MlSplitMetrics {
 
   for (let i = 0; i < sorted.length; i++) {
     const e = sorted[i];
-    if (e.time < busy) continue;
+    if (e.time <= busy) continue;
     busy = e.exitTime;
     pn++;
     psum += e.rMultiple;
@@ -911,27 +1045,37 @@ export function trainZigZagMlModel(
       a.side - b.side
   );
 
-  // Automatic 20% deterministic Unseen-Symbol holdout when symbol names are present
+  // Automatic 20% deterministic Unseen-Symbol holdout when enough symbols & samples exist
   const uniqueSymbols = Array.from(new Set(samples.map((s) => s.symbol).filter(Boolean) as string[])).sort();
   const unseenSymbolSet = new Set<string>();
-  if (uniqueSymbols.length >= 20) {
+  if (uniqueSymbols.length >= 20 && samples.length >= 1200) {
     for (let i = 0; i < uniqueSymbols.length; i++) {
       if (i % 5 === 0) unseenSymbolSet.add(uniqueSymbols[i]);
     }
   }
 
   // Strict chronological 45% Train / 25% Validation / 30% Untouched OOS Test split
-  const t45 = samples[Math.floor(samples.length * 0.45)].time;
-  const t70 = samples[Math.floor(samples.length * 0.70)].time;
+  const i45 = Math.floor(samples.length * 0.45);
+  const i70 = Math.floor(samples.length * 0.70);
+  const t45 = samples[i45].time;
+  const t70 = samples[i70].time;
 
-  const train = samples.filter((s) => s.time < t45 && (!s.symbol || !unseenSymbolSet.has(s.symbol)));
-  const val = samples.filter((s) => s.time >= t45 && s.time < t70 && (!s.symbol || !unseenSymbolSet.has(s.symbol)));
-  const oos = samples.filter((s) => s.time >= t70);
+  let train = samples.filter((s) => s.time < t45 && (!s.symbol || !unseenSymbolSet.has(s.symbol)));
+  let val = samples.filter((s) => s.time >= t45 && s.time < t70 && (!s.symbol || !unseenSymbolSet.has(s.symbol)));
+  let oos = samples.filter((s) => s.time >= t70);
+
+  // Guard against boundary timestamp ties on higher-timeframe / 1-month datasets
+  if (train.length < 150 || val.length < 50 || oos.length < 30) {
+    train = samples.slice(0, i45).filter((s) => !s.symbol || !unseenSymbolSet.has(s.symbol));
+    val = samples.slice(i45, i70).filter((s) => !s.symbol || !unseenSymbolSet.has(s.symbol));
+    oos = samples.slice(i70);
+  }
+
   const unseenOos = unseenSymbolSet.size > 0
     ? samples.filter((s) => s.time >= t70 && !!s.symbol && unseenSymbolSet.has(s.symbol))
     : [];
 
-  if (train.length < 150 || val.length < 50) {
+  if (train.length < 130 || val.length < 40) {
     throw new Error(`تعداد نمونه‌های آموزش (${train.length}) یا اعتبارسنجی (${val.length}) کافی نیست.`);
   }
 
@@ -1019,6 +1163,45 @@ export function trainZigZagMlModel(
   const featGain = new Float64Array(ML_NUM_FEATURES);
   const trees: MlTreeNode[] = [];
 
+  // Strict Validation-only Early Stopping tracker (never touches OOS)
+  const valLen = val.length;
+  const valPreds = new Float64Array(valLen).fill(baseScore);
+  const valTargets = new Float64Array(valLen);
+  const valWeights = new Float64Array(valLen);
+  const valHourCounts = new Map<number, number>();
+  for (let i = 0; i < valLen; i++) {
+    const h = Math.floor(val[i].time / hourDiv);
+    valHourCounts.set(h, (valHourCounts.get(h) || 0) + 1);
+  }
+  let valSumW = 0;
+  for (let i = 0; i < valLen; i++) {
+    const h = Math.floor(val[i].time / hourDiv);
+    const wi = 1 / Math.sqrt(valHourCounts.get(h) || 1);
+    valWeights[i] = wi;
+    valSumW += wi;
+    const r = val[i].rMultiple;
+    if (objective === 'win_prob') valTargets[i] = r > 0 ? 1 : 0;
+    else if (objective === 'blended') valTargets[i] = 0.6 * (r > 0 ? 1 : 0) + 0.4 * Math.max(-1.2, Math.min(maxClipR, r));
+    else valTargets[i] = Math.max(-1.4, Math.min(Math.max(2.2, maxClipR), r));
+  }
+  const minEarlyStopTrees = Math.min(numTrees, Math.max(15, Math.floor(numTrees * 0.3)));
+  let bestValScore = -Infinity;
+  let bestTreeCount = numTrees;
+  let bestFeatGainSnapshot = new Float64Array(ML_NUM_FEATURES);
+  let noImproveRounds = 0;
+  const earlyStopPatience = 15;
+  const valTopKCount = Math.max(25, Math.floor((valLen * topPercent) / 100));
+
+  // Precompute weighted validation target mean & variance for shift-invariant correlation early stopping
+  let valMeanY = 0;
+  for (let j = 0; j < valLen; j++) valMeanY += valWeights[j] * valTargets[j];
+  valMeanY /= Math.max(1e-9, valSumW);
+  let valVarY = 0;
+  for (let j = 0; j < valLen; j++) {
+    const dy = valTargets[j] - valMeanY;
+    valVarY += valWeights[j] * dy * dy;
+  }
+
   // Deterministic LCG PRNG for 75% feature subsampling (colsample)
   let rng = 20261121;
   const nextRand = () => {
@@ -1039,6 +1222,9 @@ export function trainZigZagMlModel(
     }
     const activeFeatures: number[] = [];
     for (let f = 0; f < ML_NUM_FEATURES; f++) {
+      // Exclude feature 42 (raw dollar_vol_log: XT contractSize varies 100,000x across coins)
+      // Exclude feature 34 (raw isLong: prevents memorizing training-window bull/bear drift instead of symmetric structure & trend alignment)
+      if (f === 42 || f === 34) continue;
       if (colSample >= 0.999 || nextRand() < colSample) activeFeatures.push(f);
     }
     if (activeFeatures.length === 0) activeFeatures.push(0);
@@ -1057,11 +1243,52 @@ export function trainZigZagMlModel(
     );
     trees.push(tree);
     for (let i = 0; i < n; i++) preds[i] += lr * predictTreeScore(tree, train[i].features);
+
+    // Update validation predictions & compute shift-invariant ranking + top-K validation score
+    let valMeanP = 0;
+    for (let j = 0; j < valLen; j++) {
+      valPreds[j] += lr * predictTreeScore(tree, val[j].features);
+      valMeanP += valWeights[j] * valPreds[j];
+    }
+    valMeanP /= Math.max(1e-9, valSumW);
+
+    if (t + 1 >= minEarlyStopTrees) {
+      let cov = 0;
+      let varP = 0;
+      for (let j = 0; j < valLen; j++) {
+        const dp = valPreds[j] - valMeanP;
+        const dy = valTargets[j] - valMeanY;
+        cov += valWeights[j] * dp * dy;
+        varP += valWeights[j] * dp * dp;
+      }
+      const corr = varP > 1e-12 && valVarY > 1e-12 ? cov / Math.sqrt(varP * valVarY) : 0;
+      // Combine shift-invariant correlation with top-K validation R-expectancy
+      const valIdxOrder = Array.from({ length: valLen }, (_, idx) => idx).sort((a, b) => valPreds[b] - valPreds[a]);
+      let topRSum = 0;
+      for (let k = 0; k < valTopKCount; k++) topRSum += val[valIdxOrder[k]].rMultiple;
+      const topAvgR = topRSum / Math.max(1, valTopKCount);
+      const valRankScore = corr + 0.35 * topAvgR;
+
+      if (valRankScore > bestValScore + 1e-5) {
+        bestValScore = valRankScore;
+        bestTreeCount = t + 1;
+        bestFeatGainSnapshot = new Float64Array(featGain);
+        noImproveRounds = 0;
+      } else {
+        noImproveRounds++;
+        if (noImproveRounds >= earlyStopPatience) {
+          break;
+        }
+      }
+    }
   }
+
+  const finalTrees = bestTreeCount < trees.length ? trees.slice(0, bestTreeCount) : trees;
+  const finalFeatGain = bestTreeCount < trees.length ? bestFeatGainSnapshot : featGain;
 
   const predictLocal = (x: Float32Array) => {
     let s = baseScore;
-    for (let i = 0; i < trees.length; i++) s += lr * predictTreeScore(trees[i], x);
+    for (let i = 0; i < finalTrees.length; i++) s += lr * predictTreeScore(finalTrees[i], x);
     if (isLogLoss) {
       return 1 / (1 + Math.exp(-Math.max(-15, Math.min(15, s))));
     }
@@ -1081,26 +1308,25 @@ export function trainZigZagMlModel(
     .map((s) => ({ ...s, score: predictLocal(s.features) }))
     .filter((s) => s.score >= scoreThreshold);
 
-  const totalGain = Array.from(featGain).reduce((a, b) => a + b, 0) || 1;
+  const totalGain = Array.from(finalFeatGain).reduce((a, b) => a + b, 0) || 1;
   const featureImportance = ML_FEATURE_NAMES.map((name, idx) => ({
     name,
-    gain: Number(featGain[idx].toFixed(2)),
-    weightPct: Number(((featGain[idx] / totalGain) * 100).toFixed(2)),
+    gain: Number(finalFeatGain[idx].toFixed(2)),
+    weightPct: Number(((finalFeatGain[idx] / totalGain) * 100).toFixed(2)),
   })).sort((a, b) => b.gain - a.gain);
 
   const patDefs: { name: string; rule: string; category: MlFeatureCategory; test: (f: Float32Array) => boolean }[] = [
+    { name: 'پولبک هم‌جهت روند قدرتمند (رژیم رونددار ER+EMA200)', rule: 'EMA200 Ext < -1% & EMA200 Slope > 0 & ER48 ≥ 0.25', category: 'structure', test: f => f[28] < -1 && (f[54] ?? 0) > 0 && (f[52] ?? 0) >= 0.25 },
     { name: 'کشیدگی شدید EMA600 + تایید پیوت زیگزاگ', rule: 'EMA600 Ext ≥ 6% & ML Score ≥ Threshold', category: 'structure', test: f => f[29] >= 6 },
     { name: 'ساختار هارمونیک و نسبت L1<L2,L3 (تخلیه موج)', rule: 'r12 < 1.0 or r13 < 1.0 & Harmonic Error < 0.45', category: 'harmonic', test: f => f[11] < 1.0 || f[12] < 1.0 || f[16] < 0.45 },
     { name: 'بازگشت لگ غول‌پیکر (سبز/قرمز) با فیلتر جهت', rule: 'L1 = Giant (Green/Red) & ML Score ≥ Threshold', category: 'legs', test: f => f[3] === 1 },
     { name: 'بازگشت لگ آبی استراتژی ۲ (CD/EF) با استاپ ضداسویپ', rule: 'L1 = Blue/Dark-Blue (CD/EF) & Anti-Sweep SL', category: 'legs', test: f => f[3] === 2 || f[3] === 3 },
     { name: 'کلایمکس یا تخلیه حجم لگ هم‌جهت + شکست کم‌عمق P3', rule: 'Vol(L1)/Vol(L3) < 0.85 or Climax > 1.8 & Sweep P3', category: 'volume', test: f => (f[18] < 0.85 || f[21] > 1.8) && f[22] === 1 },
-    { name: 'توالی لگ‌های سفید (۳+) با واگرایی RSI در پیوت کشیده', rule: 'White Streak ≥ 3 & RSI Divergence & Stretched Pivot', category: 'structure', test: f => f[7] >= 3 && f[26] > 0 },
   ];
 
-  const oosCombined = [...selVa, ...selOos];
   const discoveredPatterns: MlDiscoveredPattern[] = patDefs.map(pd => {
     const trP = selTr.filter(s => pd.test(s.features));
-    const oosP = oosCombined.filter(s => pd.test(s.features));
+    const oosP = selOos.filter(s => pd.test(s.features));
     const trM = evaluateSplitSamples(trP);
     const oosM = evaluateSplitSamples(oosP);
     return {
@@ -1123,7 +1349,7 @@ export function trainZigZagMlModel(
   return {
     id: `ml_zz_${Date.now()}`,
     name: options.modelName,
-    version: 3,
+    version: 4,
     exchange: options.exchange,
     timeframe: options.timeframe,
     datasetId: options.datasetId,
@@ -1135,7 +1361,7 @@ export function trainZigZagMlModel(
     targetRR: Number(targetRR.toFixed(2)),
     timeStopCandles: options.timeStopCandles,
     minAtrPct: options.minAtrPct,
-    minStretchPct: options.minStretchPct ?? 1.5,
+    minStretchPct: options.minStretchPct ?? 0,
     baseScore: Number(baseScore.toFixed(5)),
     learningRate: lr,
     maxDepth,
@@ -1145,7 +1371,7 @@ export function trainZigZagMlModel(
     scoreThreshold,
     topPercent,
     featureNames: ML_FEATURE_NAMES,
-    trees,
+    trees: finalTrees,
     featureImportance,
     metrics: {
       totalSymbols: options.totalSymbols,

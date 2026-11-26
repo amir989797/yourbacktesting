@@ -42,6 +42,7 @@ interface DatasetOption {
   symbol_count: number;
   total_candles: number;
   chunk_count: number;
+  source?: 'postgres' | 'local' | 'buffer';
 }
 
 interface TrainingJobStatus {
@@ -62,6 +63,8 @@ interface TrainingJobStatus {
 interface MlStrategyTabProps {
   onApplyMlStrategyToScanner: (model: ZigZagMlModel) => void;
   onActiveModelChanged?: (model: ZigZagMlModel) => void;
+  activeDatasetId?: string | null;
+  refreshTrigger?: string | number | null;
 }
 
 const CATEGORY_LABELS: Record<MlFeatureCategory, { title: string; colorClass: string; barClass: string }> = {
@@ -74,6 +77,13 @@ const CATEGORY_LABELS: Record<MlFeatureCategory, { title: string; colorClass: st
 function formatSignedR(val: number | undefined): string {
   if (val === undefined || val === null || isNaN(val)) return '0.000R';
   return `${val >= 0 ? '+' : ''}${val.toFixed(3)}R`;
+}
+
+function formatDatasetCandles(total: number | undefined): string {
+  const n = Number(total || 0);
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
+  return String(n);
 }
 
 function getTreeDepth(node?: MlTreeNode): number {
@@ -217,6 +227,8 @@ function SplitCard({
 export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
   onApplyMlStrategyToScanner,
   onActiveModelChanged,
+  activeDatasetId,
+  refreshTrigger,
 }) => {
   const [activeModel, setActiveModel] = useState<ZigZagMlModel>(PRETRAINED_XT_5M_ML_MODEL);
   const [savedModels, setSavedModels] = useState<SavedModelSummary[]>([]);
@@ -227,30 +239,30 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
 
   // Training Studio form state (synced automatically with the currently active ML model)
   const [datasetId, setDatasetId] = useState('');
-  const [modelName, setModelName] = useState('مدل XT 5m ZigZag v3 سفارشی');
+  const [modelName, setModelName] = useState('مدل XT 5m ZigZag v4 سفارشی');
   const [atrPeriod, setAtrPeriod] = useState(17);
-  const [minCandles, setMinCandles] = useState(9);
-  const [atrMultiplier, setAtrMultiplier] = useState(1.0);
+  const [minCandles, setMinCandles] = useState(4);
+  const [atrMultiplier, setAtrMultiplier] = useState(3.5);
   const [minCandlesForLongLeg, setMinCandlesForLongLeg] = useState(12);
   const [longLegAtrMultiplier, setLongLegAtrMultiplier] = useState(15);
   const [minCandlesForBlueLeg, setMinCandlesForBlueLeg] = useState(7);
   const [blueLegAtrMultiplier, setBlueLegAtrMultiplier] = useState(4.75);
   const [maxBlueLegPercent, setMaxBlueLegPercent] = useState(95);
   const [maxBreakoutAtrMultiplier, setMaxBreakoutAtrMultiplier] = useState(4);
-  const [slAtrMult, setSlAtrMult] = useState(4.5);
-  const [minSlPct, setMinSlPct] = useState(3.0);
+  const [slAtrMult, setSlAtrMult] = useState(5.0);
+  const [minSlPct, setMinSlPct] = useState(3.5);
   const [targetRR, setTargetRR] = useState(1.5);
-  const [tpAtrMult, setTpAtrMult] = useState(6.75);
-  const [timeStopCandles, setTimeStopCandles] = useState(144);
+  const [tpAtrMult, setTpAtrMult] = useState(7.5);
+  const [timeStopCandles, setTimeStopCandles] = useState(180);
   const [minAtrPct, setMinAtrPct] = useState(0.25);
-  const [minStretchPct, setMinStretchPct] = useState(1.5);
-  const [numTrees, setNumTrees] = useState(55);
+  const [minStretchPct, setMinStretchPct] = useState(0);
+  const [numTrees, setNumTrees] = useState(80);
   const [learningRate, setLearningRate] = useState(0.05);
-  const [maxDepth, setMaxDepth] = useState(2);
-  const [l2Lambda, setL2Lambda] = useState(240);
-  const [topPercent, setTopPercent] = useState(8);
-  const [objective, setObjective] = useState<'blended' | 'expected_r' | 'win_prob'>('blended');
-  const [sideFilter, setSideFilter] = useState<'BOTH' | 'SELL' | 'BUY'>('BOTH');
+  const [maxDepth, setMaxDepth] = useState(3);
+  const [l2Lambda, setL2Lambda] = useState(400);
+  const [topPercent, setTopPercent] = useState(4);
+  const [objective, setObjective] = useState<'blended' | 'expected_r' | 'win_prob'>('win_prob');
+  const [sideFilter, setSideFilter] = useState<'BOTH' | 'SELL' | 'BUY'>('SELL');
   const [maxChunks, setMaxChunks] = useState(600);
   const [activateAfterTrain, setActivateAfterTrain] = useState(true);
 
@@ -273,12 +285,12 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
   const lastSyncedModelIdRef = useRef<string | null>(null);
   const datasetsRef = useRef<DatasetOption[]>([]);
 
-  const syncStudioFromModel = useCallback((model: ZigZagMlModel, availableDatasets?: DatasetOption[]) => {
+  const syncStudioFromModel = useCallback((model: ZigZagMlModel, availableDatasets?: DatasetOption[], preferredDsId?: string | null) => {
     const zp = model.zigzagParams;
     if (zp) {
       setAtrPeriod(zp.atrPeriod ?? 17);
-      setMinCandles(zp.minCandles ?? 5);
-      setAtrMultiplier(zp.atrMultiplier ?? 1.0);
+      setMinCandles(zp.minCandles ?? 4);
+      setAtrMultiplier(zp.atrMultiplier ?? 3.5);
       setMinCandlesForLongLeg(zp.minCandlesForLongLeg ?? 12);
       setLongLegAtrMultiplier(zp.longLegAtrMultiplier ?? 15);
       setMinCandlesForBlueLeg(zp.minCandlesForBlueLeg ?? 7);
@@ -286,11 +298,11 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
       setMaxBlueLegPercent(zp.maxBlueLegPercent ?? 95);
       setMaxBreakoutAtrMultiplier(zp.maxBreakoutAtrMultiplier ?? 4);
     }
-    const nextSl = model.slAtrMult ?? 5;
+    const nextSl = model.slAtrMult ?? 5.0;
     const nextRR =
       model.targetRR && model.targetRR > 0
         ? Number(model.targetRR.toFixed(2))
-        : (nextSl > 0 && model.tpAtrMult > 0 ? Number((model.tpAtrMult / nextSl).toFixed(2)) : 2.0);
+        : (nextSl > 0 && model.tpAtrMult > 0 ? Number((model.tpAtrMult / nextSl).toFixed(2)) : 1.5);
     const nextTp =
       model.tpAtrMult && model.tpAtrMult > 0
         ? Number(model.tpAtrMult.toFixed(2))
@@ -300,19 +312,21 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
     setMinSlPct(model.minSlPct ?? 3.5);
     setTargetRR(nextRR);
     setTpAtrMult(nextTp);
-    setTimeStopCandles(model.timeStopCandles ?? 144);
+    setTimeStopCandles(model.timeStopCandles ?? 180);
     setMinAtrPct(model.minAtrPct ?? 0.25);
-    setMinStretchPct(model.minStretchPct ?? 1.5);
-    setNumTrees(Array.isArray(model.trees) && model.trees.length > 0 ? model.trees.length : 55);
+    setMinStretchPct(model.minStretchPct ?? 0);
+    setNumTrees(Array.isArray(model.trees) && model.trees.length > 0 ? model.trees.length : 80);
     setLearningRate(model.learningRate ?? 0.05);
     setMaxDepth(inferModelMaxDepth(model));
-    setL2Lambda(model.l2Lambda ?? (model.version >= 3 ? 240 : 260));
-    setTopPercent(model.topPercent ?? 8);
-    setObjective(model.objective ?? 'blended');
-    setSideFilter(model.sideFilter ?? 'BOTH');
+    setL2Lambda(model.l2Lambda ?? (model.version >= 4 ? 400 : 240));
+    setTopPercent(model.topPercent ?? 4);
+    setObjective(model.objective ?? 'win_prob');
+    setSideFilter(model.sideFilter ?? 'SELL');
 
     const dsList = availableDatasets && availableDatasets.length > 0 ? availableDatasets : datasetsRef.current;
-    if (model.datasetId && dsList.some((d) => d.id === model.datasetId)) {
+    if (preferredDsId && dsList.some((d) => d.id === preferredDsId)) {
+      setDatasetId(preferredDsId);
+    } else if (model.datasetId && dsList.some((d) => d.id === model.datasetId)) {
       setDatasetId(model.datasetId);
     } else if (dsList.length > 0) {
       setDatasetId(dsList[0].id);
@@ -334,32 +348,34 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
     }
   };
 
-  const handleTpAtrChange = (val: number) => {
-    setTpAtrMult(val);
-    if (val > 0 && slAtrMult > 0) {
-      setTargetRR(Number((val / slAtrMult).toFixed(2)));
-    }
-  };
-
   const fetchMlState = useCallback(async (forceSyncStudio = false) => {
     try {
       const resp = await fetch('/api/ml/active-model');
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
       const loadedDatasets: DatasetOption[] = Array.isArray(data.datasets) ? data.datasets : [];
-      if (loadedDatasets.length > 0) {
-        datasetsRef.current = loadedDatasets;
-        setDatasets(loadedDatasets);
-        setDatasetId((prev) =>
-          loadedDatasets.some((d: DatasetOption) => d.id === prev) ? prev : loadedDatasets[0].id
-        );
-      }
+      const preferredDsId =
+        (activeDatasetId && loadedDatasets.some((d) => d.id === activeDatasetId) ? activeDatasetId : null) ||
+        (data.activeBacktestDatasetId && loadedDatasets.some((d) => d.id === data.activeBacktestDatasetId)
+          ? data.activeBacktestDatasetId
+          : null);
+
+      datasetsRef.current = loadedDatasets;
+      setDatasets(loadedDatasets);
+      setDatasetId((prev) => {
+        if (preferredDsId && (!prev || forceSyncStudio || !loadedDatasets.some((d) => d.id === prev))) {
+          return preferredDsId;
+        }
+        if (prev && loadedDatasets.some((d) => d.id === prev)) return prev;
+        return preferredDsId || loadedDatasets[0]?.id || '';
+      });
+
       if (data.success && data.activeModel) {
         setActiveModel(data.activeModel);
         setActiveMlModel(data.activeModel);
         onActiveModelChanged?.(data.activeModel);
         if (forceSyncStudio || lastSyncedModelIdRef.current !== data.activeModel.id) {
-          syncStudioFromModel(data.activeModel, loadedDatasets);
+          syncStudioFromModel(data.activeModel, loadedDatasets, preferredDsId);
         }
       }
       if (Array.isArray(data.savedModels)) setSavedModels(data.savedModels);
@@ -369,14 +385,14 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
     } finally {
       setLoading(false);
     }
-  }, [onActiveModelChanged, syncStudioFromModel]);
+  }, [activeDatasetId, onActiveModelChanged, syncStudioFromModel]);
 
   useEffect(() => {
     fetchMlState();
     return () => {
       if (pollTimerRef.current) window.clearInterval(pollTimerRef.current);
     };
-  }, [fetchMlState]);
+  }, [fetchMlState, refreshTrigger]);
 
   useEffect(() => {
     if (!jobStatus.isRunning) {
@@ -414,7 +430,7 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
     if (!datasetId || datasets.length === 0) {
       setFeedback({
         type: 'error',
-        text: 'هیچ دیتاست کندلی در PostgreSQL ذخیره نشده است. ابتدا در تب «اسکن دستی» کندل‌ها را دانلود و ذخیره کنید.',
+        text: 'هیچ دیتاست کندلی در سرور (PostgreSQL یا کش لوکال) ذخیره نشده است. ابتدا در تب «اسکن دستی» اسکن را اجرا کنید.',
       });
       return;
     }
@@ -574,8 +590,7 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
               <span className="font-mono text-slate-200">
                 {activeModel.exchange.toUpperCase()} • {activeModel.timeframe}
               </span>{' '}
-              با لحاظ کارمزد کامل ورود/خروج (<span className="font-mono">0.06% + 0.06%</span>) و اسلیپیج استاپ (<span className="font-mono">0.04%</span>).
-              ورود دقیقاً روی بسته شدن کندل تایید پیوت انجام می‌شود تا بکتست و ترید زنده ۱۰۰٪ یکسان باشند.
+              با لحاظ کارمزد کامل ورود/خروج (<span className="font-mono">0.06% + 0.06%</span>)، اسلیپیج استاپ (<span className="font-mono">0.04%</span>)، فیلتر بازارهای قفل‌شده و بررسی خودکار تایم‌فریم‌های بالاتر (<span className="font-mono">3×TF / 12×TF / 48×TF / 288×TF / EMA600</span>) در همه تایم‌فریم‌های <span className="font-mono">5m, 15m, 1h, 4h</span>.
             </p>
           </div>
 
@@ -836,7 +851,7 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h4 className="text-xs font-bold text-slate-200 flex items-center gap-2">
               <Sliders className="w-4 h-4 text-emerald-400" />
-              استودیوی آموزش مدل جدید روی دیتای PostgreSQL
+              استودیوی آموزش مدل جدید روی دیتای دیتاست
             </h4>
             <button
               type="button"
@@ -851,7 +866,7 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
             <label className="block space-y-1">
-              <span className="text-[11px] text-slate-400">دیتاست کندل PostgreSQL</span>
+              <span className="text-[11px] text-slate-400">دیتاست کندل (PostgreSQL / کش سرور)</span>
               <select
                 value={datasetId}
                 onChange={(e) => setDatasetId(e.target.value)}
@@ -859,13 +874,17 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
                 className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-2.5 py-2 text-xs text-slate-100 focus:outline-none focus:border-emerald-500 disabled:opacity-60"
               >
                 {datasets.length === 0 ? (
-                  <option value="">هیچ دیتاست کندلی در دیتابیس ذخیره نشده است</option>
+                  <option value="">هیچ دیتاست کندلی در سرور ذخیره نشده است</option>
                 ) : (
-                  datasets.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {(d.exchange || 'xt').toUpperCase()} {d.timeframe} — {d.symbol_count} نماد ({Math.round((d.total_candles || 0) / 1000000)}M کندل)
-                    </option>
-                  ))
+                  datasets.map((d) => {
+                    const srcLabel = d.source === 'local' ? 'کش سرور' : d.source === 'buffer' ? 'حافظه اسکن' : 'PostgreSQL';
+                    const dsLabel = d.name && !d.name.startsWith('range_') ? d.name : `${(d.exchange || 'xt').toUpperCase()} ${d.timeframe}`;
+                    return (
+                      <option key={d.id} value={d.id}>
+                        {dsLabel} — {d.symbol_count} نماد ({formatDatasetCandles(d.total_candles)} کندل) [{srcLabel}]
+                      </option>
+                    );
+                  })
                 )}
               </select>
             </label>
@@ -883,7 +902,7 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
           </div>
           {datasets.length === 0 && (
             <div className="rounded-lg bg-amber-950/25 border border-amber-500/35 px-3 py-2 text-[11px] text-amber-200 leading-relaxed">
-              برای آموزش مدل جدید، ابتدا از تب <strong>اسکن دستی</strong> یک دیتاست کندل (مثلاً XT • ۵m) دانلود و در PostgreSQL ذخیره کنید. مدل آماده فعلی (<span className="font-mono">v3</span>) بدون نیاز به دیتاست کندل در ترید زنده و بکتست کار می‌کند.
+              برای آموزش مدل جدید، ابتدا از تب <strong>اسکن دستی</strong> یک بازه کندل (مثلاً ۱ ماه اخیر) را اسکن کنید تا دیتاست به‌صورت خودکار در PostgreSQL یا کش سرور ذخیره شود. مدل آماده فعلی (<span className="font-mono">v{activeModel.version || 4}</span>) بدون نیاز به دیتاست کندل در ترید زنده و بکتست کار می‌کند.
             </div>
           )}
 
@@ -975,33 +994,21 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
               </div>
             </div>
             <div className="space-y-1">
-              <span className="text-[10px] text-emerald-300 font-semibold">تارگت سود (R:R و معادل ATR)</span>
-              <div className="grid grid-cols-2 gap-1">
-                <div>
-                  <span className="block text-[9px] text-emerald-400/90 mb-0.5">نسبت R:R</span>
-                  <input
-                    type="number"
-                    step="0.25"
-                    min={0.5}
-                    max={10}
-                    value={targetRR}
-                    onChange={(e) => handleTargetRRChange(Number(e.target.value))}
-                    disabled={jobStatus.isRunning}
-                    title="نسبت ریسک به ریوارد هدف (R:R) — تارگت = حدضرر × R:R"
-                    className="w-full rounded-lg bg-[#0b0e14] border border-emerald-500/50 px-1.5 py-1.5 font-mono text-emerald-300 font-semibold"
-                  />
-                </div>
-                <div>
-                  <span className="block text-[9px] text-slate-500 mb-0.5">معادل TP×ATR</span>
-                  <input
-                    type="number"
-                    step="0.5"
-                    value={tpAtrMult}
-                    onChange={(e) => handleTpAtrChange(Number(e.target.value))}
-                    disabled={jobStatus.isRunning}
-                    title="حد سود معادل برحسب مضرب ATR (حاصل‌ضرب SL×ATR در R:R)"
-                    className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-1.5 py-1.5 font-mono text-slate-100"
-                  />
+              <span className="text-[10px] text-emerald-300 font-semibold">تارگت سود (نسبت R:R)</span>
+              <div className="space-y-1">
+                <input
+                  type="number"
+                  step="0.1"
+                  min={0.5}
+                  max={10}
+                  value={targetRR}
+                  onChange={(e) => handleTargetRRChange(Number(e.target.value))}
+                  disabled={jobStatus.isRunning}
+                  title="نسبت ریسک به ریوارد هدف (R:R) — تارگت دقیقاً برابر حدضرر ضربدر R:R محاسبه می‌شود"
+                  className="w-full rounded-lg bg-[#0b0e14] border border-emerald-500/50 px-2 py-1.5 font-mono text-emerald-300 font-semibold"
+                />
+                <div className="text-[9px] text-slate-500 font-mono tabular-nums" dir="ltr">
+                  TP = SL × {targetRR.toFixed(2)} ({(slAtrMult * targetRR).toFixed(2)}A)
                 </div>
               </div>
             </div>

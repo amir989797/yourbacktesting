@@ -35,6 +35,8 @@ import {
   initDatabase,
   ensureDatabaseInitialized,
   testDatabaseConnection,
+  hashPassword,
+  verifyPasswordHash,
   pool,
   db,
   recordLiveTradeInDb,
@@ -931,12 +933,12 @@ app.get('/api/xt/positions', async (req, res) => {
     const secretKey = (req.headers['x-secret-key'] as string) || DEFAULT_XT_SECRET_KEY;
     const params = symbol ? { symbol } : {};
 
-    // Parallel fetch: position list, position detail (for live floatingPL), profit-list, recent order history, and active DB trades
+    // Parallel fetch: position list, position detail (for live floatingPL), profit-list, real XT order list-history, and active DB trades
     const [listRes, posDetailRes, profitListRes, historyRes, activeDbTrades] = await Promise.all([
       requestXtApi('GET', '/future/user/v1/position/list', 'application/x-www-form-urlencoded', params, apiKey, secretKey).catch(() => ({ result: [] })),
       requestXtApi('GET', '/future/user/v1/position', 'application/x-www-form-urlencoded', params, apiKey, secretKey).catch(() => ({ result: [] })),
-      requestXtApi('GET', '/future/trade/v1/entrust/profit-list', 'application/x-www-form-urlencoded', { ps: '50', ...(symbol ? { symbol } : {}) }, apiKey, secretKey).catch(() => ({ result: { items: [] } })),
-      requestXtApi('GET', '/future/trade/v1/order/history-list', 'application/x-www-form-urlencoded', { ps: '20', ...(symbol ? { symbol } : {}) }, apiKey, secretKey).catch(() => ({ result: { items: [] } })),
+      requestXtApi('GET', '/future/trade/v1/entrust/profit-list', 'application/x-www-form-urlencoded', { limit: '200', ...(symbol ? { symbol } : {}) }, apiKey, secretKey).catch(() => ({ result: { items: [] } })),
+      requestXtApi('GET', '/future/trade/v1/order/list-history', 'application/x-www-form-urlencoded', { limit: '150', ...(symbol ? { symbol } : {}) }, apiKey, secretKey).catch(() => ({ result: { items: [] } })),
       getActiveLiveTradesFromDb().catch(() => []),
     ]);
 
@@ -966,11 +968,22 @@ app.get('/api/xt/positions', async (req, res) => {
         (p: any) => p.symbol === item.symbol && p.positionSide === item.positionSide
       );
 
-      // 2. Match latest order for this symbol with TP/SL
-      const matchOrder = historyItems.find(
-        (h: any) => h.symbol === item.symbol && h.positionSide === item.positionSide &&
-          (h.triggerProfitPrice || h.triggerStopPrice)
+      const expectedEntryOrderSide = item.positionSide === 'SHORT' ? 'SELL' : 'BUY';
+
+      // 2. Match latest FILLED entry order for this symbol/side from XT /order/list-history (true open timestamp + TP/SL fallback)
+      const matchEntryOrder = historyItems.find(
+        (h: any) =>
+          h.symbol === item.symbol &&
+          h.positionSide === item.positionSide &&
+          String(h.orderSide || '').toUpperCase() === expectedEntryOrderSide &&
+          String(h.state || '').toUpperCase() === 'FILLED'
       );
+      const matchOrder = (matchEntryOrder && (matchEntryOrder.triggerProfitPrice || matchEntryOrder.triggerStopPrice))
+        ? matchEntryOrder
+        : historyItems.find(
+            (h: any) => h.symbol === item.symbol && h.positionSide === item.positionSide &&
+              (h.triggerProfitPrice || h.triggerStopPrice)
+          );
 
       // 3. Match server scanner execution records (exclude FAILED entries)
       let matchExec: any = null;
@@ -1018,26 +1031,6 @@ app.get('/api/xt/positions', async (req, res) => {
         roiPercent = ((markPrice - entryPrice) / entryPrice) * (isLong ? 1 : -1) * leverage * 100;
       }
 
-      // 4-layer resolution for TP and SL to guarantee they are always shown
-      const triggerProfitPrice = matchProfit?.triggerProfitPrice
-        ? parseFloat(matchProfit.triggerProfitPrice)
-        : (item.triggerProfitPrice
-            ? parseFloat(item.triggerProfitPrice)
-            : (matchOrder?.triggerProfitPrice
-                ? parseFloat(matchOrder.triggerProfitPrice)
-                : (matchExec?.takeProfit ? parseFloat(matchExec.takeProfit) : undefined)));
-
-      const triggerStopPrice = matchProfit?.triggerStopPrice
-        ? parseFloat(matchProfit.triggerStopPrice)
-        : (item.triggerStopPrice
-            ? parseFloat(item.triggerStopPrice)
-            : (matchOrder?.triggerStopPrice
-                ? parseFloat(matchOrder.triggerStopPrice)
-                : (matchExec?.stopLoss ? parseFloat(matchExec.stopLoss) : undefined)));
-
-      const profitId = matchProfit?.profitId || item.profitId || undefined;
-      const notionalUsdt = parseFloat((coinQty * markPrice).toFixed(2));
-
       const cleanSym = (item.symbol || '').toLowerCase().replace(/[-_]/g, '');
       const matchDbTrade = Array.isArray(activeDbTrades)
         ? (activeDbTrades.find(
@@ -1049,28 +1042,77 @@ app.get('/api/xt/positions', async (req, res) => {
             (d: any) => (d.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym
           ))
         : null;
-      const posTimeframe = matchDbTrade?.timeframe || matchExec?.timeframe || '5m';
 
-      // Time-Stop remaining candles calculation
+      // 5-layer resolution for TP and SL to guarantee they are always shown
+      const triggerProfitPrice = matchProfit?.triggerProfitPrice
+        ? parseFloat(matchProfit.triggerProfitPrice)
+        : (item.triggerProfitPrice
+            ? parseFloat(item.triggerProfitPrice)
+            : (matchOrder?.triggerProfitPrice
+                ? parseFloat(matchOrder.triggerProfitPrice)
+                : (matchDbTrade?.take_profit
+                    ? parseFloat(matchDbTrade.take_profit)
+                    : (matchExec?.takeProfit ? parseFloat(matchExec.takeProfit) : undefined))));
+
+      const triggerStopPrice = matchProfit?.triggerStopPrice
+        ? parseFloat(matchProfit.triggerStopPrice)
+        : (item.triggerStopPrice
+            ? parseFloat(item.triggerStopPrice)
+            : (matchOrder?.triggerStopPrice
+                ? parseFloat(matchOrder.triggerStopPrice)
+                : (matchDbTrade?.stop_loss
+                    ? parseFloat(matchDbTrade.stop_loss)
+                    : (matchExec?.stopLoss ? parseFloat(matchExec.stopLoss) : undefined))));
+
+      const profitId = matchProfit?.profitId || item.profitId || undefined;
+      const notionalUsdt = parseFloat((coinQty * markPrice).toFixed(2));
+      const posTimeframe = matchDbTrade?.timeframe || matchExec?.timeframe || serverScannerState.config?.timeframe || '5m';
+
+      // Resolve true opening timestamp: DB -> ExecutionLog -> XT filled entry order createdTime -> item timestamps
       const execTsRaw = matchExec?.timestamp || matchExec?.time;
+      const entryOrderTs = Number(matchEntryOrder?.createdTime || matchOrder?.createdTime || 0);
+      const rawItemTs = Number(item.openTime || item.ctime || item.updatedTime || 0);
       const openTimeMs = matchDbTrade?.created_at
         ? new Date(matchDbTrade.created_at).getTime()
-        : (execTsRaw
+        : (execTsRaw && Number.isFinite(new Date(execTsRaw).getTime())
             ? new Date(execTsRaw).getTime()
-            : Number(item.openTime || item.ctime || item.mtime || Date.now()));
+            : (entryOrderTs > 0 ? entryOrderTs : (rawItemTs > 0 ? rawItemTs : Date.now())));
+
+      // Resolve owning strategy (DB -> ExecutionLog -> active ML signature check -> current scanner strategy)
+      const activeMl = getActiveMlModel();
+      const mlTargetRR = activeMl.targetRR && activeMl.targetRR > 0
+        ? activeMl.targetRR
+        : (activeMl.slAtrMult > 0 && activeMl.tpAtrMult > 0 ? activeMl.tpAtrMult / activeMl.slAtrMult : 1.5);
+      const slDistVal = entryPrice > 0 && triggerStopPrice ? Math.abs(triggerStopPrice - entryPrice) : 0;
+      const tpDistVal = entryPrice > 0 && triggerProfitPrice ? Math.abs(triggerProfitPrice - entryPrice) : 0;
+      const posRR = slDistVal > 0 && tpDistVal > 0 ? tpDistVal / slDistVal : 0;
+      const posSlPct = entryPrice > 0 && slDistVal > 0 ? (slDistVal / entryPrice) * 100 : 0;
+      const looksLikeStrategy4 =
+        posRR > 0 &&
+        Math.abs(posRR - mlTargetRR) <= 0.12 &&
+        posSlPct >= Math.max(2.0, (activeMl.minSlPct ?? 3.0) - 0.6);
+
+      const resolvedStrategyName =
+        matchDbTrade?.strategy_name ||
+        matchExec?.strategyName ||
+        (serverScannerState.config?.strategyId === 'strategy_4_ml_zigzag' || looksLikeStrategy4
+          ? 'strategy_4_ml_zigzag'
+          : (serverScannerState.config?.strategyId || 'strategy_2_next_pivot'));
+
+      const isPosMlStrategy = resolvedStrategyName === 'strategy_4_ml_zigzag';
       const tfMs = getTimeframeMs(posTimeframe);
       const candlesElapsed = Math.max(0, Math.floor((Date.now() - openTimeMs) / tfMs));
-      const isLiveMlStrategy = serverScannerState.config?.strategyId === 'strategy_4_ml_zigzag';
-      const maxTimeStopCandles = isLiveMlStrategy
-        ? (getActiveMlModel().timeStopCandles || 144)
+      const maxTimeStopCandles = isPosMlStrategy
+        ? (activeMl.timeStopCandles || 144)
         : ((serverScannerState.config?.timeStopCandles) || 80);
       const candlesRemaining = Math.max(0, maxTimeStopCandles - candlesElapsed);
-      const timeStopEnabled = isLiveMlStrategy ? true : serverScannerState.config?.timeStopEnabled !== false;
+      const timeStopEnabled = isPosMlStrategy ? true : serverScannerState.config?.timeStopEnabled !== false;
 
       return {
         ...item,
         symbol: item.symbol,
         timeframe: posTimeframe,
+        strategyName: resolvedStrategyName,
         positionSide: item.positionSide,
         side: item.positionSide,
         contractQty,
@@ -1109,7 +1151,7 @@ app.get('/api/xt/positions', async (req, res) => {
   }
 });
 
-// Reusable helper to close a position on XT exchange
+// Reusable helper to close a single position safely on XT exchange
 async function closePositionOnExchange(
   symbol: string,
   positionSide: 'LONG' | 'SHORT' = 'LONG',
@@ -1121,73 +1163,7 @@ async function closePositionOnExchange(
   const xtSymbol = toXtSymbol(symbol);
   const exitSide = positionSide === 'LONG' ? 'SELL' : 'BUY';
 
-  // 1. Cancel active stop-limit / take-profit entrusts
-  if (profitId) {
-    try {
-      await requestXtApi('POST', '/future/trade/v1/entrust/cancel-profit-stop', 'application/json', { profitId }, apiKey, secretKey);
-    } catch {}
-  }
-  try {
-    await requestXtApi('POST', '/future/trade/v1/entrust/cancel-all-profit-stop', 'application/x-www-form-urlencoded', { symbol: xtSymbol }, apiKey, secretKey);
-  } catch {}
-  try {
-    await requestXtApi('POST', '/future/trade/v1/order/cancel-all', 'application/x-www-form-urlencoded', { symbol: xtSymbol }, apiKey, secretKey);
-  } catch {}
-
-  // 2. Fetch fresh real position from XT to get exact availableCloseSize / positionSize
-  let qtyToClose = 0;
-  try {
-    const posRes = await requestXtApi('GET', '/future/trade/v1/position/list/active', 'application/x-www-form-urlencoded', { symbol: xtSymbol }, apiKey, secretKey);
-    const match = posRes?.result?.find((p: any) => p.symbol === xtSymbol && (p.positionSide === positionSide || !p.positionSide));
-    if (match) {
-      qtyToClose = Math.floor(parsePositiveNum(match.availableCloseSize, match.positionSize, match.holdAmount, match.amount));
-    }
-  } catch {}
-
-  if (!qtyToClose || qtyToClose <= 0) {
-    try {
-      const posRes2 = await requestXtApi('GET', '/future/user/v1/position/list', 'application/x-www-form-urlencoded', { symbol: xtSymbol }, apiKey, secretKey);
-      const match2 = posRes2?.result?.find((p: any) => p.symbol === xtSymbol && (p.positionSide === positionSide || !p.positionSide));
-      if (match2) {
-        qtyToClose = Math.floor(parsePositiveNum(match2.availableCloseSize, match2.positionSize, match2.holdAmount, match2.amount));
-      }
-    } catch {}
-  }
-
-  if (!qtyToClose || qtyToClose <= 0) {
-    if (contractQty && contractQty > 0) {
-      qtyToClose = Math.floor(contractQty);
-    }
-  }
-
-  // 3. Send market close order
-  let orderRes: any = null;
-  if (qtyToClose > 0) {
-    const closePayload = {
-      symbol: xtSymbol,
-      orderSide: exitSide,
-      orderType: 'MARKET',
-      positionSide,
-      origQty: qtyToClose,
-    };
-    orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', closePayload, apiKey, secretKey);
-    if (orderRes?.returnCode === 0) {
-      try {
-        const cleanXt = xtSymbol.toLowerCase().replace(/[-_]/g, '');
-        const activeDb = await getActiveLiveTradesFromDb();
-        const matchingIds = activeDb
-          .filter((d: any) => (d.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanXt && (!d.pos_side || String(d.pos_side).toUpperCase() === positionSide))
-          .map((d: any) => d.id);
-        if (matchingIds.length > 0) await markLiveTradesClosedInDb(matchingIds);
-      } catch {}
-      addServerScannerLog('info', `✅ پوزیشن ${xtSymbol.toUpperCase()} با موفقیت با قیمت مارکت در صرافی بسته شد (حجم: ${qtyToClose} قرارداد).`, xtSymbol);
-      return { success: true, result: orderRes.result, message: 'پوزیشن با موفقیت بسته شد' };
-    }
-  }
-
-  // 4. Native Close: XT official close-all endpoint
-  const closeAllRes = await requestXtApi('POST', '/future/user/v1/position/close-all', 'application/x-www-form-urlencoded', { symbol: xtSymbol }, apiKey, secretKey);
-  if (closeAllRes?.returnCode === 0) {
+  const markClosedInDb = async () => {
     try {
       const cleanXt = xtSymbol.toLowerCase().replace(/[-_]/g, '');
       const activeDb = await getActiveLiveTradesFromDb();
@@ -1196,17 +1172,82 @@ async function closePositionOnExchange(
         .map((d: any) => d.id);
       if (matchingIds.length > 0) await markLiveTradesClosedInDb(matchingIds);
     } catch {}
-    addServerScannerLog('info', `✅ پوزیشن ${xtSymbol.toUpperCase()} از طریق اندپوینت رسمی close-all صرافی با موفقیت بسته شد.`, xtSymbol);
-    return { success: true, result: closeAllRes.result, message: 'پوزیشن با موفقیت در صرافی بسته شد' };
+  };
+
+  // 1. Cancel active stop-limit / take-profit entrusts and open orders for this symbol (JSON per XT Futures API v1)
+  if (profitId) {
+    try {
+      await requestXtApi('POST', '/future/trade/v1/entrust/cancel-profit-stop', 'application/json', { profitId }, apiKey, secretKey);
+    } catch {}
+  }
+  try {
+    await requestXtApi('POST', '/future/trade/v1/entrust/cancel-all-profit-stop', 'application/json', { symbol: xtSymbol }, apiKey, secretKey);
+  } catch {}
+  try {
+    await requestXtApi('POST', '/future/trade/v1/order/cancel-all', 'application/json', { symbol: xtSymbol }, apiKey, secretKey);
+  } catch {}
+
+  // Brief settle delay so XT releases frozen close quantity after entrust cancellation
+  await sleep(250);
+
+  // 2. Fetch fresh real position from XT to get exact availableCloseSize / positionSize
+  const fetchFreshCloseQty = async (): Promise<{ qty: number; exists: boolean }> => {
+    try {
+      const posRes = await requestXtApi('GET', '/future/user/v1/position/list', 'application/x-www-form-urlencoded', { symbol: xtSymbol }, apiKey, secretKey);
+      const list = Array.isArray(posRes?.result) ? posRes.result : [];
+      const match = list.find((p: any) => p.symbol === xtSymbol && (p.positionSide === positionSide || !p.positionSide));
+      if (match) {
+        const size = Math.floor(parsePositiveNum(match.availableCloseSize, match.positionSize, match.holdAmount, match.amount));
+        return { qty: size, exists: size > 0 };
+      }
+      if (posRes?.returnCode === 0) return { qty: 0, exists: false };
+    } catch {}
+    return { qty: contractQty && contractQty > 0 ? Math.floor(contractQty) : 0, exists: true };
+  };
+
+  let fresh = await fetchFreshCloseQty();
+  if (!fresh.exists) {
+    await markClosedInDb();
+    return { success: true, message: 'پوزیشن از قبل در صرافی بسته شده است' };
   }
 
-  if (orderRes?.error?.code === 'insufficient_leveling_quantity') {
-    return { success: true, message: 'پوزیشن از قبل در صرافی بسته شده است' };
+  let qtyToClose = fresh.qty > 0 ? fresh.qty : (contractQty && contractQty > 0 ? Math.floor(contractQty) : 0);
+
+  // 3. Send market close order (with 1 automatic retry using fresh availableCloseSize; never call global close-all!)
+  let orderRes: any = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    if (qtyToClose <= 0) break;
+    const closePayload: any = {
+      symbol: xtSymbol,
+      orderSide: exitSide,
+      orderType: 'MARKET',
+      positionSide,
+      origQty: qtyToClose,
+    };
+    orderRes = await requestXtApi('POST', '/future/trade/v1/order/create', 'application/json', closePayload, apiKey, secretKey);
+    if (orderRes?.returnCode === 0) {
+      await markClosedInDb();
+      addServerScannerLog('info', `✅ پوزیشن ${xtSymbol.toUpperCase()} (${positionSide}) با موفقیت با قیمت مارکت در صرافی بسته شد (حجم: ${qtyToClose} قرارداد).`, xtSymbol);
+      return { success: true, result: orderRes.result, message: 'پوزیشن با موفقیت بسته شد' };
+    }
+    if (orderRes?.error?.code === 'insufficient_leveling_quantity') {
+      await markClosedInDb();
+      return { success: true, message: 'پوزیشن از قبل در صرافی بسته شده است' };
+    }
+    if (attempt === 1) {
+      await sleep(450);
+      fresh = await fetchFreshCloseQty();
+      if (!fresh.exists) {
+        await markClosedInDb();
+        return { success: true, message: 'پوزیشن در صرافی بسته شد' };
+      }
+      if (fresh.qty > 0) qtyToClose = fresh.qty;
+    }
   }
 
   return {
     success: false,
-    error: orderRes?.msgInfo || orderRes?.error?.code || closeAllRes?.msgInfo || 'خطا در بستن پوزیشن در صرافی XT',
+    error: orderRes?.msgInfo || orderRes?.error?.msg || orderRes?.error?.code || 'خطا در بستن پوزیشن در صرافی XT',
   };
 }
 
@@ -1503,7 +1544,7 @@ async function getEnrichedXtPositionHistory(
       }
     }
 
-    // 2. Match closest PostgreSQL live_trades record by symbol + side + closest entry time & entry price (within 30 min)
+    // 2. Match closest PostgreSQL live_trades record by symbol + side + closest entry time & entry price (within 90 min)
     const candidateDbs = Array.isArray(allDbTrades)
       ? allDbTrades.filter(
           (t: any) =>
@@ -1512,11 +1553,11 @@ async function getEnrichedXtPositionHistory(
         )
       : [];
     let matchDb: any = null;
-    let bestDbScore = 30 * 60 * 1000;
+    let bestDbScore = 90 * 60 * 1000;
     for (const t of candidateDbs) {
       const dbTs = t.created_at ? new Date(t.created_at).getTime() : 0;
       const timeDiff = dbTs > 0 ? Math.abs(dbTs - entryTimeMs) : Infinity;
-      if (timeDiff > 30 * 60 * 1000) continue;
+      if (timeDiff > 90 * 60 * 1000) continue;
       const dbPrice = Number(t.price) || 0;
       const priceRelDiff = (entryPrice > 0 && dbPrice > 0) ? Math.abs(dbPrice - entryPrice) / entryPrice : 0;
       const score = timeDiff + priceRelDiff * 600000;
@@ -1641,6 +1682,20 @@ async function getEnrichedXtPositionHistory(
       ? parseFloat(((exitPrice - entryPrice) * (posSide === 'LONG' ? 1 : -1) / slDist).toFixed(2))
       : undefined;
 
+    const slPctHistory = entryPrice > 0 && slDist > 0 ? (slDist / entryPrice) * 100 : 0;
+    const activeMlForHist = getActiveMlModel();
+    const mlHistTargetRR = activeMlForHist.targetRR && activeMlForHist.targetRR > 0
+      ? activeMlForHist.targetRR
+      : (activeMlForHist.slAtrMult > 0 && activeMlForHist.tpAtrMult > 0 ? activeMlForHist.tpAtrMult / activeMlForHist.slAtrMult : 1.5);
+    const inferredStrategyName =
+      matchExec?.strategyName ||
+      matchDb?.strategy_name ||
+      (riskReward !== undefined &&
+      Math.abs(riskReward - mlHistTargetRR) <= 0.12 &&
+      slPctHistory >= Math.max(2.0, (activeMlForHist.minSlPct ?? 3.0) - 0.6)
+        ? 'strategy_4_ml_zigzag'
+        : (serverScannerState.config?.strategyId || 'strategy_2_next_pivot'));
+
     return {
       id: String(item.id || `xt_pos_${exitTimeMs}`),
       positionId: String(item.id || ''),
@@ -1654,7 +1709,7 @@ async function getEnrichedXtPositionHistory(
       exitPrice,
       amount,
       status: 'FILLED',
-      strategyName: matchExec?.strategyName || matchDb?.strategy_name || 'Next Pivot Strategy',
+      strategyName: inferredStrategyName,
       takeProfitPrice,
       stopLossPrice,
       riskReward,
@@ -2535,53 +2590,79 @@ app.post('/api/market/server-scan-download', async (req, res) => {
       },
     };
 
-    // Auto-save to remote PostgreSQL as temporary live dataset if requested
+    // Auto-save to local disk cache AND remote PostgreSQL (if available) as temporary live dataset
     if (autoSaveCloudSql && results.length > 0) {
+      const tempId = `temp_${userId}_${timeframe}`;
+      const chunkItemsList: { chunkIndex: number; items: any[] }[] = [];
+      const CHUNK_SIZE = 5;
+      for (let i = 0; i < results.length; i += CHUNK_SIZE) {
+        const slice = results.slice(i, i + CHUNK_SIZE);
+        const items = slice.map((e) => ({
+          symbol: e.pair.symbol,
+          baseAsset: e.pair.baseAsset,
+          quoteAsset: e.pair.quoteAsset,
+          timeframe: e.timeframe,
+          tuples: e.candles.map((c) => [c.time, c.open, c.high, c.low, c.close, c.volume]),
+        }));
+        const cIdx = Math.floor(i / CHUNK_SIZE);
+        chunkItemsList.push({ chunkIndex: cIdx, items });
+        writeLocalDatasetChunk(tempId, cIdx, items);
+      }
+      finalizeLocalDatasetCompleteFlag(tempId, chunkItemsList.length);
+      upsertLocalDatasetMeta({
+        id: tempId,
+        name: `پیش‌نویس موقت اسکن اخیر (${timeframe})`,
+        user_id: userId,
+        exchange: 'xt',
+        timeframe,
+        symbol_count: results.length,
+        total_candles: totalCandles,
+        symbols_list: JSON.stringify(results.map((r) => r.pair.symbol)),
+        data_size_bytes: rawBytes,
+        data_size_formatted: sizeFormatted,
+        status: 'COMPLETED',
+        is_temporary: true,
+        chunk_count: chunkItemsList.length,
+      });
+
       try {
-        const { db } = await import('./src/db/index.ts');
-        const { candleDatasets, candleChunks } = await import('./src/db/schema.ts');
-        const { eq } = await import('drizzle-orm');
+        const initRes = await ensureDatabaseInitialized();
+        if (initRes.success) {
+          const { db } = await import('./src/db/index.ts');
+          const { candleDatasets, candleChunks } = await import('./src/db/schema.ts');
+          const { eq } = await import('drizzle-orm');
 
-        const tempId = `temp_${userId}_${timeframe}`;
-        await db.delete(candleChunks).where(eq(candleChunks.datasetId, tempId)).catch(() => {});
-        await db.delete(candleDatasets).where(eq(candleDatasets.id, tempId)).catch(() => {});
+          await db.delete(candleChunks).where(eq(candleChunks.datasetId, tempId)).catch(() => {});
+          await db.delete(candleDatasets).where(eq(candleDatasets.id, tempId)).catch(() => {});
 
-        await (db.insert(candleDatasets) as any).values({
-          id: tempId,
-          name: `پیش‌نویس موقت اسکن اخیر (${timeframe})`,
-          userId,
-          timeframe,
-          symbolCount: results.length,
-          totalCandles,
-          symbolsList: JSON.stringify(results.map((r) => r.pair.symbol)),
-          dataSizeBytes: rawBytes,
-          dataSizeFormatted: sizeFormatted,
-          isTemporary: true,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        });
-
-        const CHUNK_SIZE = 5;
-        for (let i = 0; i < results.length; i += CHUNK_SIZE) {
-          const slice = results.slice(i, i + CHUNK_SIZE);
-          const items = slice.map((e) => ({
-            symbol: e.pair.symbol,
-            baseAsset: e.pair.baseAsset,
-            quoteAsset: e.pair.quoteAsset,
-            timeframe: e.timeframe,
-            tuples: e.candles.map((c) => [c.time, c.open, c.high, c.low, c.close, c.volume]),
-          }));
-
-          await (db.insert(candleChunks) as any).values({
-            datasetId: tempId,
-            chunkIndex: Math.floor(i / CHUNK_SIZE),
-            itemsJson: JSON.stringify(items),
+          await (db.insert(candleDatasets) as any).values({
+            id: tempId,
+            name: `پیش‌نویس موقت اسکن اخیر (${timeframe})`,
+            userId,
+            timeframe,
+            exchange: 'xt',
+            symbolCount: results.length,
+            totalCandles,
+            symbolsList: JSON.stringify(results.map((r) => r.pair.symbol)),
+            dataSizeBytes: rawBytes,
+            dataSizeFormatted: sizeFormatted,
+            isTemporary: true,
             createdAt: new Date(),
+            updatedAt: new Date(),
           });
+
+          for (const ch of chunkItemsList) {
+            await (db.insert(candleChunks) as any).values({
+              datasetId: tempId,
+              chunkIndex: ch.chunkIndex,
+              itemsJson: JSON.stringify(ch.items),
+              createdAt: new Date(),
+            });
+          }
+          console.log(`Auto-saved ${results.length} symbols (${totalCandles} candles) to PostgreSQL & local cache as ${tempId}`);
         }
-        console.log(`Auto-saved ${results.length} symbols (${totalCandles} candles) to remote PostgreSQL as ${tempId}`);
       } catch (sqlErr) {
-        console.warn('Failed auto-save to remote PostgreSQL:', sqlErr);
+        console.warn('Auto-saved to local cache; remote PostgreSQL skipped:', (sqlErr as any)?.message || sqlErr);
       }
     }
 
@@ -2619,16 +2700,28 @@ app.get('/api/market/server-buffer-data', (req, res) => {
 });
 
 // =========================================================================
-// REMOTE POSTGRESQL (193.142.58.196) PERSISTENCE & HEALTH ROUTES (/api/cloudsql/*)
+// POSTGRESQL PERSISTENCE & HEALTH ROUTES (/api/cloudsql/*)
 // =========================================================================
 
 // 0. Remote PostgreSQL Status & Storage Capacity Diagnostics
 app.get('/api/cloudsql/status', async (req, res) => {
   try {
     const { createPool, getActiveDbHostPort } = await import('./src/db/index.ts');
-    const pool = createPool();
     const { host, port, fallbackWarning } = getActiveDbHostPort();
     const serverHost = `${host}:${port}`;
+
+    const initRes = await ensureDatabaseInitialized();
+    if (!initRes.success) {
+      return res.json({
+        success: false,
+        connected: false,
+        serverHost,
+        ...(fallbackWarning ? { fallbackWarning } : {}),
+        error: initRes.error || 'دیتابیس PostgreSQL در دسترس نیست',
+      });
+    }
+
+    const pool = createPool();
 
     // Query DB size and counts
     const dbSizeRes = await pool.query(
@@ -2663,16 +2756,16 @@ app.get('/api/cloudsql/status', async (req, res) => {
       spaceNote: `دیتابیس سرور PostgreSQL اختصاصی (${serverHost}) کاملاً متصل و پایدار است.`,
     });
   } catch (error: any) {
-    console.error('[Remote PostgreSQL] status check error:', error);
-    res.status(500).json({
+    console.warn('[Remote PostgreSQL] status check warning:', error?.message || error);
+    res.json({
       success: false,
       connected: false,
-      error: error.message,
+      error: error?.message || 'PostgreSQL connection unavailable',
     });
   }
 });
 
-// 1. Save Candle Dataset directly to Remote PostgreSQL
+// 1. Save Candle Dataset to Remote PostgreSQL and/or Local Cache
 app.post('/api/cloudsql/save-dataset', async (req, res) => {
   try {
     const {
@@ -2685,32 +2778,57 @@ app.post('/api/cloudsql/save-dataset', async (req, res) => {
 
     let entries = Array.from(SERVER_CANDLE_BUFFER.values());
     const sourceDatasetId = customId || serverBacktestState.datasetId;
+    const initRes = await ensureDatabaseInitialized();
 
     if (entries.length === 0 && sourceDatasetId) {
-      // Copy or promote from source range in PostgreSQL
-      const srcRes = await pool.query(`SELECT * FROM candle_datasets WHERE id = $1 LIMIT 1;`, [sourceDatasetId]);
-      if (srcRes.rows.length > 0) {
-        const src = srcRes.rows[0];
+      let src: any = null;
+      if (initRes.success) {
+        try {
+          const srcRes = await pool.query(`SELECT * FROM candle_datasets WHERE id = $1 LIMIT 1;`, [sourceDatasetId]);
+          if (srcRes.rows.length > 0) src = srcRes.rows[0];
+        } catch {}
+      }
+      if (!src) {
+        src = listLocalDatasets().find((d) => d.id === sourceDatasetId) || null;
+      }
+
+      if (src) {
         const newId = `saved_ds_${Date.now()}`;
+        const localChunks = readLocalDatasetChunks(sourceDatasetId);
+        if (localChunks.length > 0) {
+          for (const ch of localChunks) {
+            writeLocalDatasetChunk(newId, ch.chunkIndex, ch.items);
+          }
+          finalizeLocalDatasetCompleteFlag(newId, localChunks.length);
+        }
+        upsertLocalDatasetMeta({
+          ...src,
+          id: newId,
+          name: name || src.name,
+          user_id: userId,
+          is_temporary: false,
+          status: 'COMPLETED',
+        });
 
-        // Copy metadata
-        await pool.query(
-          `INSERT INTO candle_datasets (id, name, user_id, timeframe, exchange, start_time, end_time, symbol_count, total_candles, symbols_list, data_size_bytes, data_size_formatted, status, is_temporary, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'COMPLETED', false, NOW(), NOW());`,
-          [newId, name, userId, src.timeframe, src.exchange, src.start_time, src.end_time, src.symbol_count, src.total_candles, src.symbols_list, src.data_size_bytes, src.data_size_formatted]
-        );
-
-        // Copy chunks
-        await pool.query(
-          `INSERT INTO candle_chunks (dataset_id, chunk_index, items_json, created_at)
-           SELECT $1, chunk_index, items_json, NOW() FROM candle_chunks WHERE dataset_id = $2;`,
-          [newId, sourceDatasetId]
-        );
+        if (initRes.success) {
+          try {
+            await pool.query(
+              `INSERT INTO candle_datasets (id, name, user_id, timeframe, exchange, start_time, end_time, symbol_count, total_candles, symbols_list, data_size_bytes, data_size_formatted, status, is_temporary, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'COMPLETED', false, NOW(), NOW());`,
+              [newId, name, userId, src.timeframe, src.exchange || 'xt', src.start_time || 0, src.end_time || 0, src.symbol_count, src.total_candles, src.symbols_list, src.data_size_bytes, src.data_size_formatted]
+            );
+            await pool.query(
+              `INSERT INTO candle_chunks (dataset_id, chunk_index, items_json, created_at)
+               SELECT $1, chunk_index, items_json, NOW() FROM candle_chunks WHERE dataset_id = $2;`,
+              [newId, sourceDatasetId]
+            );
+          } catch {}
+        }
 
         return res.json({
           success: true,
           datasetId: newId,
-          message: 'Saved dataset to PostgreSQL successfully',
+          message: initRes.success ? 'Saved dataset to PostgreSQL successfully' : 'دیتاست در کش سرور ذخیره شد.',
           sizeFormatted: src.data_size_formatted,
           totalCandles: src.total_candles,
           symbolCount: src.symbol_count,
@@ -2722,10 +2840,6 @@ app.post('/api/cloudsql/save-dataset', async (req, res) => {
       return res.status(400).json({ success: false, error: 'هیچ کندلی برای ذخیره‌سازی یافت نشد. لطفاً ابتدا اسکن را اجرا کنید.' });
     }
 
-    const { db } = await import('./src/db/index.ts');
-    const { candleDatasets, candleChunks } = await import('./src/db/schema.ts');
-    const { eq } = await import('drizzle-orm');
-
     const datasetId = customId || (isTemporary ? `temp_${userId}_${timeframe}` : `sql_ds_${Date.now()}`);
     const symbolsList = entries.map((e) => e.pair.symbol);
     const totalCandles = entries.reduce((sum, e) => sum + e.candles.length, 0);
@@ -2734,27 +2848,7 @@ app.post('/api/cloudsql/save-dataset', async (req, res) => {
     if (rawBytes >= 1024 * 1024) sizeFormatted = `${(rawBytes / (1024 * 1024)).toFixed(2)} MB`;
     else if (rawBytes >= 1024) sizeFormatted = `${(rawBytes / 1024).toFixed(1)} KB`;
 
-    // 1. Delete previous chunks for this datasetId if overwriting
-    await db.delete(candleChunks).where(eq(candleChunks.datasetId, datasetId)).catch(() => {});
-    await db.delete(candleDatasets).where(eq(candleDatasets.id, datasetId)).catch(() => {});
-
-    // 2. Insert metadata
-    await (db.insert(candleDatasets) as any).values({
-      id: datasetId,
-      name,
-      userId,
-      timeframe,
-      symbolCount: entries.length,
-      totalCandles,
-      symbolsList: JSON.stringify(symbolsList),
-      dataSizeBytes: rawBytes,
-      dataSizeFormatted: sizeFormatted,
-      isTemporary,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-
-    // 3. Chunk & insert candle data in batches of 5 symbols
+    const chunkPayload: { chunkIndex: number; items: any[] }[] = [];
     const CHUNK_SIZE = 5;
     for (let i = 0; i < entries.length; i += CHUNK_SIZE) {
       const slice = entries.slice(i, i + CHUNK_SIZE);
@@ -2765,19 +2859,71 @@ app.post('/api/cloudsql/save-dataset', async (req, res) => {
         timeframe: e.timeframe,
         tuples: e.candles.map((c) => [c.time, c.open, c.high, c.low, c.close, c.volume]),
       }));
+      const cIdx = Math.floor(i / CHUNK_SIZE);
+      chunkPayload.push({ chunkIndex: cIdx, items });
+      writeLocalDatasetChunk(datasetId, cIdx, items);
+    }
+    finalizeLocalDatasetCompleteFlag(datasetId, chunkPayload.length);
+    upsertLocalDatasetMeta({
+      id: datasetId,
+      name,
+      user_id: userId,
+      exchange: serverBacktestState.exchange || 'xt',
+      timeframe,
+      symbol_count: entries.length,
+      total_candles: totalCandles,
+      symbols_list: JSON.stringify(symbolsList),
+      data_size_bytes: rawBytes,
+      data_size_formatted: sizeFormatted,
+      is_temporary: Boolean(isTemporary),
+      status: 'COMPLETED',
+      chunk_count: chunkPayload.length,
+    });
 
-      await (db.insert(candleChunks) as any).values({
-        datasetId,
-        chunkIndex: Math.floor(i / CHUNK_SIZE),
-        itemsJson: JSON.stringify(items),
-        createdAt: new Date(),
-      });
+    let savedToPg = false;
+    if (initRes.success) {
+      try {
+        const { db } = await import('./src/db/index.ts');
+        const { candleDatasets, candleChunks } = await import('./src/db/schema.ts');
+        const { eq } = await import('drizzle-orm');
+
+        await db.delete(candleChunks).where(eq(candleChunks.datasetId, datasetId)).catch(() => {});
+        await db.delete(candleDatasets).where(eq(candleDatasets.id, datasetId)).catch(() => {});
+
+        await (db.insert(candleDatasets) as any).values({
+          id: datasetId,
+          name,
+          userId,
+          timeframe,
+          symbolCount: entries.length,
+          totalCandles,
+          symbolsList: JSON.stringify(symbolsList),
+          dataSizeBytes: rawBytes,
+          dataSizeFormatted: sizeFormatted,
+          isTemporary,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+
+        for (const ch of chunkPayload) {
+          await (db.insert(candleChunks) as any).values({
+            datasetId,
+            chunkIndex: ch.chunkIndex,
+            itemsJson: JSON.stringify(ch.items),
+            createdAt: new Date(),
+          });
+        }
+        savedToPg = true;
+      } catch (pgErr: any) {
+        console.warn('[Save Dataset] Saved locally; PostgreSQL write skipped:', pgErr?.message || pgErr);
+      }
     }
 
     res.json({
       success: true,
       datasetId,
-      message: 'Saved to remote PostgreSQL successfully',
+      dbSaved: savedToPg,
+      message: savedToPg ? 'Saved to remote PostgreSQL successfully' : 'بسته کندل با موفقیت در کش سرور ذخیره شد.',
       sizeFormatted,
       totalCandles,
       symbolCount: entries.length,
@@ -2788,89 +2934,175 @@ app.post('/api/cloudsql/save-dataset', async (req, res) => {
   }
 });
 
-// 2. List Datasets from Remote PostgreSQL
+// 2. List Datasets from Remote PostgreSQL + Local Cache
 app.get('/api/cloudsql/datasets', async (req, res) => {
   try {
-    const { db, withDbRetry } = await import('./src/db/index.ts');
-    const { candleDatasets } = await import('./src/db/schema.ts');
-    const { desc } = await import('drizzle-orm');
+    const mergedMap = new Map<string, any>();
+    let dbConnected = false;
+    let warning: string | undefined;
 
-    const list = await withDbRetry(() =>
-      db
-        .select({
-          id: candleDatasets.id,
-          name: candleDatasets.name,
-          userId: candleDatasets.userId,
-          timeframe: candleDatasets.timeframe,
-          exchange: candleDatasets.exchange,
-          startTime: candleDatasets.startTime,
-          endTime: candleDatasets.endTime,
-          symbolCount: candleDatasets.symbolCount,
-          totalCandles: candleDatasets.totalCandles,
-          dataSizeBytes: candleDatasets.dataSizeBytes,
-          dataSizeFormatted: candleDatasets.dataSizeFormatted,
-          isTemporary: candleDatasets.isTemporary,
-          status: candleDatasets.status,
-          createdAt: candleDatasets.createdAt,
-          updatedAt: candleDatasets.updatedAt,
-        })
-        .from(candleDatasets)
-        .orderBy(desc(candleDatasets.createdAt))
+    const initRes = await ensureDatabaseInitialized();
+    if (initRes.success) {
+      try {
+        const { db, withDbRetry } = await import('./src/db/index.ts');
+        const { candleDatasets } = await import('./src/db/schema.ts');
+        const { desc } = await import('drizzle-orm');
+
+        const list = await withDbRetry(() =>
+          db
+            .select({
+              id: candleDatasets.id,
+              name: candleDatasets.name,
+              userId: candleDatasets.userId,
+              timeframe: candleDatasets.timeframe,
+              exchange: candleDatasets.exchange,
+              startTime: candleDatasets.startTime,
+              endTime: candleDatasets.endTime,
+              symbolCount: candleDatasets.symbolCount,
+              totalCandles: candleDatasets.totalCandles,
+              dataSizeBytes: candleDatasets.dataSizeBytes,
+              dataSizeFormatted: candleDatasets.dataSizeFormatted,
+              isTemporary: candleDatasets.isTemporary,
+              status: candleDatasets.status,
+              createdAt: candleDatasets.createdAt,
+              updatedAt: candleDatasets.updatedAt,
+            })
+            .from(candleDatasets)
+            .orderBy(desc(candleDatasets.createdAt))
+        );
+        dbConnected = true;
+        for (const row of list) {
+          mergedMap.set(row.id, { ...row, source: 'postgres' });
+        }
+      } catch (dbErr: any) {
+        warning = dbErr?.message;
+      }
+    } else {
+      warning = initRes.error;
+    }
+
+    for (const local of listLocalDatasets()) {
+      if (!mergedMap.has(local.id)) {
+        mergedMap.set(local.id, {
+          id: local.id,
+          name: local.name,
+          userId: local.user_id || 'amir',
+          timeframe: local.timeframe || '5m',
+          exchange: local.exchange || 'xt',
+          startTime: local.start_time || 0,
+          endTime: local.end_time || 0,
+          symbolCount: local.symbol_count || 0,
+          totalCandles: local.total_candles || 0,
+          dataSizeBytes: local.data_size_bytes || 0,
+          dataSizeFormatted: local.data_size_formatted || '0 B',
+          isTemporary: Boolean(local.is_temporary),
+          status: local.status || 'COMPLETED',
+          createdAt: local.created_at,
+          updatedAt: local.updated_at,
+          source: 'local',
+        });
+      }
+    }
+
+    const datasets = Array.from(mergedMap.values()).sort(
+      (a, b) => new Date(b.updatedAt || b.createdAt || 0).getTime() - new Date(a.updatedAt || a.createdAt || 0).getTime()
     );
-    res.json({ success: true, datasets: list });
+    res.json({ success: true, datasets, dbConnected, ...(warning ? { warning } : {}) });
   } catch (error: any) {
-    console.error('[Remote PostgreSQL] list datasets error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    console.warn('[Remote PostgreSQL] list datasets warning:', error?.message || error);
+    res.json({ success: true, datasets: [], dbConnected: false, warning: error?.message });
   }
 });
 
-// 3. Load Dataset from Remote PostgreSQL
+// 3. Load Dataset from Remote PostgreSQL or Local Cache
 app.get('/api/cloudsql/dataset/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { db, withDbRetry } = await import('./src/db/index.ts');
-    const { candleDatasets, candleChunks } = await import('./src/db/schema.ts');
-    const { eq, asc } = await import('drizzle-orm');
-
-    const meta = await withDbRetry(() => db.select().from(candleDatasets).where(eq(candleDatasets.id, id)).limit(1));
-    if (meta.length === 0) {
-      return res.status(404).json({ success: false, error: 'Dataset not found' });
-    }
-
-    const chunks = await withDbRetry(() =>
-      db
-        .select()
-        .from(candleChunks)
-        .where(eq(candleChunks.datasetId, id))
-        .orderBy(asc(candleChunks.chunkIndex))
-    );
-
+    const initRes = await ensureDatabaseInitialized();
+    let metaRecord: any = null;
     const entries: ServerCandleEntry[] = [];
 
-    for (const chunk of chunks) {
+    if (initRes.success) {
       try {
-        const items = JSON.parse(chunk.itemsJson);
-        for (const item of items) {
-          const candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
-            time: t[0],
-            open: t[1],
-            high: t[2],
-            low: t[3],
-            close: t[4],
-            volume: t[5],
-          }));
+        const { db, withDbRetry } = await import('./src/db/index.ts');
+        const { candleDatasets, candleChunks } = await import('./src/db/schema.ts');
+        const { eq, asc } = await import('drizzle-orm');
 
-          entries.push({
-            pair: {
-              symbol: item.symbol,
-              baseAsset: item.baseAsset,
-              quoteAsset: item.quoteAsset,
-            },
-            candles,
-            timeframe: item.timeframe || meta[0].timeframe,
-          });
+        const meta = await withDbRetry(() => db.select().from(candleDatasets).where(eq(candleDatasets.id, id)).limit(1));
+        if (meta.length > 0) {
+          metaRecord = meta[0];
+          const chunks = await withDbRetry(() =>
+            db
+              .select()
+              .from(candleChunks)
+              .where(eq(candleChunks.datasetId, id))
+              .orderBy(asc(candleChunks.chunkIndex))
+          );
+
+          for (const chunk of chunks) {
+            try {
+              const items = JSON.parse(chunk.itemsJson);
+              for (const item of items) {
+                const candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
+                  time: t[0],
+                  open: t[1],
+                  high: t[2],
+                  low: t[3],
+                  close: t[4],
+                  volume: t[5],
+                }));
+                entries.push({
+                  pair: { symbol: item.symbol, baseAsset: item.baseAsset, quoteAsset: item.quoteAsset },
+                  candles,
+                  timeframe: item.timeframe || metaRecord.timeframe,
+                });
+              }
+            } catch {}
+          }
         }
-      } catch {}
+      } catch (pgErr: any) {
+        console.warn('[Remote PostgreSQL] load dataset fallback to local cache:', pgErr?.message || pgErr);
+      }
+    }
+
+    if (entries.length === 0) {
+      const localMeta = listLocalDatasets().find((d) => d.id === id);
+      const localChunks = readLocalDatasetChunks(id);
+      if (localChunks.length > 0) {
+        metaRecord = localMeta || {
+          id,
+          name: id,
+          timeframe: '5m',
+          exchange: 'xt',
+          symbolCount: 0,
+          totalCandles: 0,
+        };
+        for (const ch of localChunks) {
+          for (const item of ch.items) {
+            const candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
+              time: t[0],
+              open: t[1],
+              high: t[2],
+              low: t[3],
+              close: t[4],
+              volume: t[5],
+            }));
+            entries.push({
+              pair: {
+                symbol: item.symbol,
+                baseAsset: item.baseAsset || (item.symbol?.includes('_') ? item.symbol.split('_')[0].toUpperCase() : 'CRYPTO'),
+                quoteAsset: item.quoteAsset || 'USDT',
+              },
+              candles,
+              timeframe: item.timeframe || metaRecord.timeframe || '5m',
+            });
+          }
+        }
+      }
+    }
+
+    if (!metaRecord && entries.length === 0) {
+      return res.status(404).json({ success: false, error: 'Dataset not found' });
     }
 
     // Populate server buffer as well
@@ -2881,7 +3113,7 @@ app.get('/api/cloudsql/dataset/:id', async (req, res) => {
 
     res.json({
       success: true,
-      metadata: meta[0],
+      metadata: metaRecord,
       entries,
       count: entries.length,
     });
@@ -2895,6 +3127,16 @@ app.get('/api/cloudsql/dataset/:id', async (req, res) => {
 app.post('/api/cloudsql/promote-dataset', async (req, res) => {
   try {
     const { datasetId, newName } = req.body || {};
+    if (datasetId) {
+      const local = listLocalDatasets().find((d) => d.id === datasetId);
+      if (local) {
+        upsertLocalDatasetMeta({ ...local, name: newName || local.name, is_temporary: false });
+      }
+    }
+    const initRes = await ensureDatabaseInitialized();
+    if (!initRes.success) {
+      return res.json({ success: true, message: 'دیتاست در کش سرور دائمی شد (PostgreSQL در دسترس نبود).' });
+    }
     const { db } = await import('./src/db/index.ts');
     const { candleDatasets } = await import('./src/db/schema.ts');
     const { eq } = await import('drizzle-orm');
@@ -2909,10 +3151,23 @@ app.post('/api/cloudsql/promote-dataset', async (req, res) => {
   }
 });
 
-// 5. Delete Dataset in Remote PostgreSQL
+// 5. Delete Dataset in Remote PostgreSQL and Local Cache
 app.delete('/api/cloudsql/dataset/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    serverDatasetCandleCache.delete(id);
+    deleteLocalDatasetMeta(id);
+    try {
+      const diskDir = path.join('/tmp', 'candle_chunks', id);
+      if (fs.existsSync(diskDir)) {
+        fs.rmSync(diskDir, { recursive: true, force: true });
+      }
+    } catch {}
+
+    const initRes = await ensureDatabaseInitialized();
+    if (!initRes.success) {
+      return res.json({ success: true, dbCleared: false, cacheCleared: true, message: 'کش لوکال حذف شد (دیتابیس PostgreSQL در دسترس نبود).' });
+    }
     const { db } = await import('./src/db/index.ts');
     const { candleDatasets, candleChunks } = await import('./src/db/schema.ts');
     const { eq } = await import('drizzle-orm');
@@ -2920,102 +3175,308 @@ app.delete('/api/cloudsql/dataset/:id', async (req, res) => {
     await db.delete(candleChunks).where(eq(candleChunks.datasetId, id));
     await db.delete(candleDatasets).where(eq(candleDatasets.id, id));
 
-    res.json({ success: true, message: 'Deleted from remote PostgreSQL' });
+    res.json({ success: true, dbCleared: true, cacheCleared: true, message: 'Deleted from PostgreSQL' });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// 6. User Login Verification using Remote PostgreSQL database (users table)
-function verifyPasswordHash(password: string, salt: string, expectedHash: string): boolean {
+// 6. User Authentication (PostgreSQL primary + adminpass env + one-time first-run setup)
+interface InMemoryAdminRecord {
+  username: string;
+  salt: string;
+  passwordHash: string;
+  displayName: string;
+  role: string;
+}
+
+let fallbackAdminRecord: InMemoryAdminRecord | null = null;
+
+function getEnvAdminPass(): string {
+  return (process.env.adminpass || '').trim();
+}
+
+function safeEqualStrings(a: string, b: string): boolean {
+  const hashA = crypto.createHash('sha256').update(a, 'utf8').digest();
+  const hashB = crypto.createHash('sha256').update(b, 'utf8').digest();
+  return crypto.timingSafeEqual(hashA, hashB);
+}
+
+async function queryUsersCountSafe(): Promise<number> {
   try {
-    const computed = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
-    return computed === expectedHash;
-  } catch {
-    return false;
+    const countRes = await pool.query('SELECT COUNT(*)::int AS cnt FROM users;');
+    return Number(countRes.rows[0]?.cnt || 0);
+  } catch (err: any) {
+    if (err?.code === '42P01' || String(err?.message || '').includes('does not exist')) {
+      const reinit = await ensureDatabaseInitialized(true);
+      if (reinit.success) {
+        const countRes = await pool.query('SELECT COUNT(*)::int AS cnt FROM users;');
+        return Number(countRes.rows[0]?.cnt || 0);
+      }
+    }
+    throw err;
   }
 }
+
+app.get('/api/auth/status', async (_req, res) => {
+  try {
+    const envAdminConfigured = Boolean(getEnvAdminPass());
+    const initCheck = await ensureDatabaseInitialized();
+    const dbReachable = initCheck.success;
+
+    let needsInitialSetup = false;
+    if (dbReachable) {
+      try {
+        const userCount = await queryUsersCountSafe();
+        needsInitialSetup = !envAdminConfigured && userCount === 0;
+      } catch {
+        needsInitialSetup = !envAdminConfigured && !fallbackAdminRecord;
+      }
+    } else {
+      needsInitialSetup = !envAdminConfigured && !fallbackAdminRecord;
+    }
+
+    return res.json({
+      success: true,
+      dbReachable,
+      needsInitialSetup,
+      adminConfigured: !needsInitialSetup,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/auth/setup-admin', async (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    const trimmedUser = typeof username === 'string' ? username.trim() : '';
+    if (!trimmedUser || trimmedUser.length < 2 || trimmedUser.length > 64 || !/^[a-zA-Z0-9_.-]+$/.test(trimmedUser)) {
+      return res.status(400).json({
+        success: false,
+        error: 'نام کاربری باید بین ۲ تا ۶۴ کاراکتر انگلیسی، عدد یا _ . - باشد.',
+      });
+    }
+    if (typeof password !== 'string' || password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: 'رمز عبور مدیر باید حداقل ۶ کاراکتر باشد.',
+      });
+    }
+
+    if (getEnvAdminPass()) {
+      return res.status(409).json({
+        success: false,
+        error: 'حساب مدیر قبلاً از طریق تنظیمات سرور پیکربندی شده است. لطفاً وارد شوید.',
+      });
+    }
+
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hashed = hashPassword(password, salt);
+    const displayName = `${trimmedUser} (مدیر سیستم)`;
+
+    const initCheck = await ensureDatabaseInitialized();
+    if (initCheck.success) {
+      const existingCount = await queryUsersCountSafe();
+      if (existingCount > 0) {
+        return res.status(409).json({
+          success: false,
+          error: 'حساب مدیر قبلاً ایجاد شده است. لطفاً با اطلاعات خود وارد شوید.',
+        });
+      }
+
+      // Atomic one-time insert guarded by NOT EXISTS to prevent concurrent setup races
+      const insertRes = await pool.query(
+        `INSERT INTO users (uid, username, password_hash, salt, role, display_name, created_at, updated_at, last_login_at)
+         SELECT $1, $2, $3, $4, $5, $6, NOW(), NOW(), NOW()
+         WHERE NOT EXISTS (SELECT 1 FROM users)
+         ON CONFLICT (username) DO NOTHING
+         RETURNING username, display_name, role;`,
+        [`user_${trimmedUser.toLowerCase()}`, trimmedUser, hashed, salt, 'admin', displayName]
+      );
+
+      if (insertRes.rows.length === 0) {
+        return res.status(409).json({
+          success: false,
+          error: 'حساب مدیر قبلاً ایجاد شده است. لطفاً وارد شوید.',
+        });
+      }
+
+      const created = insertRes.rows[0];
+      return res.json({
+        success: true,
+        user: created.username,
+        displayName: created.display_name || created.username,
+        role: created.role || 'admin',
+      });
+    }
+
+    // PostgreSQL is unconfigured/unreachable: claim single server-side in-memory admin account once
+    if (fallbackAdminRecord) {
+      return res.status(409).json({
+        success: false,
+        error: 'حساب مدیر قبلاً تنظیم شده است. لطفاً وارد شوید.',
+      });
+    }
+
+    fallbackAdminRecord = {
+      username: trimmedUser,
+      salt,
+      passwordHash: hashed,
+      displayName,
+      role: 'admin',
+    };
+
+    return res.json({
+      success: true,
+      user: fallbackAdminRecord.username,
+      displayName: fallbackAdminRecord.displayName,
+      role: fallbackAdminRecord.role,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, password } = req.body || {};
     const trimmedUser = typeof username === 'string' ? username.trim() : '';
-    if (!trimmedUser || !password) {
+    if (!trimmedUser || typeof password !== 'string' || !password) {
       return res.status(400).json({ success: false, error: 'نام کاربری و رمز عبور الزامی است.' });
     }
 
-    // Ensure schema & users table exist (handles fresh DBs or boot-time races)
-    const initCheck = await ensureDatabaseInitialized();
-    if (!initCheck.success) {
-      return res.status(500).json({
-        success: false,
-        error: `خطا در آماده‌سازی جداول دیتابیس PostgreSQL: ${initCheck.error}`,
-      });
-    }
+    const envAdminPass = getEnvAdminPass();
+    const isEnvAdminMatch =
+      Boolean(envAdminPass) &&
+      trimmedUser.toLowerCase() === 'amir' &&
+      safeEqualStrings(password, envAdminPass);
 
-    // Query user record directly from PostgreSQL database (auto-heal if relation "users" was missing)
-    let userRes;
-    try {
-      userRes = await pool.query('SELECT * FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1;', [trimmedUser]);
-    } catch (queryErr: any) {
-      if (queryErr?.code === '42P01' || String(queryErr?.message || '').includes('does not exist')) {
-        const reinit = await ensureDatabaseInitialized(true);
-        if (!reinit.success) {
-          return res.status(500).json({
-            success: false,
-            error: `جدول users در دیتابیس ساخته نشد: ${reinit.error}`,
-          });
-        }
+    // Try PostgreSQL first if configured & reachable
+    const initCheck = await ensureDatabaseInitialized();
+    if (initCheck.success) {
+      let userRes;
+      try {
         userRes = await pool.query('SELECT * FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1;', [trimmedUser]);
-      } else {
-        throw queryErr;
+      } catch (queryErr: any) {
+        if (queryErr?.code === '42P01' || String(queryErr?.message || '').includes('does not exist')) {
+          const reinit = await ensureDatabaseInitialized(true);
+          if (reinit.success) {
+            userRes = await pool.query('SELECT * FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1;', [trimmedUser]);
+          } else {
+            userRes = null;
+          }
+        } else {
+          throw queryErr;
+        }
       }
-    }
-    if (userRes.rows.length === 0) {
-      // Auto-bootstrap amir if table was freshly created
-      if (trimmedUser.toLowerCase() === 'amir' && (password === '!#@Amir' || password === (process.env.adminpass || '!#@Amir'))) {
+
+      if (userRes && userRes.rows.length > 0) {
+        const userRow = userRes.rows[0];
+        let isMatch = false;
+
+        if (userRow.salt && userRow.password_hash) {
+          isMatch = verifyPasswordHash(password, userRow.salt, userRow.password_hash);
+        } else if (userRow.password_hash) {
+          isMatch = safeEqualStrings(password, String(userRow.password_hash));
+          if (isMatch) {
+            // Upgrade legacy unsalted record to scrypt immediately
+            const upgradedSalt = crypto.randomBytes(16).toString('hex');
+            const upgradedHash = hashPassword(password, upgradedSalt);
+            await pool.query('UPDATE users SET password_hash = $1, salt = $2, updated_at = NOW() WHERE id = $3;', [
+              upgradedHash,
+              upgradedSalt,
+              userRow.id,
+            ]);
+          }
+        }
+
+        if (!isMatch && isEnvAdminMatch) {
+          isMatch = true;
+          const newSalt = crypto.randomBytes(16).toString('hex');
+          const newHash = hashPassword(password, newSalt);
+          await pool.query('UPDATE users SET password_hash = $1, salt = $2, updated_at = NOW() WHERE id = $3;', [
+            newHash,
+            newSalt,
+            userRow.id,
+          ]);
+        }
+
+        if (!isMatch) {
+          return res.status(401).json({ success: false, error: 'نام کاربری یا رمز عبور اشتباه است.' });
+        }
+
+        await pool.query('UPDATE users SET last_login_at = NOW() WHERE id = $1;', [userRow.id]);
+
+        return res.json({
+          success: true,
+          user: userRow.username,
+          displayName: userRow.display_name || userRow.username,
+          role: userRow.role || 'admin',
+        });
+      }
+
+      // User not found in DB
+      if (isEnvAdminMatch) {
         const salt = crypto.randomBytes(16).toString('hex');
-        const hash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
+        const hash = hashPassword(password, salt);
         await pool.query(
           `INSERT INTO users (uid, username, password_hash, salt, role, display_name, created_at, updated_at, last_login_at)
            VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW(), NOW())
            ON CONFLICT (username) DO NOTHING;`,
           ['user_amir', 'amir', hash, salt, 'admin', 'Amir (مدیر سیستم)']
         );
-        return res.json({ success: true, user: 'amir', role: 'admin' });
+        return res.json({
+          success: true,
+          user: 'amir',
+          displayName: 'Amir (مدیر سیستم)',
+          role: 'admin',
+        });
+      }
+
+      const existingCount = await queryUsersCountSafe();
+      if (existingCount === 0 && !envAdminPass) {
+        return res.status(403).json({
+          success: false,
+          needsInitialSetup: true,
+          error: 'هنوز حساب مدیری تنظیم نشده است. لطفاً ابتدا رمز عبور مدیر را تعریف کنید.',
+        });
+      }
+
+      return res.status(401).json({ success: false, error: 'نام کاربری یا رمز عبور اشتباه است.' });
+    }
+
+    // PostgreSQL is unconfigured or currently unreachable: authenticate via adminpass secret or claimed admin
+    if (envAdminPass) {
+      if (isEnvAdminMatch) {
+        return res.json({
+          success: true,
+          user: 'amir',
+          displayName: 'Amir (مدیر سیستم)',
+          role: 'admin',
+        });
       }
       return res.status(401).json({ success: false, error: 'نام کاربری یا رمز عبور اشتباه است.' });
     }
 
-    const userRow = userRes.rows[0];
-    let isMatch = false;
-
-    if (userRow.salt && userRow.password_hash) {
-      isMatch = verifyPasswordHash(password, userRow.salt, userRow.password_hash);
-    } else if (userRow.password_hash) {
-      isMatch = userRow.password_hash === password;
-    }
-
-    // Emergency fallback check for amir master password
-    if (!isMatch && trimmedUser.toLowerCase() === 'amir' && (password === '!#@Amir' || password === (process.env.adminpass || '!#@Amir'))) {
-      isMatch = true;
-      const newSalt = crypto.randomBytes(16).toString('hex');
-      const newHash = crypto.pbkdf2Sync(password, newSalt, 1000, 64, 'sha512').toString('hex');
-      await pool.query('UPDATE users SET password_hash = $1, salt = $2, updated_at = NOW() WHERE id = $3;', [newHash, newSalt, userRow.id]);
-    }
-
-    if (!isMatch) {
+    if (fallbackAdminRecord) {
+      const userMatches = trimmedUser.toLowerCase() === fallbackAdminRecord.username.toLowerCase();
+      const passMatches = verifyPasswordHash(password, fallbackAdminRecord.salt, fallbackAdminRecord.passwordHash);
+      if (userMatches && passMatches) {
+        return res.json({
+          success: true,
+          user: fallbackAdminRecord.username,
+          displayName: fallbackAdminRecord.displayName,
+          role: fallbackAdminRecord.role,
+        });
+      }
       return res.status(401).json({ success: false, error: 'نام کاربری یا رمز عبور اشتباه است.' });
     }
 
-    // Record last login timestamp in PostgreSQL
-    await pool.query('UPDATE users SET last_login_at = NOW() WHERE id = $1;', [userRow.id]);
-
-    return res.json({
-      success: true,
-      user: userRow.username,
-      displayName: userRow.display_name || userRow.username,
-      role: userRow.role || 'admin',
+    return res.status(403).json({
+      success: false,
+      needsInitialSetup: true,
+      error: 'هنوز رمز عبور مدیر تنظیم نشده است. لطفاً ابتدا حساب مدیر را تنظیم کنید.',
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
@@ -3026,28 +3487,63 @@ app.post('/api/auth/change-password', async (req, res) => {
   try {
     const { username, oldPassword, newPassword } = req.body || {};
     const trimmedUser = typeof username === 'string' ? username.trim() : '';
-    if (!trimmedUser || !newPassword) {
-      return res.status(400).json({ success: false, error: 'اطلاعات ناقص است.' });
+    if (!trimmedUser || typeof oldPassword !== 'string' || !oldPassword || typeof newPassword !== 'string' || newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: 'نام کاربری، رمز عبور فعلی و رمز عبور جدید (حداقل ۶ کاراکتر) الزامی است.',
+      });
     }
+
+    const envAdminPass = getEnvAdminPass();
+    const isEnvAdminOldMatch =
+      Boolean(envAdminPass) &&
+      trimmedUser.toLowerCase() === 'amir' &&
+      safeEqualStrings(oldPassword, envAdminPass);
+
     const initCheck = await ensureDatabaseInitialized();
-    if (!initCheck.success) {
-      return res.status(500).json({ success: false, error: `خطا در آماده‌سازی دیتابیس: ${initCheck.error}` });
-    }
-    const userRes = await pool.query('SELECT * FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1;', [trimmedUser]);
-    if (userRes.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'کاربر در پایگاه داده یافت نشد.' });
-    }
-    const userRow = userRes.rows[0];
-    if (oldPassword && userRow.salt && userRow.password_hash) {
-      const match = verifyPasswordHash(oldPassword, userRow.salt, userRow.password_hash);
-      if (!match && oldPassword !== '!#@Amir') {
+    if (initCheck.success) {
+      const userRes = await pool.query('SELECT * FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1;', [trimmedUser]);
+      if (userRes.rows.length === 0) {
+        return res.status(404).json({ success: false, error: 'کاربر در پایگاه داده یافت نشد.' });
+      }
+      const userRow = userRes.rows[0];
+      const storedMatch =
+        userRow.salt && userRow.password_hash
+          ? verifyPasswordHash(oldPassword, userRow.salt, userRow.password_hash)
+          : Boolean(userRow.password_hash && safeEqualStrings(oldPassword, String(userRow.password_hash)));
+
+      if (!storedMatch && !isEnvAdminOldMatch) {
         return res.status(401).json({ success: false, error: 'رمز عبور فعلی نامعتبر است.' });
       }
+
+      const newSalt = crypto.randomBytes(16).toString('hex');
+      const newHash = hashPassword(newPassword, newSalt);
+      await pool.query('UPDATE users SET password_hash = $1, salt = $2, updated_at = NOW() WHERE id = $3;', [
+        newHash,
+        newSalt,
+        userRow.id,
+      ]);
+      return res.json({ success: true, message: 'رمز عبور با موفقیت تغییر یافت.' });
     }
-    const newSalt = crypto.randomBytes(16).toString('hex');
-    const newHash = crypto.pbkdf2Sync(newPassword, newSalt, 1000, 64, 'sha512').toString('hex');
-    await pool.query('UPDATE users SET password_hash = $1, salt = $2, updated_at = NOW() WHERE id = $3;', [newHash, newSalt, userRow.id]);
-    return res.json({ success: true, message: 'رمز عبور با موفقیت در دیتابیس PostgreSQL تغییر یافت.' });
+
+    if (fallbackAdminRecord && trimmedUser.toLowerCase() === fallbackAdminRecord.username.toLowerCase()) {
+      const storedMatch = verifyPasswordHash(oldPassword, fallbackAdminRecord.salt, fallbackAdminRecord.passwordHash);
+      if (!storedMatch && !isEnvAdminOldMatch) {
+        return res.status(401).json({ success: false, error: 'رمز عبور فعلی نامعتبر است.' });
+      }
+      const newSalt = crypto.randomBytes(16).toString('hex');
+      fallbackAdminRecord = {
+        ...fallbackAdminRecord,
+        salt: newSalt,
+        passwordHash: hashPassword(newPassword, newSalt),
+      };
+      return res.json({ success: true, message: 'رمز عبور با موفقیت تغییر یافت.' });
+    }
+
+    return res.status(400).json({
+      success: false,
+      error: 'امکان تغییر رمز عبور در این حالت وجود ندارد. در صورت استفاده از متغیر محیطی adminpass، مقدار آن را در تنظیمات سرور تغییر دهید.',
+    });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -3169,8 +3665,223 @@ function computeSymbolsSignature(symbols?: string[] | null): string {
   return `${normalized.length}:${normalized.slice(0, 5).join(',')}:${normalized[normalized.length - 1]}`;
 }
 
+function getCandleChunksBaseDir(): string {
+  return path.join('/tmp', 'candle_chunks');
+}
+
+function getLocalDatasetsIndexPath(): string {
+  return path.join(getCandleChunksBaseDir(), '_datasets_index.json');
+}
+
+function getLocalMlModelsPath(): string {
+  return path.join(process.cwd(), 'data', 'ml-models.json');
+}
+
+function readLocalDatasetsIndex(): Record<string, any> {
+  try {
+    const p = getLocalDatasetsIndexPath();
+    if (!fs.existsSync(p)) return {};
+    const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalDatasetsIndex(indexObj: Record<string, any>): void {
+  try {
+    const base = getCandleChunksBaseDir();
+    fs.mkdirSync(base, { recursive: true });
+    fs.writeFileSync(getLocalDatasetsIndexPath(), JSON.stringify(indexObj));
+  } catch {}
+}
+
+function upsertLocalDatasetMeta(meta: any): void {
+  if (!meta || !meta.id) return;
+  try {
+    const idx = readLocalDatasetsIndex();
+    const existing = idx[meta.id] || {};
+    const nowIso = new Date().toISOString();
+    idx[meta.id] = {
+      ...existing,
+      ...meta,
+      created_at: existing.created_at || meta.created_at || nowIso,
+      updated_at: meta.updated_at || nowIso,
+      source: 'local',
+    };
+    writeLocalDatasetsIndex(idx);
+  } catch {}
+}
+
+function deleteLocalDatasetMeta(datasetId: string): void {
+  if (!datasetId) return;
+  try {
+    const idx = readLocalDatasetsIndex();
+    if (idx[datasetId]) {
+      delete idx[datasetId];
+      writeLocalDatasetsIndex(idx);
+    }
+  } catch {}
+}
+
+function writeLocalDatasetChunk(datasetId: string, chunkIndex: number, items: any[]): void {
+  try {
+    const dir = path.join(getCandleChunksBaseDir(), datasetId);
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, `chunk_${String(chunkIndex).padStart(5, '0')}.json`);
+    fs.writeFileSync(filePath, JSON.stringify(items));
+  } catch {}
+}
+
+function finalizeLocalDatasetCompleteFlag(datasetId: string, chunkCount: number): void {
+  try {
+    const dir = path.join(getCandleChunksBaseDir(), datasetId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '_complete.flag'), String(chunkCount));
+  } catch {}
+}
+
+function readLocalDatasetChunks(datasetId: string, onlyIndices?: number[]): { chunkIndex: number; items: any[] }[] {
+  const dir = path.join(getCandleChunksBaseDir(), datasetId);
+  if (!fs.existsSync(dir)) return [];
+  try {
+    let files = fs.readdirSync(dir).filter((f) => f.startsWith('chunk_') && f.endsWith('.json')).sort();
+    if (Array.isArray(onlyIndices) && onlyIndices.length > 0) {
+      const targetNames = new Set(onlyIndices.map((idx) => `chunk_${String(idx).padStart(5, '0')}.json`));
+      files = files.filter((f) => targetNames.has(f));
+    }
+    const out: { chunkIndex: number; items: any[] }[] = [];
+    for (const f of files) {
+      try {
+        const m = f.match(/^chunk_(\d+)\.json$/);
+        const idx = m ? Number(m[1]) : out.length;
+        const parsed = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+        if (Array.isArray(parsed)) out.push({ chunkIndex: idx, items: parsed });
+      } catch {}
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function listLocalDatasets(): any[] {
+  const base = getCandleChunksBaseDir();
+  const idx = readLocalDatasetsIndex();
+  const resultMap = new Map<string, any>();
+
+  for (const [id, meta] of Object.entries(idx)) {
+    const dir = path.join(base, id);
+    if (!fs.existsSync(dir)) continue;
+    const files = fs.readdirSync(dir).filter((f) => f.startsWith('chunk_') && f.endsWith('.json'));
+    if (files.length === 0) continue;
+    resultMap.set(id, { ...meta, chunk_count: files.length, source: 'local' });
+  }
+
+  try {
+    if (fs.existsSync(base)) {
+      const dirs = fs.readdirSync(base, { withFileTypes: true }).filter((d) => d.isDirectory());
+      for (const d of dirs) {
+        const id = d.name;
+        if (resultMap.has(id)) continue;
+        const dirPath = path.join(base, id);
+        const files = fs.readdirSync(dirPath).filter((f) => f.startsWith('chunk_') && f.endsWith('.json')).sort();
+        if (files.length === 0) continue;
+
+        let exchange = 'xt';
+        let timeframe = '5m';
+        let startTime = 0;
+        let endTime = 0;
+        const rm = id.match(/^range_([a-z0-9]+)_([a-z0-9]+)_(\d+)_(\d+)$/i);
+        if (rm) {
+          exchange = rm[1].toLowerCase();
+          timeframe = rm[2];
+          startTime = Number(rm[3]) || 0;
+          endTime = Number(rm[4]) || 0;
+        }
+        let totalCandles = 0;
+        const symbolsSet = new Set<string>();
+        for (const f of files) {
+          try {
+            const items = JSON.parse(fs.readFileSync(path.join(dirPath, f), 'utf8'));
+            if (Array.isArray(items)) {
+              for (const it of items) {
+                if (it?.symbol) symbolsSet.add(it.symbol);
+                if (it?.timeframe && !rm) timeframe = it.timeframe;
+                if (Array.isArray(it?.tuples)) totalCandles += it.tuples.length;
+              }
+            }
+          } catch {}
+        }
+        if (totalCandles === 0) continue;
+        const bytes = Math.round(totalCandles * 48);
+        const sizeFmt = bytes > 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${(bytes / 1024).toFixed(0)} KB`;
+        const stat = fs.statSync(dirPath);
+        const recovered = {
+          id,
+          name: `بازه ${exchange.toUpperCase()} ${timeframe}${startTime && endTime ? ` (${new Date(startTime).toLocaleDateString('fa-IR')} تا ${new Date(endTime).toLocaleDateString('fa-IR')})` : ''}`,
+          user_id: 'amir',
+          exchange,
+          timeframe,
+          start_time: String(startTime),
+          end_time: String(endTime),
+          symbol_count: symbolsSet.size,
+          total_candles: totalCandles,
+          symbols_list: JSON.stringify(Array.from(symbolsSet)),
+          data_size_bytes: bytes,
+          data_size_formatted: sizeFmt,
+          status: 'COMPLETED',
+          chunk_count: files.length,
+          created_at: stat.birthtime.toISOString(),
+          updated_at: stat.mtime.toISOString(),
+          source: 'local',
+        };
+        resultMap.set(id, recovered);
+        upsertLocalDatasetMeta(recovered);
+      }
+    }
+  } catch {}
+
+  return Array.from(resultMap.values()).sort(
+    (a, b) => new Date(b.updated_at || b.created_at || 0).getTime() - new Date(a.updated_at || a.created_at || 0).getTime()
+  );
+}
+
+function readLocalMlModelsStore(): { activeModelId?: string; models: ZigZagMlModel[] } {
+  try {
+    const p = getLocalMlModelsPath();
+    if (!fs.existsSync(p)) return { models: [] };
+    const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (parsed && Array.isArray(parsed.models)) {
+      return { activeModelId: parsed.activeModelId, models: parsed.models };
+    }
+    return { models: [] };
+  } catch {
+    return { models: [] };
+  }
+}
+
+function writeLocalMlModelsStore(store: { activeModelId?: string; models: ZigZagMlModel[] }): void {
+  try {
+    const p = getLocalMlModelsPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(store));
+  } catch {}
+}
+
+function upsertLocalMlModel(model: ZigZagMlModel, makeActive?: boolean): void {
+  const store = readLocalMlModelsStore();
+  const nextModels = store.models.filter((m) => m.id !== model.id);
+  nextModels.unshift(model);
+  writeLocalMlModelsStore({
+    activeModelId: makeActive ? model.id : store.activeModelId,
+    models: nextModels.slice(0, 30),
+  });
+}
+
 function invalidateDatasetCaches(datasetId: string) {
   serverDatasetCandleCache.delete(datasetId);
+  deleteLocalDatasetMeta(datasetId);
   const diskCacheDir = path.join('/tmp', 'candle_chunks', datasetId);
   try {
     if (fs.existsSync(diskCacheDir)) {
@@ -3335,7 +4046,74 @@ async function loadDatasetEntriesFromPostgres(datasetId: string, symbolsFilter?:
   return entries;
 }
 
-// Intelligent Matching of Datasets in PostgreSQL for Time Range & Coverage
+function selectBestCandidateFromList(
+  candidates: any[],
+  params: { exchange: string; timeframe: string; startTime?: number | null; endTime?: number | null; explicitDatasetId?: string | null }
+) {
+  const { exchange, timeframe, startTime, endTime, explicitDatasetId } = params;
+  if (explicitDatasetId) {
+    const exact = candidates.find((c) => c.id === explicitDatasetId && Number(c.total_candles || 0) > 0);
+    if (exact) return exact;
+  }
+
+  const filtered = candidates.filter(
+    (c) =>
+      String(c.exchange || 'xt').toLowerCase() === String(exchange || 'xt').toLowerCase() &&
+      String(c.timeframe || '5m') === String(timeframe || '5m') &&
+      (Number(c.total_candles || 0) > 0 || c.status === 'COMPLETED')
+  );
+  if (filtered.length === 0) return null;
+
+  if (!startTime || !endTime || endTime <= startTime) {
+    return filtered[0];
+  }
+
+  const reqDuration = Math.abs(endTime - startTime);
+  const ONE_DAY = 86400000;
+
+  const exactGenId = getRangeDatasetId(exchange, timeframe, startTime, endTime);
+  const exactGenMatch = filtered.find((c) => c.id === exactGenId);
+  if (exactGenMatch) return exactGenMatch;
+
+  const encompassingMatches = filtered.filter((c) => {
+    const cStart = Number(c.start_time) || 0;
+    const cEnd = Number(c.end_time) || 0;
+    if (cStart <= 0 || cEnd <= cStart) return false;
+    return cStart <= startTime + 2 * ONE_DAY && cEnd >= endTime - 5 * ONE_DAY;
+  });
+  if (encompassingMatches.length > 0) {
+    encompassingMatches.sort((a, b) => {
+      const freshA = Math.abs(Number(a.end_time || 0) - endTime);
+      const freshB = Math.abs(Number(b.end_time || 0) - endTime);
+      if (Math.abs(freshA - freshB) > 3 * ONE_DAY) return freshA - freshB;
+      return Number(b.total_candles || 0) - Number(a.total_candles || 0);
+    });
+    return encompassingMatches[0];
+  }
+
+  const overlappingCandidates = filtered.filter((c) => {
+    const cStart = Number(c.start_time) || 0;
+    const cEnd = Number(c.end_time) || 0;
+    if (cStart <= 0 || cEnd <= cStart) return false;
+    const overlapStart = Math.max(cStart, startTime);
+    const overlapEnd = Math.min(cEnd, endTime);
+    if (overlapEnd <= overlapStart) return false;
+    return overlapEnd - overlapStart >= 0.4 * reqDuration;
+  });
+  if (overlappingCandidates.length > 0) {
+    overlappingCandidates.sort((a, b) => {
+      const overlapA = Math.max(0, Math.min(Number(a.end_time || 0), endTime) - Math.max(Number(a.start_time || 0), startTime));
+      const overlapB = Math.max(0, Math.min(Number(b.end_time || 0), endTime) - Math.max(Number(b.start_time || 0), startTime));
+      if (Math.abs(overlapB - overlapA) > ONE_DAY) return overlapB - overlapA;
+      return Number(b.total_candles || 0) - Number(a.total_candles || 0);
+    });
+    return overlappingCandidates[0];
+  }
+
+  return null;
+}
+
+// Intelligent Matching of Datasets in PostgreSQL + Local Cache for Time Range & Coverage
 async function findBestMatchingDataset(params: {
   exchange: string;
   timeframe: string;
@@ -3343,107 +4121,40 @@ async function findBestMatchingDataset(params: {
   endTime?: number | null;
   explicitDatasetId?: string | null;
 }) {
-  const { exchange, timeframe, startTime, endTime, explicitDatasetId } = params;
+  const { exchange, timeframe, explicitDatasetId } = params;
 
-  // 1. If explicit dataset ID was provided, test exact match first
-  if (explicitDatasetId) {
-    const exactRes = await pool.query(`SELECT * FROM candle_datasets WHERE id = $1 LIMIT 1;`, [explicitDatasetId]);
-    if (exactRes.rows.length > 0) {
-      if (Number(exactRes.rows[0].total_candles || 0) > 0) {
-        return exactRes.rows[0];
+  const initRes = await ensureDatabaseInitialized();
+  if (initRes.success) {
+    try {
+      if (explicitDatasetId) {
+        const exactRes = await pool.query(`SELECT * FROM candle_datasets WHERE id = $1 LIMIT 1;`, [explicitDatasetId]);
+        if (exactRes.rows.length > 0) {
+          if (Number(exactRes.rows[0].total_candles || 0) > 0) {
+            return exactRes.rows[0];
+          }
+          const chunkCheck = await pool.query(`SELECT 1 FROM candle_chunks WHERE dataset_id = $1 LIMIT 1;`, [explicitDatasetId]);
+          if (chunkCheck.rows.length > 0) {
+            return exactRes.rows[0];
+          }
+        }
       }
-      const chunkCheck = await pool.query(`SELECT 1 FROM candle_chunks WHERE dataset_id = $1 LIMIT 1;`, [explicitDatasetId]);
-      if (chunkCheck.rows.length > 0) {
-        return exactRes.rows[0];
+
+      const allCandidatesRes = await pool.query(
+        `SELECT * FROM candle_datasets 
+         WHERE LOWER(exchange) = LOWER($1) AND timeframe = $2 AND (total_candles > 0 OR status = 'COMPLETED') 
+         ORDER BY total_candles DESC, updated_at DESC;`,
+        [exchange, timeframe]
+      );
+      if (allCandidatesRes.rows.length > 0) {
+        const matched = selectBestCandidateFromList(allCandidatesRes.rows, params);
+        if (matched) return matched;
       }
-    }
+    } catch {}
   }
 
-  // 2. Query all candidate datasets for this exchange & timeframe with candles > 0 or status = 'COMPLETED'
-  const allCandidatesRes = await pool.query(
-    `SELECT * FROM candle_datasets 
-     WHERE LOWER(exchange) = LOWER($1) AND timeframe = $2 AND (total_candles > 0 OR status = 'COMPLETED') 
-     ORDER BY total_candles DESC, updated_at DESC;`,
-    [exchange, timeframe]
-  );
-
-  if (allCandidatesRes.rows.length === 0) {
-    return null;
-  }
-
-  const candidates = allCandidatesRes.rows;
-
-  // If no valid startTime or endTime provided, return the top candidate
-  if (!startTime || !endTime || endTime <= startTime) {
-    return candidates[0];
-  }
-
-  const reqDuration = Math.abs(endTime - startTime);
-  const ONE_DAY = 86400000;
-
-  // Priority 1: Exact generated ID match (e.g. range_xt_5m_start_end)
-  const exactGenId = getRangeDatasetId(exchange, timeframe, startTime, endTime);
-  const exactGenMatch = candidates.find((c) => c.id === exactGenId);
-  if (exactGenMatch) return exactGenMatch;
-
-  // Priority 2: Candidates that encompass the requested range (e.g. DB has 90 days, user asked for 30 days!)
-  // If a dataset in DB already covers [startTime, endTime], it is 100% complete for the requested range.
-  const encompassingMatches = candidates.filter((c) => {
-    const cStart = Number(c.start_time) || 0;
-    const cEnd = Number(c.end_time) || 0;
-    if (cStart <= 0 || cEnd <= cStart) return false;
-    return (cStart <= startTime + 2 * ONE_DAY) && (cEnd >= endTime - 5 * ONE_DAY);
-  });
-  if (encompassingMatches.length > 0) {
-    encompassingMatches.sort((a, b) => {
-      // Prefer freshest dataset (end_time closest to endTime) and largest candle count
-      const freshA = Math.abs(Number(a.end_time || 0) - endTime);
-      const freshB = Math.abs(Number(b.end_time || 0) - endTime);
-      if (Math.abs(freshA - freshB) > 3 * ONE_DAY) {
-        return freshA - freshB;
-      }
-      return Number(b.total_candles || 0) - Number(a.total_candles || 0);
-    });
-    return encompassingMatches[0];
-  }
-
-  // Priority 3: Candidates that have significant actual time overlap with [startTime, endTime]
-  // CRITICAL FIX: If the user requests e.g. 30 days from 3 months ago, an October dataset has ZERO overlap.
-  // We MUST NOT return a dataset from a completely different date range just because its duration is 30 days!
-  const overlappingCandidates = candidates.filter((c) => {
-    const cStart = Number(c.start_time) || 0;
-    const cEnd = Number(c.end_time) || 0;
-    if (cStart <= 0 || cEnd <= cStart) return false;
-
-    // Overlap window
-    const overlapStart = Math.max(cStart, startTime);
-    const overlapEnd = Math.min(cEnd, endTime);
-    if (overlapEnd <= overlapStart) return false; // Zero overlap!
-
-    const overlapDuration = overlapEnd - overlapStart;
-    // Require at least 40% of the requested time range to overlap
-    return overlapDuration >= 0.40 * reqDuration;
-  });
-
-  if (overlappingCandidates.length > 0) {
-    overlappingCandidates.sort((a, b) => {
-      const aStart = Number(a.start_time) || 0;
-      const aEnd = Number(a.end_time) || 0;
-      const bStart = Number(b.start_time) || 0;
-      const bEnd = Number(b.end_time) || 0;
-      const overlapA = Math.max(0, Math.min(aEnd, endTime) - Math.max(aStart, startTime));
-      const overlapB = Math.max(0, Math.min(bEnd, endTime) - Math.max(bStart, startTime));
-      if (Math.abs(overlapB - overlapA) > ONE_DAY) {
-        return overlapB - overlapA; // Prefer highest actual overlap with requested range
-      }
-      return Number(b.total_candles || 0) - Number(a.total_candles || 0);
-    });
-    return overlappingCandidates[0];
-  }
-
-  // If no dataset has at least 40% overlap with the requested dates, return NULL!
-  // This correctly reports that the requested date range does NOT exist in the database!
-  return null;
+  // Fallback to local /tmp/candle_chunks cache when PostgreSQL is offline or dataset is local-only
+  const localDatasets = listLocalDatasets();
+  return selectBestCandidateFromList(localDatasets, params);
 }
 
 async function runServerBacktestCycle(params: {
@@ -3570,6 +4281,7 @@ async function runServerBacktestCycle(params: {
       optS2RsiThreshold: s2RsiThreshold,
       minEntryPivotAtr,
       optMinEntryPivotAtr: minEntryPivotAtr,
+      timeframe,
     };
 
     let backtestRes: any;
@@ -3637,6 +4349,8 @@ async function runServerBacktestCycle(params: {
   };
 
   try {
+    const dbInit = await ensureDatabaseInitialized();
+    let isDbAvailable = dbInit.success;
     let entries: ServerCandleEntry[] = [];
     let savedSymbolsCount = 0;
     let savedTotalCandles = 0;
@@ -3646,7 +4360,9 @@ async function runServerBacktestCycle(params: {
     // 1. Check if dataset already exists in RAM cache or PostgreSQL
     if (!forceRedownload) {
       serverBacktestState.stage = 'downloading';
-      serverBacktestState.progress.currentSymbol = 'بررسی داده‌های ذخیره‌شده در دیتابیس PostgreSQL...';
+      serverBacktestState.progress.currentSymbol = isDbAvailable
+        ? 'بررسی داده‌های ذخیره‌شده در دیتابیس PostgreSQL...'
+        : 'آماده‌سازی دریافت کندل‌ها از صرافی...';
 
       if (incrementalSync) {
         // When incremental sync is requested, invalidate caches so fresh missing symbols are pulled and saved
@@ -3655,13 +4371,18 @@ async function runServerBacktestCycle(params: {
       serverDatasetCandleCache.clear(); // Always avoid keeping massive decoded candle arrays in RAM alongside disk chunks
 
       if (entries.length === 0) {
-        const matchedRow = await findBestMatchingDataset({
-          exchange,
-          timeframe,
-          startTime,
-          endTime,
-          explicitDatasetId: !forceRedownload ? datasetId : null,
-        });
+        let matchedRow: any = null;
+        try {
+          matchedRow = await findBestMatchingDataset({
+            exchange,
+            timeframe,
+            startTime,
+            endTime,
+            explicitDatasetId: !forceRedownload ? datasetId : null,
+          });
+        } catch (dbLookupErr: any) {
+          console.warn('[Server Backtest] Dataset lookup warning:', dbLookupErr?.message || dbLookupErr);
+        }
         let dsRes = matchedRow ? { rows: [matchedRow] } : { rows: [] };
         if (matchedRow) {
           datasetId = matchedRow.id;
@@ -3695,11 +4416,16 @@ async function runServerBacktestCycle(params: {
                 currentSymbol: `دانلود تکمیلی ${missingSymbolsToFetch.length} نماد کسری...`,
               };
 
-              const maxChunkRes = await pool.query(
-                `SELECT COALESCE(MAX(chunk_index), 0) as max_idx FROM candle_chunks WHERE dataset_id = $1;`,
-                [datasetId]
-              );
-              let nextChunkIdx = Number(maxChunkRes.rows[0]?.max_idx || 0) + 1;
+              let nextChunkIdx = readLocalDatasetChunks(datasetId).reduce((m, c) => Math.max(m, c.chunkIndex), -1) + 1;
+              if (isDbAvailable) {
+                try {
+                  const maxChunkRes = await pool.query(
+                    `SELECT COALESCE(MAX(chunk_index), 0) as max_idx FROM candle_chunks WHERE dataset_id = $1;`,
+                    [datasetId]
+                  );
+                  nextChunkIdx = Math.max(nextChunkIdx, Number(maxChunkRes.rows[0]?.max_idx || 0) + 1);
+                } catch {}
+              }
 
               const stepMs = timeframeToMs(timeframe);
               let neededLimit = 5000;
@@ -3757,12 +4483,21 @@ async function runServerBacktestCycle(params: {
                     timeframe: e.timeframe,
                     tuples: e.candles.map((c) => [c.time, c.open, c.high, c.low, c.close, c.volume]),
                   }));
-                  await pool.query(
-                    `INSERT INTO candle_chunks (dataset_id, chunk_index, items_json, created_at)
-                     VALUES ($1, $2, $3, NOW());`,
-                    [datasetId, nextChunkIdx++, JSON.stringify(items)]
-                  );
+                  const thisIdx = nextChunkIdx++;
+                  writeLocalDatasetChunk(datasetId, thisIdx, items);
+                  if (isDbAvailable) {
+                    try {
+                      await pool.query(
+                        `INSERT INTO candle_chunks (dataset_id, chunk_index, items_json, created_at)
+                         VALUES ($1, $2, $3, NOW());`,
+                        [datasetId, thisIdx, JSON.stringify(items)]
+                      );
+                    } catch {
+                      isDbAvailable = false;
+                    }
+                  }
                 }
+                finalizeLocalDatasetCompleteFlag(datasetId, nextChunkIdx);
 
                 const newCandlesCount = appendedEntries.reduce((acc, e) => acc + e.candles.length, 0);
                 const totalCandles = Number(dsRes.rows[0].total_candles || 0) + newCandlesCount;
@@ -3770,12 +4505,24 @@ async function runServerBacktestCycle(params: {
                 const dataSizeBytes = Math.round(totalCandles * 48);
                 const dataSizeFormatted = dataSizeBytes > 1048576 ? `${(dataSizeBytes / 1048576).toFixed(1)} MB` : `${(dataSizeBytes / 1024).toFixed(0)} KB`;
 
-                await pool.query(
-                  `UPDATE candle_datasets 
-                   SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5, updated_at = NOW()
-                   WHERE id = $6;`,
-                  [mergedSymbols.length, totalCandles, JSON.stringify(mergedSymbols), dataSizeBytes, dataSizeFormatted, datasetId]
-                );
+                upsertLocalDatasetMeta({
+                  ...dsRes.rows[0],
+                  id: datasetId,
+                  symbol_count: mergedSymbols.length,
+                  total_candles: totalCandles,
+                  symbols_list: JSON.stringify(mergedSymbols),
+                  data_size_bytes: dataSizeBytes,
+                  data_size_formatted: dataSizeFormatted,
+                });
+
+                if (isDbAvailable) {
+                  await pool.query(
+                    `UPDATE candle_datasets 
+                     SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5, updated_at = NOW()
+                     WHERE id = $6;`,
+                    [mergedSymbols.length, totalCandles, JSON.stringify(mergedSymbols), dataSizeBytes, dataSizeFormatted, datasetId]
+                  ).catch(() => {});
+                }
                 dsRes.rows[0].symbol_count = mergedSymbols.length;
                 dsRes.rows[0].total_candles = totalCandles;
                 console.log(`[Server Backtest] ✅ Incremental sync saved ${appendedEntries.length} new symbols into dataset ${datasetId}.`);
@@ -3923,17 +4670,38 @@ async function runServerBacktestCycle(params: {
 
       const isFutures = exchange !== 'spot';
 
-      // Clean prior range data in PostgreSQL before fresh write
-      await pool.query(`DELETE FROM candle_chunks WHERE dataset_id = $1;`, [datasetId]);
-      await pool.query(`DELETE FROM candle_datasets WHERE id = $1;`, [datasetId]);
-
       const rangeName = `بازه ${exchange.toUpperCase()} ${timeframe} (${startTime ? new Date(startTime).toLocaleDateString('fa-IR') : 'آغاز'} تا ${endTime ? new Date(endTime).toLocaleDateString('fa-IR') : 'اکنون'})`;
-      await pool.query(
-        `INSERT INTO candle_datasets (id, name, user_id, timeframe, exchange, start_time, end_time, status, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
-         ON CONFLICT (id) DO UPDATE SET status = $8, updated_at = NOW();`,
-        [datasetId, rangeName, 'amir', timeframe, exchange, startTime ? String(startTime) : '0', endTime ? String(endTime) : '0', 'DOWNLOADING']
-      );
+      upsertLocalDatasetMeta({
+        id: datasetId,
+        name: rangeName,
+        user_id: 'amir',
+        timeframe,
+        exchange,
+        start_time: startTime ? String(startTime) : '0',
+        end_time: endTime ? String(endTime) : '0',
+        symbol_count: 0,
+        total_candles: 0,
+        symbols_list: '[]',
+        status: 'DOWNLOADING',
+      });
+
+      // Clean prior range data in PostgreSQL before fresh write (non-fatal if DB unavailable)
+      if (isDbAvailable) {
+        try {
+          await pool.query(`DELETE FROM candle_chunks WHERE dataset_id = $1;`, [datasetId]);
+          await pool.query(`DELETE FROM candle_datasets WHERE id = $1;`, [datasetId]);
+
+          await pool.query(
+            `INSERT INTO candle_datasets (id, name, user_id, timeframe, exchange, start_time, end_time, status, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+             ON CONFLICT (id) DO UPDATE SET status = $8, updated_at = NOW();`,
+            [datasetId, rangeName, 'amir', timeframe, exchange, startTime ? String(startTime) : '0', endTime ? String(endTime) : '0', 'DOWNLOADING']
+          );
+        } catch (dbInitWriteErr: any) {
+          console.warn('[Server Backtest] PostgreSQL write init skipped, running backtest with local disk chunks:', dbInitWriteErr?.message || dbInitWriteErr);
+          isDbAvailable = false;
+        }
+      }
 
       let chunkIdx = 0;
       let batchToSave: ServerCandleEntry[] = [];
@@ -3948,7 +4716,7 @@ async function runServerBacktestCycle(params: {
         neededLimit = Math.max(50, Math.ceil((endTime - startTime) / stepMs));
       }
 
-      // Thread-safe streaming batch flusher to PostgreSQL
+      // Thread-safe streaming batch flusher to local disk chunks AND PostgreSQL
       const flushBatchToDatabase = async (force: boolean = false) => {
         if (isFlushing) return;
         const currentBatchCandles = batchToSave.reduce((sum, e) => sum + e.candles.length, 0);
@@ -3968,14 +4736,6 @@ async function runServerBacktestCycle(params: {
             const toFlush = batchToSave.splice(0, sliceCount);
             if (toFlush.length === 0) break;
 
-            const items = toFlush.map((e) => ({
-              symbol: e.pair.symbol,
-              baseAsset: e.pair.baseAsset,
-              quoteAsset: e.pair.quoteAsset,
-              timeframe: e.timeframe,
-              tuples: e.candles.map((c) => [c.time, c.open, c.high, c.low, c.close, c.volume]),
-            }));
-
             for (const e of toFlush) {
               savedSymbolsCount++;
               savedTotalCandles += e.candles.length;
@@ -3990,24 +4750,54 @@ async function runServerBacktestCycle(params: {
             serverBacktestState.totalCandles = savedTotalCandles;
             serverBacktestState.dataSizeFormatted = dataSizeFormatted;
 
-            try {
-              // 1. Insert chunk
-              await pool.query(
-                `INSERT INTO candle_chunks (dataset_id, chunk_index, items_json, created_at)
-                 VALUES ($1, $2, $3, NOW());`,
-                [datasetId, chunkIdx++, JSON.stringify(items)]
-              );
+            const thisChunkIdx = chunkIdx++;
+            const items = toFlush.map((e) => ({
+              symbol: e.pair.symbol,
+              baseAsset: e.pair.baseAsset,
+              quoteAsset: e.pair.quoteAsset,
+              timeframe: e.timeframe,
+              tuples: e.candles.map((c) => [c.time, c.open, c.high, c.low, c.close, c.volume]),
+            }));
 
-              // 2. Incrementally update candle_datasets so PostgreSQL ALWAYS shows exact progress and candles count
-              await pool.query(
-                `UPDATE candle_datasets 
-                 SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
-                     status = 'DOWNLOADING', updated_at = NOW()
-                 WHERE id = $6;`,
-                [savedSymbolsCount, savedTotalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, datasetId]
-              );
-            } catch (err: any) {
-              console.warn('[Chunk & Dataset Save Error]:', err.message);
+            // Always persist chunks + metadata locally so ML training, optimizer, and range-status work even if PostgreSQL is offline
+            writeLocalDatasetChunk(datasetId, thisChunkIdx, items);
+            upsertLocalDatasetMeta({
+              id: datasetId,
+              name: rangeName,
+              timeframe,
+              exchange,
+              start_time: startTime ? String(startTime) : '0',
+              end_time: endTime ? String(endTime) : '0',
+              symbol_count: savedSymbolsCount,
+              total_candles: savedTotalCandles,
+              symbols_list: symbolsListJson,
+              data_size_bytes: dataSizeBytes,
+              data_size_formatted: dataSizeFormatted,
+              chunk_count: thisChunkIdx + 1,
+              status: 'DOWNLOADING',
+            });
+
+            if (isDbAvailable) {
+              try {
+                // 1. Insert chunk
+                await pool.query(
+                  `INSERT INTO candle_chunks (dataset_id, chunk_index, items_json, created_at)
+                   VALUES ($1, $2, $3, NOW());`,
+                  [datasetId, thisChunkIdx, JSON.stringify(items)]
+                );
+
+                // 2. Incrementally update candle_datasets so PostgreSQL ALWAYS shows exact progress and candles count
+                await pool.query(
+                  `UPDATE candle_datasets 
+                   SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
+                       status = 'DOWNLOADING', updated_at = NOW()
+                   WHERE id = $6;`,
+                  [savedSymbolsCount, savedTotalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, datasetId]
+                );
+              } catch (err: any) {
+                console.warn('[Chunk & Dataset Save Warning]:', err.message);
+                isDbAvailable = false;
+              }
             }
           }
         } finally {
@@ -4086,34 +4876,53 @@ async function runServerBacktestCycle(params: {
       serverBacktestState.totalCandles = totalCandles;
       serverBacktestState.dataSizeFormatted = dataSizeFormatted;
 
-      // Ensure dataset is marked COMPLETED in PostgreSQL with partial data so optimizer & stats work immediately
+      // Ensure dataset is marked COMPLETED in local cache AND PostgreSQL with partial data so optimizer & stats work immediately
       serverBacktestState.skippedSymbols = skippedSymbols;
-      try {
-        const resultsJson = JSON.stringify({
-          results: serverBacktestState.results,
-          allTrades: serverBacktestState.allTrades,
-          skippedSymbols: serverBacktestState.skippedSymbols,
-          requestedSymbolsCount: serverBacktestState.requestedSymbolsCount,
+      const stoppedResultsJson = JSON.stringify({
+        results: serverBacktestState.results,
+        allTrades: serverBacktestState.allTrades,
+        skippedSymbols: serverBacktestState.skippedSymbols,
+        requestedSymbolsCount: serverBacktestState.requestedSymbolsCount,
+      });
+      const localStopChunks = readLocalDatasetChunks(datasetId);
+      if (localStopChunks.length > 0) {
+        finalizeLocalDatasetCompleteFlag(datasetId, localStopChunks.length);
+        upsertLocalDatasetMeta({
+          id: datasetId,
+          symbol_count: savedSymbolsCount,
+          total_candles: totalCandles,
+          symbols_list: symbolsListJson,
+          data_size_bytes: dataSizeBytes,
+          data_size_formatted: dataSizeFormatted,
+          status: 'COMPLETED',
+          results_json: stoppedResultsJson,
+          strategy_id: strategyId,
+          strategy_config_json: JSON.stringify(cfg),
+          chunk_count: localStopChunks.length,
         });
-        if (!forceRedownload) {
-          await pool.query(
-            `UPDATE candle_datasets 
-             SET status = 'COMPLETED', results_json = $1, strategy_id = $2, strategy_config_json = $3, updated_at = NOW()
-             WHERE id = $4;`,
-            [resultsJson, strategyId, JSON.stringify(cfg), datasetId]
-          );
-        } else {
-          await pool.query(
-            `UPDATE candle_datasets 
-             SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
-                 status = 'COMPLETED', results_json = $6, strategy_id = $7, strategy_config_json = $8, updated_at = NOW()
-             WHERE id = $9;`,
-            [savedSymbolsCount, totalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, resultsJson, strategyId, JSON.stringify(cfg), datasetId]
-          );
+      }
+      if (isDbAvailable) {
+        try {
+          if (!forceRedownload) {
+            await pool.query(
+              `UPDATE candle_datasets 
+               SET status = 'COMPLETED', results_json = $1, strategy_id = $2, strategy_config_json = $3, updated_at = NOW()
+               WHERE id = $4;`,
+              [stoppedResultsJson, strategyId, JSON.stringify(cfg), datasetId]
+            );
+          } else {
+            await pool.query(
+              `UPDATE candle_datasets 
+               SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
+                   status = 'COMPLETED', results_json = $6, strategy_id = $7, strategy_config_json = $8, updated_at = NOW()
+               WHERE id = $9;`,
+              [savedSymbolsCount, totalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, stoppedResultsJson, strategyId, JSON.stringify(cfg), datasetId]
+            );
+          }
+          console.log(`[Server Backtest] ⏸️ Scan stopped gracefully by user for ${datasetId}.`);
+        } catch (err: any) {
+          console.warn('[Server Backtest] Warning saving stopped state:', err.message);
         }
-        console.log(`[Server Backtest] ⏸️ Scan stopped gracefully by user for ${datasetId}.`);
-      } catch (err: any) {
-        console.warn('[Server Backtest] Warning saving stopped state:', err.message);
       }
       return;
     }
@@ -4138,59 +4947,86 @@ async function runServerBacktestCycle(params: {
     serverBacktestState.stage = 'completed';
     serverBacktestState.isScanning = false;
 
-    // 4. Persist final results in PostgreSQL safely (non-blocking)
-    try {
-      const persistedCfg = {
-        ...cfg,
-        engineVersion: ENGINE_PARITY_VERSION,
+    const persistedCfg = {
+      ...cfg,
+      engineVersion: ENGINE_PARITY_VERSION,
+      exchange: effectiveExchange,
+      slSlippagePercent,
+      entryCommissionPercent: entryCommission,
+      exitCommissionPercent: exitCommission,
+      capital,
+      riskMode,
+      riskAmountFixed,
+      riskPercent,
+      maxCandlesToEnter,
+      noConcurrentPositions: cfg.noConcurrentPositions !== false,
+      timeStopEnabled,
+      timeStopCandles,
+      maxPositionToRiskRatio,
+      minAtrPercent,
+      optMinAtrPercent: minAtrPercent,
+      s2RsiThreshold,
+      optS2RsiThreshold: s2RsiThreshold,
+      minEntryPivotAtr,
+      optMinEntryPivotAtr: minEntryPivotAtr,
+      startTime: toMsSafe(startTime),
+      endTime: toMsSafe(endTime),
+      symbolsSignature: computeSymbolsSignature(symbols),
+    };
+    const resultsJson = JSON.stringify({
+      results: serverBacktestState.results,
+      allTrades: serverBacktestState.allTrades,
+      skippedSymbols: serverBacktestState.skippedSymbols,
+      requestedSymbolsCount: serverBacktestState.requestedSymbolsCount,
+    });
+
+    const localFinalChunks = readLocalDatasetChunks(datasetId);
+    if (localFinalChunks.length > 0) {
+      finalizeLocalDatasetCompleteFlag(datasetId, localFinalChunks.length);
+      upsertLocalDatasetMeta({
+        id: datasetId,
+        timeframe,
         exchange: effectiveExchange,
-        slSlippagePercent,
-        entryCommissionPercent: entryCommission,
-        exitCommissionPercent: exitCommission,
-        capital,
-        riskMode,
-        riskAmountFixed,
-        riskPercent,
-        maxCandlesToEnter,
-        noConcurrentPositions: cfg.noConcurrentPositions !== false,
-        timeStopEnabled,
-        timeStopCandles,
-        maxPositionToRiskRatio,
-        minAtrPercent,
-        optMinAtrPercent: minAtrPercent,
-        s2RsiThreshold,
-        optS2RsiThreshold: s2RsiThreshold,
-        minEntryPivotAtr,
-        optMinEntryPivotAtr: minEntryPivotAtr,
-        startTime: toMsSafe(startTime),
-        endTime: toMsSafe(endTime),
-        symbolsSignature: computeSymbolsSignature(symbols),
-      };
-      const resultsJson = JSON.stringify({
-        results: serverBacktestState.results,
-        allTrades: serverBacktestState.allTrades,
-        skippedSymbols: serverBacktestState.skippedSymbols,
-        requestedSymbolsCount: serverBacktestState.requestedSymbolsCount,
+        start_time: startTime ? String(startTime) : '0',
+        end_time: endTime ? String(endTime) : '0',
+        symbol_count: savedSymbolsCount,
+        total_candles: totalCandles,
+        symbols_list: symbolsListJson,
+        data_size_bytes: dataSizeBytes,
+        data_size_formatted: dataSizeFormatted,
+        status: 'COMPLETED',
+        results_json: resultsJson,
+        strategy_id: strategyId,
+        strategy_config_json: JSON.stringify(persistedCfg),
+        chunk_count: localFinalChunks.length,
       });
-      if (!forceRedownload) {
-        await pool.query(
-          `UPDATE candle_datasets 
-           SET status = 'COMPLETED', results_json = $1, strategy_id = $2, strategy_config_json = $3, updated_at = NOW()
-           WHERE id = $4;`,
-          [resultsJson, strategyId, JSON.stringify(persistedCfg), datasetId]
-        );
-      } else {
-        await pool.query(
-          `UPDATE candle_datasets 
-           SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
-               status = 'COMPLETED', results_json = $6, strategy_id = $7, strategy_config_json = $8, updated_at = NOW()
-           WHERE id = $9;`,
-          [savedSymbolsCount, totalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, resultsJson, strategyId, JSON.stringify(persistedCfg), datasetId]
-        );
+    }
+
+    // 4. Persist final results in PostgreSQL safely (non-blocking)
+    if (isDbAvailable) {
+      try {
+        if (!forceRedownload) {
+          await pool.query(
+            `UPDATE candle_datasets 
+             SET status = 'COMPLETED', results_json = $1, strategy_id = $2, strategy_config_json = $3, updated_at = NOW()
+             WHERE id = $4;`,
+            [resultsJson, strategyId, JSON.stringify(persistedCfg), datasetId]
+          );
+        } else {
+          await pool.query(
+            `UPDATE candle_datasets 
+             SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
+                 status = 'COMPLETED', results_json = $6, strategy_id = $7, strategy_config_json = $8, updated_at = NOW()
+             WHERE id = $9;`,
+            [savedSymbolsCount, totalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, resultsJson, strategyId, JSON.stringify(persistedCfg), datasetId]
+          );
+        }
+        console.log(`[Server Backtest] ✅ Completed backtest for ${datasetId} on ${serverBacktestState.results.length} pairs in PostgreSQL.`);
+      } catch (dbErr: any) {
+        console.warn(`[Server Backtest] Warning: Could not update candle_datasets status in PostgreSQL:`, dbErr.message);
       }
-      console.log(`[Server Backtest] ✅ Completed backtest for ${datasetId} on ${serverBacktestState.results.length} pairs in PostgreSQL.`);
-    } catch (dbErr: any) {
-      console.warn(`[Server Backtest] Warning: Could not update candle_datasets status in PostgreSQL:`, dbErr.message);
+    } else {
+      console.log(`[Server Backtest] ✅ Completed backtest for ${datasetId} on ${serverBacktestState.results.length} pairs (saved to local disk cache).`);
     }
   } catch (err: any) {
     console.error(`[Server Backtest] ❌ Backtest error:`, err.message);
@@ -4380,13 +5216,18 @@ async function handleRangeStatusQuery(params: {
     rawSymbols = params.symbols.split(',').map((s) => s.trim()).filter(Boolean);
   }
 
-  const matchedRow = await findBestMatchingDataset({
-    exchange,
-    timeframe,
-    startTime,
-    endTime,
-    explicitDatasetId,
-  });
+  let matchedRow: any = null;
+  try {
+    matchedRow = await findBestMatchingDataset({
+      exchange,
+      timeframe,
+      startTime,
+      endTime,
+      explicitDatasetId,
+    });
+  } catch {
+    matchedRow = null;
+  }
 
   if (!matchedRow) {
     const fallbackId = explicitDatasetId || getRangeDatasetId(exchange, timeframe, startTime, endTime);
@@ -4683,25 +5524,37 @@ app.delete('/api/backtest/range', async (req, res) => {
     const genId = getRangeDatasetId(exchange, timeframe, startTime, endTime);
     idsToDelete.add(genId);
 
-    // Also look up any matched dataset for this specific time range
-    const matched = await findBestMatchingDataset({
-      exchange,
-      timeframe,
-      startTime,
-      endTime,
-      explicitDatasetId: req.query.datasetId?.toString() || req.body?.datasetId?.toString() || null,
-    });
-    if (matched && matched.id) {
-      idsToDelete.add(matched.id);
+    const initRes = await ensureDatabaseInitialized();
+    let deletedCount = 0;
+    let dbCleared = false;
+
+    if (initRes.success) {
+      try {
+        const matched = await findBestMatchingDataset({
+          exchange,
+          timeframe,
+          startTime,
+          endTime,
+          explicitDatasetId: req.query.datasetId?.toString() || req.body?.datasetId?.toString() || null,
+        });
+        if (matched && matched.id) {
+          idsToDelete.add(matched.id);
+        }
+
+        for (const dId of idsToDelete) {
+          await pool.query(`DELETE FROM candle_chunks WHERE dataset_id = $1;`, [dId]);
+          const dsDel = await pool.query(`DELETE FROM candle_datasets WHERE id = $1;`, [dId]);
+          deletedCount += (dsDel.rowCount || 0);
+        }
+        dbCleared = true;
+      } catch (dbErr: any) {
+        console.warn('[Delete Range] PostgreSQL cleanup skipped (clearing local cache):', dbErr?.message || dbErr);
+      }
     }
 
-    let deletedCount = 0;
     for (const dId of idsToDelete) {
-      const chunkDel = await pool.query(`DELETE FROM candle_chunks WHERE dataset_id = $1;`, [dId]);
-      const dsDel = await pool.query(`DELETE FROM candle_datasets WHERE id = $1;`, [dId]);
-      deletedCount += (dsDel.rowCount || 0);
       serverDatasetCandleCache.delete(dId);
-
+      deleteLocalDatasetMeta(dId);
       try {
         const diskDir = path.join('/tmp', 'candle_chunks', dId);
         if (fs.existsSync(diskDir)) {
@@ -4710,7 +5563,7 @@ app.delete('/api/backtest/range', async (req, res) => {
       } catch {}
     }
 
-    // Always clear active serverBacktestState if it matched any deleted id or was current
+    // Always clear active serverBacktestState
     serverBacktestState.isScanning = false;
     serverBacktestState.stage = 'idle';
     serverBacktestState.results = [];
@@ -4722,7 +5575,11 @@ app.delete('/api/backtest/range', async (req, res) => {
 
     res.json({
       success: true,
-      message: `داده‌های بازه زمانی با موفقیت از دیتابیس PostgreSQL و حافظه کش حذف شدند.`,
+      dbCleared,
+      cacheCleared: true,
+      message: dbCleared
+        ? 'داده‌های بازه زمانی با موفقیت از دیتابیس PostgreSQL و حافظه کش حذف شدند.'
+        : 'حافظه کش سرور و فایل‌های موقت بازه زمانی با موفقیت پاکسازی شدند (دیتابیس PostgreSQL متصل نبود).',
       deletedIds: Array.from(idsToDelete),
       deletedCount,
     });
@@ -4734,9 +5591,23 @@ app.delete('/api/backtest/range', async (req, res) => {
 // 6.5.5.B Clear ALL Candle Datasets & Chunks from PostgreSQL and Disk Cache
 const handleClearAllCandles = async (_req: any, res: any) => {
   try {
-    await pool.query('TRUNCATE TABLE candle_chunks;');
-    const delRes = await pool.query('DELETE FROM candle_datasets;');
+    let deletedCount = 0;
+    let dbCleared = false;
+
+    const initRes = await ensureDatabaseInitialized();
+    if (initRes.success) {
+      try {
+        await pool.query('TRUNCATE TABLE candle_chunks;');
+        const delRes = await pool.query('DELETE FROM candle_datasets;');
+        deletedCount = delRes.rowCount || 0;
+        dbCleared = true;
+      } catch (dbErr: any) {
+        console.warn('[Clear All Candles] PostgreSQL cleanup warning (clearing local cache):', dbErr?.message || dbErr);
+      }
+    }
+
     serverDatasetCandleCache.clear();
+    SERVER_CANDLE_BUFFER.clear();
 
     try {
       const diskBase = path.join('/tmp', 'candle_chunks');
@@ -4756,8 +5627,12 @@ const handleClearAllCandles = async (_req: any, res: any) => {
 
     res.json({
       success: true,
-      message: 'تمام دیتای کندل‌های ذخیره‌شده در دیتابیس PostgreSQL و حافظه کش با موفقیت پاکسازی شد.',
-      deletedCount: delRes.rowCount || 0,
+      dbCleared,
+      cacheCleared: true,
+      message: dbCleared
+        ? 'تمام دیتای کندل‌های ذخیره‌شده در دیتابیس PostgreSQL و حافظه کش با موفقیت پاکسازی شد.'
+        : 'تمام حافظه کش سرور و فایل‌های موقت با موفقیت پاکسازی شد (اتصال دیتابیس PostgreSQL برقرار نبود).',
+      deletedCount,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -5272,7 +6147,18 @@ function processFilteredTrades(
 
   let effectiveTrades: any[] = [];
   if (!baseConfig.noConcurrentPositions) {
-    effectiveTrades = sorted;
+    // Enforce max 1 concurrent open trade per symbol in Multi-Position mode (matches XT futures & live scanner)
+    const lastExitBySymbol = new Map<string, number>();
+    for (const t of sorted) {
+      const symKey = (t.symbol || t.id || '').toString().toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const eTime = t.entryTime || t.timeF || 0;
+      const xTime = t.exitTime || eTime;
+      const symLastExit = lastExitBySymbol.get(symKey) || 0;
+      if (!symKey || eTime >= symLastExit) {
+        effectiveTrades.push(t);
+        if (symKey) lastExitBySymbol.set(symKey, Math.max(symLastExit, xTime));
+      }
+    }
   } else {
     let lastExitTime = 0;
     for (const t of sorted) {
@@ -5409,13 +6295,34 @@ async function ensureDatasetChunksCachedOnDisk(
     return true;
   }
 
-  const idxRes = await pool.query(
-    `SELECT chunk_index FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC;`,
-    [datasetId]
-  );
-  const allIndices: number[] = idxRes.rows.map((r: any) => Number(r.chunk_index));
+  const initRes = await ensureDatabaseInitialized();
+  if (!initRes.success) {
+    const existingLocalChunks = fs.existsSync(diskCacheDir)
+      ? fs.readdirSync(diskCacheDir).filter((f) => f.startsWith('chunk_') && f.endsWith('.json'))
+      : [];
+    return existingLocalChunks.length > 0;
+  }
+
+  let allIndices: number[] = [];
+  try {
+    const idxRes = await pool.query(
+      `SELECT chunk_index FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC;`,
+      [datasetId]
+    );
+    allIndices = idxRes.rows.map((r: any) => Number(r.chunk_index));
+  } catch {
+    const existingLocalChunks = fs.existsSync(diskCacheDir)
+      ? fs.readdirSync(diskCacheDir).filter((f) => f.startsWith('chunk_') && f.endsWith('.json'))
+      : [];
+    return existingLocalChunks.length > 0;
+  }
   const totalChunks = allIndices.length;
-  if (totalChunks === 0) return false;
+  if (totalChunks === 0) {
+    const existingLocalChunks = fs.existsSync(diskCacheDir)
+      ? fs.readdirSync(diskCacheDir).filter((f) => f.startsWith('chunk_') && f.endsWith('.json'))
+      : [];
+    return existingLocalChunks.length > 0;
+  }
 
   const targetIndices = Number.isFinite(maxChunksToLoad) ? allIndices.slice(0, maxChunksToLoad) : allIndices;
   const missingIndices: number[] = [];
@@ -5628,6 +6535,7 @@ async function streamEvaluateDatasetFromPostgres(
           candidate.minEntryPivotAtr !== undefined && candidate.minEntryPivotAtr !== null && !isNaN(Number(candidate.minEntryPivotAtr))
             ? Math.max(0, Number(candidate.minEntryPivotAtr))
             : (baseConfig.minEntryPivotAtr ?? 0),
+        timeframe: baseConfig.timeframe || serverOptimizerState.timeframe || '5m',
       };
 
       let backtestRes: any;
@@ -5775,6 +6683,7 @@ async function evaluateCombinationOnServer(
         params.minEntryPivotAtr !== undefined && params.minEntryPivotAtr !== null && !isNaN(Number(params.minEntryPivotAtr))
           ? Math.max(0, Number(params.minEntryPivotAtr))
           : (baseConfig.minEntryPivotAtr ?? 0),
+      timeframe: (baseConfig as any).timeframe || serverOptimizerState.timeframe || '5m',
     };
 
     let backtestRes: any;
@@ -5860,16 +6769,29 @@ async function runServerOptimizerLoop(
 
     let manualEval: any = null;
     if (processingDepth !== 'fast') {
-      const dsMeta = await pool.query(`SELECT strategy_id, strategy_config_json, results_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
-      if (dsMeta.rows.length > 0 && dsMeta.rows[0].results_json) {
-        let storedCfg: any = null;
-        try { storedCfg = JSON.parse(dsMeta.rows[0].strategy_config_json); } catch {}
-        if (isExactStoredConfigMatch(storedCfg, dsMeta.rows[0].strategy_id, strategyId, baseConfig, manualCandidate)) {
-          const parsedRes = JSON.parse(dsMeta.rows[0].results_json);
-          if (parsedRes.allTrades && parsedRes.allTrades.length > 0) {
-            manualEval = processFilteredTrades(parsedRes.allTrades, baseConfig, constraints);
+      try {
+        let metaRow: any = null;
+        const metaDbInit = await ensureDatabaseInitialized();
+        if (metaDbInit.success) {
+          const dsMeta = await pool.query(`SELECT strategy_id, strategy_config_json, results_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
+          if (dsMeta.rows.length > 0) metaRow = dsMeta.rows[0];
+        }
+        if (!metaRow) {
+          const localDs = listLocalDatasets().find((d) => d.id === datasetId);
+          if (localDs) metaRow = localDs;
+        }
+        if (metaRow && metaRow.results_json) {
+          let storedCfg: any = null;
+          try { storedCfg = JSON.parse(metaRow.strategy_config_json); } catch {}
+          if (isExactStoredConfigMatch(storedCfg, metaRow.strategy_id, strategyId, baseConfig, manualCandidate)) {
+            const parsedRes = JSON.parse(metaRow.results_json);
+            if (parsedRes.allTrades && parsedRes.allTrades.length > 0) {
+              manualEval = processFilteredTrades(parsedRes.allTrades, baseConfig, constraints);
+            }
           }
         }
+      } catch (metaErr: any) {
+        console.warn('[Optimizer manual cached lookup skipped]:', metaErr?.message || metaErr);
       }
     }
 
@@ -6043,72 +6965,90 @@ app.post('/api/optimizer/start', async (req, res) => {
       await sleep(50);
     }
 
-    // 1. Quick metadata validation in PostgreSQL (< 2ms) without loading 800MB chunks synchronously!
+    // 1. Quick metadata validation across PostgreSQL and local disk cache
     let targetDatasetId = datasetId;
-    const dsRes = await pool.query(
-      `SELECT id, total_candles, symbol_count FROM candle_datasets WHERE id = $1 LIMIT 1;`,
-      [datasetId]
-    );
+    const initRes = await ensureDatabaseInitialized();
+    let foundDs = false;
+    let dsMetaRow: any = null;
 
-    if (dsRes.rows.length === 0 || !dsRes.rows[0].total_candles || Number(dsRes.rows[0].total_candles) === 0) {
-      // Priority 1: Check if the user just ran an active manual backtest on the server
-      if (serverBacktestState.datasetId && serverBacktestState.datasetId !== datasetId) {
-        const backtestDs = await pool.query(
-          `SELECT id, total_candles, symbol_count FROM candle_datasets WHERE id = $1 LIMIT 1;`,
-          [serverBacktestState.datasetId]
+    if (initRes.success) {
+      try {
+        const dsRes = await pool.query(
+          `SELECT id, total_candles, symbol_count, strategy_id, strategy_config_json FROM candle_datasets WHERE id = $1 LIMIT 1;`,
+          [datasetId]
         );
-        if (backtestDs.rows.length > 0 && Number(backtestDs.rows[0].total_candles) > 0) {
-          targetDatasetId = serverBacktestState.datasetId;
-        }
-      }
-
-      // Priority 2: Check for completed dataset matching the exact exchange and timeframe
-      if (targetDatasetId === datasetId) {
-        const matchDs = await pool.query(
-          `SELECT id, total_candles, symbol_count FROM candle_datasets WHERE exchange = $1 AND timeframe = $2 AND total_candles > 0 ORDER BY updated_at DESC LIMIT 1;`,
-          [exchange, timeframe]
-        );
-        if (matchDs.rows.length > 0) {
-          targetDatasetId = matchDs.rows[0].id;
+        if (dsRes.rows.length > 0 && Number(dsRes.rows[0].total_candles || 0) > 0) {
+          foundDs = true;
+          dsMetaRow = dsRes.rows[0];
         } else {
-          // Priority 3: Fallback to any completed dataset in PostgreSQL
-          const fallbackDs = await pool.query(
-            `SELECT id, total_candles, symbol_count FROM candle_datasets WHERE total_candles > 0 ORDER BY updated_at DESC LIMIT 1;`
-          );
-          if (fallbackDs.rows.length > 0) {
-            targetDatasetId = fallbackDs.rows[0].id;
-          } else {
-            // Also check if any chunks exist for this dataset
-            const chunkCheck = await pool.query(
-              `SELECT dataset_id FROM candle_chunks WHERE dataset_id = $1 LIMIT 1;`,
-              [datasetId]
+          if (serverBacktestState.datasetId && serverBacktestState.datasetId !== datasetId) {
+            const backtestDs = await pool.query(
+              `SELECT id, total_candles, symbol_count, strategy_id, strategy_config_json FROM candle_datasets WHERE id = $1 LIMIT 1;`,
+              [serverBacktestState.datasetId]
             );
-            if (chunkCheck.rows.length === 0) {
-              return res.status(400).json({
-                success: false,
-                error: '⚠️ داده کندلی در پایگاه داده PostgreSQL یافت نشد. لطفاً ابتدا در تب اسکن دستی دکمه شروع اسکن را بزنید.',
-              });
+            if (backtestDs.rows.length > 0 && Number(backtestDs.rows[0].total_candles) > 0) {
+              targetDatasetId = serverBacktestState.datasetId;
+              foundDs = true;
+              dsMetaRow = backtestDs.rows[0];
+            }
+          }
+          if (!foundDs) {
+            const matchDs = await pool.query(
+              `SELECT id, total_candles, symbol_count, strategy_id, strategy_config_json FROM candle_datasets WHERE exchange = $1 AND timeframe = $2 AND total_candles > 0 ORDER BY updated_at DESC LIMIT 1;`,
+              [exchange, timeframe]
+            );
+            if (matchDs.rows.length > 0) {
+              targetDatasetId = matchDs.rows[0].id;
+              foundDs = true;
+              dsMetaRow = matchDs.rows[0];
+            } else {
+              const fallbackDs = await pool.query(
+                `SELECT id, total_candles, symbol_count, strategy_id, strategy_config_json FROM candle_datasets WHERE total_candles > 0 ORDER BY updated_at DESC LIMIT 1;`
+              );
+              if (fallbackDs.rows.length > 0) {
+                targetDatasetId = fallbackDs.rows[0].id;
+                foundDs = true;
+                dsMetaRow = fallbackDs.rows[0];
+              }
             }
           }
         }
+      } catch {}
+    }
+
+    if (!foundDs) {
+      const localList = listLocalDatasets();
+      const matchedLocal =
+        localList.find((d) => d.id === datasetId) ||
+        (serverBacktestState.datasetId ? localList.find((d) => d.id === serverBacktestState.datasetId) : undefined) ||
+        localList.find((d) => String(d.exchange || '').toLowerCase() === String(exchange || '').toLowerCase() && d.timeframe === timeframe) ||
+        localList[0];
+      if (matchedLocal) {
+        targetDatasetId = matchedLocal.id;
+        dsMetaRow = matchedLocal;
+        foundDs = true;
       }
+    }
+
+    if (!foundDs) {
+      return res.status(400).json({
+        success: false,
+        error: '⚠️ داده کندلی در پایگاه داده یا کش سرور یافت نشد. لطفاً ابتدا در تب اسکن دستی دکمه شروع اسکن را بزنید.',
+      });
     }
 
     const cfg = strategyConfig || {};
     let effectiveStrategyId = strategyId;
-    if (targetDatasetId) {
+    if (dsMetaRow) {
       try {
-        const dsMeta = await pool.query(`SELECT strategy_id, strategy_config_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [targetDatasetId]);
-        if (dsMeta.rows.length > 0) {
-          if (!req.body?.strategyId && dsMeta.rows[0].strategy_id) {
-            effectiveStrategyId = dsMeta.rows[0].strategy_id;
-          }
-          if (dsMeta.rows[0].strategy_config_json) {
-            const parsed = JSON.parse(dsMeta.rows[0].strategy_config_json);
-            if (!cfg.riskMode && parsed.riskMode) cfg.riskMode = parsed.riskMode;
-            if (!cfg.riskAmountFixed && parsed.riskAmountFixed) cfg.riskAmountFixed = parsed.riskAmountFixed;
-            if (!cfg.maxCandlesToEnter && parsed.maxCandlesToEnter) cfg.maxCandlesToEnter = parsed.maxCandlesToEnter;
-          }
+        if (!req.body?.strategyId && dsMetaRow.strategy_id) {
+          effectiveStrategyId = dsMetaRow.strategy_id;
+        }
+        if (dsMetaRow.strategy_config_json) {
+          const parsed = JSON.parse(dsMetaRow.strategy_config_json);
+          if (!cfg.riskMode && parsed.riskMode) cfg.riskMode = parsed.riskMode;
+          if (!cfg.riskAmountFixed && parsed.riskAmountFixed) cfg.riskAmountFixed = parsed.riskAmountFixed;
+          if (!cfg.maxCandlesToEnter && parsed.maxCandlesToEnter) cfg.maxCandlesToEnter = parsed.maxCandlesToEnter;
         }
       } catch {}
     }
@@ -6421,62 +7361,85 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
     const explicitDatasetId = req.body?.datasetId;
     let datasetId = explicitDatasetId || getRangeDatasetId(exchange, timeframe, startTime, endTime);
 
-    // 1. Resolve datasetId directly from PostgreSQL metadata (< 2ms) without memory bloat
+    // 1. Resolve datasetId from PostgreSQL metadata OR local disk cache
     let resolvedDatasetId = datasetId;
     let dsExists = false;
-    const checkDs = await pool.query(`SELECT id, strategy_id, strategy_config_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
-    if (checkDs.rows.length > 0) {
-      dsExists = true;
-    } else {
-      if (serverBacktestState.datasetId) {
-        const backtestDs = await pool.query(`SELECT id, strategy_id, strategy_config_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [serverBacktestState.datasetId]);
-        if (backtestDs.rows.length > 0) {
-          resolvedDatasetId = serverBacktestState.datasetId;
+    let resolvedMetaRow: any = null;
+    const initRes = await ensureDatabaseInitialized();
+    if (initRes.success) {
+      try {
+        const checkDs = await pool.query(`SELECT id, strategy_id, strategy_config_json, results_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
+        if (checkDs.rows.length > 0) {
           dsExists = true;
+          resolvedMetaRow = checkDs.rows[0];
+        } else {
+          if (serverBacktestState.datasetId) {
+            const backtestDs = await pool.query(`SELECT id, strategy_id, strategy_config_json, results_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [serverBacktestState.datasetId]);
+            if (backtestDs.rows.length > 0) {
+              resolvedDatasetId = serverBacktestState.datasetId;
+              dsExists = true;
+              resolvedMetaRow = backtestDs.rows[0];
+            }
+          }
+          if (!dsExists) {
+            const matchDs = await pool.query(
+              `SELECT id, strategy_id, strategy_config_json, results_json FROM candle_datasets WHERE exchange = $1 AND timeframe = $2 AND total_candles > 0 ORDER BY updated_at DESC LIMIT 1;`,
+              [exchange, timeframe]
+            );
+            if (matchDs.rows.length > 0) {
+              resolvedDatasetId = matchDs.rows[0].id;
+              dsExists = true;
+              resolvedMetaRow = matchDs.rows[0];
+            }
+          }
+          if (!dsExists) {
+            const latestDs = await pool.query(
+              `SELECT id, strategy_id, strategy_config_json, results_json FROM candle_datasets WHERE (status = 'COMPLETED' OR symbol_count > 0) AND total_candles > 0 ORDER BY updated_at DESC LIMIT 1;`
+            );
+            if (latestDs.rows.length > 0) {
+              resolvedDatasetId = latestDs.rows[0].id;
+              dsExists = true;
+              resolvedMetaRow = latestDs.rows[0];
+            }
+          }
         }
-      }
-      if (!dsExists) {
-        const matchDs = await pool.query(
-          `SELECT id, strategy_id, strategy_config_json FROM candle_datasets WHERE exchange = $1 AND timeframe = $2 AND total_candles > 0 ORDER BY updated_at DESC LIMIT 1;`,
-          [exchange, timeframe]
-        );
-        if (matchDs.rows.length > 0) {
-          resolvedDatasetId = matchDs.rows[0].id;
-          dsExists = true;
-        }
-      }
-      if (!dsExists) {
-        const latestDs = await pool.query(
-          `SELECT id, strategy_id, strategy_config_json FROM candle_datasets WHERE (status = 'COMPLETED' OR symbol_count > 0) AND total_candles > 0 ORDER BY updated_at DESC LIMIT 1;`
-        );
-        if (latestDs.rows.length > 0) {
-          resolvedDatasetId = latestDs.rows[0].id;
-          dsExists = true;
-        }
+      } catch {}
+    }
+
+    if (!dsExists) {
+      const localList = listLocalDatasets();
+      const matchedLocal =
+        localList.find((d) => d.id === datasetId) ||
+        (serverBacktestState.datasetId ? localList.find((d) => d.id === serverBacktestState.datasetId) : undefined) ||
+        localList.find((d) => String(d.exchange || '').toLowerCase() === String(exchange || '').toLowerCase() && d.timeframe === timeframe) ||
+        localList[0];
+      if (matchedLocal) {
+        resolvedDatasetId = matchedLocal.id;
+        resolvedMetaRow = matchedLocal;
+        dsExists = true;
       }
     }
 
     if (!dsExists) {
-      return res.status(400).json({ success: false, error: 'داده کندلی در دیتابیس یافت نشد.' });
+      return res.status(400).json({ success: false, error: 'داده کندلی در دیتابیس یا کش سرور یافت نشد.' });
     }
 
     datasetId = resolvedDatasetId;
     const cfg = strategyConfig || {};
     let effectiveStrategyId = strategyId;
-    try {
-      const dsMeta = await pool.query(`SELECT strategy_id, strategy_config_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
-      if (dsMeta.rows.length > 0) {
-        if (!req.body?.strategyId && dsMeta.rows[0].strategy_id) {
-          effectiveStrategyId = dsMeta.rows[0].strategy_id;
+    if (resolvedMetaRow) {
+      try {
+        if (!req.body?.strategyId && resolvedMetaRow.strategy_id) {
+          effectiveStrategyId = resolvedMetaRow.strategy_id;
         }
-        if (dsMeta.rows[0].strategy_config_json) {
-          const parsed = JSON.parse(dsMeta.rows[0].strategy_config_json);
+        if (resolvedMetaRow.strategy_config_json) {
+          const parsed = JSON.parse(resolvedMetaRow.strategy_config_json);
           if (!cfg.riskMode && parsed.riskMode) cfg.riskMode = parsed.riskMode;
           if (!cfg.riskAmountFixed && parsed.riskAmountFixed) cfg.riskAmountFixed = parsed.riskAmountFixed;
           if (!cfg.maxCandlesToEnter && parsed.maxCandlesToEnter) cfg.maxCandlesToEnter = parsed.maxCandlesToEnter;
         }
-      }
-    } catch {}
+      } catch {}
+    }
 
     const manualEntryFee = cfg.entryCommissionPercent !== undefined && cfg.entryCommissionPercent !== null ? Number(cfg.entryCommissionPercent) : 0.06;
     const manualExitFee = cfg.exitCommissionPercent !== undefined && cfg.exitCommissionPercent !== null ? Number(cfg.exitCommissionPercent) : 0.06;
@@ -6517,9 +7480,12 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
     // 2. Instant Exact Match ONLY when ALL strategy, financial, slippage, ratio, symbol, range, and engineVersion match!
     let evalRes: any = null;
     try {
-      const dsMeta = await pool.query(`SELECT strategy_id, strategy_config_json, results_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
-      if (dsMeta.rows.length > 0) {
-        const row = dsMeta.rows[0];
+      let row = resolvedMetaRow;
+      if (!row && initRes.success) {
+        const dsMeta = await pool.query(`SELECT strategy_id, strategy_config_json, results_json FROM candle_datasets WHERE id = $1 LIMIT 1;`, [datasetId]);
+        if (dsMeta.rows.length > 0) row = dsMeta.rows[0];
+      }
+      if (row) {
         let storedCfg: any = null;
         if (row.strategy_config_json) {
           try { storedCfg = JSON.parse(row.strategy_config_json); } catch {}
@@ -6602,6 +7568,10 @@ app.post('/api/optimizer/evaluate-candidate', async (req, res) => {
 // =========================================================================
 app.get('/api/test-configs', async (req, res) => {
   try {
+    const initRes = await ensureDatabaseInitialized();
+    if (!initRes.success) {
+      return res.json({ success: true, configs: [], dbConnected: false });
+    }
     const userId = (req.query.userId || 'amir').toString();
     const result = await pool.query(
       `SELECT * FROM test_configs WHERE user_id = $1 OR user_id = 'amir' ORDER BY updated_at DESC;`,
@@ -6627,12 +7597,17 @@ app.get('/api/test-configs', async (req, res) => {
     });
     res.json({ success: true, configs });
   } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
+    console.warn('[test-configs] GET fallback:', err?.message || err);
+    res.json({ success: true, configs: [], dbConnected: false });
   }
 });
 
 app.post('/api/test-configs', async (req, res) => {
   try {
+    const initRes = await ensureDatabaseInitialized();
+    if (!initRes.success) {
+      return res.status(503).json({ success: false, error: `دیتابیس PostgreSQL در دسترس نیست: ${initRes.error}` });
+    }
     const cfg = req.body || {};
     const id = cfg.id || `config_${Date.now()}`;
     const name = cfg.name || 'کانفیگ بدون نام';
@@ -6663,6 +7638,10 @@ app.post('/api/test-configs', async (req, res) => {
 
 app.delete('/api/test-configs/:id', async (req, res) => {
   try {
+    const initRes = await ensureDatabaseInitialized();
+    if (!initRes.success) {
+      return res.status(503).json({ success: false, error: `دیتابیس PostgreSQL در دسترس نیست: ${initRes.error}` });
+    }
     const id = req.params.id;
     await pool.query(`DELETE FROM test_configs WHERE id = $1;`, [id]);
     res.json({ success: true, message: 'Config deleted from PostgreSQL successfully' });
@@ -6676,6 +7655,10 @@ app.delete('/api/test-configs/:id', async (req, res) => {
 // =========================================================================
 app.get('/api/allowed-pairs', async (req, res) => {
   try {
+    const initRes = await ensureDatabaseInitialized();
+    if (!initRes.success) {
+      return res.json({ success: true, lists: [], dbConnected: false });
+    }
     const userId = (req.query.userId || 'amir').toString();
     const exchange = (req.query.exchange || 'xt').toString();
     const result = await pool.query(
@@ -6703,12 +7686,17 @@ app.get('/api/allowed-pairs', async (req, res) => {
     });
     res.json({ success: true, lists });
   } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
+    console.warn('[allowed-pairs] GET fallback:', err?.message || err);
+    res.json({ success: true, lists: [], dbConnected: false });
   }
 });
 
 app.post('/api/allowed-pairs', async (req, res) => {
   try {
+    const initRes = await ensureDatabaseInitialized();
+    if (!initRes.success) {
+      return res.status(503).json({ success: false, error: `دیتابیس PostgreSQL در دسترس نیست: ${initRes.error}` });
+    }
     const { id, userId = 'amir', exchange = 'xt', listName, name, symbols = [] } = req.body || {};
     const effectiveName = listName || name || 'پیش‌فرض';
     const safeId = id || `${userId}_${exchange}_${Date.now()}`;
@@ -6729,6 +7717,10 @@ app.post('/api/allowed-pairs', async (req, res) => {
 
 app.delete('/api/allowed-pairs/:id', async (req, res) => {
   try {
+    const initRes = await ensureDatabaseInitialized();
+    if (!initRes.success) {
+      return res.status(503).json({ success: false, error: `دیتابیس PostgreSQL در دسترس نیست: ${initRes.error}` });
+    }
     const id = req.params.id;
     await pool.query(`DELETE FROM allowed_pairs WHERE id = $1;`, [id]);
     res.json({ success: true, message: 'Allowed pairs deleted from PostgreSQL successfully' });
@@ -6907,6 +7899,126 @@ function scheduleNextAlignedScannerRun(overrideIntervalMs?: number) {
     }
   }, delayMs);
 }
+
+// Dedicated 60-second Time-Stop Guardian (closes expired XT positions promptly even between 15m/1h/4h candle boundaries)
+let isTimeStopGuardianBusy = false;
+setInterval(async () => {
+  if (isTimeStopGuardianBusy || serverScannerState.isScanning || manualStopRequested) return;
+  const cfg = serverScannerState.config;
+  if (!serverScannerState.isRunning || !cfg?.isLiveExecution || cfg?.exchange !== 'xt') return;
+
+  isTimeStopGuardianBusy = true;
+  try {
+    const [posRes, activeDbTrades] = await Promise.all([
+      requestXtApi('GET', '/future/user/v1/position/list', 'application/x-www-form-urlencoded').catch(() => null),
+      getActiveLiveTradesFromDb().catch(() => []),
+    ]);
+    if (!posRes || posRes.returnCode !== 0 || !Array.isArray(posRes.result)) return;
+
+    const openPositions = posRes.result.filter(
+      (p: any) => parsePositiveNum(p.positionSize, p.holdAmount, p.availableCloseSize, p.amount) > 0
+    );
+    if (openPositions.length === 0) return;
+
+    const activeMl = getActiveMlModel();
+    const mlTargetRR = activeMl.targetRR && activeMl.targetRR > 0
+      ? activeMl.targetRR
+      : (activeMl.slAtrMult > 0 && activeMl.tpAtrMult > 0 ? activeMl.tpAtrMult / activeMl.slAtrMult : 1.5);
+
+    let recentOrders: any[] | null = null;
+    for (const pos of openPositions) {
+      const cleanSym = (pos.symbol || '').toLowerCase().replace(/[-_]/g, '');
+      const posSide: 'LONG' | 'SHORT' = String(pos.positionSide || 'LONG').toUpperCase() === 'SHORT' ? 'SHORT' : 'LONG';
+      const entryOrderSide = posSide === 'SHORT' ? 'SELL' : 'BUY';
+
+      const dbTrade = activeDbTrades.find(
+        (d: any) =>
+          (d.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym &&
+          (!d.pos_side || String(d.pos_side).toUpperCase() === posSide)
+      );
+      const matchExec = serverScannerState.executionLogs?.find(
+        (ex: any) =>
+          ex.status !== 'FAILED' &&
+          (ex.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym &&
+          (!ex.posSide || String(ex.posSide).toUpperCase() === posSide)
+      );
+
+      let openTimeMs = dbTrade?.created_at
+        ? new Date(dbTrade.created_at).getTime()
+        : (matchExec?.timestamp || matchExec?.time ? new Date(matchExec.timestamp || matchExec.time).getTime() : 0);
+
+      let matchEntryOrd: any = null;
+      if (!openTimeMs || !Number.isFinite(openTimeMs)) {
+        if (recentOrders === null) {
+          const ordRes = await requestXtApi('GET', '/future/trade/v1/order/list-history', 'application/x-www-form-urlencoded', { limit: '150' }).catch(() => null);
+          recentOrders = Array.isArray(ordRes?.result?.items) ? ordRes.result.items : [];
+        }
+        matchEntryOrd = recentOrders.find(
+          (o: any) =>
+            (o.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym &&
+            String(o.positionSide || '').toUpperCase() === posSide &&
+            String(o.orderSide || '').toUpperCase() === entryOrderSide &&
+            String(o.state || '').toUpperCase() === 'FILLED'
+        );
+        openTimeMs = Number(matchEntryOrd?.createdTime || 0);
+      }
+
+      if (!openTimeMs || !Number.isFinite(openTimeMs)) continue;
+
+      const tf = dbTrade?.timeframe || matchExec?.timeframe || cfg.timeframe || '5m';
+      const entryP = parseFloat(pos.entryPrice || pos.openPrice || '0');
+      const slP = parseFloat(pos.triggerStopPrice || matchEntryOrd?.triggerStopPrice || dbTrade?.stop_loss || '0');
+      const tpP = parseFloat(pos.triggerProfitPrice || matchEntryOrd?.triggerProfitPrice || dbTrade?.take_profit || '0');
+      const posRR = entryP > 0 && slP > 0 && tpP > 0 && Math.abs(entryP - slP) > 0
+        ? Math.abs(tpP - entryP) / Math.abs(entryP - slP)
+        : 0;
+      const posSlPct = entryP > 0 && slP > 0 ? (Math.abs(entryP - slP) / entryP) * 100 : 0;
+
+      const isMlPos =
+        dbTrade?.strategy_name === 'strategy_4_ml_zigzag' ||
+        matchExec?.strategyName === 'strategy_4_ml_zigzag' ||
+        (!dbTrade?.strategy_name && cfg.strategyId === 'strategy_4_ml_zigzag') ||
+        (posRR > 0 && Math.abs(posRR - mlTargetRR) <= 0.12 && posSlPct >= Math.max(2.0, (activeMl.minSlPct ?? 3.0) - 0.6));
+
+      const maxTsCandles = isMlPos ? (activeMl.timeStopCandles || 144) : (cfg.timeStopCandles || 80);
+      const candlesElapsed = Math.floor((Date.now() - openTimeMs) / getTimeframeMs(tf));
+
+      if ((isMlPos || cfg.timeStopEnabled !== false) && candlesElapsed >= maxTsCandles) {
+        addServerScannerLog(
+          'trade',
+          `⏰ [نگهبان Time-Stop] معامله ${String(pos.symbol).toUpperCase()} (${posSide} • ${tf}) پس از ${candlesElapsed} کندل به سقف ${maxTsCandles} رسید؛ بستن خودکار در صرافی...`,
+          pos.symbol,
+          tf
+        );
+        const qty = parsePositiveNum(pos.positionSize, pos.holdAmount, pos.availableCloseSize, pos.amount);
+        const closeRes = await closePositionOnExchange(pos.symbol, posSide, qty, pos.profitId);
+        if (closeRes?.success) {
+          if (dbTrade?.id) {
+            await markLiveTradesClosedInDb([dbTrade.id]).catch(() => {});
+          }
+          addServerScannerLog(
+            'success',
+            `✅ [نگهبان Time-Stop] پوزیشن ${String(pos.symbol).toUpperCase()} (${posSide}) پس از ${candlesElapsed} کندل با موفقیت بسته شد.`,
+            pos.symbol,
+            tf
+          );
+        } else {
+          addServerScannerLog(
+            'warning',
+            `⚠️ [نگهبان Time-Stop] خطا در بستن ${String(pos.symbol).toUpperCase()}: ${closeRes?.error || closeRes?.message || 'نامشخص'}`,
+            pos.symbol,
+            tf
+          );
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn('[TimeStopGuardian] Warning:', err?.message);
+  } finally {
+    isTimeStopGuardianBusy = false;
+  }
+}, 60 * 1000);
+
 const serverScannerState = {
   isRunning: false,
   isScanning: false, // Concurrency lock to prevent overlapping executions
@@ -6983,10 +8095,14 @@ let manualStopRequested = false;
 let lastDbRunningCheckMs = 0;
 let dbSyncQueue: Promise<boolean> = Promise.resolve(true);
 
+let hasLoggedLiveSyncWarn = false;
+
 function syncLiveConfigToDatabase(data: PersistentLiveScannerData): Promise<boolean> {
   const writeTask = async (): Promise<boolean> => {
     try {
       if (!pool) return false;
+      const initRes = await ensureDatabaseInitialized();
+      if (!initRes.success) return false;
       await pool.query(
         `INSERT INTO live_scanner_state (id, is_running, started_at, last_run_at, total_runs_count, config_json, logs_json, execution_logs_json, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
@@ -7010,9 +8126,13 @@ function syncLiveConfigToDatabase(data: PersistentLiveScannerData): Promise<bool
           JSON.stringify(data.executionLogs || []),
         ]
       );
+      hasLoggedLiveSyncWarn = false;
       return true;
     } catch (err: any) {
-      console.warn('[ServerLiveScanner] Error syncing config to PostgreSQL:', err.message);
+      if (!hasLoggedLiveSyncWarn) {
+        hasLoggedLiveSyncWarn = true;
+        console.warn('[ServerLiveScanner] PostgreSQL config sync paused (using local disk persistence):', err.message);
+      }
       return false;
     }
   };
@@ -7027,6 +8147,8 @@ async function loadLiveConfigFromDatabase(): Promise<boolean> {
   }
   try {
     if (!pool) return false;
+    const initRes = await ensureDatabaseInitialized();
+    if (!initRes.success) return false;
     const res = await pool.query('SELECT * FROM live_scanner_state WHERE id = $1', ['current']);
     if (hasBootHydratedLiveConfig) {
       return true;
@@ -7496,31 +8618,149 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
       );
     }
 
-    // Also check any open positions on XT exchange that might not have been recorded in activeDbTrades
-    for (const pos of openXtPositions) {
+    // Also check any open positions on XT exchange that were NOT yet tracked in activeDbTrades
+    // (e.g. after switching to a new server/database or transient DB write failure):
+    // recover true open timestamp from XT /order/list-history, auto-backfill into PostgreSQL, AND enforce Time-Stop!
+    const untrackedXtPositions = openXtPositions.filter((pos: any) => {
       const cleanSym = (pos.symbol || '').toLowerCase().replace(/[-_]/g, '');
-      activePositionSymbols.add(cleanSym);
-      let alreadyMapped = false;
       for (const tradesList of activeTradesByTf.values()) {
         if (tradesList.some((tr) => (tr.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym)) {
-          alreadyMapped = true;
-          break;
+          return false;
         }
       }
-      if (!alreadyMapped) {
-        const matchExec = serverScannerState.executionLogs?.find(
-          (ex: any) =>
-            ex.status !== 'FAILED' &&
-            (ex.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym
+      return true;
+    });
+
+    let xtRecentOrdersForUntracked: any[] = [];
+    if (untrackedXtPositions.length > 0 && cfg.exchange === 'xt') {
+      try {
+        const histOrdRes = await requestXtApi('GET', '/future/trade/v1/order/list-history', 'application/x-www-form-urlencoded', { limit: '150' });
+        if (Array.isArray(histOrdRes?.result?.items)) {
+          xtRecentOrdersForUntracked = histOrdRes.result.items;
+        }
+      } catch {}
+    }
+
+    for (const pos of untrackedXtPositions) {
+      const cleanSym = (pos.symbol || '').toLowerCase().replace(/[-_]/g, '');
+      const posSide: 'LONG' | 'SHORT' = String(pos.positionSide || 'LONG').toUpperCase() === 'SHORT' ? 'SHORT' : 'LONG';
+      const entryOrderSide = posSide === 'SHORT' ? 'SELL' : 'BUY';
+      const matchExec = serverScannerState.executionLogs?.find(
+        (ex: any) =>
+          ex.status !== 'FAILED' &&
+          (ex.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym &&
+          (!ex.posSide || String(ex.posSide).toUpperCase() === posSide)
+      );
+      const matchEntryOrd = xtRecentOrdersForUntracked.find(
+        (o: any) =>
+          (o.symbol || '').toLowerCase().replace(/[-_]/g, '') === cleanSym &&
+          String(o.positionSide || '').toUpperCase() === posSide &&
+          String(o.orderSide || '').toUpperCase() === entryOrderSide &&
+          String(o.state || '').toUpperCase() === 'FILLED'
+      );
+
+      const resolvedTf = matchExec?.timeframe || cfg.timeframe || '5m';
+      const tfMs = getTimeframeMs(resolvedTf);
+      const execTsRaw = matchExec?.timestamp || matchExec?.time;
+      const entryOrdTs = Number(matchEntryOrd?.createdTime || 0);
+      const fallbackItemTs = Number(pos.openTime || pos.ctime || pos.updatedTime || 0);
+      const recoveredOpenMs = execTsRaw && Number.isFinite(new Date(execTsRaw).getTime())
+        ? new Date(execTsRaw).getTime()
+        : (entryOrdTs > 0 ? entryOrdTs : (fallbackItemTs > 0 ? fallbackItemTs : Date.now()));
+
+      const entryP = parseFloat(pos.entryPrice || pos.openPrice || matchEntryOrd?.avgPrice || '0');
+      const slP = parseFloat(pos.triggerStopPrice || matchEntryOrd?.triggerStopPrice || matchExec?.stopLoss || '0') || null;
+      const tpP = parseFloat(pos.triggerProfitPrice || matchEntryOrd?.triggerProfitPrice || matchExec?.takeProfit || '0') || null;
+      const activeMlCheck = getActiveMlModel();
+      const mlTargetRRCheck = activeMlCheck.targetRR && activeMlCheck.targetRR > 0
+        ? activeMlCheck.targetRR
+        : (activeMlCheck.slAtrMult > 0 && activeMlCheck.tpAtrMult > 0 ? activeMlCheck.tpAtrMult / activeMlCheck.slAtrMult : 1.5);
+      const posRRCheck = (entryP > 0 && slP && tpP && Math.abs(entryP - slP) > 0)
+        ? Math.abs(tpP - entryP) / Math.abs(entryP - slP)
+        : 0;
+      const posSlPctCheck = (entryP > 0 && slP) ? (Math.abs(entryP - slP) / entryP) * 100 : 0;
+      const isUntrackedMl =
+        matchExec?.strategyName === 'strategy_4_ml_zigzag' ||
+        cfg.strategyId === 'strategy_4_ml_zigzag' ||
+        (posRRCheck > 0 && Math.abs(posRRCheck - mlTargetRRCheck) <= 0.12 && posSlPctCheck >= Math.max(2.0, (activeMlCheck.minSlPct ?? 3.0) - 0.6));
+      const resolvedStratName = matchExec?.strategyName || (isUntrackedMl ? 'strategy_4_ml_zigzag' : (cfg.strategyId || 'strategy_2_next_pivot'));
+      const maxTsCandles = isUntrackedMl ? (activeMlCheck.timeStopCandles || 144) : (cfg.timeStopCandles || 80);
+      const candlesElapsed = Math.max(0, Math.floor((Date.now() - recoveredOpenMs) / tfMs));
+
+      const syntheticId = `xt_sync_${cleanSym}_${posSide}_${recoveredOpenMs}`;
+      const posQty = parsePositiveNum(pos.positionSize, pos.holdAmount, pos.availableCloseSize, pos.amount);
+
+      // Enforce Time-Stop on untracked/migrated open XT positions too!
+      if ((isUntrackedMl || cfg.timeStopEnabled !== false) && entryOrdTs > 0 && candlesElapsed >= maxTsCandles) {
+        addServerScannerLog(
+          'trade',
+          `⏰ فعال‌سازی خروج زمانی (Time-Stop بازیابی‌شده از صرافی) در تایم‌فریم ${resolvedTf}: پوزیشن ${String(pos.symbol).toUpperCase()} (${posSide}) به مدت ${candlesElapsed} کندل باز بوده (سقف: ${maxTsCandles}). بستن خودکار در صرافی...`,
+          pos.symbol,
+          resolvedTf
         );
-        const resolvedTf = matchExec?.timeframe || cfg.timeframe || '5m';
-        pushActiveTfTrade(resolvedTf, {
-          symbol: pos.symbol,
-          timeframe: resolvedTf,
-          id: pos.positionId || cleanSym,
-          amount: pos.positionSize || pos.amount || '0',
-        });
+        let closedOk = true;
+        if (cfg.exchange === 'xt' && cfg.isLiveExecution) {
+          try {
+            const closeRes = await closePositionOnExchange(pos.symbol, posSide, posQty, pos.profitId);
+            closedOk = Boolean(closeRes?.success);
+            if (!closedOk) {
+              addServerScannerLog(
+                'warning',
+                `⚠️ بستن خودکار Time-Stop برای ${String(pos.symbol).toUpperCase()} ناموفق بود (${closeRes?.error || closeRes?.message || 'خطای ناشناخته'}).`,
+                pos.symbol,
+                resolvedTf
+              );
+            }
+          } catch (closeErr: any) {
+            closedOk = false;
+            console.warn('[ServerLiveScanner] Error closing untracked position on time-stop:', closeErr.message);
+          }
+        }
+        if (closedOk) {
+          openXtSymbolsSet.delete(cleanSym);
+          activePositionSymbols.delete(cleanSym);
+          addServerScannerLog(
+            'success',
+            `✅ پوزیشن بازیابی‌شده ${String(pos.symbol).toUpperCase()} پس از ${candlesElapsed} کندل توسط Time-Stop با موفقیت بسته شد.`,
+            pos.symbol,
+            resolvedTf
+          );
+          continue;
+        }
       }
+
+      // Auto-backfill this open XT position into PostgreSQL live_trades so future cycles & UI track it cleanly
+      try {
+        await recordLiveTradeInDb({
+          id: syntheticId,
+          orderId: matchEntryOrd?.orderId ? String(matchEntryOrd.orderId) : null,
+          userId: cfg.userId || 'amir',
+          exchange: cfg.exchange || 'xt',
+          symbol: toXtSymbol(pos.symbol),
+          timeframe: resolvedTf,
+          side: entryOrderSide,
+          posSide,
+          price: entryP,
+          amount: posQty,
+          status: 'ACTIVE',
+          stopLoss: slP,
+          takeProfit: tpP,
+          riskReward: posRRCheck > 0 ? parseFloat(posRRCheck.toFixed(2)) : null,
+          strategyName: resolvedStratName,
+          createdAt: recoveredOpenMs,
+        });
+      } catch {}
+
+      activePositionSymbols.add(cleanSym);
+      pushActiveTfTrade(resolvedTf, {
+        symbol: pos.symbol,
+        timeframe: resolvedTf,
+        id: syntheticId,
+        amount: posQty,
+        pos_side: posSide,
+        strategy_name: resolvedStratName,
+        created_at: new Date(recoveredOpenMs).toISOString(),
+      });
     }
 
     const formatElapsedFa = (ms: number) => ms >= 60000
@@ -8134,6 +9374,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
               timeFa: new Date().toLocaleTimeString('fa-IR'),
               symbol: xtSymbol,
               timeframe: currentTf,
+              strategyName: cfg.strategyId,
               side: chosen.side,
               posSide: chosen.posSide,
               orderType: orderPayload.orderType,
@@ -9023,11 +10264,30 @@ function pushMlLog(msg: string) {
 
 async function hydrateActiveMlModelFromDatabase(): Promise<void> {
   try {
+    const localStore = readLocalMlModelsStore();
+    const initRes = await ensureDatabaseInitialized();
+    const isLegacyPretrained = (id?: string | null) =>
+      id === 'pretrained_xt_5m_zigzag_gbdt_v1' ||
+      id === 'pretrained_xt_5m_zigzag_gbdt_v2' ||
+      id === 'pretrained_xt_5m_zigzag_gbdt_v3';
+
+    if (!initRes.success) {
+      if (localStore.activeModelId && !isLegacyPretrained(localStore.activeModelId)) {
+        const found = localStore.models.find((m) => m.id === localStore.activeModelId);
+        if (found && Array.isArray(found.trees) && found.trees.length > 0) {
+          setActiveMlModel(found);
+          console.log(`[ML ZigZag] Hydrated active model "${found.name}" from local store.`);
+          return;
+        }
+      }
+      setActiveMlModel(PRETRAINED_XT_5M_ML_MODEL);
+      return;
+    }
     const existing = await pool.query(
       `SELECT id, is_active, model_json FROM ml_zigzag_models ORDER BY is_active DESC, created_at DESC LIMIT 30`
     );
 
-    // Always ensure the latest embedded v2 champion model exists and is up-to-date in PostgreSQL
+    // Always ensure the latest embedded champion model exists and is up-to-date in PostgreSQL
     await pool.query(
       `INSERT INTO ml_zigzag_models (id, name, exchange, timeframe, dataset_id, is_active, model_json, metrics_json, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, FALSE, $6, $7, NOW(), NOW())
@@ -9051,8 +10311,7 @@ async function hydrateActiveMlModelFromDatabase(): Promise<void> {
     const shouldPromoteDefault =
       existing.rows.length === 0 ||
       !activeRow ||
-      activeRow.id === 'pretrained_xt_5m_zigzag_gbdt_v1' ||
-      activeRow.id === 'pretrained_xt_5m_zigzag_gbdt_v2' ||
+      isLegacyPretrained(activeRow.id) ||
       activeRow.id === PRETRAINED_XT_5M_ML_MODEL.id;
 
     if (shouldPromoteDefault) {
@@ -9079,44 +10338,142 @@ async function hydrateActiveMlModelFromDatabase(): Promise<void> {
 app.get('/api/ml/active-model', async (_req, res) => {
   try {
     const activeModel = getActiveMlModel();
-    let savedModels: any[] = [];
-    let datasets: any[] = [];
-    try {
-      const mRes = await pool.query(
-        `SELECT id, name, exchange, timeframe, dataset_id, is_active, metrics_json, created_at
-         FROM ml_zigzag_models
-         ORDER BY is_active DESC, created_at DESC
-         LIMIT 30`
-      );
-      savedModels = mRes.rows.map((r: any) => ({
-        id: r.id,
-        name: r.name,
-        exchange: r.exchange || 'xt',
-        timeframe: r.timeframe || '5m',
-        datasetId: r.dataset_id || '',
-        isActive: Boolean(r.is_active),
-        metrics: r.metrics_json ? (typeof r.metrics_json === 'string' ? JSON.parse(r.metrics_json) : r.metrics_json) : null,
-        createdAt: r.created_at,
-      }));
+    const savedMap = new Map<string, any>();
+    const datasetsMap = new Map<string, any>();
+    const activeScanId = serverBacktestState.datasetId || '';
 
-      const dRes = await pool.query(
-        `SELECT cd.id, cd.name, cd.exchange, cd.timeframe, cd.symbol_count, cd.total_candles, cd.created_at,
-                (SELECT COUNT(*)::int FROM candle_chunks cc WHERE cc.dataset_id = cd.id) AS chunk_count
-         FROM candle_datasets cd
-         WHERE EXISTS (SELECT 1 FROM candle_chunks cc WHERE cc.dataset_id = cd.id)
-         ORDER BY (CASE WHEN cd.exchange = 'xt' AND cd.timeframe = '5m' THEN 0 ELSE 1 END), cd.total_candles DESC, cd.created_at DESC
-         LIMIT 20`
-      );
-      datasets = dRes.rows;
+    try {
+      const initRes = await ensureDatabaseInitialized();
+      if (initRes.success) {
+        const mRes = await pool.query(
+          `SELECT id, name, exchange, timeframe, dataset_id, is_active, metrics_json, created_at
+           FROM ml_zigzag_models
+           ORDER BY is_active DESC, created_at DESC
+           LIMIT 30`
+        );
+        for (const r of mRes.rows) {
+          savedMap.set(r.id, {
+            id: r.id,
+            name: r.name,
+            exchange: r.exchange || 'xt',
+            timeframe: r.timeframe || '5m',
+            datasetId: r.dataset_id || '',
+            isActive: r.id === activeModel.id || Boolean(r.is_active),
+            metrics: r.metrics_json ? (typeof r.metrics_json === 'string' ? JSON.parse(r.metrics_json) : r.metrics_json) : null,
+            createdAt: r.created_at,
+          });
+        }
+
+        const dRes = await pool.query(
+          `SELECT cd.id, cd.name, cd.exchange, cd.timeframe, cd.symbol_count, cd.total_candles, cd.created_at, cd.updated_at,
+                  (SELECT COUNT(*)::int FROM candle_chunks cc WHERE cc.dataset_id = cd.id) AS chunk_count
+           FROM candle_datasets cd
+           WHERE EXISTS (SELECT 1 FROM candle_chunks cc WHERE cc.dataset_id = cd.id)
+           ORDER BY (CASE WHEN cd.id = $1 THEN 0 WHEN cd.exchange = 'xt' AND cd.timeframe = '5m' THEN 1 ELSE 2 END),
+                    GREATEST(cd.updated_at, cd.created_at) DESC NULLS LAST,
+                    cd.total_candles DESC
+           LIMIT 60`,
+          [activeScanId]
+        );
+        for (const row of dRes.rows) {
+          datasetsMap.set(row.id, { ...row, source: 'postgres' });
+        }
+      }
     } catch (dbErr: any) {
       console.warn('[ML API] DB list warning:', dbErr?.message);
     }
+
+    // Merge local saved ML models + embedded pretrained model
+    const localModelsStore = readLocalMlModelsStore();
+    for (const lm of localModelsStore.models) {
+      if (!savedMap.has(lm.id)) {
+        savedMap.set(lm.id, {
+          id: lm.id,
+          name: lm.name,
+          exchange: lm.exchange || 'xt',
+          timeframe: lm.timeframe || '5m',
+          datasetId: lm.datasetId || '',
+          isActive: lm.id === activeModel.id,
+          metrics: lm.metrics || null,
+          createdAt: lm.createdAt,
+        });
+      }
+    }
+    if (!savedMap.has(PRETRAINED_XT_5M_ML_MODEL.id)) {
+      savedMap.set(PRETRAINED_XT_5M_ML_MODEL.id, {
+        id: PRETRAINED_XT_5M_ML_MODEL.id,
+        name: PRETRAINED_XT_5M_ML_MODEL.name,
+        exchange: PRETRAINED_XT_5M_ML_MODEL.exchange,
+        timeframe: PRETRAINED_XT_5M_ML_MODEL.timeframe,
+        datasetId: PRETRAINED_XT_5M_ML_MODEL.datasetId,
+        isActive: activeModel.id === PRETRAINED_XT_5M_ML_MODEL.id,
+        metrics: PRETRAINED_XT_5M_ML_MODEL.metrics,
+        createdAt: PRETRAINED_XT_5M_ML_MODEL.createdAt,
+      });
+    }
+
+    // Merge local disk datasets (/tmp/candle_chunks) so 1-month & HTF backtests ALWAYS appear even when PG is offline
+    for (const ld of listLocalDatasets()) {
+      if (!datasetsMap.has(ld.id) && Number(ld.total_candles || 0) > 0) {
+        datasetsMap.set(ld.id, {
+          id: ld.id,
+          name: ld.name,
+          exchange: ld.exchange || 'xt',
+          timeframe: ld.timeframe || '5m',
+          symbol_count: Number(ld.symbol_count || 0),
+          total_candles: Number(ld.total_candles || 0),
+          chunk_count: Number(ld.chunk_count || 1),
+          created_at: ld.created_at,
+          updated_at: ld.updated_at,
+          source: 'local',
+        });
+      }
+    }
+
+    // Expose in-memory SERVER_CANDLE_BUFFER if populated and not yet represented
+    if (SERVER_CANDLE_BUFFER.size > 0 && datasetsMap.size === 0) {
+      let bufCandles = 0;
+      let bufTf = serverBufferMetadata.timeframe || '5m';
+      for (const e of SERVER_CANDLE_BUFFER.values()) {
+        bufCandles += e.candles?.length || 0;
+        if (e.timeframe) bufTf = e.timeframe;
+      }
+      if (bufCandles > 0) {
+        datasetsMap.set('server_buffer_active', {
+          id: 'server_buffer_active',
+          name: `حافظه اسکن اخیر (${bufTf})`,
+          exchange: 'xt',
+          timeframe: bufTf,
+          symbol_count: SERVER_CANDLE_BUFFER.size,
+          total_candles: bufCandles,
+          chunk_count: Math.ceil(SERVER_CANDLE_BUFFER.size / 5),
+          created_at: serverBufferMetadata.updatedAt || new Date().toISOString(),
+          updated_at: serverBufferMetadata.updatedAt || new Date().toISOString(),
+          source: 'buffer',
+        });
+      }
+    }
+
+    const savedModels = Array.from(savedMap.values()).sort(
+      (a, b) => (b.isActive ? 1 : 0) - (a.isActive ? 1 : 0)
+    );
+    const datasets = Array.from(datasetsMap.values()).sort((a, b) => {
+      if (activeScanId) {
+        if (a.id === activeScanId) return -1;
+        if (b.id === activeScanId) return 1;
+      }
+      const tA = new Date(a.updated_at || a.created_at || 0).getTime();
+      const tB = new Date(b.updated_at || b.created_at || 0).getTime();
+      if (Math.abs(tB - tA) > 60_000) return tB - tA;
+      return Number(b.total_candles || 0) - Number(a.total_candles || 0);
+    });
 
     res.json({
       success: true,
       activeModel,
       savedModels,
       datasets,
+      activeBacktestDatasetId: activeScanId || null,
       trainingStatus: mlTrainingState,
     });
   } catch (err: any) {
@@ -9143,37 +10500,58 @@ app.post('/api/ml/activate-model', async (req, res) => {
       return res.status(400).json({ success: false, error: 'شناسه مدل نامعتبر است.' });
     }
 
+    const initRes = await ensureDatabaseInitialized();
+
     if (modelId === PRETRAINED_XT_5M_ML_MODEL.id) {
-      await pool.query(`UPDATE ml_zigzag_models SET is_active = FALSE`);
-      await pool.query(
-        `INSERT INTO ml_zigzag_models (id, name, exchange, timeframe, dataset_id, is_active, model_json, metrics_json, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, TRUE, $6, $7, NOW(), NOW())
-         ON CONFLICT (id) DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
-        [
-          PRETRAINED_XT_5M_ML_MODEL.id,
-          PRETRAINED_XT_5M_ML_MODEL.name,
-          PRETRAINED_XT_5M_ML_MODEL.exchange,
-          PRETRAINED_XT_5M_ML_MODEL.timeframe,
-          PRETRAINED_XT_5M_ML_MODEL.datasetId,
-          JSON.stringify(PRETRAINED_XT_5M_ML_MODEL),
-          JSON.stringify(PRETRAINED_XT_5M_ML_MODEL.metrics),
-        ]
-      );
+      upsertLocalMlModel(PRETRAINED_XT_5M_ML_MODEL, true);
+      if (initRes.success) {
+        try {
+          await pool.query(`UPDATE ml_zigzag_models SET is_active = FALSE`);
+          await pool.query(
+            `INSERT INTO ml_zigzag_models (id, name, exchange, timeframe, dataset_id, is_active, model_json, metrics_json, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, TRUE, $6, $7, NOW(), NOW())
+             ON CONFLICT (id) DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
+            [
+              PRETRAINED_XT_5M_ML_MODEL.id,
+              PRETRAINED_XT_5M_ML_MODEL.name,
+              PRETRAINED_XT_5M_ML_MODEL.exchange,
+              PRETRAINED_XT_5M_ML_MODEL.timeframe,
+              PRETRAINED_XT_5M_ML_MODEL.datasetId,
+              JSON.stringify(PRETRAINED_XT_5M_ML_MODEL),
+              JSON.stringify(PRETRAINED_XT_5M_ML_MODEL.metrics),
+            ]
+          );
+        } catch {}
+      }
       setActiveMlModel(PRETRAINED_XT_5M_ML_MODEL);
       return res.json({ success: true, activeModel: PRETRAINED_XT_5M_ML_MODEL });
     }
 
-    const rowRes = await pool.query(`SELECT model_json FROM ml_zigzag_models WHERE id = $1 LIMIT 1`, [modelId]);
-    if (rowRes.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'مدل مورد نظر در دیتابیس یافت نشد.' });
+    let parsed: ZigZagMlModel | null = null;
+    if (initRes.success) {
+      try {
+        const rowRes = await pool.query(`SELECT model_json FROM ml_zigzag_models WHERE id = $1 LIMIT 1`, [modelId]);
+        if (rowRes.rows.length > 0) {
+          parsed = typeof rowRes.rows[0].model_json === 'string'
+            ? JSON.parse(rowRes.rows[0].model_json)
+            : rowRes.rows[0].model_json;
+          await pool.query(`UPDATE ml_zigzag_models SET is_active = FALSE`);
+          await pool.query(`UPDATE ml_zigzag_models SET is_active = TRUE, updated_at = NOW() WHERE id = $1`, [modelId]);
+        }
+      } catch {}
     }
-    const parsed = typeof rowRes.rows[0].model_json === 'string'
-      ? JSON.parse(rowRes.rows[0].model_json)
-      : rowRes.rows[0].model_json;
-    await pool.query(`UPDATE ml_zigzag_models SET is_active = FALSE`);
-    await pool.query(`UPDATE ml_zigzag_models SET is_active = TRUE, updated_at = NOW() WHERE id = $1`, [modelId]);
-    setActiveMlModel(parsed as ZigZagMlModel);
 
+    if (!parsed) {
+      const localStore = readLocalMlModelsStore();
+      parsed = localStore.models.find((m) => m.id === modelId) || null;
+    }
+
+    if (!parsed) {
+      return res.status(404).json({ success: false, error: 'مدل مورد نظر در دیتابیس یا حافظه محلی یافت نشد.' });
+    }
+
+    upsertLocalMlModel(parsed, true);
+    setActiveMlModel(parsed);
     res.json({ success: true, activeModel: parsed });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err?.message || 'خطا در فعال‌سازی مدل' });
@@ -9187,9 +10565,21 @@ app.post('/api/ml/delete-model', async (req, res) => {
       return res.status(400).json({ success: false, error: 'مدل پیش‌فرض سیستم قابل حذف نیست.' });
     }
     const active = getActiveMlModel();
-    await pool.query(`DELETE FROM ml_zigzag_models WHERE id = $1`, [modelId]);
+    const store = readLocalMlModelsStore();
+    const filteredModels = store.models.filter((m) => m.id !== modelId);
+    const nextActiveId = active.id === modelId ? PRETRAINED_XT_5M_ML_MODEL.id : store.activeModelId;
+    writeLocalMlModelsStore({ activeModelId: nextActiveId, models: filteredModels });
+
+    const initRes = await ensureDatabaseInitialized();
+    if (initRes.success) {
+      try {
+        await pool.query(`DELETE FROM ml_zigzag_models WHERE id = $1`, [modelId]);
+        if (active.id === modelId) {
+          await pool.query(`UPDATE ml_zigzag_models SET is_active = TRUE WHERE id = $1`, [PRETRAINED_XT_5M_ML_MODEL.id]);
+        }
+      } catch {}
+    }
     if (active.id === modelId) {
-      await pool.query(`UPDATE ml_zigzag_models SET is_active = TRUE WHERE id = $1`, [PRETRAINED_XT_5M_ML_MODEL.id]);
       setActiveMlModel(PRETRAINED_XT_5M_ML_MODEL);
     }
     res.json({ success: true, activeModel: getActiveMlModel() });
@@ -9204,13 +10594,14 @@ app.post('/api/ml/train-start', async (req, res) => {
   }
 
   const body = req.body || {};
-  const datasetId: string = String(body.datasetId || 'range_xt_5m_1779074700000_1786786200000');
-  const modelName: string = String(body.modelName || `مدل XT 5m ZigZag v2 سفارشی (${new Date().toLocaleDateString('fa-IR')})`).slice(0, 90);
+  const fallbackDs = serverBacktestState.datasetId || listLocalDatasets()[0]?.id || 'server_buffer_active';
+  const datasetId: string = String(body.datasetId || fallbackDs);
+  const modelName: string = String(body.modelName || `مدل XT ZigZag v4 سفارشی (${new Date().toLocaleDateString('fa-IR')})`).slice(0, 90);
   const maxChunksToScan = Math.max(20, Math.min(1000, Number(body.maxChunks ?? 600)));
   const zigzagParams: ZigZagMlParams = {
     atrPeriod: Math.max(5, Math.min(50, Number(body.atrPeriod ?? 17))),
-    minCandles: Math.max(2, Math.min(30, Number(body.minCandles ?? 5))),
-    atrMultiplier: Math.max(0.5, Math.min(8.0, Number(body.atrMultiplier ?? 1.0))),
+    minCandles: Math.max(2, Math.min(30, Number(body.minCandles ?? 4))),
+    atrMultiplier: Math.max(0.5, Math.min(8.0, Number(body.atrMultiplier ?? 3.5))),
     minCandlesForLongLeg: Math.max(4, Math.min(40, Number(body.minCandlesForLongLeg ?? 12))),
     longLegAtrMultiplier: Math.max(4, Math.min(30, Number(body.longLegAtrMultiplier ?? 15))),
     minCandlesForBlueLeg: Math.max(2, Math.min(25, Number(body.minCandlesForBlueLeg ?? 7))),
@@ -9218,31 +10609,35 @@ app.post('/api/ml/train-start', async (req, res) => {
     maxBlueLegPercent: Math.max(50, Math.min(120, Number(body.maxBlueLegPercent ?? 95))),
     maxBreakoutAtrMultiplier: Math.max(1, Math.min(15, Number(body.maxBreakoutAtrMultiplier ?? 4))),
   };
-  const slAtrMult = Math.max(1.5, Math.min(10, Number(body.slAtrMult ?? 5)));
+  const slAtrMult = Math.max(1.5, Math.min(10, Number(body.slAtrMult ?? 5.0)));
   const minSlPct = Math.max(0.5, Math.min(12.0, Number(body.minSlPct ?? 3.5)));
   const hasExplicitRR = body.targetRR !== undefined && body.targetRR !== null && body.targetRR !== '' && !isNaN(Number(body.targetRR));
-  const rawTpAtrMult = Math.max(2.0, Math.min(40, Number(body.tpAtrMult ?? 10)));
+  const rawTpAtrMult = Math.max(2.0, Math.min(40, Number(body.tpAtrMult ?? 7.5)));
   const targetRR = hasExplicitRR
     ? Math.max(0.5, Math.min(10.0, Number(body.targetRR)))
-    : (slAtrMult > 0 ? Math.max(0.5, Math.min(10.0, rawTpAtrMult / slAtrMult)) : 2.0);
+    : (slAtrMult > 0 ? Math.max(0.5, Math.min(10.0, rawTpAtrMult / slAtrMult)) : 1.5);
   const tpAtrMult = hasExplicitRR ? Number((slAtrMult * targetRR).toFixed(2)) : rawTpAtrMult;
-  const timeStopCandles = Math.max(20, Math.min(400, Number(body.timeStopCandles ?? 288)));
+  const timeStopCandles = Math.max(20, Math.min(400, Number(body.timeStopCandles ?? 180)));
   const minAtrPct = Math.max(0.1, Math.min(2.0, Number(body.minAtrPct ?? 0.25)));
-  const minStretchPct = Math.max(0, Math.min(15.0, Number(body.minStretchPct ?? 4.0)));
-  const numTrees = Math.max(15, Math.min(80, Number(body.numTrees ?? 55)));
+  const minStretchPct = Math.max(0, Math.min(15.0, Number(body.minStretchPct ?? 0)));
+  const numTrees = Math.max(15, Math.min(120, Number(body.numTrees ?? 80)));
   const learningRate = Math.max(0.01, Math.min(0.2, Number(body.learningRate ?? 0.05)));
-  const maxDepth = Math.max(1, Math.min(4, Number(body.maxDepth ?? 2)));
-  const l2Lambda = Math.max(50, Math.min(1000, Number(body.l2Lambda ?? 240)));
-  const topPercent = Math.max(1, Math.min(20, Number(body.topPercent ?? 8)));
+  const maxDepth = Math.max(1, Math.min(4, Number(body.maxDepth ?? 3)));
+  const l2Lambda = Math.max(50, Math.min(1000, Number(body.l2Lambda ?? 400)));
+  const topPercent = Math.max(1, Math.min(20, Number(body.topPercent ?? 4)));
   const objective: 'blended' | 'expected_r' | 'win_prob' =
-    body.objective === 'expected_r' || body.objective === 'win_prob' ? body.objective : 'blended';
+    body.objective === 'expected_r' || body.objective === 'blended' || body.objective === 'win_prob'
+      ? body.objective
+      : 'win_prob';
   const sideFilter: 'BOTH' | 'BUY' | 'SELL' =
-    body.sideFilter === 'BUY' || body.sideFilter === 'SELL' ? body.sideFilter : 'BOTH';
+    body.sideFilter === 'BUY' || body.sideFilter === 'BOTH' || body.sideFilter === 'SELL'
+      ? body.sideFilter
+      : 'SELL';
   const activateAfterTrain = body.activateAfterTrain !== false;
 
   mlTrainingState.isRunning = true;
   mlTrainingState.shouldStop = false;
-  mlTrainingState.stage = 'در حال بررسی دیتاست PostgreSQL...';
+  mlTrainingState.stage = 'در حال بررسی دیتاست (PostgreSQL / کش سرور)...';
   mlTrainingState.progress = 2;
   mlTrainingState.symbolsProcessed = 0;
   mlTrainingState.totalSymbolsEstimate = 0;
@@ -9256,110 +10651,194 @@ app.post('/api/ml/train-start', async (req, res) => {
 
   res.json({ success: true, message: 'آموزش مدل در پس‌زمینه آغاز شد.' });
 
-  // Run memory-safe streaming training job in background
+  // Run memory-safe streaming training job in background (supports PostgreSQL, local disk chunks, or server buffer)
   (async () => {
     try {
-      const metaRes = await pool.query(
-        `SELECT exchange, timeframe, symbol_count FROM candle_datasets WHERE id = $1 LIMIT 1`,
-        [datasetId]
-      );
-      const exchange = metaRes.rows[0]?.exchange || 'xt';
-      const timeframe = metaRes.rows[0]?.timeframe || '5m';
+      let exchange = 'xt';
+      let timeframe = '5m';
+      let symbolCountEst = 0;
+      let useLocalChunks = false;
+      let useBuffer = false;
+      let allChunkIndices: number[] = [];
 
-      const idxRes = await pool.query(
-        `SELECT chunk_index FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC`,
-        [datasetId]
-      );
-      const allChunkIndices: number[] = idxRes.rows.map((r: any) => Number(r.chunk_index));
-      if (allChunkIndices.length === 0) {
-        throw new Error(`هیچ کندلی برای دیتاست ${datasetId} در PostgreSQL یافت نشد.`);
+      const localMeta = listLocalDatasets().find((d) => d.id === datasetId);
+      const localChunksList = readLocalDatasetChunks(datasetId);
+      const initRes = await ensureDatabaseInitialized();
+
+      if (datasetId === 'server_buffer_active' && SERVER_CANDLE_BUFFER.size > 0) {
+        useBuffer = true;
+        exchange = 'xt';
+        timeframe = serverBufferMetadata.timeframe || '5m';
+        symbolCountEst = SERVER_CANDLE_BUFFER.size;
+      } else if (initRes.success) {
+        try {
+          const metaRes = await pool.query(
+            `SELECT exchange, timeframe, symbol_count FROM candle_datasets WHERE id = $1 LIMIT 1`,
+            [datasetId]
+          );
+          if (metaRes.rows.length > 0) {
+            exchange = metaRes.rows[0].exchange || 'xt';
+            timeframe = metaRes.rows[0].timeframe || '5m';
+            symbolCountEst = Number(metaRes.rows[0].symbol_count || 0);
+          }
+          const idxRes = await pool.query(
+            `SELECT chunk_index FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC`,
+            [datasetId]
+          );
+          allChunkIndices = idxRes.rows.map((r: any) => Number(r.chunk_index));
+        } catch {}
       }
 
-      // Evenly sample chunks across the dataset to keep RAM strictly bounded (<120 MB)
-      const selectedChunks: number[] = [];
-      if (allChunkIndices.length <= maxChunksToScan) {
-        selectedChunks.push(...allChunkIndices);
-      } else {
-        const stride = allChunkIndices.length / maxChunksToScan;
-        for (let k = 0; k < maxChunksToScan; k++) {
-          selectedChunks.push(allChunkIndices[Math.floor(k * stride)]);
-        }
+      if (!useBuffer && allChunkIndices.length === 0 && localChunksList.length > 0) {
+        useLocalChunks = true;
+        exchange = localMeta?.exchange || exchange;
+        timeframe = localMeta?.timeframe || timeframe;
+        symbolCountEst = Number(localMeta?.symbol_count || 0);
+        allChunkIndices = localChunksList.map((c) => c.chunkIndex);
       }
 
-      mlTrainingState.totalSymbolsEstimate = Math.max(selectedChunks.length, Math.round((metaRes.rows[0]?.symbol_count || selectedChunks.length) * (selectedChunks.length / allChunkIndices.length)));
-      mlTrainingState.stage = 'در حال استخراج ۴۶ ویژگی علّی زیگزاگ (بدون نگاه به آینده)...';
-      pushMlLog(`تعداد ${selectedChunks.length} بسته از ${allChunkIndices.length} بسته کندل ${exchange.toUpperCase()} (${timeframe}) برای آموزش انتخاب شد.`);
+      if (!useBuffer && allChunkIndices.length === 0) {
+        throw new Error(`هیچ کندلی برای دیتاست ${datasetId} در PostgreSQL یا کش لوکال یافت نشد.`);
+      }
 
       const samples: MlTrainingSample[] = [];
       const MAX_SAMPLES = 115000;
-      const BATCH_CHUNKS = 10;
-      const excludeTail = Math.min(300, timeStopCandles + 5);
 
-      for (let b = 0; b < selectedChunks.length; b += BATCH_CHUNKS) {
-        if (mlTrainingState.shouldStop) {
-          throw new Error('آموزش توسط کاربر متوقف شد.');
-        }
-        const batch = selectedChunks.slice(b, b + BATCH_CHUNKS);
-        const chunkRows = await pool.query(
-          `SELECT items_json FROM candle_chunks WHERE dataset_id = $1 AND chunk_index = ANY($2::int[]) ORDER BY chunk_index ASC`,
-          [datasetId, batch]
-        );
-        for (const row of chunkRows.rows) {
-          if (mlTrainingState.shouldStop) break;
-          const rawItems = typeof row.items_json === 'string' ? JSON.parse(row.items_json) : row.items_json;
-          if (!Array.isArray(rawItems)) continue;
-          const items = [...rawItems].sort((a: any, b: any) =>
-            String(a?.symbol || '').localeCompare(String(b?.symbol || ''))
-          );
-          for (const item of items) {
-            mlTrainingState.symbolsProcessed++;
-            if (!Array.isArray(item.tuples) || item.tuples.length < 650) continue;
-            const symName = String(item.symbol || '');
-            const candles = item.tuples.map((t: number[]) => ({
-              time: t[0],
-              open: t[1],
-              high: t[2],
-              low: t[3],
-              close: t[4],
-              volume: t[5],
-            }));
-            const evs = extractCausalZigZagEvents(candles, zigzagParams, minAtrPct, undefined, excludeTail, minStretchPct);
-            for (const ev of evs) {
-              const side: 1 | -1 = ev.side === 'BUY' ? 1 : -1;
-              const slDist = Math.max(ev.close * (minSlPct / 100), slAtrMult * ev.atr);
-              const tpDist = slDist * targetRR;
-              const sim = simulateCausalOutcome(
-                candles,
-                ev.candleIndex,
-                side,
-                slDist,
-                tpDist,
-                timeStopCandles,
-                0.0006,
-                0.0006,
-                exchange === 'xt' ? 0.0004 : 0
-              );
-              samples.push({
-                symbol: symName,
-                time: ev.time,
-                exitTime: sim.exitTime,
-                side,
-                rMultiple: sim.rMultiple,
-                features: ev.features,
-              });
-              if (samples.length >= MAX_SAMPLES) break;
-            }
-            mlTrainingState.eventsExtracted = samples.length;
+      const processSymbolItems = (items: any[]) => {
+        for (const item of items) {
+          mlTrainingState.symbolsProcessed++;
+          if (!Array.isArray(item.tuples) || item.tuples.length < 110) continue;
+          const symName = String(item.symbol || '');
+          const candles = item.tuples.map((t: number[]) => ({
+            time: t[0],
+            open: t[1],
+            high: t[2],
+            low: t[3],
+            close: t[4],
+            volume: t[5],
+          }));
+          // Adaptive tail exclusion ensures 1-month 1h/4h datasets never zero out events while preventing label truncation on 5m
+          const excludeTail = Math.min(Math.floor(candles.length * 0.18), Math.min(200, timeStopCandles + 5));
+          const evs = extractCausalZigZagEvents(candles, zigzagParams, minAtrPct, undefined, excludeTail, minStretchPct, timeframe);
+          for (const ev of evs) {
+            const side: 1 | -1 = ev.side === 'BUY' ? 1 : -1;
+            const slDist = Math.max(ev.close * (minSlPct / 100), slAtrMult * ev.atr);
+            const tpDist = slDist * targetRR;
+            const sim = simulateCausalOutcome(
+              candles,
+              ev.candleIndex,
+              side,
+              slDist,
+              tpDist,
+              timeStopCandles,
+              0.0006,
+              0.0006,
+              exchange === 'xt' ? 0.0004 : 0
+            );
+            samples.push({
+              symbol: symName,
+              time: ev.time,
+              exitTime: sim.exitTime,
+              side,
+              rMultiple: sim.rMultiple,
+              features: ev.features,
+            });
             if (samples.length >= MAX_SAMPLES) break;
           }
+          mlTrainingState.eventsExtracted = samples.length;
           if (samples.length >= MAX_SAMPLES) break;
         }
-        const pct = Math.min(75, Math.round(5 + ((b + batch.length) / selectedChunks.length) * 70));
-        mlTrainingState.progress = pct;
-        await new Promise((r) => setImmediate(r));
-        if (samples.length >= MAX_SAMPLES) {
-          pushMlLog(`سقف ایمن حافظه (${MAX_SAMPLES.toLocaleString('fa-IR')} رویداد علّی) تکمیل شد؛ ورود به مرحله آموزش درخت‌ها...`);
-          break;
+      };
+
+      if (useBuffer) {
+        const entries = Array.from(SERVER_CANDLE_BUFFER.values()).sort((a, b) =>
+          String(a.pair.symbol).localeCompare(String(b.pair.symbol))
+        );
+        mlTrainingState.totalSymbolsEstimate = entries.length;
+        mlTrainingState.stage = 'در حال استخراج ۴۶ ویژگی علّی زیگزاگ از حافظه اسکن...';
+        pushMlLog(`شروع پردازش ${entries.length} نماد (${timeframe}) از حافظه اسکن...`);
+        for (let i = 0; i < entries.length; i++) {
+          if (mlTrainingState.shouldStop) throw new Error('آموزش توسط کاربر متوقف شد.');
+          const e = entries[i];
+          processSymbolItems([{
+            symbol: e.pair.symbol,
+            tuples: e.candles.map((c) => [c.time, c.open, c.high, c.low, c.close, c.volume]),
+          }]);
+          mlTrainingState.progress = Math.min(75, Math.round(5 + ((i + 1) / entries.length) * 70));
+          if (i % 5 === 0) await new Promise((r) => setImmediate(r));
+          if (samples.length >= MAX_SAMPLES) break;
+        }
+      } else {
+        // Evenly sample chunks across the entire symbol universe, then interleave so MAX_SAMPLES covers A-Z evenly
+        const sampledChunks: number[] = [];
+        if (allChunkIndices.length <= maxChunksToScan) {
+          sampledChunks.push(...allChunkIndices);
+        } else {
+          const stride = allChunkIndices.length / maxChunksToScan;
+          for (let k = 0; k < maxChunksToScan; k++) {
+            sampledChunks.push(allChunkIndices[Math.floor(k * stride)]);
+          }
+        }
+        const selectedChunks: number[] = [];
+        const stepInterleave = Math.max(1, Math.round(Math.sqrt(sampledChunks.length)));
+        const usedIdx = new Set<number>();
+        for (let offset = 0; offset < stepInterleave; offset++) {
+          for (let j = offset; j < sampledChunks.length; j += stepInterleave) {
+            if (!usedIdx.has(j)) {
+              usedIdx.add(j);
+              selectedChunks.push(sampledChunks[j]);
+            }
+          }
+        }
+
+        mlTrainingState.totalSymbolsEstimate = Math.max(
+          selectedChunks.length,
+          Math.round((symbolCountEst || selectedChunks.length) * (selectedChunks.length / allChunkIndices.length))
+        );
+        mlTrainingState.stage = 'در حال استخراج ۴۶ ویژگی علّی زیگزاگ (بدون نگاه به آینده)...';
+        pushMlLog(
+          `تعداد ${selectedChunks.length} بسته از ${allChunkIndices.length} بسته کندل ${exchange.toUpperCase()} (${timeframe}) [${useLocalChunks ? 'کش سرور' : 'PostgreSQL'}] انتخاب شد.`
+        );
+
+        const BATCH_CHUNKS = 10;
+        for (let b = 0; b < selectedChunks.length; b += BATCH_CHUNKS) {
+          if (mlTrainingState.shouldStop) {
+            throw new Error('آموزش توسط کاربر متوقف شد.');
+          }
+          const batch = selectedChunks.slice(b, b + BATCH_CHUNKS);
+          if (useLocalChunks) {
+            const chunks = readLocalDatasetChunks(datasetId, batch);
+            for (const ch of chunks) {
+              if (mlTrainingState.shouldStop) break;
+              const items = [...ch.items].sort((a: any, b: any) =>
+                String(a?.symbol || '').localeCompare(String(b?.symbol || ''))
+              );
+              processSymbolItems(items);
+              if (samples.length >= MAX_SAMPLES) break;
+            }
+          } else {
+            const chunkRows = await pool.query(
+              `SELECT items_json FROM candle_chunks WHERE dataset_id = $1 AND chunk_index = ANY($2::int[]) ORDER BY chunk_index ASC`,
+              [datasetId, batch]
+            );
+            for (const row of chunkRows.rows) {
+              if (mlTrainingState.shouldStop) break;
+              const rawItems = typeof row.items_json === 'string' ? JSON.parse(row.items_json) : row.items_json;
+              if (!Array.isArray(rawItems)) continue;
+              const items = [...rawItems].sort((a: any, b: any) =>
+                String(a?.symbol || '').localeCompare(String(b?.symbol || ''))
+              );
+              processSymbolItems(items);
+              if (samples.length >= MAX_SAMPLES) break;
+            }
+          }
+          const pct = Math.min(75, Math.round(5 + ((b + batch.length) / selectedChunks.length) * 70));
+          mlTrainingState.progress = pct;
+          await new Promise((r) => setImmediate(r));
+          if (samples.length >= MAX_SAMPLES) {
+            pushMlLog(`سقف ایمن حافظه (${MAX_SAMPLES.toLocaleString('fa-IR')} رویداد علّی) تکمیل شد؛ ورود به مرحله آموزش درخت‌ها...`);
+            break;
+          }
         }
       }
 
@@ -9396,26 +10875,34 @@ app.post('/api/ml/train-start', async (req, res) => {
       });
       samples.length = 0;
 
-      mlTrainingState.stage = 'در حال ذخیره‌سازی مدل در دیتابیس PostgreSQL...';
+      mlTrainingState.stage = 'در حال ذخیره‌سازی مدل...';
       mlTrainingState.progress = 94;
 
-      if (activateAfterTrain) {
-        await pool.query(`UPDATE ml_zigzag_models SET is_active = FALSE`);
+      upsertLocalMlModel(trained, activateAfterTrain);
+
+      if (initRes.success) {
+        try {
+          if (activateAfterTrain) {
+            await pool.query(`UPDATE ml_zigzag_models SET is_active = FALSE`);
+          }
+          await pool.query(
+            `INSERT INTO ml_zigzag_models (id, name, exchange, timeframe, dataset_id, is_active, model_json, metrics_json, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())`,
+            [
+              trained.id,
+              trained.name,
+              trained.exchange,
+              trained.timeframe,
+              trained.datasetId,
+              activateAfterTrain,
+              JSON.stringify(trained),
+              JSON.stringify(trained.metrics),
+            ]
+          );
+        } catch (pgSaveErr: any) {
+          pushMlLog(`مدل در حافظه محلی ذخیره شد (PostgreSQL در دسترس نبود: ${pgSaveErr?.message || ''}).`);
+        }
       }
-      await pool.query(
-        `INSERT INTO ml_zigzag_models (id, name, exchange, timeframe, dataset_id, is_active, model_json, metrics_json, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())`,
-        [
-          trained.id,
-          trained.name,
-          trained.exchange,
-          trained.timeframe,
-          trained.datasetId,
-          activateAfterTrain,
-          JSON.stringify(trained),
-          JSON.stringify(trained.metrics),
-        ]
-      );
 
       if (activateAfterTrain) {
         setActiveMlModel(trained);

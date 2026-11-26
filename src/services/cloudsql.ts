@@ -1,5 +1,5 @@
 /**
- * Remote PostgreSQL (193.142.58.196) Client Service
+ * PostgreSQL Client Service
  * Provides direct persistence, retrieval, and health status for market candle datasets.
  */
 
@@ -55,7 +55,7 @@ export async function getCloudSqlStatus(): Promise<CloudSqlStatus> {
     return {
       success: false,
       connected: false,
-      error: err?.message || 'خطا در ارتباط با سرور PostgreSQL اختصاصی (193.142.58.196)',
+      error: err?.message || 'خطا در ارتباط با دیتابیس PostgreSQL',
     };
   }
 }

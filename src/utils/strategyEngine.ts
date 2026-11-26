@@ -2,7 +2,14 @@ import { CandleData, Leg, ZigZagPoint as CryptoZigZagPoint } from '../types/cryp
 import { ZigZagLeg, ZigZagPoint, analyzeZigZagLegs, calculateATR, calculateRSI } from './indicators';
 import { StrategyConfig, StrategyMetrics, StrategyTrade, TradeStatus, BacktestMetrics, StrategyParams, Trade } from '../types/strategy.ts';
 import { calculateExactTradeSizing } from './exchangePrecision.ts';
-import { extractCausalZigZagEvents, getActiveMlModel, predictZigZagMlScore, type ZigZagMlModel } from './zigzagMlEngine.ts';
+import {
+  extractCausalZigZagEvents,
+  getActiveMlModel,
+  getTimeframeVolatilityScale,
+  normalizeMlFeaturesForTimeframe,
+  predictZigZagMlScore,
+  type ZigZagMlModel,
+} from './zigzagMlEngine.ts';
 import './pretrainedZigZagMlModel.ts';
 
 function resolveCausalZigZagParams(
@@ -1884,24 +1891,33 @@ export function runStrategy4MlBacktest(
   metrics: StrategyMetrics;
 } {
   const trades: StrategyTrade[] = [];
-  if (!candles || candles.length < 210) {
+  if (!candles || candles.length < 100) {
     return { trades: [], metrics: getEmptyMetrics(config.capital) };
   }
 
   const model = customModel || getActiveMlModel();
+  const activeTf = config.timeframe || model.timeframe || '5m';
+  const modelTf = model.timeframe || '5m';
+  const tfVolScale = getTimeframeVolatilityScale(activeTf, modelTf);
+  const tfThresholdScale = Math.max(0.6, Math.min(2.5, tfVolScale));
+
   const useProvidedAtr =
     atrValues &&
     atrValues.length === candles.length &&
     (config.atrPeriod ?? config.optAtrPeriod) === model.zigzagParams.atrPeriod;
 
-  const minStretchPct = model.minStretchPct ?? (model.version >= 3 ? 1.5 : model.version >= 2 ? 4.0 : 0);
+  const baseMinStretchPct = model.minStretchPct ?? (model.version >= 3 ? 1.5 : model.version >= 2 ? 4.0 : 0);
+  const effectiveMinStretchPct = baseMinStretchPct * tfThresholdScale;
+  const effectiveMinAtrPct = model.minAtrPct * tfThresholdScale;
+
   const events = extractCausalZigZagEvents(
     candles,
     model.zigzagParams,
-    model.minAtrPct,
+    effectiveMinAtrPct,
     useProvidedAtr ? atrValues : undefined,
     0,
-    minStretchPct
+    effectiveMinStretchPct,
+    activeTf
   );
 
   if (events.length === 0) {
@@ -1914,7 +1930,8 @@ export function runStrategy4MlBacktest(
   const maxPosRatio = config.maxPositionToRiskRatio ?? config.optMaxPositionToRiskRatio ?? 300;
   const timeStopBars = Math.max(10, Math.round(model.timeStopCandles || 144));
   const slMult = model.slAtrMult > 0 ? model.slAtrMult : 4.5;
-  const minSlPct = model.minSlPct ?? (model.version >= 3 ? 3.0 : model.version >= 2 ? 3.5 : 0);
+  const baseMinSlPct = model.minSlPct ?? (model.version >= 3 ? 3.0 : model.version >= 2 ? 3.5 : 0);
+  const minSlPct = baseMinSlPct * tfThresholdScale;
   const tpMult = model.tpAtrMult > 0 ? model.tpAtrMult : 6.75;
   const targetRR = model.targetRR && model.targetRR > 0 ? model.targetRR : tpMult / slMult;
 
@@ -1932,7 +1949,8 @@ export function runStrategy4MlBacktest(
       continue;
     }
 
-    const score = predictZigZagMlScore(model, ev.features);
+    const evalFeatures = normalizeMlFeaturesForTimeframe(ev.features, activeTf, modelTf);
+    const score = predictZigZagMlScore(model, evalFeatures);
     if (score < model.scoreThreshold) {
       continue;
     }

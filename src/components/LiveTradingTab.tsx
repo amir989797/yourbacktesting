@@ -645,10 +645,22 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
   // فرمت کوتاه ستون استراتژی
   const formatStrategyShort = (strategyName?: string, matchedName?: string): string => {
     const combined = `${strategyName || ''} ${matchedName || ''}`.toLowerCase();
-    if (combined.includes('3') || combined.includes('پیوت متوالی') || combined.includes('midpoint')) {
+    if (
+      combined.includes('strategy_4') ||
+      combined.includes('ml_zigzag') ||
+      combined.includes('zigzag ml') ||
+      combined.includes('هوش مصنوعی') ||
+      combined.includes('استراتژی ۴') ||
+      /\b4\b/.test(combined) ||
+      combined.includes(' ml') ||
+      combined.startsWith('ml')
+    ) {
+      return 'استراتژی ۴ (ML)';
+    }
+    if (combined.includes('strategy_3') || combined.includes('3') || combined.includes('پیوت متوالی') || combined.includes('midpoint')) {
       return 'استراتژی ۳';
     }
-    if (combined.includes('1') || combined.includes('breakout') || combined.includes('شکست')) {
+    if (combined.includes('strategy_1') || combined.includes('1') || combined.includes('breakout') || combined.includes('شکست')) {
       return 'استراتژی ۱';
     }
     return 'استراتژی ۲';
@@ -3306,12 +3318,16 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                     );
                     const posTimeframe = pos.timeframe || matchedTrade?.timeframe || tradeTimeframe || '5m';
 
+                    const posStrategyRaw = (pos as any).strategyName || matchedTrade?.strategy_name || selectedStrategy;
+                    const posStrategyLabel = formatStrategyShort(posStrategyRaw, matchedTrade?.strategy_name);
+                    const isPosStrategy4 = posStrategyLabel.includes('۴');
+
                     const openTimeMs = pos.openTimeMs || (matchedTrade?.created_at ? new Date(matchedTrade.created_at).getTime() : Date.now());
                     const tfMs = getTimeframeMsHelper(posTimeframe);
                     const candlesElapsed = pos.candlesElapsed !== undefined ? pos.candlesElapsed : Math.max(0, Math.floor((Date.now() - openTimeMs) / tfMs));
-                    const maxTimeStopCandles = pos.maxTimeStopCandles || timeStopCandles || 80;
+                    const maxTimeStopCandles = pos.maxTimeStopCandles || (isPosStrategy4 ? (activeMlModelSummary?.timeStopCandles || 144) : (timeStopCandles || 80));
                     const candlesRemaining = pos.candlesRemaining !== undefined ? pos.candlesRemaining : Math.max(0, maxTimeStopCandles - candlesElapsed);
-                    const isTimeStopActive = pos.timeStopEnabled !== false && timeStopEnabled;
+                    const isTimeStopActive = isPosStrategy4 || pos.timeStopEnabled === true || (pos.timeStopEnabled !== false && timeStopEnabled);
 
                     const effectiveCoinQty = pos.coinQty && pos.coinQty > 0
                       ? pos.coinQty
@@ -3345,9 +3361,18 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                           <span className="group-hover:text-amber-300 transition-colors">{fromXtSymbol(pos.symbol)}</span>
                         </td>
                         <td className="py-2.5 px-3 text-center">
-                          <span className="px-2 py-0.5 rounded-md font-mono text-[10px] font-bold bg-cyan-950/80 text-cyan-300 border border-cyan-500/40 shadow-xs">
-                            {posTimeframe}
-                          </span>
+                          <div className="inline-flex flex-col items-center gap-0.5">
+                            <span className="px-2 py-0.5 rounded-md font-mono text-[10px] font-bold bg-cyan-950/80 text-cyan-300 border border-cyan-500/40 shadow-xs">
+                              {posTimeframe}
+                            </span>
+                            <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold font-sans border ${
+                              isPosStrategy4
+                                ? 'bg-violet-950/80 text-violet-300 border-violet-500/40'
+                                : 'bg-slate-900/80 text-slate-300 border-slate-700/60'
+                            }`}>
+                              {posStrategyLabel}
+                            </span>
+                          </div>
                         </td>
                         <td className="py-2.5 px-3 text-center">
                           <span
@@ -3406,13 +3431,15 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                           {isTimeStopActive ? (
                             <div className="inline-flex flex-col items-center">
                               <span className={`px-2 py-0.5 rounded-md font-mono text-[11px] font-bold border shadow-xs ${
-                                candlesRemaining <= 10
-                                  ? 'bg-rose-950/80 text-rose-300 border-rose-500/60 animate-pulse'
-                                  : candlesRemaining <= 30
-                                    ? 'bg-amber-950/80 text-amber-300 border-amber-500/40'
-                                    : 'bg-[#141d2c] text-cyan-300 border-cyan-500/30'
+                                candlesRemaining === 0
+                                  ? 'bg-rose-900/90 text-rose-200 border-rose-400 animate-pulse'
+                                  : candlesRemaining <= 10
+                                    ? 'bg-rose-950/80 text-rose-300 border-rose-500/60 animate-pulse'
+                                    : candlesRemaining <= 30
+                                      ? 'bg-amber-950/80 text-amber-300 border-amber-500/40'
+                                      : 'bg-[#141d2c] text-cyan-300 border-cyan-500/30'
                               }`}>
-                                {candlesRemaining} کندل مانده
+                                {candlesRemaining === 0 ? 'منقضی (بستن خودکار)' : `${candlesRemaining} کندل مانده`}
                               </span>
                               <span className="text-[9px] text-gray-400 font-mono mt-0.5">
                                 ({candlesElapsed} از {maxTimeStopCandles} کندل)
@@ -3923,9 +3950,19 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
                           })()}
                         </td>
                         <td className="py-2.5 px-3 text-center">
-                          <span className="px-2 py-0.5 rounded-md text-[10px] font-bold font-sans bg-cyan-950/70 text-cyan-300 border border-cyan-500/30">
-                            {formatStrategyShort(order.strategyName, matchedDb?.strategy_name)}
-                          </span>
+                          {(() => {
+                            const stratLabel = formatStrategyShort(order.strategyName, matchedDb?.strategy_name);
+                            const isS4 = stratLabel.includes('۴');
+                            return (
+                              <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold font-sans border ${
+                                isS4
+                                  ? 'bg-violet-950/80 text-violet-300 border-violet-500/40'
+                                  : 'bg-cyan-950/70 text-cyan-300 border-cyan-500/30'
+                              }`}>
+                                {stratLabel}
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td className="py-2.5 px-3 text-white font-bold">${formatPrice(order.price)}</td>
                         <td className="py-2.5 px-3 text-emerald-400">${order.takeProfitPrice ? formatPrice(order.takeProfitPrice) : '---'}</td>

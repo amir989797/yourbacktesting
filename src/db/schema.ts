@@ -105,6 +105,7 @@ export const liveTrades = pgTable('live_trades', {
   status: text('status').notNull().default('NEW'), // 'SUCCESS' | 'FILLED' | 'ACTIVE' | 'FAILED' | 'CANCELED' | 'CLOSED'
   stopLoss: doublePrecision('stop_loss'),
   takeProfit: doublePrecision('take_profit'),
+  riskReward: doublePrecision('risk_reward'),
   realizedPnl: doublePrecision('realized_pnl').default(0),
   strategyName: text('strategy_name'),
   payloadJson: text('payload_json'),
@@ -131,4 +132,32 @@ export const allowedPairs = pgTable('allowed_pairs', {
 }, (table) => [
   index('idx_allowed_pairs_user_exchange').on(table.userId, table.exchange),
 ]);
+
+// 8. Live Scanner Persistent State
+export const liveScannerState = pgTable('live_scanner_state', {
+  id: text('id').primaryKey().default('current'),
+  isRunning: boolean('is_running').default(false),
+  startedAt: timestamp('started_at'),
+  lastRunAt: timestamp('last_run_at'),
+  totalRunsCount: integer('total_runs_count').default(0),
+  configJson: text('config_json'),
+  logsJson: text('logs_json'),
+  executionLogsJson: text('execution_logs_json'),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// 9. Trained ZigZag ML Models
+export const mlZigzagModels = pgTable('ml_zigzag_models', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  exchange: text('exchange').default('xt'),
+  timeframe: text('timeframe').default('5m'),
+  datasetId: text('dataset_id'),
+  isActive: boolean('is_active').default(false),
+  modelJson: text('model_json').notNull(),
+  metricsJson: text('metrics_json'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
 

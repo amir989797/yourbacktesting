@@ -95,14 +95,17 @@ export const SaveCandleModal: React.FC<SaveCandleModalProps> = ({
               </div>
             </div>
 
-            {/* وضعیت و سلامت سرور اختصاصی PostgreSQL */}
+            {/* وضعیت و سلامت دیتابیس PostgreSQL */}
             <div className="p-2.5 rounded-xl bg-cyan-950/40 border border-cyan-500/30 flex items-center justify-between text-[11px]">
               <div className="flex items-center gap-1.5 text-cyan-300">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span>سرور اختصاصی PostgreSQL (193.142.58.196): <strong>متصل و آماده</strong></span>
+                <span className={`w-2 h-2 rounded-full ${cloudSqlStatus?.connected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
+                <span>
+                  دیتابیس PostgreSQL{cloudSqlStatus?.serverHost ? ` (${cloudSqlStatus.serverHost})` : ''}:{' '}
+                  <strong>{cloudSqlStatus?.connected ? 'متصل و آماده' : 'در دسترس نیست'}</strong>
+                </span>
               </div>
               <div className="text-gray-300 font-mono text-[10px]">
-                حجم دیتابیس: <span className="text-emerald-300 font-bold">{cloudSqlStatus?.dbSize || '89 MB'}</span>
+                حجم دیتابیس: <span className="text-emerald-300 font-bold">{cloudSqlStatus?.dbSize || '—'}</span>
               </div>
             </div>
 

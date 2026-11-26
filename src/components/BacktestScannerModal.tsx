@@ -1641,7 +1641,29 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     let conflictGroupsCount = 0;
 
     if (!noConcurrentPositions) {
-      accepted.push(...sorted);
+      // در حالت چند‌پوزیشن، بین ارزهای مختلف همزمانی مجاز است؛ اما روی یک نماد یکسان همزمان بیش از ۱ پوزیشن باز نمی‌شود
+      const lastExitBySymbol = new Map<string, number>();
+      for (const t of sorted) {
+        const symKey = ((t as any).symbol || t.id || '').toString().toUpperCase().replace(/[^A-Z0-9]/g, '');
+        const eTime = t.entryTime || t.timeF || 0;
+        const xTime = t.exitTime || eTime;
+        const symLastExit = lastExitBySymbol.get(symKey) || 0;
+        if (!symKey || eTime >= symLastExit) {
+          accepted.push(t);
+          if (symKey) lastExitBySymbol.set(symKey, Math.max(symLastExit, xTime));
+        } else {
+          conflictGroupsCount++;
+          rejected.push({
+            symbol: (t as any).symbol || 'USDT',
+            direction: t.direction,
+            entryTime: eTime,
+            exitTime: xTime,
+            score: (t as any).score || 0,
+            competingSymbol: (t as any).symbol || symKey,
+            reason: 'تداخل همزمان روی همین نماد در حالت چند‌پوزیشن',
+          });
+        }
+      }
     } else {
       let lastExitTime = 0;
       let currentActiveTrade: StrategyTrade | null = null;
@@ -3058,6 +3080,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         minAtrPercent: params.minAtrPercent !== undefined ? params.minAtrPercent : optMinAtrPercent,
         s2RsiThreshold: params.s2RsiThreshold !== undefined ? params.s2RsiThreshold : optS2RsiThreshold,
         minEntryPivotAtr: params.minEntryPivotAtr !== undefined ? params.minEntryPivotAtr : optMinEntryPivotAtr,
+        timeframe,
       };
 
       let res;
@@ -4369,6 +4392,8 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         {activeTab === 'ml' && (
           <div className="flex-1 overflow-y-auto p-4 sm:p-5 bg-[#0b0e14]">
             <MlStrategyTab
+              activeDatasetId={rangeStatus?.datasetId || activeSessionDatasetId}
+              refreshTrigger={`${isScanning}-${results.length}-${allCollectedTrades.length}`}
               onApplyMlStrategyToScanner={(model: ZigZagMlModel) => {
                 setActiveMlModel(model);
                 setSelectedStrategyId('strategy_4_ml_zigzag');

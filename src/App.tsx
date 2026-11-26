@@ -331,6 +331,7 @@ export default function App() {
       blueLegAtrMultiplier: zigzagSettings.blueLegAtrMultiplier,
       maxBlueLegPercent: zigzagSettings.maxBlueLegPercent,
       maxBreakoutAtrMultiplier: zigzagSettings.maxBreakoutAtrMultiplier,
+      timeframe,
     };
     return runStrategyBacktest(
       candles,
@@ -348,6 +349,7 @@ export default function App() {
     strategyConfig,
     atrMetrics.atrValues,
     zigzagSettings,
+    timeframe,
     mlModelVersion,
   ]);
 

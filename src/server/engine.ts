@@ -267,6 +267,7 @@ export function evaluateSymbolForLiveSignal(params: {
         : 0,
     disableCapitalCompounding: true,
     symbol,
+    timeframe: config.timeframe,
   };
 
   // Run Strategy 1, Strategy 2, Strategy 3, or Strategy 4 (ML ZigZag) Backtest Engine on closed candles

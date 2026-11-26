@@ -5,7 +5,7 @@ export default defineConfig({
   out: './drizzle',
   dialect: 'postgresql',
   dbCredentials: {
-    url: process.env.DATABASE_URL || 'postgresql://admin:x3Yuxl6T89GaWF0y1R@193.142.58.196:5432/crypto_strategy_lab',
+    url: process.env.DATABASE_URL || '',
     ssl: false,
   },
 });

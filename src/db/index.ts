@@ -5,18 +5,41 @@ import crypto from 'crypto';
 import * as schema from './schema.ts';
 
 export function hashPassword(password: string, salt: string): string {
-  return crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
+  return `scrypt:${crypto.scryptSync(password, salt, 64).toString('hex')}`;
 }
 
-const DEFAULT_FALLBACK_PG_URL =
-  'postgresql://admin:x3Yuxl6T89GaWF0y1R@193.142.58.196:5432/crypto_strategy_lab';
+export function verifyPasswordHash(password: string, salt: string, expectedHash: string): boolean {
+  try {
+    if (!password || !salt || !expectedHash) return false;
+    if (expectedHash.startsWith('scrypt:')) {
+      const expectedHex = expectedHash.slice('scrypt:'.length);
+      const expectedBuf = Buffer.from(expectedHex, 'hex');
+      const computedBuf = crypto.scryptSync(password, salt, 64);
+      if (expectedBuf.length !== computedBuf.length) return false;
+      return crypto.timingSafeEqual(computedBuf, expectedBuf);
+    }
+    // Backward compatibility for existing PostgreSQL users hashed with PBKDF2
+    const expectedBuf = Buffer.from(expectedHash, 'hex');
+    const computedBuf = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512');
+    if (expectedBuf.length !== computedBuf.length) return false;
+    return crypto.timingSafeEqual(computedBuf, expectedBuf);
+  } catch {
+    return false;
+  }
+}
 
-export let PG_CONNECTION_STRING =
-  process.env.DATABASE_URL?.trim() || DEFAULT_FALLBACK_PG_URL;
+export let PG_CONNECTION_STRING = process.env.DATABASE_URL?.trim() || '';
+
+export function isDatabaseConfigured(): boolean {
+  return Boolean(PG_CONNECTION_STRING);
+}
 
 export let dbFallbackWarning: string | null = null;
 
 export function parseDbHostPort(connStr: string): { host: string; port: number } {
+  if (!connStr) {
+    return { host: 'unconfigured', port: 5432 };
+  }
   try {
     const u = new URL(connStr);
     return { host: u.hostname || 'localhost', port: Number(u.port) || 5432 };
@@ -43,7 +66,7 @@ function buildPgPool(connectionString: string): Pool {
     connectionString,
     ssl: false,
     max: 20,
-    connectionTimeoutMillis: 15000,
+    connectionTimeoutMillis: 4000,
     idleTimeoutMillis: 20000,
     statement_timeout: 30000,
     query_timeout: 30000,
@@ -58,13 +81,21 @@ function buildPgPool(connectionString: string): Pool {
 }
 
 export const createPool = () => {
+  const latestUrl = process.env.DATABASE_URL?.trim() || '';
+  if (latestUrl && latestUrl !== PG_CONNECTION_STRING) {
+    PG_CONNECTION_STRING = latestUrl;
+    if (global._postgresPool) {
+      global._postgresPool.end().catch(() => {});
+      global._postgresPool = undefined;
+    }
+  }
   if (!global._postgresPool) {
     global._postgresPool = buildPgPool(PG_CONNECTION_STRING);
   }
   return global._postgresPool;
 };
 
-// Proxy ensures Drizzle `db` and direct `pool` imports always target the active pool even after failover
+// Proxy ensures Drizzle `db` and direct `pool` imports always target the active pool
 export const pool: Pool = new Proxy({} as Pool, {
   get(_target, prop) {
     const active = createPool() as any;
@@ -76,36 +107,10 @@ export const pool: Pool = new Proxy({} as Pool, {
 export const db = drizzle(pool, { schema });
 
 async function connectWithFailover() {
-  try {
-    return await createPool().connect();
-  } catch (err: any) {
-    const msg = String(err?.message || '').toLowerCase();
-    const isUnreachable =
-      err?.code === 'ECONNREFUSED' ||
-      err?.code === 'ENOTFOUND' ||
-      err?.code === 'ETIMEDOUT' ||
-      msg.includes('econnrefused') ||
-      msg.includes('enotfound') ||
-      msg.includes('timeout');
-
-    const primary = parseDbHostPort(PG_CONNECTION_STRING);
-    const isLocalPrimary =
-      primary.host === 'localhost' || primary.host === '127.0.0.1' || primary.host === '::1';
-
-    if (isUnreachable && !isLocalPrimary && PG_CONNECTION_STRING !== DEFAULT_FALLBACK_PG_URL) {
-      const fb = parseDbHostPort(DEFAULT_FALLBACK_PG_URL);
-      dbFallbackWarning = `Primary DATABASE_URL (${primary.host}:${primary.port}) was unreachable (${err.message}); automatically switched to ${fb.host}:${fb.port}.`;
-      console.warn(`[PostgreSQL] ⚠️ ${dbFallbackWarning}`);
-      const deadPool = global._postgresPool;
-      PG_CONNECTION_STRING = DEFAULT_FALLBACK_PG_URL;
-      global._postgresPool = buildPgPool(PG_CONNECTION_STRING);
-      if (deadPool) {
-        deadPool.end().catch(() => {});
-      }
-      return await global._postgresPool.connect();
-    }
-    throw err;
+  if (!PG_CONNECTION_STRING) {
+    throw new Error('DATABASE_URL is not configured');
   }
+  return await createPool().connect();
 }
 
 /**
@@ -140,6 +145,9 @@ export async function withDbRetry<T>(fn: () => Promise<T>, retries = 2, delayMs 
 
 let dbSchemaReady = false;
 let dbInitInFlight: Promise<{ success: boolean; tablesCreated: string[]; error?: string }> | null = null;
+let lastDbInitFailAt = 0;
+let lastDbInitError = '';
+const DB_INIT_FAIL_COOLDOWN_MS = 10000;
 
 /**
  * Ensures PostgreSQL schema is initialized (single-flight & auto-retried if boot init failed).
@@ -147,8 +155,14 @@ let dbInitInFlight: Promise<{ success: boolean; tablesCreated: string[]; error?:
 export async function ensureDatabaseInitialized(
   force = false
 ): Promise<{ success: boolean; tablesCreated: string[]; error?: string }> {
+  if (!PG_CONNECTION_STRING) {
+    return { success: false, tablesCreated: [], error: 'DATABASE_URL is not configured' };
+  }
   if (dbSchemaReady && !force) {
     return { success: true, tablesCreated: ['already_initialized'] };
+  }
+  if (!force && lastDbInitFailAt > 0 && Date.now() - lastDbInitFailAt < DB_INIT_FAIL_COOLDOWN_MS) {
+    return { success: false, tablesCreated: [], error: lastDbInitError || 'Database connection unavailable' };
   }
   if (dbInitInFlight && !force) {
     return dbInitInFlight;
@@ -157,6 +171,11 @@ export async function ensureDatabaseInitialized(
     .then((res) => {
       if (res.success) {
         dbSchemaReady = true;
+        lastDbInitFailAt = 0;
+        lastDbInitError = '';
+      } else {
+        lastDbInitFailAt = Date.now();
+        lastDbInitError = res.error || 'Database connection failed';
       }
       return res;
     })
@@ -171,11 +190,14 @@ export async function ensureDatabaseInitialized(
  * Auto-initialize all 9 application tables and indexes on server startup or first request
  */
 export async function initDatabase(): Promise<{ success: boolean; tablesCreated: string[]; error?: string }> {
+  if (!PG_CONNECTION_STRING) {
+    return { success: false, tablesCreated: [], error: 'DATABASE_URL is not configured' };
+  }
   let client;
   try {
     client = await connectWithFailover();
   } catch (err: any) {
-    console.error('[PostgreSQL] ❌ Database connection failed during init:', err.message);
+    console.warn('[PostgreSQL] Database unavailable during init:', err.message);
     return { success: false, tablesCreated: [], error: err.message };
   }
   try {
@@ -257,18 +279,21 @@ export async function initDatabase(): Promise<{ success: boolean; tablesCreated:
       CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_unique ON users(username);
     `);
 
-    // Ensure initial admin user 'amir' exists in PostgreSQL
-    const existingUser = await client.query(`SELECT * FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1;`, ['amir']);
-    if (existingUser.rows.length === 0) {
-      const salt = crypto.randomBytes(16).toString('hex');
-      const hash = hashPassword('!#@Amir', salt);
-      await client.query(
-        `INSERT INTO users (uid, username, password_hash, salt, role, display_name, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
-         ON CONFLICT (username) DO NOTHING;`,
-        ['user_amir', 'amir', hash, salt, 'admin', 'Amir (مدیر سیستم)']
-      );
-      console.log('[PostgreSQL] 👤 Initial admin user amir verified in PostgreSQL.');
+    // Seed initial admin user 'amir' only if adminpass environment variable is explicitly configured
+    const envAdminPass = (process.env.adminpass || '').trim();
+    if (envAdminPass) {
+      const existingUser = await client.query(`SELECT id FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1;`, ['amir']);
+      if (existingUser.rows.length === 0) {
+        const salt = crypto.randomBytes(16).toString('hex');
+        const hash = hashPassword(envAdminPass, salt);
+        await client.query(
+          `INSERT INTO users (uid, username, password_hash, salt, role, display_name, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+           ON CONFLICT (username) DO NOTHING;`,
+          ['user_amir', 'amir', hash, salt, 'admin', 'Amir (مدیر سیستم)']
+        );
+        console.log('[PostgreSQL] 👤 Initial admin user amir provisioned from environment secret.');
+      }
     }
 
     // 2. Market Candle Datasets Metadata
@@ -539,17 +564,23 @@ export async function recordLiveTradeInDb(trade: {
   payloadJson?: string | null;
   responseJson?: string | null;
   errorMessage?: string | null;
+  createdAt?: Date | number | string | null;
 }) {
-  const client = await pool.connect();
+  const initRes = await ensureDatabaseInitialized();
+  if (!initRes.success) return;
+  let client: any = null;
   try {
+    client = await pool.connect();
     const slDist = (trade.price && trade.stopLoss) ? Math.abs(trade.price - trade.stopLoss) : 0;
     const tpDist = (trade.price && trade.takeProfit) ? Math.abs(trade.takeProfit - trade.price) : 0;
     const effectiveRR = trade.riskReward || (slDist > 0 ? parseFloat((tpDist / slDist).toFixed(2)) : null);
+    const createdAtDate = trade.createdAt ? new Date(trade.createdAt) : new Date();
+    const validCreatedAt = Number.isFinite(createdAtDate.getTime()) ? createdAtDate : new Date();
 
     await client.query(
       `INSERT INTO live_trades (
         id, order_id, user_id, exchange, symbol, timeframe, side, pos_side, price, amount, status, stop_loss, take_profit, risk_reward, realized_pnl, strategy_name, payload_json, response_json, error_message, created_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW())
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
       ON CONFLICT (id) DO UPDATE SET
         order_id = COALESCE(EXCLUDED.order_id, live_trades.order_id),
         timeframe = COALESCE(EXCLUDED.timeframe, live_trades.timeframe),
@@ -558,6 +589,7 @@ export async function recordLiveTradeInDb(trade: {
         take_profit = COALESCE(EXCLUDED.take_profit, live_trades.take_profit),
         risk_reward = COALESCE(EXCLUDED.risk_reward, live_trades.risk_reward),
         realized_pnl = COALESCE(EXCLUDED.realized_pnl, live_trades.realized_pnl),
+        strategy_name = COALESCE(EXCLUDED.strategy_name, live_trades.strategy_name),
         response_json = COALESCE(EXCLUDED.response_json, live_trades.response_json),
         error_message = COALESCE(EXCLUDED.error_message, live_trades.error_message);`,
       [
@@ -580,12 +612,13 @@ export async function recordLiveTradeInDb(trade: {
         trade.payloadJson || null,
         trade.responseJson || null,
         trade.errorMessage || null,
+        validCreatedAt,
       ]
     );
   } catch (err: any) {
-    console.error('[PostgreSQL] ❌ Error in recordLiveTradeInDb:', err.message);
+    console.warn('[PostgreSQL] Warning in recordLiveTradeInDb:', err.message);
   } finally {
-    client.release();
+    client?.release();
   }
 }
 
@@ -593,17 +626,20 @@ export async function recordLiveTradeInDb(trade: {
  * Returns all currently ACTIVE trades from PostgreSQL
  */
 export async function getActiveLiveTradesFromDb(): Promise<any[]> {
-  const client = await pool.connect();
+  const initRes = await ensureDatabaseInitialized();
+  if (!initRes.success) return [];
+  let client: any = null;
   try {
+    client = await pool.connect();
     const res = await client.query(
       `SELECT * FROM live_trades WHERE status = 'ACTIVE' ORDER BY created_at DESC;`
     );
     return res.rows || [];
   } catch (err: any) {
-    console.error('[PostgreSQL] ❌ Error in getActiveLiveTradesFromDb:', err.message);
+    console.warn('[PostgreSQL] Warning in getActiveLiveTradesFromDb:', err.message);
     return [];
   } finally {
-    client.release();
+    client?.release();
   }
 }
 
@@ -612,16 +648,19 @@ export async function getActiveLiveTradesFromDb(): Promise<any[]> {
  */
 export async function markLiveTradesClosedInDb(tradeIds: string[]) {
   if (!tradeIds || tradeIds.length === 0) return;
-  const client = await pool.connect();
+  const initRes = await ensureDatabaseInitialized();
+  if (!initRes.success) return;
+  let client: any = null;
   try {
+    client = await pool.connect();
     await client.query(
       `UPDATE live_trades SET status = 'CLOSED' WHERE id = ANY($1::text[]);`,
       [tradeIds]
     );
   } catch (err: any) {
-    console.error('[PostgreSQL] ❌ Error in markLiveTradesClosedInDb:', err.message);
+    console.warn('[PostgreSQL] Warning in markLiveTradesClosedInDb:', err.message);
   } finally {
-    client.release();
+    client?.release();
   }
 }
 
@@ -629,18 +668,21 @@ export async function markLiveTradesClosedInDb(tradeIds: string[]) {
  * Returns recent live trades from PostgreSQL
  */
 export async function getAllLiveTradesFromDb(limit: number = 50): Promise<any[]> {
-  const client = await pool.connect();
+  const initRes = await ensureDatabaseInitialized();
+  if (!initRes.success) return [];
+  let client: any = null;
   try {
+    client = await pool.connect();
     const res = await client.query(
       `SELECT * FROM live_trades ORDER BY created_at DESC LIMIT $1;`,
       [limit]
     );
     return res.rows || [];
   } catch (err: any) {
-    console.error('[PostgreSQL] ❌ Error in getAllLiveTradesFromDb:', err.message);
+    console.warn('[PostgreSQL] Warning in getAllLiveTradesFromDb:', err.message);
     return [];
   } finally {
-    client.release();
+    client?.release();
   }
 }
 
