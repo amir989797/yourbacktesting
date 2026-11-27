@@ -10269,7 +10269,8 @@ async function hydrateActiveMlModelFromDatabase(): Promise<void> {
     const isLegacyPretrained = (id?: string | null) =>
       id === 'pretrained_xt_5m_zigzag_gbdt_v1' ||
       id === 'pretrained_xt_5m_zigzag_gbdt_v2' ||
-      id === 'pretrained_xt_5m_zigzag_gbdt_v3';
+      id === 'pretrained_xt_5m_zigzag_gbdt_v3' ||
+      id === 'pretrained_xt_5m_zigzag_gbdt_v4';
 
     if (!initRes.success) {
       if (localStore.activeModelId && !isLegacyPretrained(localStore.activeModelId)) {
@@ -10596,8 +10597,8 @@ app.post('/api/ml/train-start', async (req, res) => {
   const body = req.body || {};
   const fallbackDs = serverBacktestState.datasetId || listLocalDatasets()[0]?.id || 'server_buffer_active';
   const datasetId: string = String(body.datasetId || fallbackDs);
-  const modelName: string = String(body.modelName || `مدل XT ZigZag v4 سفارشی (${new Date().toLocaleDateString('fa-IR')})`).slice(0, 90);
-  const maxChunksToScan = Math.max(20, Math.min(1000, Number(body.maxChunks ?? 600)));
+  const modelName: string = String(body.modelName || `مدل XT ZigZag v5 دوجهته (${new Date().toLocaleDateString('fa-IR')})`).slice(0, 90);
+  const maxChunksToScan = Math.max(20, Math.min(1000, Number(body.maxChunks ?? 1000)));
   const zigzagParams: ZigZagMlParams = {
     atrPeriod: Math.max(5, Math.min(50, Number(body.atrPeriod ?? 17))),
     minCandles: Math.max(2, Math.min(30, Number(body.minCandles ?? 4))),
@@ -10617,22 +10618,20 @@ app.post('/api/ml/train-start', async (req, res) => {
     ? Math.max(0.5, Math.min(10.0, Number(body.targetRR)))
     : (slAtrMult > 0 ? Math.max(0.5, Math.min(10.0, rawTpAtrMult / slAtrMult)) : 1.5);
   const tpAtrMult = hasExplicitRR ? Number((slAtrMult * targetRR).toFixed(2)) : rawTpAtrMult;
-  const timeStopCandles = Math.max(20, Math.min(400, Number(body.timeStopCandles ?? 180)));
+  const timeStopCandles = Math.max(20, Math.min(400, Number(body.timeStopCandles ?? 144)));
   const minAtrPct = Math.max(0.1, Math.min(2.0, Number(body.minAtrPct ?? 0.25)));
   const minStretchPct = Math.max(0, Math.min(15.0, Number(body.minStretchPct ?? 0)));
-  const numTrees = Math.max(15, Math.min(120, Number(body.numTrees ?? 80)));
-  const learningRate = Math.max(0.01, Math.min(0.2, Number(body.learningRate ?? 0.05)));
-  const maxDepth = Math.max(1, Math.min(4, Number(body.maxDepth ?? 3)));
-  const l2Lambda = Math.max(50, Math.min(1000, Number(body.l2Lambda ?? 400)));
-  const topPercent = Math.max(1, Math.min(20, Number(body.topPercent ?? 4)));
+  const numTrees = Math.max(20, Math.min(250, Number(body.numTrees ?? 160)));
+  const learningRate = Math.max(0.01, Math.min(0.2, Number(body.learningRate ?? 0.035)));
+  const maxDepth = Math.max(1, Math.min(6, Number(body.maxDepth ?? 5)));
+  const l2Lambda = Math.max(50, Math.min(1200, Number(body.l2Lambda ?? 700)));
+  const topPercent = Math.max(1, Math.min(25, Number(body.topPercent ?? 5)));
   const objective: 'blended' | 'expected_r' | 'win_prob' =
     body.objective === 'expected_r' || body.objective === 'blended' || body.objective === 'win_prob'
       ? body.objective
       : 'win_prob';
-  const sideFilter: 'BOTH' | 'BUY' | 'SELL' =
-    body.sideFilter === 'BUY' || body.sideFilter === 'BOTH' || body.sideFilter === 'SELL'
-      ? body.sideFilter
-      : 'SELL';
+  // Strategy 4 trades are ALWAYS bidirectional (Long + Short)
+  const sideFilter: 'BOTH' = 'BOTH';
   const activateAfterTrain = body.activateAfterTrain !== false;
 
   mlTrainingState.isRunning = true;
@@ -10755,7 +10754,7 @@ app.post('/api/ml/train-start', async (req, res) => {
           String(a.pair.symbol).localeCompare(String(b.pair.symbol))
         );
         mlTrainingState.totalSymbolsEstimate = entries.length;
-        mlTrainingState.stage = 'در حال استخراج ۴۶ ویژگی علّی زیگزاگ از حافظه اسکن...';
+        mlTrainingState.stage = 'در حال استخراج ۵۸ ویژگی علّی زیگزاگ از حافظه اسکن...';
         pushMlLog(`شروع پردازش ${entries.length} نماد (${timeframe}) از حافظه اسکن...`);
         for (let i = 0; i < entries.length; i++) {
           if (mlTrainingState.shouldStop) throw new Error('آموزش توسط کاربر متوقف شد.');
@@ -10795,7 +10794,7 @@ app.post('/api/ml/train-start', async (req, res) => {
           selectedChunks.length,
           Math.round((symbolCountEst || selectedChunks.length) * (selectedChunks.length / allChunkIndices.length))
         );
-        mlTrainingState.stage = 'در حال استخراج ۴۶ ویژگی علّی زیگزاگ (بدون نگاه به آینده)...';
+        mlTrainingState.stage = 'در حال استخراج ۵۸ ویژگی علّی زیگزاگ (بدون نگاه به آینده)...';
         pushMlLog(
           `تعداد ${selectedChunks.length} بسته از ${allChunkIndices.length} بسته کندل ${exchange.toUpperCase()} (${timeframe}) [${useLocalChunks ? 'کش سرور' : 'PostgreSQL'}] انتخاب شد.`
         );

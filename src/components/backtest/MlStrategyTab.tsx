@@ -99,7 +99,7 @@ function inferModelMaxDepth(model: ZigZagMlModel): number {
     const td = getTreeDepth(t);
     if (td > d) d = td;
   }
-  return Math.max(1, Math.min(4, d || 2));
+  return Math.max(1, Math.min(6, d || 2));
 }
 
 function SplitCard({
@@ -237,33 +237,21 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // Training Studio form state (synced automatically with the currently active ML model)
+  // Training Studio form state (simplified high-impact controls; always BOTH directions)
   const [datasetId, setDatasetId] = useState('');
-  const [modelName, setModelName] = useState('مدل XT 5m ZigZag v4 سفارشی');
-  const [atrPeriod, setAtrPeriod] = useState(17);
+  const [modelName, setModelName] = useState('مدل XT 5m ZigZag v5 دوجهته');
   const [minCandles, setMinCandles] = useState(4);
   const [atrMultiplier, setAtrMultiplier] = useState(3.5);
-  const [minCandlesForLongLeg, setMinCandlesForLongLeg] = useState(12);
-  const [longLegAtrMultiplier, setLongLegAtrMultiplier] = useState(15);
-  const [minCandlesForBlueLeg, setMinCandlesForBlueLeg] = useState(7);
-  const [blueLegAtrMultiplier, setBlueLegAtrMultiplier] = useState(4.75);
-  const [maxBlueLegPercent, setMaxBlueLegPercent] = useState(95);
-  const [maxBreakoutAtrMultiplier, setMaxBreakoutAtrMultiplier] = useState(4);
   const [slAtrMult, setSlAtrMult] = useState(5.0);
   const [minSlPct, setMinSlPct] = useState(3.5);
   const [targetRR, setTargetRR] = useState(1.5);
   const [tpAtrMult, setTpAtrMult] = useState(7.5);
-  const [timeStopCandles, setTimeStopCandles] = useState(180);
-  const [minAtrPct, setMinAtrPct] = useState(0.25);
-  const [minStretchPct, setMinStretchPct] = useState(0);
-  const [numTrees, setNumTrees] = useState(80);
-  const [learningRate, setLearningRate] = useState(0.05);
-  const [maxDepth, setMaxDepth] = useState(3);
-  const [l2Lambda, setL2Lambda] = useState(400);
-  const [topPercent, setTopPercent] = useState(4);
+  const [timeStopCandles, setTimeStopCandles] = useState(144);
+  const [numTrees, setNumTrees] = useState(160);
+  const [maxDepth, setMaxDepth] = useState(5);
+  const [l2Lambda, setL2Lambda] = useState(700);
+  const [topPercent, setTopPercent] = useState(5);
   const [objective, setObjective] = useState<'blended' | 'expected_r' | 'win_prob'>('win_prob');
-  const [sideFilter, setSideFilter] = useState<'BOTH' | 'SELL' | 'BUY'>('SELL');
-  const [maxChunks, setMaxChunks] = useState(600);
   const [activateAfterTrain, setActivateAfterTrain] = useState(true);
 
   const [jobStatus, setJobStatus] = useState<TrainingJobStatus>({
@@ -288,15 +276,8 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
   const syncStudioFromModel = useCallback((model: ZigZagMlModel, availableDatasets?: DatasetOption[], preferredDsId?: string | null) => {
     const zp = model.zigzagParams;
     if (zp) {
-      setAtrPeriod(zp.atrPeriod ?? 17);
       setMinCandles(zp.minCandles ?? 4);
       setAtrMultiplier(zp.atrMultiplier ?? 3.5);
-      setMinCandlesForLongLeg(zp.minCandlesForLongLeg ?? 12);
-      setLongLegAtrMultiplier(zp.longLegAtrMultiplier ?? 15);
-      setMinCandlesForBlueLeg(zp.minCandlesForBlueLeg ?? 7);
-      setBlueLegAtrMultiplier(zp.blueLegAtrMultiplier ?? 4.75);
-      setMaxBlueLegPercent(zp.maxBlueLegPercent ?? 95);
-      setMaxBreakoutAtrMultiplier(zp.maxBreakoutAtrMultiplier ?? 4);
     }
     const nextSl = model.slAtrMult ?? 5.0;
     const nextRR =
@@ -312,16 +293,12 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
     setMinSlPct(model.minSlPct ?? 3.5);
     setTargetRR(nextRR);
     setTpAtrMult(nextTp);
-    setTimeStopCandles(model.timeStopCandles ?? 180);
-    setMinAtrPct(model.minAtrPct ?? 0.25);
-    setMinStretchPct(model.minStretchPct ?? 0);
-    setNumTrees(Array.isArray(model.trees) && model.trees.length > 0 ? model.trees.length : 80);
-    setLearningRate(model.learningRate ?? 0.05);
+    setTimeStopCandles(model.timeStopCandles ?? 144);
+    setNumTrees(Array.isArray(model.trees) && model.trees.length > 0 ? model.trees.length : 160);
     setMaxDepth(inferModelMaxDepth(model));
-    setL2Lambda(model.l2Lambda ?? (model.version >= 4 ? 400 : 240));
-    setTopPercent(model.topPercent ?? 4);
+    setL2Lambda(model.l2Lambda ?? 700);
+    setTopPercent(model.topPercent ?? 5);
     setObjective(model.objective ?? 'win_prob');
-    setSideFilter(model.sideFilter ?? 'SELL');
 
     const dsList = availableDatasets && availableDatasets.length > 0 ? availableDatasets : datasetsRef.current;
     if (preferredDsId && dsList.some((d) => d.id === preferredDsId)) {
@@ -440,31 +417,31 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           datasetId,
-          modelName: modelName.trim() || 'مدل XT 5m ZigZag GBDT',
-          atrPeriod,
+          modelName: modelName.trim() || 'مدل XT 5m ZigZag GBDT دوجهته',
+          atrPeriod: 17,
           minCandles,
           atrMultiplier,
-          minCandlesForLongLeg,
-          longLegAtrMultiplier,
-          minCandlesForBlueLeg,
-          blueLegAtrMultiplier,
-          maxBlueLegPercent,
-          maxBreakoutAtrMultiplier,
+          minCandlesForLongLeg: 12,
+          longLegAtrMultiplier: 15,
+          minCandlesForBlueLeg: 7,
+          blueLegAtrMultiplier: 4.75,
+          maxBlueLegPercent: 95,
+          maxBreakoutAtrMultiplier: 4,
           slAtrMult,
           minSlPct,
           targetRR,
           tpAtrMult,
           timeStopCandles,
-          minAtrPct,
-          minStretchPct,
+          minAtrPct: 0.25,
+          minStretchPct: 0,
           numTrees,
-          learningRate,
+          learningRate: 0.035,
           maxDepth,
           l2Lambda,
           topPercent,
           objective,
-          sideFilter,
-          maxChunks,
+          sideFilter: 'BOTH',
+          maxChunks: 1000,
           activateAfterTrain,
         }),
       });
@@ -646,8 +623,7 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
           <div className="bg-[#0b0e14] rounded-lg px-3 py-2 border border-slate-800/70">
             <div className="text-[10px] text-slate-500">ساختار درخت GBDT / جهت</div>
             <div className="font-mono tabular-nums text-slate-200 mt-0.5">
-              {activeModel.trees.length} درخت ({activeModel.featureNames?.length || 46} ویژگی) •{' '}
-              {activeModel.sideFilter === 'SELL' ? 'فقط شورت' : activeModel.sideFilter === 'BUY' ? 'فقط لانگ' : 'دوجهته'} • آستانه {activeModel.scoreThreshold.toFixed(4)}
+              {activeModel.trees.length} درخت (عمق {inferModelMaxDepth(activeModel)} • {activeModel.featureNames?.length || 58} ویژگی) • دوجهته (لانگ+شورت) • آستانه {activeModel.scoreThreshold.toFixed(4)}
             </div>
           </div>
           <div className="bg-[#0b0e14] rounded-lg px-3 py-2 border border-slate-800/70">
@@ -714,7 +690,7 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
           {activeModel.metrics?.unseenSymbolsOos && (
             <SplitCard
               title="ارزهای کاملاً جدید (Unseen Coins OOS)"
-              subtitle="۲۵٪ نمادهای هرگز دیده‌نشده در بازه آینده"
+              subtitle="۲۰٪ نمادهای هرگز دیده‌نشده در بازه آینده"
               metrics={activeModel.metrics.unseenSymbolsOos}
               highlight="sky"
             />
@@ -906,22 +882,14 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
             </div>
           )}
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
-            <label className="space-y-1">
-              <span className="text-[10px] text-slate-400">دوره ATR</span>
-              <input
-                type="number"
-                value={atrPeriod}
-                onChange={(e) => setAtrPeriod(Number(e.target.value))}
-                disabled={jobStatus.isRunning}
-                className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-2 py-1.5 font-mono text-slate-100"
-              />
-            </label>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 text-xs">
             <label className="space-y-1">
               <span className="text-[10px] text-slate-400">ضریب زیگزاگ ATR</span>
               <input
                 type="number"
                 step="0.25"
+                min={0.5}
+                max={8}
                 value={atrMultiplier}
                 onChange={(e) => setAtrMultiplier(Number(e.target.value))}
                 disabled={jobStatus.isRunning}
@@ -932,134 +900,87 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
               <span className="text-[10px] text-slate-400">حداقل کندل لگ</span>
               <input
                 type="number"
+                min={2}
+                max={30}
                 value={minCandles}
                 onChange={(e) => setMinCandles(Number(e.target.value))}
                 disabled={jobStatus.isRunning}
                 className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-2 py-1.5 font-mono text-slate-100"
               />
             </label>
-            <label className="space-y-1">
-              <span className="text-[10px] text-slate-400">ضریب غول‌پیکر / آبی</span>
+            <div className="space-y-1">
+              <span className="text-[10px] text-slate-400">حد ضرر (SL: ATR / %)</span>
               <div className="grid grid-cols-2 gap-1">
                 <input
                   type="number"
-                  step="0.5"
-                  value={longLegAtrMultiplier}
-                  onChange={(e) => setLongLegAtrMultiplier(Number(e.target.value))}
+                  step="0.25"
+                  min={1.5}
+                  max={10}
+                  value={slAtrMult}
+                  onChange={(e) => handleSlAtrChange(Number(e.target.value))}
                   disabled={jobStatus.isRunning}
-                  title="ضریب لگ غول‌پیکر"
+                  title="ضریب SL برحسب ATR"
                   className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-1.5 py-1.5 font-mono text-slate-100"
                 />
                 <input
                   type="number"
                   step="0.25"
-                  value={blueLegAtrMultiplier}
-                  onChange={(e) => setBlueLegAtrMultiplier(Number(e.target.value))}
+                  min={0.5}
+                  max={12}
+                  value={minSlPct}
+                  onChange={(e) => setMinSlPct(Number(e.target.value))}
                   disabled={jobStatus.isRunning}
-                  title="ضریب لگ آبی CD/EF"
+                  title="حداقل درصد SL ضداسویپ (%)"
                   className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-1.5 py-1.5 font-mono text-slate-100"
                 />
               </div>
-            </label>
-
-            <div className="space-y-1">
-              <span className="text-[10px] text-slate-400">حد ضرر (SL)</span>
-              <div className="grid grid-cols-2 gap-1">
-                <div>
-                  <span className="block text-[9px] text-slate-500 mb-0.5">ضریب ATR</span>
-                  <input
-                    type="number"
-                    step="0.5"
-                    value={slAtrMult}
-                    onChange={(e) => handleSlAtrChange(Number(e.target.value))}
-                    disabled={jobStatus.isRunning}
-                    title="ضریب SL برحسب ATR"
-                    className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-1.5 py-1.5 font-mono text-slate-100"
-                  />
-                </div>
-                <div>
-                  <span className="block text-[9px] text-slate-500 mb-0.5">حداقل SL (%)</span>
-                  <input
-                    type="number"
-                    step="0.5"
-                    min={0.5}
-                    max={12}
-                    value={minSlPct}
-                    onChange={(e) => setMinSlPct(Number(e.target.value))}
-                    disabled={jobStatus.isRunning}
-                    title="حداقل درصد SL ضداسویپ (%)"
-                    className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-1.5 py-1.5 font-mono text-slate-100"
-                  />
-                </div>
-              </div>
             </div>
             <div className="space-y-1">
-              <span className="text-[10px] text-emerald-300 font-semibold">تارگت سود (نسبت R:R)</span>
-              <div className="space-y-1">
-                <input
-                  type="number"
-                  step="0.1"
-                  min={0.5}
-                  max={10}
-                  value={targetRR}
-                  onChange={(e) => handleTargetRRChange(Number(e.target.value))}
-                  disabled={jobStatus.isRunning}
-                  title="نسبت ریسک به ریوارد هدف (R:R) — تارگت دقیقاً برابر حدضرر ضربدر R:R محاسبه می‌شود"
-                  className="w-full rounded-lg bg-[#0b0e14] border border-emerald-500/50 px-2 py-1.5 font-mono text-emerald-300 font-semibold"
-                />
-                <div className="text-[9px] text-slate-500 font-mono tabular-nums" dir="ltr">
-                  TP = SL × {targetRR.toFixed(2)} ({(slAtrMult * targetRR).toFixed(2)}A)
-                </div>
-              </div>
-            </div>
-            <div className="space-y-1">
-              <span className="text-[10px] text-slate-400">خروج زمانی و کشیدگی</span>
-              <div className="grid grid-cols-2 gap-1">
-                <div>
-                  <span className="block text-[9px] text-slate-500 mb-0.5">Time-Stop (کندل)</span>
-                  <input
-                    type="number"
-                    value={timeStopCandles}
-                    onChange={(e) => setTimeStopCandles(Number(e.target.value))}
-                    disabled={jobStatus.isRunning}
-                    title="سقف کندل Time-Stop"
-                    className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-1.5 py-1.5 font-mono text-slate-100"
-                  />
-                </div>
-                <div>
-                  <span className="block text-[9px] text-slate-500 mb-0.5">کشیدگی (%)</span>
-                  <input
-                    type="number"
-                    step="0.5"
-                    min={0}
-                    max={15}
-                    value={minStretchPct}
-                    onChange={(e) => setMinStretchPct(Number(e.target.value))}
-                    disabled={jobStatus.isRunning}
-                    title="حداقل کشیدگی پیوت از EMA200 یا ۴h (%)"
-                    className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-1.5 py-1.5 font-mono text-slate-100"
-                  />
-                </div>
-              </div>
-            </div>
-            <label className="space-y-1">
-              <span className="text-[10px] text-slate-400">فیلتر نخبگان (Top %)</span>
+              <span className="text-[10px] text-emerald-300 font-semibold">تارگت سود (R:R)</span>
               <input
                 type="number"
-                step="1"
-                min={1}
-                max={20}
-                value={topPercent}
-                onChange={(e) => setTopPercent(Number(e.target.value))}
+                step="0.1"
+                min={0.5}
+                max={10}
+                value={targetRR}
+                onChange={(e) => handleTargetRRChange(Number(e.target.value))}
+                disabled={jobStatus.isRunning}
+                title={`TP = SL × ${targetRR.toFixed(2)} (${(slAtrMult * targetRR).toFixed(2)}A)`}
+                className="w-full rounded-lg bg-[#0b0e14] border border-emerald-500/50 px-2 py-1.5 font-mono text-emerald-300 font-semibold"
+              />
+            </div>
+            <label className="space-y-1">
+              <span className="text-[10px] text-slate-400">Time-Stop (کندل)</span>
+              <input
+                type="number"
+                min={20}
+                max={400}
+                value={timeStopCandles}
+                onChange={(e) => setTimeStopCandles(Number(e.target.value))}
                 disabled={jobStatus.isRunning}
                 className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-2 py-1.5 font-mono text-slate-100"
               />
             </label>
 
             <label className="space-y-1">
+              <span className="text-[10px] text-slate-400">فیلتر نخبگان (Top %)</span>
+              <input
+                type="number"
+                step="0.5"
+                min={1}
+                max={25}
+                value={topPercent}
+                onChange={(e) => setTopPercent(Number(e.target.value))}
+                disabled={jobStatus.isRunning}
+                className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-2 py-1.5 font-mono text-slate-100"
+              />
+            </label>
+            <label className="space-y-1">
               <span className="text-[10px] text-slate-400">تعداد درخت (Trees)</span>
               <input
                 type="number"
+                min={20}
+                max={250}
                 value={numTrees}
                 onChange={(e) => setNumTrees(Number(e.target.value))}
                 disabled={jobStatus.isRunning}
@@ -1071,7 +992,7 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
               <input
                 type="number"
                 min={1}
-                max={4}
+                max={6}
                 value={maxDepth}
                 onChange={(e) => setMaxDepth(Number(e.target.value))}
                 disabled={jobStatus.isRunning}
@@ -1082,6 +1003,8 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
               <span className="text-[10px] text-slate-400">رگولاریزاسیون L2</span>
               <input
                 type="number"
+                min={50}
+                max={1200}
                 value={l2Lambda}
                 onChange={(e) => setL2Lambda(Number(e.target.value))}
                 disabled={jobStatus.isRunning}
@@ -1089,68 +1012,17 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
               />
             </label>
             <label className="space-y-1">
-              <span className="text-[10px] text-slate-400">سقف بسته کندل (همه نمادها)</span>
-              <input
-                type="number"
-                min={20}
-                max={1000}
-                value={maxChunks}
-                onChange={(e) => setMaxChunks(Number(e.target.value))}
-                disabled={jobStatus.isRunning}
-                className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-2 py-1.5 font-mono text-slate-100"
-              />
-            </label>
-            <label className="space-y-1">
-              <span className="text-[10px] text-slate-400">جهت معاملات مدل</span>
-              <select
-                value={sideFilter}
-                onChange={(e) => setSideFilter(e.target.value as 'BOTH' | 'SELL' | 'BUY')}
-                disabled={jobStatus.isRunning}
-                className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-2 py-1.5 text-xs text-slate-100"
-              >
-                <option value="BOTH">هر دو جهت (Long + Short)</option>
-                <option value="SELL">فقط شورت (Short Only)</option>
-                <option value="BUY">فقط لانگ (Long Only)</option>
-              </select>
-            </label>
-            <label className="space-y-1">
-              <span className="text-[10px] text-slate-400">تابع هدف آموزش (Objective)</span>
+              <span className="text-[10px] text-slate-400">تابع هدف (Objective)</span>
               <select
                 value={objective}
                 onChange={(e) => setObjective(e.target.value as 'blended' | 'expected_r' | 'win_prob')}
                 disabled={jobStatus.isRunning}
                 className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-2 py-1.5 text-xs text-slate-100"
               >
+                <option value="win_prob">احتمال برد (Win Prob)</option>
                 <option value="blended">ترکیبی (WR + Expected R)</option>
                 <option value="expected_r">میانگین سود (Expected R)</option>
-                <option value="win_prob">احتمال برد (Win Prob)</option>
               </select>
-            </label>
-            <label className="space-y-1">
-              <span className="text-[10px] text-slate-400">حداقل نوسان ATR (%)</span>
-              <input
-                type="number"
-                step="0.05"
-                min={0.1}
-                max={2}
-                value={minAtrPct}
-                onChange={(e) => setMinAtrPct(Number(e.target.value))}
-                disabled={jobStatus.isRunning}
-                className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-2 py-1.5 font-mono text-slate-100"
-              />
-            </label>
-            <label className="space-y-1">
-              <span className="text-[10px] text-slate-400">نرخ یادگیری (LR)</span>
-              <input
-                type="number"
-                step="0.01"
-                min={0.01}
-                max={0.2}
-                value={learningRate}
-                onChange={(e) => setLearningRate(Number(e.target.value))}
-                disabled={jobStatus.isRunning}
-                className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-2 py-1.5 font-mono text-slate-100"
-              />
             </label>
           </div>
 

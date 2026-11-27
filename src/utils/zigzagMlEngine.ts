@@ -235,7 +235,7 @@ export function describeMatchedPattern(f: Float32Array, l1Color: string): string
   if (f[16] < 0.40) return 'ساختار هارمونیک در ناحیه اشباع';
   if ((f[18] < 0.75 || f[21] > 1.8) && f[22] === 1) return 'تخلیه/کلایمکس حجم + شکست P3';
   if (f[7] >= 3 && f[26] > 0) return 'توالی سفید + واگرایی RSI';
-  return 'ترکیب چندعاملی ZigZag ML v4';
+  return 'ترکیب چندعاملی ZigZag ML v5';
 }
 
 export function parseTimeframeMinutes(timeframe?: string): number {
@@ -794,7 +794,7 @@ export interface MlTrainOptions {
   colSample?: number;
 }
 
-const BINS = 14;
+const BINS = 20;
 
 function buildHistogramTree(
   bx: Uint8Array,
@@ -1024,6 +1024,228 @@ export function simulateCausalOutcome(
   return { rMultiple: (rawPnl - fees) / slDist, exitTime };
 }
 
+interface SingleSideCoreResult {
+  baseScore: number;
+  trees: MlTreeNode[];
+  featGain: Float64Array;
+}
+
+function trainSingleSideCore(
+  train: MlTrainingSample[],
+  val: MlTrainingSample[],
+  opts: {
+    numTrees: number;
+    lr: number;
+    maxDepth: number;
+    minLeaf: number;
+    lambda: number;
+    topPercent: number;
+    objective: 'expected_r' | 'win_prob' | 'blended';
+    targetRR: number;
+    colSample: number;
+    seed: number;
+  }
+): SingleSideCoreResult {
+  const { numTrees, lr, maxDepth, minLeaf, lambda, topPercent, objective, targetRR, colSample } = opts;
+  const n = train.length;
+
+  // Deterministic exact quantile binning on sorted train samples
+  const thresholds: number[][] = [];
+  for (let f = 0; f < ML_NUM_FEATURES; f++) {
+    const vals = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const xf = train[i].features;
+      vals[i] = f < xf.length ? xf[f] : 0;
+    }
+    vals.sort();
+    const ths: number[] = [];
+    for (let q = 1; q < BINS; q++) {
+      const v = vals[Math.floor((q / BINS) * n)];
+      if (!ths.length || v > ths[ths.length - 1] + 1e-6) ths.push(v);
+    }
+    thresholds.push(ths);
+  }
+
+  const bx = new Uint8Array(n * ML_NUM_FEATURES);
+  for (let i = 0; i < n; i++) {
+    const xf = train[i].features;
+    const base = i * ML_NUM_FEATURES;
+    for (let f = 0; f < ML_NUM_FEATURES; f++) {
+      const ths = thresholds[f];
+      const v = f < xf.length ? xf[f] : 0;
+      let b = 0;
+      while (b < ths.length && v > ths[b]) b++;
+      bx[base + f] = b;
+    }
+  }
+
+  // Time-cluster de-weighting: 1 / sqrt(events in same hour) prevents market-wide flushes from dominating trees
+  const isMs = train[0].time > 1e12;
+  const hourDiv = isMs ? 3600000 : 3600;
+  const hourCounts = new Map<number, number>();
+  for (let i = 0; i < n; i++) {
+    const h = Math.floor(train[i].time / hourDiv);
+    hourCounts.set(h, (hourCounts.get(h) || 0) + 1);
+  }
+
+  const y = new Float64Array(n);
+  const w = new Float64Array(n);
+  let sumWY = 0;
+  let sumW = 0;
+  const maxClipR = Math.max(1.8, targetRR * 1.15);
+  for (let i = 0; i < n; i++) {
+    const h = Math.floor(train[i].time / hourDiv);
+    const wi = 1 / Math.sqrt(hourCounts.get(h) || 1);
+    w[i] = wi;
+    const r = train[i].rMultiple;
+    if (objective === 'win_prob') {
+      y[i] = r > 0 ? 1 : 0;
+    } else if (objective === 'blended') {
+      const winFlag = r > 0 ? 1 : 0;
+      const clippedR = Math.max(-1.2, Math.min(maxClipR, r));
+      y[i] = 0.6 * winFlag + 0.4 * clippedR;
+    } else {
+      y[i] = Math.max(-1.4, Math.min(Math.max(2.2, maxClipR), r));
+    }
+    sumWY += wi * y[i];
+    sumW += wi;
+  }
+
+  const isLogLoss = objective === 'win_prob';
+  const baseProb = Math.min(0.95, Math.max(0.05, sumWY / Math.max(1e-9, sumW)));
+  const baseScore = isLogLoss ? Math.log(baseProb / (1 - baseProb)) : sumWY / Math.max(1e-9, sumW);
+
+  const preds = new Float64Array(n).fill(baseScore);
+  const grad = new Float64Array(n);
+  const hess = new Float64Array(n);
+  const allIdx = new Int32Array(n);
+  for (let i = 0; i < n; i++) allIdx[i] = i;
+  const featGain = new Float64Array(ML_NUM_FEATURES);
+  const trees: MlTreeNode[] = [];
+
+  // Strict Validation-only Early Stopping tracker (never touches OOS)
+  const valLen = val.length;
+  const valPreds = new Float64Array(valLen).fill(baseScore);
+  const valTargets = new Float64Array(valLen);
+  const valWeights = new Float64Array(valLen);
+  const valHourCounts = new Map<number, number>();
+  for (let i = 0; i < valLen; i++) {
+    const h = Math.floor(val[i].time / hourDiv);
+    valHourCounts.set(h, (valHourCounts.get(h) || 0) + 1);
+  }
+  let valSumW = 0;
+  for (let i = 0; i < valLen; i++) {
+    const h = Math.floor(val[i].time / hourDiv);
+    const wi = 1 / Math.sqrt(valHourCounts.get(h) || 1);
+    valWeights[i] = wi;
+    valSumW += wi;
+    const r = val[i].rMultiple;
+    if (objective === 'win_prob') valTargets[i] = r > 0 ? 1 : 0;
+    else if (objective === 'blended') valTargets[i] = 0.6 * (r > 0 ? 1 : 0) + 0.4 * Math.max(-1.2, Math.min(maxClipR, r));
+    else valTargets[i] = Math.max(-1.4, Math.min(Math.max(2.2, maxClipR), r));
+  }
+  const minEarlyStopTrees = Math.min(numTrees, Math.max(25, Math.floor(numTrees * 0.25)));
+  let bestValScore = -Infinity;
+  let bestTreeCount = numTrees;
+  let bestFeatGainSnapshot = new Float64Array(ML_NUM_FEATURES);
+  let noImproveRounds = 0;
+  const earlyStopPatience = 22;
+  const valTopKCount = Math.max(25, Math.floor((valLen * topPercent) / 100));
+
+  let valMeanY = 0;
+  for (let j = 0; j < valLen; j++) valMeanY += valWeights[j] * valTargets[j];
+  valMeanY /= Math.max(1e-9, valSumW);
+  let valVarY = 0;
+  for (let j = 0; j < valLen; j++) {
+    const dy = valTargets[j] - valMeanY;
+    valVarY += valWeights[j] * dy * dy;
+  }
+
+  let rng = opts.seed >>> 0;
+  const nextRand = () => {
+    rng = (rng * 1664525 + 1013904223) >>> 0;
+    return rng / 4294967296;
+  };
+
+  for (let t = 0; t < numTrees; t++) {
+    for (let i = 0; i < n; i++) {
+      if (isLogLoss) {
+        const p = 1 / (1 + Math.exp(-Math.max(-15, Math.min(15, preds[i]))));
+        grad[i] = (p - y[i]) * w[i];
+        hess[i] = Math.max(0.02, p * (1 - p)) * w[i];
+      } else {
+        grad[i] = (preds[i] - y[i]) * w[i];
+        hess[i] = w[i];
+      }
+    }
+    const activeFeatures: number[] = [];
+    for (let f = 0; f < ML_NUM_FEATURES; f++) {
+      // Exclude feature 42 (raw dollar_vol_log: XT contractSize varies 100,000x across coins)
+      // Exclude feature 34 (raw isLong: handled cleanly via Dual-Side root routing without bull/bear drift memorization)
+      if (f === 42 || f === 34) continue;
+      if (colSample >= 0.999 || nextRand() < colSample) activeFeatures.push(f);
+    }
+    if (activeFeatures.length === 0) activeFeatures.push(0);
+    const tree = buildHistogramTree(
+      bx,
+      grad,
+      hess,
+      allIdx,
+      0,
+      maxDepth,
+      minLeaf,
+      lambda,
+      thresholds,
+      featGain,
+      activeFeatures
+    );
+    trees.push(tree);
+    for (let i = 0; i < n; i++) preds[i] += lr * predictTreeScore(tree, train[i].features);
+
+    let valMeanP = 0;
+    for (let j = 0; j < valLen; j++) {
+      valPreds[j] += lr * predictTreeScore(tree, val[j].features);
+      valMeanP += valWeights[j] * valPreds[j];
+    }
+    valMeanP /= Math.max(1e-9, valSumW);
+
+    if (t + 1 >= minEarlyStopTrees) {
+      let cov = 0;
+      let varP = 0;
+      for (let j = 0; j < valLen; j++) {
+        const dp = valPreds[j] - valMeanP;
+        const dy = valTargets[j] - valMeanY;
+        cov += valWeights[j] * dp * dy;
+        varP += valWeights[j] * dp * dp;
+      }
+      const corr = varP > 1e-12 && valVarY > 1e-12 ? cov / Math.sqrt(varP * valVarY) : 0;
+      const valIdxOrder = Array.from({ length: valLen }, (_, idx) => idx).sort((a, b) => valPreds[b] - valPreds[a]);
+      let topRSum = 0;
+      for (let k = 0; k < valTopKCount; k++) topRSum += val[valIdxOrder[k]].rMultiple;
+      const topAvgR = topRSum / Math.max(1, valTopKCount);
+      const valRankScore = corr + 0.35 * topAvgR;
+
+      if (valRankScore > bestValScore + 1e-5) {
+        bestValScore = valRankScore;
+        bestTreeCount = t + 1;
+        bestFeatGainSnapshot = new Float64Array(featGain);
+        noImproveRounds = 0;
+      } else {
+        noImproveRounds++;
+        if (noImproveRounds >= earlyStopPatience) {
+          break;
+        }
+      }
+    }
+  }
+
+  return {
+    baseScore,
+    trees: bestTreeCount < trees.length ? trees.slice(0, bestTreeCount) : trees,
+    featGain: bestTreeCount < trees.length ? bestFeatGainSnapshot : featGain,
+  };
+}
+
 export function trainZigZagMlModel(
   rawSamples: MlTrainingSample[],
   options: MlTrainOptions
@@ -1079,215 +1301,179 @@ export function trainZigZagMlModel(
     throw new Error(`تعداد نمونه‌های آموزش (${train.length}) یا اعتبارسنجی (${val.length}) کافی نیست.`);
   }
 
-  const numTrees = options.numTrees ?? 55;
-  const lr = options.learningRate ?? 0.05;
-  const maxDepth = options.maxDepth ?? 2;
-  const minLeaf = options.minLeafSamples ?? Math.max(35, Math.min(200, Math.floor(train.length * 0.02)));
-  const lambda = options.l2Lambda ?? 240;
-  const topPercent = options.topPercent ?? 8;
-  const objective = options.objective ?? 'blended';
-  const colSample = options.colSample ?? 0.75;
-
-  const n = train.length;
-  // Deterministic exact quantile binning on sorted train samples
-  const thresholds: number[][] = [];
-  for (let f = 0; f < ML_NUM_FEATURES; f++) {
-    const vals = new Float64Array(n);
-    for (let i = 0; i < n; i++) {
-      const xf = train[i].features;
-      vals[i] = f < xf.length ? xf[f] : 0;
-    }
-    vals.sort();
-    const ths: number[] = [];
-    for (let q = 1; q < BINS; q++) {
-      const v = vals[Math.floor((q / BINS) * n)];
-      if (!ths.length || v > ths[ths.length - 1] + 1e-6) ths.push(v);
-    }
-    thresholds.push(ths);
-  }
-
-  const bx = new Uint8Array(n * ML_NUM_FEATURES);
-  for (let i = 0; i < n; i++) {
-    const xf = train[i].features;
-    const base = i * ML_NUM_FEATURES;
-    for (let f = 0; f < ML_NUM_FEATURES; f++) {
-      const ths = thresholds[f];
-      const v = f < xf.length ? xf[f] : 0;
-      let b = 0;
-      while (b < ths.length && v > ths[b]) b++;
-      bx[base + f] = b;
-    }
-  }
-
-  // Time-cluster de-weighting: 1 / sqrt(events in same hour) prevents market-wide flushes from dominating trees
-  const isMs = train[0].time > 1e12;
-  const hourDiv = isMs ? 3600000 : 3600;
-  const hourCounts = new Map<number, number>();
-  for (let i = 0; i < n; i++) {
-    const h = Math.floor(train[i].time / hourDiv);
-    hourCounts.set(h, (hourCounts.get(h) || 0) + 1);
-  }
-
-  const y = new Float64Array(n);
-  const w = new Float64Array(n);
-  let sumWY = 0;
-  let sumW = 0;
-  const maxClipR = Math.max(1.8, (options.targetRR ?? (options.slAtrMult > 0 ? options.tpAtrMult / options.slAtrMult : 1.5)) * 1.15);
-  for (let i = 0; i < n; i++) {
-    const h = Math.floor(train[i].time / hourDiv);
-    const wi = 1 / Math.sqrt(hourCounts.get(h) || 1);
-    w[i] = wi;
-    const r = train[i].rMultiple;
-    if (objective === 'win_prob') {
-      y[i] = r > 0 ? 1 : 0;
-    } else if (objective === 'blended') {
-      const winFlag = r > 0 ? 1 : 0;
-      const clippedR = Math.max(-1.2, Math.min(maxClipR, r));
-      y[i] = 0.6 * winFlag + 0.4 * clippedR;
-    } else {
-      y[i] = Math.max(-1.4, Math.min(Math.max(2.2, maxClipR), r));
-    }
-    sumWY += wi * y[i];
-    sumW += wi;
-  }
-
+  const numTrees = options.numTrees ?? 160;
+  const lr = options.learningRate ?? 0.035;
+  const maxDepth = options.maxDepth ?? 5;
+  const lambda = options.l2Lambda ?? 700;
+  const topPercent = options.topPercent ?? 5;
+  const objective = options.objective ?? 'win_prob';
+  const colSample = options.colSample ?? 0.72;
+  const targetRR = options.targetRR ?? (options.slAtrMult > 0 ? options.tpAtrMult / options.slAtrMult : 1.5);
   const isLogLoss = objective === 'win_prob';
-  const baseProb = Math.min(0.95, Math.max(0.05, sumWY / Math.max(1e-9, sumW)));
-  const baseScore = isLogLoss ? Math.log(baseProb / (1 - baseProb)) : sumWY / Math.max(1e-9, sumW);
 
-  const preds = new Float64Array(n).fill(baseScore);
-  const grad = new Float64Array(n);
-  const hess = new Float64Array(n);
-  const allIdx = new Int32Array(n);
-  for (let i = 0; i < n; i++) allIdx[i] = i;
-  const featGain = new Float64Array(ML_NUM_FEATURES);
-  const trees: MlTreeNode[] = [];
+  const calcMinLeaf = (len: number) =>
+    options.minLeafSamples ?? Math.max(30, Math.min(140, Math.floor(len * 0.012)));
 
-  // Strict Validation-only Early Stopping tracker (never touches OOS)
-  const valLen = val.length;
-  const valPreds = new Float64Array(valLen).fill(baseScore);
-  const valTargets = new Float64Array(valLen);
-  const valWeights = new Float64Array(valLen);
-  const valHourCounts = new Map<number, number>();
-  for (let i = 0; i < valLen; i++) {
-    const h = Math.floor(val[i].time / hourDiv);
-    valHourCounts.set(h, (valHourCounts.get(h) || 0) + 1);
-  }
-  let valSumW = 0;
-  for (let i = 0; i < valLen; i++) {
-    const h = Math.floor(val[i].time / hourDiv);
-    const wi = 1 / Math.sqrt(valHourCounts.get(h) || 1);
-    valWeights[i] = wi;
-    valSumW += wi;
-    const r = val[i].rMultiple;
-    if (objective === 'win_prob') valTargets[i] = r > 0 ? 1 : 0;
-    else if (objective === 'blended') valTargets[i] = 0.6 * (r > 0 ? 1 : 0) + 0.4 * Math.max(-1.2, Math.min(maxClipR, r));
-    else valTargets[i] = Math.max(-1.4, Math.min(Math.max(2.2, maxClipR), r));
-  }
-  const minEarlyStopTrees = Math.min(numTrees, Math.max(15, Math.floor(numTrees * 0.3)));
-  let bestValScore = -Infinity;
-  let bestTreeCount = numTrees;
-  let bestFeatGainSnapshot = new Float64Array(ML_NUM_FEATURES);
-  let noImproveRounds = 0;
-  const earlyStopPatience = 15;
-  const valTopKCount = Math.max(25, Math.floor((valLen * topPercent) / 100));
+  let finalBaseScore = 0;
+  let finalTrees: MlTreeNode[] = [];
+  const finalFeatGain = new Float64Array(ML_NUM_FEATURES);
 
-  // Precompute weighted validation target mean & variance for shift-invariant correlation early stopping
-  let valMeanY = 0;
-  for (let j = 0; j < valLen; j++) valMeanY += valWeights[j] * valTargets[j];
-  valMeanY /= Math.max(1e-9, valSumW);
-  let valVarY = 0;
-  for (let j = 0; j < valLen; j++) {
-    const dy = valTargets[j] - valMeanY;
-    valVarY += valWeights[j] * dy * dy;
-  }
+  // Dual-Side Root-Routed GBDT (v5): train specialized Short and Stretched-Long sub-ensembles
+  // on the exact same global chronological Train/Val splits (zero OOS peeking) and route via root split on f=34 (isLong).
+  const tfVolScale = getTimeframeVolatilityScale(options.timeframe, '5m');
+  const trainS = train.filter((s) => s.side === -1);
+  const valS = val.filter((s) => s.side === -1);
 
-  // Deterministic LCG PRNG for 75% feature subsampling (colsample)
-  let rng = 20261121;
-  const nextRand = () => {
-    rng = (rng * 1664525 + 1013904223) >>> 0;
-    return rng / 4294967296;
-  };
-
-  for (let t = 0; t < numTrees; t++) {
-    for (let i = 0; i < n; i++) {
-      if (isLogLoss) {
-        const p = 1 / (1 + Math.exp(-Math.max(-15, Math.min(15, preds[i]))));
-        grad[i] = (p - y[i]) * w[i];
-        hess[i] = Math.max(0.02, p * (1 - p)) * w[i];
-      } else {
-        grad[i] = (preds[i] - y[i]) * w[i];
-        hess[i] = w[i];
-      }
-    }
-    const activeFeatures: number[] = [];
-    for (let f = 0; f < ML_NUM_FEATURES; f++) {
-      // Exclude feature 42 (raw dollar_vol_log: XT contractSize varies 100,000x across coins)
-      // Exclude feature 34 (raw isLong: prevents memorizing training-window bull/bear drift instead of symmetric structure & trend alignment)
-      if (f === 42 || f === 34) continue;
-      if (colSample >= 0.999 || nextRand() < colSample) activeFeatures.push(f);
-    }
-    if (activeFeatures.length === 0) activeFeatures.push(0);
-    const tree = buildHistogramTree(
-      bx,
-      grad,
-      hess,
-      allIdx,
-      0,
-      maxDepth,
-      minLeaf,
-      lambda,
-      thresholds,
-      featGain,
-      activeFeatures
+  let longStretchGate = (options.minStretchPct ?? 0) > 0 ? 0 : Number((4.5 * tfVolScale).toFixed(2));
+  let trainL = train.filter(
+    (s) => s.side === 1 && (longStretchGate <= 0 || s.features[28] >= longStretchGate || s.features[31] >= longStretchGate)
+  );
+  let valL = val.filter(
+    (s) => s.side === 1 && (longStretchGate <= 0 || s.features[28] >= longStretchGate || s.features[31] >= longStretchGate)
+  );
+  if (sideFilter === 'BOTH' && (trainL.length < 130 || valL.length < 40) && longStretchGate > 0) {
+    longStretchGate = Number((2.5 * tfVolScale).toFixed(2));
+    trainL = train.filter(
+      (s) => s.side === 1 && (s.features[28] >= longStretchGate || s.features[31] >= longStretchGate)
     );
-    trees.push(tree);
-    for (let i = 0; i < n; i++) preds[i] += lr * predictTreeScore(tree, train[i].features);
-
-    // Update validation predictions & compute shift-invariant ranking + top-K validation score
-    let valMeanP = 0;
-    for (let j = 0; j < valLen; j++) {
-      valPreds[j] += lr * predictTreeScore(tree, val[j].features);
-      valMeanP += valWeights[j] * valPreds[j];
-    }
-    valMeanP /= Math.max(1e-9, valSumW);
-
-    if (t + 1 >= minEarlyStopTrees) {
-      let cov = 0;
-      let varP = 0;
-      for (let j = 0; j < valLen; j++) {
-        const dp = valPreds[j] - valMeanP;
-        const dy = valTargets[j] - valMeanY;
-        cov += valWeights[j] * dp * dy;
-        varP += valWeights[j] * dp * dp;
-      }
-      const corr = varP > 1e-12 && valVarY > 1e-12 ? cov / Math.sqrt(varP * valVarY) : 0;
-      // Combine shift-invariant correlation with top-K validation R-expectancy
-      const valIdxOrder = Array.from({ length: valLen }, (_, idx) => idx).sort((a, b) => valPreds[b] - valPreds[a]);
-      let topRSum = 0;
-      for (let k = 0; k < valTopKCount; k++) topRSum += val[valIdxOrder[k]].rMultiple;
-      const topAvgR = topRSum / Math.max(1, valTopKCount);
-      const valRankScore = corr + 0.35 * topAvgR;
-
-      if (valRankScore > bestValScore + 1e-5) {
-        bestValScore = valRankScore;
-        bestTreeCount = t + 1;
-        bestFeatGainSnapshot = new Float64Array(featGain);
-        noImproveRounds = 0;
-      } else {
-        noImproveRounds++;
-        if (noImproveRounds >= earlyStopPatience) {
-          break;
-        }
-      }
-    }
+    valL = val.filter(
+      (s) => s.side === 1 && (s.features[28] >= longStretchGate || s.features[31] >= longStretchGate)
+    );
+  }
+  if (sideFilter === 'BOTH' && (trainL.length < 130 || valL.length < 40)) {
+    longStretchGate = 0;
+    trainL = train.filter((s) => s.side === 1);
+    valL = val.filter((s) => s.side === 1);
   }
 
-  const finalTrees = bestTreeCount < trees.length ? trees.slice(0, bestTreeCount) : trees;
-  const finalFeatGain = bestTreeCount < trees.length ? bestFeatGainSnapshot : featGain;
+  const useDualSide =
+    sideFilter === 'BOTH' &&
+    trainS.length >= 130 &&
+    valS.length >= 40 &&
+    trainL.length >= 130 &&
+    valL.length >= 40;
+
+  if (useDualSide) {
+    const resS = trainSingleSideCore(trainS, valS, {
+      numTrees,
+      lr,
+      maxDepth,
+      minLeaf: calcMinLeaf(trainS.length),
+      lambda,
+      topPercent: Math.max(3, topPercent),
+      objective,
+      targetRR,
+      colSample,
+      seed: 20261121,
+    });
+    const resL = trainSingleSideCore(trainL, valL, {
+      numTrees,
+      lr,
+      maxDepth,
+      minLeaf: Math.max(50, calcMinLeaf(trainL.length)),
+      lambda,
+      topPercent: Math.max(4, topPercent),
+      objective,
+      targetRR,
+      colSample,
+      seed: 20261127,
+    });
+
+    const evalCoreZ = (core: SingleSideCoreResult, x: Float32Array) => {
+      let s = core.baseScore;
+      for (let i = 0; i < core.trees.length; i++) s += lr * predictTreeScore(core.trees[i], x);
+      return s;
+    };
+    const logit = (p: number) => {
+      const pc = Math.max(0.05, Math.min(0.95, p));
+      return Math.log(pc / (1 - pc));
+    };
+
+    const zValS = valS.map((s) => evalCoreZ(resS, s.features));
+    const zValL = valL.map((s) => evalCoreZ(resL, s.features));
+    const empS = valS.filter((s) => s.rMultiple > 0).length / Math.max(1, valS.length);
+    const muS = zValS.reduce((a, b) => a + b, 0) / Math.max(1, zValS.length);
+    const shiftS = isLogLoss ? logit(empS) - muS : 0;
+
+    // Align elite Validation upper-tail quantiles (strictly Validation-only, zero OOS peeking)
+    // so elite stretched-Long bounces compete naturally alongside elite Shorts in every regime.
+    const sortedS = [...zValS].sort((a, b) => b - a);
+    const sortedL = [...zValL].sort((a, b) => b - a);
+    const qS5 = sortedS[Math.min(sortedS.length - 1, Math.floor(sortedS.length * 0.05))] ?? muS;
+    const longQuantile = longStretchGate > 0 ? 0.10 : 0.05;
+    const qL = sortedL[Math.min(sortedL.length - 1, Math.floor(sortedL.length * longQuantile))] ?? 0;
+    const shiftL = (qS5 + shiftS) - qL;
+
+    const shortBaseLeaf: MlTreeNode = { isLeaf: true, v: Number(((resS.baseScore + shiftS) / lr).toFixed(5)) };
+    const longBaseLeaf: MlTreeNode = { isLeaf: true, v: Number(((resL.baseScore + shiftL) / lr).toFixed(5)) };
+    const rejectLeaf: MlTreeNode = { isLeaf: true, v: Number((-20 / lr).toFixed(5)) };
+
+    const tree0: MlTreeNode = {
+      isLeaf: false,
+      v: 0,
+      f: 34,
+      th: 0.5,
+      l: shortBaseLeaf,
+      r:
+        longStretchGate > 0
+          ? {
+              isLeaf: false,
+              v: 0,
+              f: 28,
+              th: longStretchGate,
+              l: {
+                isLeaf: false,
+                v: 0,
+                f: 31,
+                th: longStretchGate,
+                l: rejectLeaf,
+                r: longBaseLeaf,
+              },
+              r: longBaseLeaf,
+            }
+          : longBaseLeaf,
+    };
+
+    const merged: MlTreeNode[] = [tree0];
+    const maxLen = Math.max(resS.trees.length, resL.trees.length);
+    for (let i = 0; i < maxLen; i++) {
+      merged.push({
+        isLeaf: false,
+        v: 0,
+        f: 34,
+        th: 0.5,
+        l: resS.trees[i] ?? { isLeaf: true, v: 0 },
+        r: resL.trees[i] ?? { isLeaf: true, v: 0 },
+      });
+    }
+
+    finalBaseScore = 0;
+    finalTrees = merged;
+    for (let f = 0; f < ML_NUM_FEATURES; f++) {
+      finalFeatGain[f] = resS.featGain[f] + resL.featGain[f];
+    }
+  } else {
+    const singleRes = trainSingleSideCore(train, val, {
+      numTrees,
+      lr,
+      maxDepth,
+      minLeaf: calcMinLeaf(train.length),
+      lambda,
+      topPercent,
+      objective,
+      targetRR,
+      colSample,
+      seed: 20261121,
+    });
+    finalBaseScore = singleRes.baseScore;
+    finalTrees = singleRes.trees;
+    for (let f = 0; f < ML_NUM_FEATURES; f++) {
+      finalFeatGain[f] = singleRes.featGain[f];
+    }
+  }
 
   const predictLocal = (x: Float32Array) => {
-    let s = baseScore;
+    let s = finalBaseScore;
     for (let i = 0; i < finalTrees.length; i++) s += lr * predictTreeScore(finalTrees[i], x);
     if (isLogLoss) {
       return 1 / (1 + Math.exp(-Math.max(-15, Math.min(15, s))));
@@ -1317,7 +1503,7 @@ export function trainZigZagMlModel(
 
   const patDefs: { name: string; rule: string; category: MlFeatureCategory; test: (f: Float32Array) => boolean }[] = [
     { name: 'پولبک هم‌جهت روند قدرتمند (رژیم رونددار ER+EMA200)', rule: 'EMA200 Ext < -1% & EMA200 Slope > 0 & ER48 ≥ 0.25', category: 'structure', test: f => f[28] < -1 && (f[54] ?? 0) > 0 && (f[52] ?? 0) >= 0.25 },
-    { name: 'کشیدگی شدید EMA600 + تایید پیوت زیگزاگ', rule: 'EMA600 Ext ≥ 6% & ML Score ≥ Threshold', category: 'structure', test: f => f[29] >= 6 },
+    { name: 'بازگشت اشباع عمیق دوجهته (EMA200 / 4h Stretch ≥ 4.5%)', rule: 'EMA200 Ext ≥ 4.5% or 4h Stretch ≥ 4.5% & ML Score ≥ Threshold', category: 'structure', test: f => f[28] >= 4.5 || f[31] >= 4.5 },
     { name: 'ساختار هارمونیک و نسبت L1<L2,L3 (تخلیه موج)', rule: 'r12 < 1.0 or r13 < 1.0 & Harmonic Error < 0.45', category: 'harmonic', test: f => f[11] < 1.0 || f[12] < 1.0 || f[16] < 0.45 },
     { name: 'بازگشت لگ غول‌پیکر (سبز/قرمز) با فیلتر جهت', rule: 'L1 = Giant (Green/Red) & ML Score ≥ Threshold', category: 'legs', test: f => f[3] === 1 },
     { name: 'بازگشت لگ آبی استراتژی ۲ (CD/EF) با استاپ ضداسویپ', rule: 'L1 = Blue/Dark-Blue (CD/EF) & Anti-Sweep SL', category: 'legs', test: f => f[3] === 2 || f[3] === 3 },
@@ -1344,25 +1530,23 @@ export function trainZigZagMlModel(
     };
   });
 
-  const targetRR = options.targetRR ?? (options.slAtrMult > 0 ? options.tpAtrMult / options.slAtrMult : 2.0);
-
   return {
     id: `ml_zz_${Date.now()}`,
     name: options.modelName,
-    version: 4,
+    version: 5,
     exchange: options.exchange,
     timeframe: options.timeframe,
     datasetId: options.datasetId,
     createdAt: new Date().toISOString(),
     zigzagParams: options.zigzagParams,
     slAtrMult: options.slAtrMult,
-    minSlPct: options.minSlPct ?? 3.0,
+    minSlPct: options.minSlPct ?? 3.5,
     tpAtrMult: options.tpAtrMult,
     targetRR: Number(targetRR.toFixed(2)),
     timeStopCandles: options.timeStopCandles,
     minAtrPct: options.minAtrPct,
     minStretchPct: options.minStretchPct ?? 0,
-    baseScore: Number(baseScore.toFixed(5)),
+    baseScore: Number(finalBaseScore.toFixed(5)),
     learningRate: lr,
     maxDepth,
     l2Lambda: lambda,
