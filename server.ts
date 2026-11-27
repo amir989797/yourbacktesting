@@ -376,14 +376,48 @@ let lastWeightTime = Date.now();
  * - Tracks x-mbx-used-weight-1m to prevent 429/418 bans proactively
  * - 30-minute server memory cache
  */
+function createCombinedSignal(timeoutMs: number, externalSignal?: AbortSignal): AbortSignal {
+  const timeoutSig = AbortSignal.timeout(timeoutMs);
+  if (!externalSignal) return timeoutSig;
+  if (typeof (AbortSignal as any).any === 'function') {
+    return (AbortSignal as any).any([timeoutSig, externalSignal]);
+  }
+  const ctrl = new AbortController();
+  if (externalSignal.aborted) {
+    ctrl.abort(externalSignal.reason);
+    return ctrl.signal;
+  }
+  const onAbort = () => ctrl.abort();
+  externalSignal.addEventListener('abort', onAbort, { once: true });
+  timeoutSig.addEventListener('abort', onAbort, { once: true });
+  return ctrl.signal;
+}
+
+async function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 async function fetchServerKlines(
   symbol: string,
   timeframe: string,
   targetLimit: number = 5000,
   isFutures: boolean = true,
   startTime?: number,
-  endTime?: number
+  endTime?: number,
+  signal?: AbortSignal
 ): Promise<CandleData[]> {
+  if (signal?.aborted) return [];
   const cleanSymbol = symbol.trim().toUpperCase();
   const cacheKey = `${cleanSymbol}_${timeframe}_${targetLimit}_${isFutures}_${startTime || 0}_${endTime || 0}`;
   const cacheTtlMs = (startTime || endTime)
@@ -396,7 +430,8 @@ async function fetchServerKlines(
 
   // Pre-emptive pacing if Binance 1-minute weight is near the 2400 limit
   if (binanceUsedWeight1m > 2150 && Date.now() - lastWeightTime < 60000) {
-    await sleep(150);
+    await abortableSleep(150, signal);
+    if (signal?.aborted) return [];
   }
 
   const symCandidates = cleanSymbol.startsWith('1000')
@@ -452,13 +487,14 @@ async function fetchServerKlines(
         const timeMap = new Map<number, CandleData>();
 
         for (let i = 0; i < chunks.length; i++) {
+          if (signal?.aborted) return [];
           const chunk = chunks[i];
           const url = `${mirror}${basePath}?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(timeframe)}&limit=${chunk.limit}${chunk.endParam}`;
 
           try {
             const r = await fetch(url, {
               headers: { Accept: 'application/json' },
-              signal: AbortSignal.timeout(6000),
+              signal: createCombinedSignal(6000, signal),
             });
 
             // Track rate-limit weight from Binance header
@@ -474,7 +510,8 @@ async function fetchServerKlines(
             }
             if (r.status === 429) {
               const retryAfter = parseInt(r.headers.get('retry-after') || '2', 10);
-              await sleep(Math.min(retryAfter, 5) * 1000);
+              await abortableSleep(Math.min(retryAfter, 5) * 1000, signal);
+              if (signal?.aborted) return [];
               i--; // Retry this chunk after backoff delay
               continue;
             }
@@ -502,16 +539,19 @@ async function fetchServerKlines(
               break;
             }
           } catch {
+            if (signal?.aborted) return [];
             break;
           }
 
           // Sequential API delay pacing between chunks to bypass exchange rate limits safely
           if (chunks.length > 1 && i < chunks.length - 1) {
             const delayMs = binanceUsedWeight1m > 1800 ? 250 : 80;
-            await sleep(delayMs);
+            await abortableSleep(delayMs, signal);
+            if (signal?.aborted) return [];
           }
         }
 
+        if (signal?.aborted) return [];
         if (timeMap.size >= 50) {
           let sorted = Array.from(timeMap.values()).sort((a, b) => a.time - b.time);
           if (startTime && startTime > 0) {
@@ -530,9 +570,11 @@ async function fetchServerKlines(
     }
   }
 
+  if (signal?.aborted) return [];
+
   // Fallback: XT Futures public klines
   try {
-    const xtCandles = await fetchXtServerKlines(symbol, timeframe, Math.min(targetLimit, 1000));
+    const xtCandles = await fetchXtServerKlines(symbol, timeframe, Math.min(targetLimit, 1000), startTime, endTime, signal);
     if (xtCandles && xtCandles.length >= 50) {
       setBoundedKlineCache(cacheKey, xtCandles);
       return xtCandles;
@@ -661,8 +703,10 @@ async function fetchXtServerKlines(
   interval: string,
   limit: number = 1000,
   startTime?: number,
-  endTime?: number
+  endTime?: number,
+  signal?: AbortSignal
 ): Promise<CandleData[]> {
+  if (signal?.aborted) return [];
   const xtSymbol = toXtSymbol(symbol);
   const stepMs = timeframeToMs(interval);
   const now = Date.now();
@@ -682,6 +726,7 @@ async function fetchXtServerKlines(
   const maxIterations = Math.min(50, Math.ceil(targetCandles / 1000) + 2);
 
   while (candleMap.size < targetCandles && iterations < maxIterations) {
+    if (signal?.aborted) return [];
     iterations++;
     const chunkLimit = Math.min(1000, targetCandles - candleMap.size);
     let url = `https://${XT_FAPI_HOST}/future/market/v1/public/q/kline?symbol=${encodeURIComponent(xtSymbol)}&interval=${encodeURIComponent(interval)}&limit=${chunkLimit}`;
@@ -693,10 +738,11 @@ async function fetchXtServerKlines(
     }
 
     try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(6000) });
+      const response = await fetch(url, { signal: createCombinedSignal(6000, signal) });
       if (!response.ok) {
         if (response.status === 429) {
-          await sleep(1000);
+          await abortableSleep(1000, signal);
+          if (signal?.aborted) return [];
           continue;
         }
         break;
@@ -735,13 +781,17 @@ async function fetchXtServerKlines(
 
       // API delay pacing between chunks to bypass exchange rate limits safely
       if (iterations < maxIterations && candleMap.size < targetCandles) {
-        await sleep(100);
+        await abortableSleep(100, signal);
+        if (signal?.aborted) return [];
       }
     } catch (err: any) {
+      if (signal?.aborted) return [];
       console.warn(`[XT Klines Chunk Error] ${xtSymbol}:`, err.message);
       break;
     }
   }
+
+  if (signal?.aborted) return [];
 
   let sorted = Array.from(candleMap.values()).sort((a, b) => a.time - b.time);
   if (startMs > 0) {
@@ -3560,7 +3610,10 @@ interface ServerBacktestProgress {
   currentSymbol: string;
 }
 
+let serverBacktestAbortController: AbortController | null = null;
+
 const serverBacktestState = {
+  activeRunId: 0,
   isScanning: false,
   shouldStop: false,
   datasetId: null as string | null,
@@ -3899,6 +3952,10 @@ function isExactStoredConfigMatch(
 ): boolean {
   if (!storedCfg || storedCfg.engineVersion !== ENGINE_PARITY_VERSION) return false;
   if ((storedStrategyId || 'strategy_1_e_breakout') !== reqStrategyId) return false;
+  if (reqStrategyId === 'strategy_4_ml_zigzag') {
+    const activeModelId = getActiveMlModel()?.id;
+    if (!storedCfg.activeMlModelId || storedCfg.activeMlModelId !== activeModelId) return false;
+  }
 
   const numEq = (a: any, b: any, tol = 0.0005) => Math.abs(Number(a) - Number(b)) < tol;
   const isAtrMatch = Number(candidate.atrPeriod) === Number(storedCfg.optAtrPeriod ?? storedCfg.atrPeriod);
@@ -4174,6 +4231,19 @@ async function runServerBacktestCycle(params: {
   const { exchange, timeframe, startTime, endTime, symbols, workersCount, strategyId, strategyConfig, forceRedownload, incrementalSync, scanMode } = params;
   let datasetId = params.datasetId || getRangeDatasetId(exchange, timeframe, startTime, endTime);
 
+  // Cancel any in-flight previous run immediately before initializing this run
+  if (serverBacktestAbortController) {
+    try {
+      serverBacktestAbortController.abort();
+    } catch {}
+  }
+  const runAbortController = new AbortController();
+  serverBacktestAbortController = runAbortController;
+  const myRunId = ++serverBacktestState.activeRunId;
+  const isActiveRun = () => serverBacktestState.activeRunId === myRunId;
+  const isCancelled = () =>
+    !isActiveRun() || serverBacktestState.shouldStop || runAbortController.signal.aborted;
+
   serverBacktestState.isScanning = true;
   serverBacktestState.lastStartedAt = Date.now();
   serverBacktestState.shouldStop = false;
@@ -4439,17 +4509,18 @@ async function runServerBacktestCycle(params: {
               let incCompleted = 0;
 
               const incWorker = async () => {
-                while (queue.length > 0 && !serverBacktestState.shouldStop) {
+                while (queue.length > 0 && !isCancelled()) {
                   const sym = queue.shift();
-                  if (!sym) break;
+                  if (!sym || isCancelled()) break;
                   try {
                     let candles: CandleData[] = [];
                     if (exchange === 'xt') {
-                      candles = await fetchXtServerKlines(sym, timeframe, neededLimit, startTime || undefined, endTime || undefined);
+                      candles = await fetchXtServerKlines(sym, timeframe, neededLimit, startTime || undefined, endTime || undefined, runAbortController.signal);
                     } else {
                       const clean = sym.replace('_', '').toUpperCase();
-                      candles = await fetchServerKlines(clean, timeframe, neededLimit, true, startTime || undefined, endTime || undefined);
+                      candles = await fetchServerKlines(clean, timeframe, neededLimit, true, startTime || undefined, endTime || undefined, runAbortController.signal);
                     }
+                    if (isCancelled()) break;
                     if (candles && candles.length >= 50) {
                       const baseAsset = sym.includes('_') ? sym.split('_')[0].toUpperCase() : sym.replace(/USDT$/i, '');
                       appendedEntries.push({ pair: { symbol: sym, baseAsset, quoteAsset: 'USDT' }, candles, timeframe });
@@ -4460,14 +4531,19 @@ async function runServerBacktestCycle(params: {
                       skippedSymbols.push({ symbol: sym, reason });
                     }
                   } catch (err: any) {
-                    console.warn(`[Incremental Worker Error] ${sym}:`, err.message);
+                    if (!isCancelled()) {
+                      console.warn(`[Incremental Worker Error] ${sym}:`, err.message);
+                    }
                   } finally {
-                    incCompleted++;
-                    serverBacktestState.progress.current = incCompleted;
-                    serverBacktestState.progress.percent = Math.round((incCompleted / missingSymbolsToFetch.length) * 100);
-                    serverBacktestState.progress.currentSymbol = `دانلود کسری: ${sym}`;
+                    if (!isCancelled()) {
+                      incCompleted++;
+                      serverBacktestState.progress.current = incCompleted;
+                      serverBacktestState.progress.percent = Math.round((incCompleted / missingSymbolsToFetch.length) * 100);
+                      serverBacktestState.progress.currentSymbol = `دانلود کسری: ${sym}`;
+                    }
                   }
-                  await sleep(20);
+                  if (isCancelled()) break;
+                  await abortableSleep(20, runAbortController.signal);
                 }
               };
 
@@ -4539,31 +4615,37 @@ async function runServerBacktestCycle(params: {
           let processedSymbols = 0;
           let totalCandlesSum = 0;
 
-          await forEachDatasetChunkSymbol(
-            datasetId,
-            {
-              symbols,
-              startTime,
-              endTime,
-              checkStop: () => serverBacktestState.shouldStop,
-              onProgress: (msg) => {
-                serverBacktestState.progress.currentSymbol = msg;
+          if (!isCancelled()) {
+            await forEachDatasetChunkSymbol(
+              datasetId,
+              {
+                symbols,
+                startTime,
+                endTime,
+                checkStop: isCancelled,
+                onProgress: (msg) => {
+                  if (!isCancelled()) {
+                    serverBacktestState.progress.currentSymbol = msg;
+                  }
+                },
               },
-            },
-            (pair, candles) => {
-              const calc = processSymbolStrategy(pair, candles);
-              if (calc) {
-                serverBacktestState.results.push(calc.resultItem);
-                serverBacktestState.allTrades.push(...calc.finishedTrades);
+              (pair, candles) => {
+                if (isCancelled()) return;
+                const calc = processSymbolStrategy(pair, candles);
+                if (isCancelled()) return;
+                if (calc) {
+                  serverBacktestState.results.push(calc.resultItem);
+                  serverBacktestState.allTrades.push(...calc.finishedTrades);
+                }
+                processedSymbols++;
+                totalCandlesSum += candles.length;
+                savedSymbolsList.push(pair.symbol);
+                serverBacktestState.progress.current = processedSymbols;
+                serverBacktestState.progress.percent = Math.min(100, Math.round((processedSymbols / estTotalSymbols) * 100));
+                serverBacktestState.progress.currentSymbol = pair.symbol;
               }
-              processedSymbols++;
-              totalCandlesSum += candles.length;
-              savedSymbolsList.push(pair.symbol);
-              serverBacktestState.progress.current = processedSymbols;
-              serverBacktestState.progress.percent = Math.min(100, Math.round((processedSymbols / estTotalSymbols) * 100));
-              serverBacktestState.progress.currentSymbol = pair.symbol;
-            }
-          );
+            );
+          }
 
           savedSymbolsCount = processedSymbols;
           savedTotalCandles = totalCandlesSum;
@@ -4605,32 +4687,30 @@ async function runServerBacktestCycle(params: {
       let completed = 0;
 
       const worker = async () => {
-        while (queue.length > 0 && !serverBacktestState.shouldStop) {
+        while (queue.length > 0 && !isCancelled()) {
           const entry = queue.shift();
-          if (!entry) break;
+          if (!entry || isCancelled()) break;
 
           try {
-            let activeCandles = entry.candles || [];
-            if (startTime && startTime > 0) {
-              activeCandles = activeCandles.filter((c) => c.time >= startTime);
-            }
-            if (endTime && endTime > 0) {
-              activeCandles = activeCandles.filter((c) => c.time <= endTime);
-            }
-            if (activeCandles.length >= 50) {
+            const activeCandles = filterCandlesByMsRange(entry.candles || [], startTime, endTime);
+            if (activeCandles.length >= 50 && !isCancelled()) {
               const calculated = processSymbolStrategy(entry.pair, activeCandles);
-              if (calculated) {
+              if (calculated && !isCancelled()) {
                 serverBacktestState.results.push(calculated.resultItem);
                 serverBacktestState.allTrades.push(...calculated.finishedTrades);
               }
             }
           } catch (err: any) {
-            console.warn(`[Backtest Calc Error] ${entry.pair.symbol}:`, err.message);
+            if (!isCancelled()) {
+              console.warn(`[Backtest Calc Error] ${entry.pair.symbol}:`, err.message);
+            }
           } finally {
-            completed++;
-            serverBacktestState.progress.current = completed;
-            serverBacktestState.progress.percent = total > 0 ? Math.round((completed / total) * 100) : 100;
-            serverBacktestState.progress.currentSymbol = entry.pair.symbol;
+            if (!isCancelled()) {
+              completed++;
+              serverBacktestState.progress.current = completed;
+              serverBacktestState.progress.percent = total > 0 ? Math.round((completed / total) * 100) : 100;
+              serverBacktestState.progress.currentSymbol = entry.pair.symbol;
+            }
           }
         }
       };
@@ -4641,7 +4721,7 @@ async function runServerBacktestCycle(params: {
       for (const e of activeEntries) {
         savedSymbolsList.push(e.pair.symbol);
       }
-    } else if (savedSymbolsCount === 0) {
+    } else if (savedSymbolsCount === 0 && !isCancelled()) {
       if (scanMode === 'cached') {
         throw new Error('داده‌های کندل این بازه زمانی در دیتابیس PostgreSQL یافت نشد. لطفاً ابتدا اسکن کامل را انجام دهید.');
       }
@@ -4806,18 +4886,20 @@ async function runServerBacktestCycle(params: {
       };
 
       const worker = async () => {
-        while (queue.length > 0 && !serverBacktestState.shouldStop) {
+        while (queue.length > 0 && !isCancelled()) {
           const sym = queue.shift();
-          if (!sym) break;
+          if (!sym || isCancelled()) break;
 
           try {
             let candles: CandleData[] = [];
             if (exchange === 'xt') {
-              candles = await fetchXtServerKlines(sym, timeframe, neededLimit, startTime || undefined, endTime || undefined);
+              candles = await fetchXtServerKlines(sym, timeframe, neededLimit, startTime || undefined, endTime || undefined, runAbortController.signal);
             } else {
               const clean = sym.replace('_', '').toUpperCase();
-              candles = await fetchServerKlines(clean, timeframe, neededLimit, isFutures, startTime || undefined, endTime || undefined);
+              candles = await fetchServerKlines(clean, timeframe, neededLimit, isFutures, startTime || undefined, endTime || undefined, runAbortController.signal);
             }
+
+            if (isCancelled()) break;
 
             if (candles && candles.length >= 50) {
               const baseAsset = sym.includes('_') ? sym.split('_')[0].toUpperCase() : sym.replace(/USDT$/i, '');
@@ -4829,13 +4911,15 @@ async function runServerBacktestCycle(params: {
 
               // IMMEDIATELY compute strategy for this pair and STREAM live results!
               const calculated = processSymbolStrategy(pair, candles);
-              if (calculated) {
+              if (calculated && !isCancelled()) {
                 serverBacktestState.results.push(calculated.resultItem);
                 serverBacktestState.allTrades.push(...calculated.finishedTrades);
               }
 
               // Flush to PostgreSQL in small batches so RAM never bloats
-              await flushBatchToDatabase(false);
+              if (!isCancelled()) {
+                await flushBatchToDatabase(false);
+              }
             } else {
               const reason = (!candles || candles.length === 0)
                 ? 'عدم ارائه دیتای کندل توسط صرافی XT در این تایم‌فریم (قرارداد متوقف یا فاقد معامله در فیوچرز)'
@@ -4843,27 +4927,35 @@ async function runServerBacktestCycle(params: {
               skippedSymbols.push({ symbol: sym, reason });
             }
           } catch (err: any) {
-            console.warn(`[Backtest Worker Error] ${sym}:`, err.message);
+            if (!isCancelled()) {
+              console.warn(`[Backtest Worker Error] ${sym}:`, err.message);
+            }
           } finally {
-            completedCount++;
-            serverBacktestState.progress.current = completedCount;
-            serverBacktestState.progress.percent = Math.round((completedCount / total) * 100);
-            serverBacktestState.progress.currentSymbol = sym;
+            if (!isCancelled()) {
+              completedCount++;
+              serverBacktestState.progress.current = completedCount;
+              serverBacktestState.progress.percent = Math.round((completedCount / total) * 100);
+              serverBacktestState.progress.currentSymbol = sym;
+            }
           }
 
-          await sleep(20);
+          if (isCancelled()) break;
+          await abortableSleep(20, runAbortController.signal);
         }
       };
 
       // Run parallel workers in Node.js backend
       await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
-      // Save any remaining batch to PostgreSQL
-      await flushBatchToDatabase(true);
+      // Save any remaining batch to PostgreSQL only if this run is still active
+      if (isActiveRun() && batchToSave.length > 0) {
+        await flushBatchToDatabase(true);
+      }
     }
 
     // Handle user manual cancellation / stop
-    if (serverBacktestState.shouldStop) {
+    if (isCancelled()) {
+      if (!isActiveRun()) return;
       serverBacktestState.isScanning = false;
       serverBacktestState.stage = 'idle';
 
@@ -4936,6 +5028,7 @@ async function runServerBacktestCycle(params: {
     const dataSizeFormatted = dataSizeBytes > 1048576 ? `${(dataSizeBytes / 1048576).toFixed(1)} MB` : `${(dataSizeBytes / 1024).toFixed(0)} KB`;
     const symbolsListJson = JSON.stringify(savedSymbolsList);
 
+    if (!isActiveRun()) return;
     serverBacktestState.symbolCount = savedSymbolsCount;
     serverBacktestState.totalCandles = totalCandles;
     serverBacktestState.dataSizeFormatted = dataSizeFormatted;
@@ -4950,6 +5043,7 @@ async function runServerBacktestCycle(params: {
     const persistedCfg = {
       ...cfg,
       engineVersion: ENGINE_PARITY_VERSION,
+      activeMlModelId: strategyId === 'strategy_4_ml_zigzag' ? getActiveMlModel()?.id : undefined,
       exchange: effectiveExchange,
       slSlippagePercent,
       entryCommissionPercent: entryCommission,
@@ -5029,6 +5123,9 @@ async function runServerBacktestCycle(params: {
       console.log(`[Server Backtest] ✅ Completed backtest for ${datasetId} on ${serverBacktestState.results.length} pairs (saved to local disk cache).`);
     }
   } catch (err: any) {
+    if (!isActiveRun() || runAbortController.signal.aborted) {
+      return;
+    }
     console.error(`[Server Backtest] ❌ Backtest error:`, err.message);
     serverBacktestState.isScanning = false;
     serverBacktestState.stage = 'error';
@@ -5461,6 +5558,12 @@ app.post('/api/backtest/start', async (req, res) => {
 // 6.5.2.1 Reset Server Backtest State
 app.post('/api/backtest/reset', (_req, res) => {
   serverBacktestState.shouldStop = true;
+  serverBacktestState.activeRunId++;
+  if (serverBacktestAbortController) {
+    try {
+      serverBacktestAbortController.abort();
+    } catch {}
+  }
   serverBacktestState.isScanning = false;
   serverBacktestState.stage = 'idle';
   serverBacktestState.errorMsg = null;
@@ -5474,6 +5577,7 @@ app.get('/api/backtest/status', (req, res) => {
   res.json({
     success: true,
     state: {
+      activeRunId: serverBacktestState.activeRunId,
       isScanning: serverBacktestState.isScanning,
       stage: serverBacktestState.stage,
       datasetId: serverBacktestState.datasetId,
@@ -5497,12 +5601,23 @@ app.get('/api/backtest/status', (req, res) => {
   });
 });
 
-// 6.5.4 Stop In-Flight Server Backtest
+// 6.5.4 Stop In-Flight Server Backtest Immediately
 app.post('/api/backtest/stop', (_req, res) => {
   serverBacktestState.shouldStop = true;
+  if (serverBacktestAbortController) {
+    try {
+      serverBacktestAbortController.abort();
+    } catch {}
+  }
   serverBacktestState.isScanning = false;
   serverBacktestState.stage = 'idle';
-  res.json({ success: true, message: 'دستور توقف اسکن سرور ثبت شد.' });
+  res.json({
+    success: true,
+    message: 'اسکن سرور بلافاصله متوقف شد.',
+    resultsCount: serverBacktestState.results.length,
+    allTradesCount: serverBacktestState.allTrades.length,
+    activeRunId: serverBacktestState.activeRunId,
+  });
 });
 
 // 6.5.5 Delete ONLY Specific Time Range Dataset from PostgreSQL

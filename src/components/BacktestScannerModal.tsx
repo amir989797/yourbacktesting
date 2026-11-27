@@ -1072,13 +1072,20 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
           const availableCount = data.coverage?.availableSymbolsCount || data.dataset.symbolCount || 0;
           setCachedCount(availableCount);
 
-          if (Array.isArray(data.results) && data.results.length > 0) {
-            setResults((prev) => (prev.length === 0 ? data.results : prev));
+          if (!isScanningRef.current && Array.isArray(data.results) && data.results.length > 0) {
+            let hydratedResults = false;
+            setResults((prev) => {
+              if (prev.length === 0) {
+                hydratedResults = true;
+                return data.results;
+              }
+              return prev;
+            });
             const expectedCount = Number(data.allTradesCount || (Array.isArray(data.allTrades) ? data.allTrades.length : 0));
-            if (expectedCount > 0 && Array.isArray(data.allTrades)) {
-              if (data.allTrades.length >= expectedCount) {
-                setAllCollectedTrades((prev) => (prev.length === 0 || prev.length < expectedCount ? data.allTrades : prev));
-              } else if (allCollectedTradesCountRef.current < expectedCount) {
+            if (expectedCount > 0 && (hydratedResults || allCollectedTradesCountRef.current === 0)) {
+              if (Array.isArray(data.allTrades) && data.allTrades.length >= expectedCount) {
+                setAllCollectedTrades(data.allTrades);
+              } else {
                 try {
                   const fullRes = await fetch('/api/backtest/range-status', {
                     method: 'POST',
@@ -1190,6 +1197,14 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const hasSyncedDatasetIdRef = useRef<string | null>(null);
   const wasScanningRef = useRef<boolean>(false);
   const initialPollDoneRef = useRef<boolean>(false);
+  const isScanningRef = useRef<boolean>(false);
+  const stoppingRef = useRef<boolean>(false);
+  const lastHandledRunAtRef = useRef<string | null>(null);
+  const pollStatusRef = useRef<(() => Promise<void>) | null>(null);
+
+  useEffect(() => {
+    isScanningRef.current = isScanning;
+  }, [isScanning]);
 
   // پایش بی‌وقفه و همگام وضعیت اسکن در پس‌زمینه سرور (حفظ وضعیت در صورت ریلود یا بستن تب)
   useEffect(() => {
@@ -1205,8 +1220,14 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         const data = await res.json();
         if (data && data.success && data.state && isMounted) {
           const st = data.state;
+          // اگر کاربر همین الان دکمه توقف را زده، پاسخ‌های قدیمی‌تر در راه را نادیده بگیر تا دکمه توقف برنگردد
+          if (stoppingRef.current && st.isScanning) {
+            return;
+          }
+
           if (st.isScanning) {
             setIsScanning(true);
+            isScanningRef.current = true;
             wasScanningRef.current = true;
             if (st.progress) {
               setProgress({
@@ -1218,10 +1239,17 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             if (Array.isArray(st.results) && st.results.length > 0) {
               setResults(st.results);
             }
-          } else if (wasScanningRef.current) {
-            // تنها یک بار در لحظه پایان اسکن اجرا شود
+          } else if (
+            wasScanningRef.current ||
+            (st.stage === 'completed' && st.lastRunAt && st.lastRunAt !== lastHandledRunAtRef.current && initialPollDoneRef.current)
+          ) {
+            // تنها یک بار در لحظه پایان اسکن (حتی اگر اسکن کش‌شده کمتر از ۲.۵ ثانیه تمام شده باشد) اجرا شود
             wasScanningRef.current = false;
             setIsScanning(false);
+            isScanningRef.current = false;
+            if (st.lastRunAt) {
+              lastHandledRunAtRef.current = st.lastRunAt;
+            }
 
             if (st.stage === 'error') {
               setErrorMsg(st.errorMsg || 'خطا در اسکن.');
@@ -1229,7 +1257,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               return;
             }
 
-            if (Array.isArray(st.results) && st.results.length > 0) {
+            if (Array.isArray(st.results)) {
               setResults(st.results);
             }
             if (Array.isArray(st.skippedSymbols)) {
@@ -1239,11 +1267,16 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             try {
               const fullTradesRes = await fetch('/api/backtest/status?includeTrades=true');
               const fullTradesData = await fullTradesRes.json();
-              if (fullTradesData?.state?.allTrades && isMounted) {
-                setAllCollectedTrades(fullTradesData.state.allTrades);
-              }
-              if (Array.isArray(fullTradesData?.state?.skippedSymbols) && isMounted) {
-                setSkippedSymbols(fullTradesData.state.skippedSymbols);
+              if (fullTradesData?.state && isMounted) {
+                if (Array.isArray(fullTradesData.state.results) && fullTradesData.state.results.length > 0) {
+                  setResults(fullTradesData.state.results);
+                }
+                if (Array.isArray(fullTradesData.state.allTrades)) {
+                  setAllCollectedTrades(fullTradesData.state.allTrades);
+                }
+                if (Array.isArray(fullTradesData.state.skippedSymbols)) {
+                  setSkippedSymbols(fullTradesData.state.skippedSymbols);
+                }
               }
             } catch {}
 
@@ -1290,14 +1323,18 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             // بارگذاری اولیه یکباره در زمان باز شدن صفحه در صورتی که دیتای سرور موجود است
             initialPollDoneRef.current = true;
             setIsScanning(false);
-            if (Array.isArray(st.results) && st.results.length > 0 && results.length === 0) {
+            isScanningRef.current = false;
+            if (st.lastRunAt) {
+              lastHandledRunAtRef.current = st.lastRunAt;
+            }
+            if (Array.isArray(st.results) && st.results.length > 0) {
               setResults(st.results);
             }
-            if ((st.allTradesCount || 0) > 0 && allCollectedTradesCountRef.current < Number(st.allTradesCount)) {
+            if ((st.allTradesCount || 0) > 0) {
               try {
                 const fullTradesRes = await fetch('/api/backtest/status?includeTrades=true');
                 const fullTradesData = await fullTradesRes.json();
-                if (fullTradesData?.state?.allTrades && isMounted) {
+                if (Array.isArray(fullTradesData?.state?.allTrades) && isMounted) {
                   setAllCollectedTrades(fullTradesData.state.allTrades);
                 }
               } catch {}
@@ -1324,19 +1361,22 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             });
           } else {
             // در حالت بیکار (Idle) وضعیت در حال اسکن غیرفعال نگه داشته می‌شود بدون ری‌رندر مداوم کامپوننت‌ها
-            if (isScanning) {
+            if (isScanningRef.current) {
               setIsScanning(false);
+              isScanningRef.current = false;
             }
           }
         }
       } catch {}
     };
 
+    pollStatusRef.current = pollStatus;
     pollStatus();
-    interval = setInterval(pollStatus, 2500);
+    interval = setInterval(pollStatus, 2000);
 
     return () => {
       isMounted = false;
+      pollStatusRef.current = null;
       if (interval) clearInterval(interval);
     };
   }, []);
@@ -1362,6 +1402,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     }
 
     setIsRescanPromptOpen(false);
+    stoppingRef.current = false;
+    wasScanningRef.current = true;
+    isScanningRef.current = true;
     setIsScanning(true);
     abortControllerRef.current = false;
     setErrorMsg(null);
@@ -1456,11 +1499,19 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
               ? `🚀 دانلود مجدد کامل و جایگزینی دیتابیس با ${scanWorkersCount} ورکر آغاز شد.`
               : `⚡ بک‌تست موازی با استفاده از داده‌های موجود در PostgreSQL آغاز شد.`)
         );
+        // پول سریع برای اسکن‌های کش‌شده که در کمتر از ۲ ثانیه به پایان می‌رسند
+        setTimeout(() => {
+          pollStatusRef.current?.();
+        }, 450);
       } else {
+        wasScanningRef.current = false;
+        isScanningRef.current = false;
         setErrorMsg(data?.error || 'خطا در آغاز اسکن سرور.');
         setIsScanning(false);
       }
     } catch (err: any) {
+      wasScanningRef.current = false;
+      isScanningRef.current = false;
       setErrorMsg(err?.message || 'خطا در برقراری ارتباط با سرور.');
       setIsScanning(false);
     }
@@ -1477,15 +1528,46 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   };
 
   const handleStopScan = async () => {
+    stoppingRef.current = true;
     abortControllerRef.current = true;
+    wasScanningRef.current = false;
+    isScanningRef.current = false;
     setIsScanning(false);
+    setProgress((prev) => ({
+      ...prev,
+      currentSymbol: 'در حال توقف فوری اسکن...',
+    }));
     try {
       await fetch('/api/backtest/stop', { method: 'POST' });
-      showToast('⏸️ دستور توقف اسکن سرور ثبت شد.');
+      // بلافاصله نتایج و تمام معاملات تا همین لحظه را دریافت کن تا سود خالص سبد تک‌پوزیشن دقیق نمایش داده شود
+      const statusRes = await fetch('/api/backtest/status?includeTrades=true');
+      if (statusRes.ok) {
+        const statusData = await statusRes.json();
+        const st = statusData?.state;
+        if (st) {
+          if (Array.isArray(st.results) && st.results.length > 0) {
+            setResults(st.results);
+          }
+          if (Array.isArray(st.allTrades) && st.allTrades.length > 0) {
+            setAllCollectedTrades(st.allTrades);
+          }
+          if (Array.isArray(st.skippedSymbols)) {
+            setSkippedSymbols(st.skippedSymbols);
+          }
+        }
+      }
+      setProgress((prev) => ({
+        ...prev,
+        currentSymbol: 'اسکن توسط کاربر متوقف شد.',
+      }));
+      showToast('⏹️ اسکن سرور بلافاصله متوقف شد.');
       setTimeout(() => {
-        checkCurrentRangeStatus();
-      }, 700);
-    } catch {}
+        stoppingRef.current = false;
+        checkCurrentRangeStatusRef.current?.();
+      }, 600);
+    } catch {
+      stoppingRef.current = false;
+    }
   };
 
   const handleClearResults = () => {
@@ -1579,9 +1661,38 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const totalScanned = results.length;
   const profitableCount = results.filter((r) => r.netProfit > 0).length;
 
+  // بازسازی پشتیبان معاملات از آرایه results در صورت خالی یا ناقص بودن allCollectedTrades (مانند حین اسکن، پس از توقف یا سرریز localStorage)
+  const embeddedResultTrades = useMemo(() => {
+    if (!results || results.length === 0) return [] as StrategyTrade[];
+    const out: StrategyTrade[] = [];
+    for (const r of results) {
+      const sym = r.pair?.symbol || '';
+      const list = r.trades || [];
+      for (let i = 0; i < list.length; i++) {
+        const t = list[i];
+        if (t.status === 'WIN' || t.status === 'LOSS' || t.status === 'BREAKEVEN') {
+          out.push({
+            ...t,
+            id: t.id && String(t.id).startsWith(sym) ? t.id : `${sym}-${t.id || i}`,
+            symbol: (t as any).symbol || sym,
+          } as StrategyTrade);
+        }
+      }
+    }
+    return out;
+  }, [results]);
+
   // شبیه‌سازی و فیلتر عدم محاسبه معاملات همزمان در سطح کل پرتفوی با ممیزی کامل Table 13 و رفع اریب نگاه به آینده
   const concurrencyFilterResults = useMemo(() => {
-    if (allCollectedTrades.length === 0) {
+    const collectedFinished = allCollectedTrades.filter(
+      (t) => t.status === 'WIN' || t.status === 'LOSS' || t.status === 'BREAKEVEN'
+    );
+    const rawTrades =
+      collectedFinished.length >= embeddedResultTrades.length && collectedFinished.length > 0
+        ? collectedFinished
+        : embeddedResultTrades;
+
+    if (rawTrades.length === 0) {
       return {
         effectiveTrades: [] as StrategyTrade[],
         rawTradesCount: 0,
@@ -1608,9 +1719,6 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       };
     }
 
-    const rawTrades = [...allCollectedTrades].filter(
-      (t) => t.status === 'WIN' || t.status === 'LOSS' || t.status === 'BREAKEVEN'
-    );
     const rawTradesCount = rawTrades.length;
 
     // اولویت‌بندی قطعی و بدون اریب نگاه به آینده (Deterministic Ranking with Zero Look-Ahead Bias)
@@ -1692,17 +1800,20 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       }
     }
 
-    // سنجش اوج سیگنال‌های خام همزمان
-    const timeEvents = new Set<number>();
+    // سنجش اوج سیگنال‌های خام همزمان با الگوریتم سریع Sweep-Line O(N log N)
+    const sweepEvents: Array<{ t: number; delta: number }> = [];
     for (const t of rawTrades) {
-      if (t.entryTime) timeEvents.add(t.entryTime);
-      if (t.exitTime) timeEvents.add(t.exitTime);
+      const s = t.entryTime || t.timeF || 0;
+      const e = t.exitTime || s;
+      sweepEvents.push({ t: s, delta: 1 });
+      sweepEvents.push({ t: e, delta: -1 });
     }
-    const sortedEvents = Array.from(timeEvents).sort((a, b) => a - b);
+    sweepEvents.sort((a, b) => (a.t !== b.t ? a.t - b.t : b.delta - a.delta));
     let maxSimultaneousRaw = 0;
-    for (const te of sortedEvents) {
-      const activeCount = rawTrades.filter((t) => (t.entryTime || 0) <= te && (t.exitTime || 0) >= te).length;
-      if (activeCount > maxSimultaneousRaw) maxSimultaneousRaw = activeCount;
+    let curActiveRaw = 0;
+    for (const ev of sweepEvents) {
+      curActiveRaw += ev.delta;
+      if (curActiveRaw > maxSimultaneousRaw) maxSimultaneousRaw = curActiveRaw;
     }
 
     // در حالت درصد از سرمایه، سایز هر معامله با سرمایه واقعی سبد (نه سرمایه ایزوله هر ارز) هماهنگ می‌شود
@@ -1777,7 +1888,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       tieBreakerRule: 'Priority 1: Earliest entry timestamp -> Priority 2: Signal score at entry bar -> Priority 3: Alphabetical symbol',
       lookAheadBiasAssertion: 'PASS - انتخاب سیگنال منحصراً بر پایه زمان ورود، نمره کندل ورودی و ترتیب نماد صورت گرفته و هیچ داده‌ای از آینده یا خروج ترید در تصمیم‌گیری فیلتر دخالت ندارد.',
     };
-  }, [allCollectedTrades, noConcurrentPositions, riskMode, capital]);
+  }, [allCollectedTrades, embeddedResultTrades, noConcurrentPositions, riskMode, capital]);
 
   const effectivePortfolioTrades = concurrencyFilterResults.effectiveTrades;
 
@@ -1789,9 +1900,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const rawTotalLossSum = parseFloat(results.reduce((acc, r) => acc + r.totalLoss, 0).toFixed(2));
   const rawTotalFeeSum = parseFloat(results.reduce((acc, r) => acc + (r.totalFee || 0), 0).toFixed(2));
 
-  // در زمان اسکن فعال، همواره مجموع افزایشی تمام ارزهای اسکن‌شده نمایش داده می‌شود تا وین‌ریت هرگز به عقب برنگردد
-  const hasPortfolioTrades = !isScanning && effectivePortfolioTrades.length > 0;
-  const isPortfolioFilterActive = noConcurrentPositions && hasPortfolioTrades;
+  // همواره در صورت وجود معاملات پرتفوی (حتی حین اسکن یا پس از توقف) سود خالص و آمار دقیق سبد پس از کسر همزمانی محاسبه می‌شود
+  const hasPortfolioTrades = effectivePortfolioTrades.length > 0;
+  const isPortfolioFilterActive = noConcurrentPositions && (hasPortfolioTrades || results.length > 0);
 
   const totalTradesSum = hasPortfolioTrades ? effectivePortfolioTrades.length : rawTotalTradesSum;
   const totalWinTradesSum = hasPortfolioTrades
@@ -1885,13 +1996,13 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     };
   }, [equityPoints, capital]);
 
-  // به‌روزرسانی حداکثر درودان در حین اسکن: در حین اسکن مقیاس لحظه‌ای را نشان می‌دهد و پس از پایان اسکن دقیقاً منطبق با منحنی سرمایه پرتفوی می‌شود
+  // به‌روزرسانی حداکثر درودان منطبق با منحنی سرمایه پرتفوی (تک‌پوزیشن یا چندپوزیشن)
   useEffect(() => {
     if (results.length === 0) {
       setScanMaxDrawdown((prev) => (prev === 0 ? 0 : 0));
       return;
     }
-    if (!isScanning && effectivePortfolioTrades.length > 0) {
+    if (effectivePortfolioTrades.length > 0) {
       const portfolioDd = parseFloat((chartStats.maxDd || 0).toFixed(2));
       setScanMaxDrawdown(portfolioDd);
       return;
@@ -1903,17 +2014,17 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       const next = parseFloat(Math.max(prev, currentWorst).toFixed(2));
       return next === prev ? prev : next;
     });
-  }, [results, chartStats.maxDd, isScanning, effectivePortfolioTrades.length]);
+  }, [results, chartStats.maxDd, effectivePortfolioTrades.length]);
 
   const portfolioMaxDrawdown = useMemo(() => {
     if (results.length === 0) return 0;
-    if (!isScanning && effectivePortfolioTrades.length > 0) {
+    if (effectivePortfolioTrades.length > 0) {
       return parseFloat((chartStats.maxDd || 0).toFixed(2));
     }
     const maxPair = Math.max(...results.map((r) => r.maxDrawdownPercent || 0));
     const combined = chartStats.maxDd || 0;
     return parseFloat(Math.max(scanMaxDrawdown, maxPair, combined).toFixed(2));
-  }, [results, scanMaxDrawdown, chartStats.maxDd, isScanning, effectivePortfolioTrades.length]);
+  }, [results, scanMaxDrawdown, chartStats.maxDd, effectivePortfolioTrades.length]);
 
   const portfolioOptimalRisk = useMemo(() => {
     if (portfolioMaxDrawdown > 0) {

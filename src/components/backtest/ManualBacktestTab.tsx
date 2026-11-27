@@ -1339,7 +1339,7 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
 
                   <div className="p-2.5 rounded-xl bg-[#141924] border border-[#263143]">
                     <span className="text-[10px] text-gray-400 block mb-0.5">
-                      {isPortfolioFilterActive ? 'سود خالص (سبد تک‌پوزیشن)' : 'مجموع سود خالص (بازدهی)'}
+                      {isPortfolioFilterActive ? 'سود خالص (کسر تک‌پوزیشن)' : 'مجموع سود خالص (بازدهی)'}
                     </span>
                     <div className="flex items-baseline gap-1.5 flex-wrap">
                       <span className={`text-base font-extrabold font-mono ${totalNetProfitSum >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
@@ -1352,7 +1352,7 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                     </div>
                     {isPortfolioFilterActive && (
                       <span className="text-[9px] text-gray-400 font-mono block mt-0.5">
-                        سود کل سیگنال‌ها: {rawTotalNetProfitSum >= 0 ? '+' : ''}{rawTotalNetProfitSum.toLocaleString()}
+                        کل سیگنال‌ها: {rawTotalNetProfitSum >= 0 ? '+' : ''}{rawTotalNetProfitSum.toLocaleString()} | حذف همزمان: {Math.max(0, rawTotalTradesSum - totalTradesSum).toLocaleString()}
                       </span>
                     )}
                   </div>
