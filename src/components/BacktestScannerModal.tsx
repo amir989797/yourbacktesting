@@ -489,6 +489,15 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       symbolCount: number;
       totalCandles: number;
       dataSizeFormatted: string;
+      headerSizeFormatted?: string;
+      dbChunksCount?: number;
+      dbChunkRowsCount?: number;
+      diskChunksCount?: number;
+      dbRealBytes?: number;
+      dbRealSizeFormatted?: string;
+      integrityStatus?: 'OK' | 'EMPTY_CHUNKS' | 'POSSIBLE_MISMATCH';
+      integrityMessage?: string;
+      lastResultsCount?: number;
       status: string;
       updatedAt: string;
       hasResults: boolean;
@@ -503,6 +512,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
   const [skippedSymbols, setSkippedSymbols] = useState<{ symbol: string; reason: string }[]>([]);
   const [isCheckingRange, setIsCheckingRange] = useState<boolean>(false);
   const [isRescanPromptOpen, setIsRescanPromptOpen] = useState<boolean>(false);
+  const [isAuditingDataset, setIsAuditingDataset] = useState<boolean>(false);
+  const [datasetAuditReport, setDatasetAuditReport] = useState<any | null>(null);
+  const [datasetAuditError, setDatasetAuditError] = useState<string | null>(null);
   const [isDeleteRangePromptOpen, setIsDeleteRangePromptOpen] = useState<boolean>(false);
   const [isClearAllCandlesPromptOpen, setIsClearAllCandlesPromptOpen] = useState<boolean>(false);
   const [isClearingAllCandles, setIsClearingAllCandles] = useState<boolean>(false);
@@ -1129,6 +1141,38 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
     checkCurrentRangeStatusRef.current = checkCurrentRangeStatus;
   }, [checkCurrentRangeStatus]);
 
+  // ممیزی عمیق و همگام‌سازی واقعی چانک‌های candle_chunks در PostgreSQL (بدون مصرف رم بالا)
+  const handleAuditCurrentDataset = useCallback(async () => {
+    setIsAuditingDataset(true);
+    setDatasetAuditError(null);
+    try {
+      const targetDatasetId = rangeStatus?.datasetId || rangeStatus?.dataset?.id || activeSessionDatasetId || undefined;
+      const res = await fetch('/api/backtest/audit-dataset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          datasetId: targetDatasetId,
+          exchange: selectedExchange,
+          timeframe,
+          startTime: timeRangeStartMs,
+          endTime: timeRangeEndMs,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.success) {
+        setDatasetAuditError(data?.error || 'ممیزی دیتابیس با خطا مواجه شد.');
+        return;
+      }
+      setDatasetAuditReport(data);
+      // پس از ممیزی و اصلاح احتمالی هدر، آمار button[2] و مودال بلافاصله تازه می‌شود
+      await checkCurrentRangeStatus({ datasetId: data.datasetId || targetDatasetId || null });
+    } catch (err: any) {
+      setDatasetAuditError(err?.message || 'خطا در ارتباط با سرور برای ممیزی چانک‌ها.');
+    } finally {
+      setIsAuditingDataset(false);
+    }
+  }, [rangeStatus, activeSessionDatasetId, selectedExchange, timeframe, timeRangeStartMs, timeRangeEndMs, checkCurrentRangeStatus]);
+
   const handleSelectTimeframe = useCallback((newTf: Timeframe) => {
     setTimeframe(newTf);
     setActiveSessionDatasetId(null);
@@ -1238,6 +1282,9 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             }
             if (Array.isArray(st.results) && st.results.length > 0) {
               setResults(st.results);
+            }
+            if (Array.isArray(st.allTrades) && st.allTrades.length > 0) {
+              setAllCollectedTrades(st.allTrades);
             }
           } else if (
             wasScanningRef.current ||
@@ -4320,7 +4367,11 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
             isChartDragging={isChartDragging}
             onSelectPairAndClose={onSelectPairAndClose}
             selectedExchange={selectedExchange}
-            onOpenRescanChoiceModal={() => setIsRescanPromptOpen(true)}
+            onOpenRescanChoiceModal={() => {
+              setDatasetAuditError(null);
+              setIsRescanPromptOpen(true);
+              checkCurrentRangeStatus();
+            }}
             handleStartIncrementalScan={handleStartIncrementalScan}
             skippedSymbols={skippedSymbols}
             onRemoveSkippedSymbols={handleRemoveSkippedSymbolsFromAllowed}
@@ -4638,19 +4689,25 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         {/* MODAL: INTELLIGENT RESCAN CHOICE (SMART SYNC / FAST / FULL) */}
         {/* ========================================================= */}
         {isRescanPromptOpen && (() => {
+          const ds = rangeStatus?.dataset;
           const cov = rangeStatus?.coverage;
           const missingCount = cov?.missingSymbolsCount || 0;
           const surplusCount = cov?.surplusSymbolsCount || 0;
-          const availableCount = cov?.availableSymbolsCount || rangeStatus?.dataset?.symbolCount || cachedCount || 0;
+          const availableCount = cov?.availableSymbolsCount || ds?.symbolCount || cachedCount || 0;
           const reqCount = cov?.requestedSymbolsCount || selectedAllowedSymbols.length || 0;
           const coveragePct = cov?.symbolCoveragePct !== undefined ? cov.symbolCoveragePct : (reqCount > 0 ? Math.round((availableCount / reqCount) * 100) : 100);
           const missingEarlierDays = cov?.missingEarlierDays || 0;
-          const missingNewerDays = cov?.missingNewerDays || 0;
           const isExchangeMatch = cov?.isExchangeMatch !== false;
+          const integrityStatus = ds?.integrityStatus || 'OK';
+          const dbChunksCount = typeof ds?.dbChunksCount === 'number' ? ds.dbChunksCount : 0;
+          const diskChunksCount = typeof ds?.diskChunksCount === 'number' ? ds.diskChunksCount : 0;
+          const realSizeFormatted = ds?.dbRealSizeFormatted || ds?.dataSizeFormatted || '0 KB';
+          const dbDays = Number(cov?.dbDays || 0);
+          const needsCleanupRecommended = integrityStatus === 'EMPTY_CHUNKS' || Boolean(datasetAuditReport?.needsCleanup);
 
           return (
             <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/85 backdrop-blur-sm p-4">
-              <div className="bg-[#101622] border border-[#233147] rounded-2xl p-6 max-w-xl w-full shadow-2xl text-right animate-in fade-in zoom-in-95 duration-150">
+              <div className="bg-[#101622] border border-[#233147] rounded-2xl p-6 max-w-2xl w-full max-h-[92vh] overflow-y-auto shadow-2xl text-right animate-in fade-in zoom-in-95 duration-150">
                 <div className="flex items-center justify-between mb-4 pb-3 border-b border-[#233147]">
                   <div className="flex items-center gap-3 text-amber-400">
                     <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
@@ -4658,23 +4715,179 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                     </div>
                     <div>
                       <h3 className="text-base font-extrabold text-white">
-                        تحلیل هوشمند تطابق داده‌های دیتابیس PostgreSQL
+                        گزارش واقعی و تحلیل هوشمند دیتابیس PostgreSQL
                       </h3>
                       <p className="text-[11px] text-gray-400">
-                        بررسی وضعیت پوشش نمادها، صرافی و بازه زمانی انتخابی
+                        بررسی آمار واقعی نمادها، تعداد کندل، حجم چانک‌ها، بازه زمانی و سلامت داده
                       </p>
                     </div>
                   </div>
-                  <span className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold border ${
-                    selectedExchange === 'xt'
-                      ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
-                      : 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'
-                  }`}>
-                    {selectedExchange.toUpperCase()}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {isCheckingRange && (
+                      <span className="flex items-center gap-1 text-[10px] text-cyan-300 font-bold">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        بروزرسانی...
+                      </span>
+                    )}
+                    <span className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold border ${
+                      selectedExchange === 'xt'
+                        ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                        : 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'
+                    }`}>
+                      {selectedExchange.toUpperCase()}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="bg-[#151c29] p-4 rounded-xl border border-[#2b3a52] text-xs text-gray-300 space-y-3 mb-5">
+                  {/* کارت‌های آمار واقعی دیتابیس (نماد، کندل، حجم واقعی، چانک‌ها) */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                    <div className="bg-[#0e131d] p-2.5 rounded-lg border border-[#202b3d]">
+                      <span className="text-gray-400 text-[10px] block mb-0.5">تعداد نماد در دیتابیس:</span>
+                      <span className="text-white font-extrabold font-mono text-sm">
+                        {(ds?.symbolCount ?? cachedCount ?? 0).toLocaleString()} نماد
+                      </span>
+                      {typeof ds?.lastResultsCount === 'number' && ds.lastResultsCount > 0 && (
+                        <span className="text-[10px] text-gray-400 block mt-0.5 font-mono">
+                          آخرین اسکن: {ds.lastResultsCount} ارز
+                        </span>
+                      )}
+                    </div>
+                    <div className="bg-[#0e131d] p-2.5 rounded-lg border border-[#202b3d]">
+                      <span className="text-gray-400 text-[10px] block mb-0.5">مجموع کندل‌ها:</span>
+                      <span className="text-emerald-300 font-extrabold font-mono text-sm">
+                        {Number(ds?.totalCandles || 0).toLocaleString()}
+                      </span>
+                      <span className="text-[10px] text-gray-400 block mt-0.5 font-mono">
+                        تایم‌فریم {timeframe}
+                      </span>
+                    </div>
+                    <div className="bg-[#0e131d] p-2.5 rounded-lg border border-[#202b3d]">
+                      <span className="text-gray-400 text-[10px] block mb-0.5">حجم واقعی دیتابیس:</span>
+                      <span className="text-cyan-300 font-extrabold font-mono text-sm">
+                        {realSizeFormatted}
+                      </span>
+                      {ds?.headerSizeFormatted && ds.headerSizeFormatted !== realSizeFormatted && (
+                        <span className="text-[10px] text-amber-300 block mt-0.5 font-mono">
+                          هدر قبلی: {ds.headerSizeFormatted}
+                        </span>
+                      )}
+                    </div>
+                    <div className="bg-[#0e131d] p-2.5 rounded-lg border border-[#202b3d]">
+                      <span className="text-gray-400 text-[10px] block mb-0.5">چانک‌های PostgreSQL:</span>
+                      <span className={`font-extrabold font-mono text-sm ${dbChunksCount === 0 ? 'text-rose-400' : 'text-amber-300'}`}>
+                        {dbChunksCount} چانک
+                      </span>
+                      <span className="text-[10px] text-gray-400 block mt-0.5 font-mono">
+                        کش دیسک: {diskChunksCount} چانک
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* بنر هشدار مغایرت یا خالی بودن چانک‌ها */}
+                  {integrityStatus !== 'OK' && (
+                    <div className={`p-3 rounded-xl border text-xs space-y-1.5 ${
+                      integrityStatus === 'EMPTY_CHUNKS'
+                        ? 'bg-rose-950/60 border-rose-500/60 text-rose-200'
+                        : 'bg-amber-950/50 border-amber-500/50 text-amber-200'
+                    }`}>
+                      <div className="flex items-center gap-1.5 font-extrabold">
+                        <AlertTriangle className={`w-4 h-4 shrink-0 ${integrityStatus === 'EMPTY_CHUNKS' ? 'text-rose-400' : 'text-amber-400'}`} />
+                        <span>
+                          {integrityStatus === 'EMPTY_CHUNKS'
+                            ? 'خطای بحرانی: چانک‌های کندل در PostgreSQL خالی است!'
+                            : 'هشدار مغایرت بین آمار هدر، نتایج اسکن و چانک‌های دیتابیس'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] leading-relaxed opacity-95">
+                        {ds?.integrityMessage}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* دکمه و خروجی ممیزی عمیق و همگام‌سازی واقعی چانک‌ها */}
+                  <div className="bg-[#0e131d] p-3 rounded-xl border border-cyan-500/30 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div>
+                        <div className="text-xs font-extrabold text-cyan-300">
+                          ممیزی و همگام‌سازی واقعی چانک‌های PostgreSQL
+                        </div>
+                        <div className="text-[10px] text-gray-400">
+                          تک‌تک چانک‌های candle_chunks را بدون فشار رم می‌شمارد، آمار اشتباه را اصلاح می‌کند و می‌گوید نیاز به پاکسازی هست یا خیر.
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={isAuditingDataset}
+                        onClick={handleAuditCurrentDataset}
+                        className="px-3 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 disabled:opacity-60 text-cyan-200 border border-cyan-400/50 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all shrink-0"
+                      >
+                        {isAuditingDataset ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>در حال ممیزی چانک‌ها...</span>
+                          </>
+                        ) : (
+                          <>
+                            <RefreshCw className="w-3.5 h-3.5" />
+                            <span>🔍 ممیزی واقعی چانک‌ها</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    {datasetAuditError && (
+                      <div className="p-2 rounded-lg bg-rose-950/60 border border-rose-500/40 text-rose-200 text-[11px]">
+                        ⚠️ {datasetAuditError}
+                      </div>
+                    )}
+
+                    {datasetAuditReport && datasetAuditReport.exists && (
+                      <div className={`p-3 rounded-lg border text-[11px] space-y-2 ${
+                        datasetAuditReport.verdict === 'NEEDS_CLEANUP'
+                          ? 'bg-rose-950/50 border-rose-500/50 text-rose-100'
+                          : datasetAuditReport.verdict === 'REPAIRED'
+                            ? 'bg-amber-950/40 border-amber-500/50 text-amber-100'
+                            : 'bg-emerald-950/40 border-emerald-500/50 text-emerald-100'
+                      }`}>
+                        <div className="flex items-center justify-between flex-wrap gap-1.5">
+                          <span className="font-extrabold flex items-center gap-1.5">
+                            {datasetAuditReport.verdict === 'NEEDS_CLEANUP' ? (
+                              <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                            ) : (
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                            )}
+                            <span>
+                              {datasetAuditReport.verdict === 'NEEDS_CLEANUP'
+                                ? 'نتیجه ممیزی: نیاز به پاکسازی / دانلود مجدد'
+                                : datasetAuditReport.verdict === 'REPAIRED'
+                                  ? 'نتیجه ممیزی: داده‌ها سالم است (آمار هدر اصلاح و همگام‌سازی شد)'
+                                  : 'نتیجه ممیزی: دیتابیس ۱۰۰٪ سالم و آمار دقیق است'}
+                            </span>
+                          </span>
+                          <span className="font-mono text-[10px] opacity-80">
+                            {((datasetAuditReport.durationMs || 0) / 1000).toFixed(1)}s
+                          </span>
+                        </div>
+
+                        {datasetAuditReport.verified && (
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-[10px] font-mono bg-black/25 p-2 rounded-lg">
+                            <div>نماد سالم واقعی: <strong className="text-white">{datasetAuditReport.verified.validSymbols}</strong>{datasetAuditReport.verified.shortSymbols > 0 ? ` (+${datasetAuditReport.verified.shortSymbols} کوتاه)` : ''}</div>
+                            <div>کندل واقعی: <strong className="text-white">{Number(datasetAuditReport.verified.totalCandles || 0).toLocaleString()}</strong></div>
+                            <div>حجم واقعی: <strong className="text-white">{datasetAuditReport.verified.sizeFormatted}</strong></div>
+                            <div>بازه واقعی: <strong className="text-white">{datasetAuditReport.verified.days} روز</strong></div>
+                            <div>تاریخ واقعی: <strong className="text-white">{datasetAuditReport.verified.startDateFormatted || '—'} تا {datasetAuditReport.verified.endDateFormatted || '—'}</strong></div>
+                            <div>چانک سالم/خراب: <strong className="text-white">{datasetAuditReport.verified.dbChunksCount}</strong> / <strong className={datasetAuditReport.verified.corruptChunks > 0 ? 'text-rose-300' : 'text-emerald-300'}>{datasetAuditReport.verified.corruptChunks}</strong></div>
+                          </div>
+                        )}
+
+                        <p className="leading-relaxed font-medium">
+                          {datasetAuditReport.recommendation}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
                   {/* ردیف صرافی و بازه */}
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="bg-[#0e131d] p-2.5 rounded-lg border border-[#202b3d]">
@@ -4692,7 +4905,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                       <span className="text-gray-400 text-[11px] block mb-1">بازه زمانی تست:</span>
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="text-amber-300 font-bold font-mono">
-                          {timeRangeLabel || `${cov?.reqDays || 90} روزه`}
+                          {timeRangeLabel || (cov?.reqDays > 0 ? `${cov.reqDays} روزه` : 'بازه انتخابی')}
                         </span>
                         {(cov?.reqStartDateFormatted || cov?.reqEndDateFormatted) && (
                           <span className="text-[10px] text-gray-400 font-mono">
@@ -4701,15 +4914,21 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                         )}
                       </div>
                       <div className="mt-1 pt-1 border-t border-[#1a2332] text-[10px] font-mono">
-                        <span className="text-gray-400">موجودی دیتابیس: </span>
-                        <span className="text-cyan-300 font-bold">{cov?.dbDays || 90} روز</span>
+                        <span className="text-gray-400">موجودی واقعی دیتابیس: </span>
+                        <span className={dbDays > 0 ? 'text-cyan-300 font-bold' : 'text-amber-300 font-bold'}>
+                          {dbDays > 0 ? `${dbDays} روز` : 'نامشخص (نیاز به ممیزی)'}
+                        </span>
                         {(cov?.dbStartDateFormatted || cov?.dbEndDateFormatted) && (
                           <span className="text-gray-400 mr-1">({cov.dbStartDateFormatted} تا {cov.dbEndDateFormatted})</span>
                         )}
                       </div>
-                      {missingEarlierDays > 0 ? (
+                      {dbDays === 0 ? (
                         <span className="text-amber-400 text-[10px] block mt-1 font-bold">
-                          ⚠️ دیتابیس {cov?.dbDays} روز دارد ({missingEarlierDays} روز کسری تاریخچه)
+                          ⚠️ تاریخ شروع/پایان ثبت نشده — دکمه «ممیزی واقعی چانک‌ها» را بزنید
+                        </span>
+                      ) : missingEarlierDays > 0 ? (
+                        <span className="text-amber-400 text-[10px] block mt-1 font-bold">
+                          ⚠️ دیتابیس {dbDays} روز دارد ({missingEarlierDays} روز کسری تاریخچه)
                         </span>
                       ) : (
                         <span className="text-emerald-400 text-[10px] block mt-1 font-bold">
@@ -4727,7 +4946,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                         <span>میزان پوشش نمادهای انتخابی:</span>
                       </span>
                       <span className="font-mono text-emerald-400 font-bold">
-                        {availableCount} از {reqCount} نماد ({coveragePct}٪)
+                        {availableCount} از {reqCount || availableCount} نماد ({coveragePct}٪)
                       </span>
                     </div>
 
@@ -4786,6 +5005,30 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                 </div>
 
                 <div className="flex flex-col gap-2.5">
+                  {needsCleanupRecommended && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsRescanPromptOpen(false);
+                        handleClearCandleCache();
+                      }}
+                      className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-extrabold text-xs flex items-center justify-between shadow-lg shadow-rose-500/25 cursor-pointer transition-all"
+                    >
+                      <div className="flex items-center gap-2 text-right">
+                        <Trash2 className="w-4 h-4 shrink-0" />
+                        <div>
+                          <div>🗑️ پاکسازی کامل دیتای خراب/ناقص این بازه از دیتابیس [پیشنهادی]</div>
+                          <div className="text-[10px] text-rose-100 font-normal">
+                            چانک‌های ناقص این بازه پاک می‌شوند تا بتوانید دانلود تمیز و کامل از صفر انجام دهید.
+                          </div>
+                        </div>
+                      </div>
+                      <span className="px-2 py-0.5 rounded bg-black/25 text-white font-mono text-[10px] font-bold">
+                        پاکسازی
+                      </span>
+                    </button>
+                  )}
+
                   {/* اگر نماد کسری وجود ندارد: اسکن سریع با دیتابیس گزینه پیشنهادی اصلی است */}
                   {missingCount === 0 ? (
                     <>
@@ -4805,7 +5048,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                           </div>
                         </div>
                         <span className="px-2 py-0.5 rounded bg-black/20 text-black font-mono text-[10px] font-bold">
-                          فوری (۱ ثانیه)
+                          فوری
                         </span>
                       </button>
 
@@ -4860,7 +5103,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
                           </div>
                         </div>
                         <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 font-mono text-[10px]">
-                          فوری (۱ ثانیه)
+                          فوری
                         </span>
                       </button>
 

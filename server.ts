@@ -35,6 +35,7 @@ import {
   initDatabase,
   ensureDatabaseInitialized,
   testDatabaseConnection,
+  withDbRetry,
   hashPassword,
   verifyPasswordHash,
   pool,
@@ -3782,7 +3783,9 @@ function writeLocalDatasetChunk(datasetId: string, chunkIndex: number, items: an
     const dir = path.join(getCandleChunksBaseDir(), datasetId);
     fs.mkdirSync(dir, { recursive: true });
     const filePath = path.join(dir, `chunk_${String(chunkIndex).padStart(5, '0')}.json`);
-    fs.writeFileSync(filePath, JSON.stringify(items));
+    const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(items));
+    fs.renameSync(tmpPath, filePath);
   } catch {}
 }
 
@@ -3792,6 +3795,24 @@ function finalizeLocalDatasetCompleteFlag(datasetId: string, chunkCount: number)
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, '_complete.flag'), String(chunkCount));
   } catch {}
+}
+
+function countLocalDatasetChunks(datasetId: string): number {
+  const dir = path.join(getCandleChunksBaseDir(), datasetId);
+  if (!fs.existsSync(dir)) return 0;
+  try {
+    const files = fs.readdirSync(dir).filter((f) => f.startsWith('chunk_') && f.endsWith('.json'));
+    let validCount = 0;
+    for (const f of files) {
+      try {
+        const st = fs.statSync(path.join(dir, f));
+        if (st.size > 2) validCount++;
+      } catch {}
+    }
+    return validCount;
+  } catch {
+    return 0;
+  }
 }
 
 function readLocalDatasetChunks(datasetId: string, onlyIndices?: number[]): { chunkIndex: number; items: any[] }[] {
@@ -4403,7 +4424,8 @@ async function runServerBacktestCycle(params: {
       openPositionsUnrealizedPnl: metrics.openPositionsUnrealizedPnl || 0,
       openPositionsFee: metrics.openPositionsFee || 0,
       lastTradeStatus: lastTrade?.status,
-      trades,
+      // Keep resultItem lightweight (~250 bytes/symbol); all finished trades are carried once in serverBacktestState.allTrades
+      trades: [],
     };
 
     const finishedTrades = (trades || [])
@@ -4786,6 +4808,7 @@ async function runServerBacktestCycle(params: {
       let chunkIdx = 0;
       let batchToSave: ServerCandleEntry[] = [];
       let isFlushing = false;
+      let consecutiveDbChunkErrors = 0;
       const queue = [...targetSymbols];
       const concurrency = Math.min(Math.max(1, Number(workersCount) || 8), 12, targetSymbols.length);
       let completedCount = 0;
@@ -4859,24 +4882,39 @@ async function runServerBacktestCycle(params: {
 
             if (isDbAvailable) {
               try {
-                // 1. Insert chunk
-                await pool.query(
-                  `INSERT INTO candle_chunks (dataset_id, chunk_index, items_json, created_at)
-                   VALUES ($1, $2, $3, NOW());`,
-                  [datasetId, thisChunkIdx, JSON.stringify(items)]
+                const payloadStr = JSON.stringify(items);
+                // 1. Insert chunk with automatic retry on transient PG timeout
+                await withDbRetry(
+                  () =>
+                    pool.query(
+                      `INSERT INTO candle_chunks (dataset_id, chunk_index, items_json, created_at)
+                       VALUES ($1, $2, $3, NOW());`,
+                      [datasetId, thisChunkIdx, payloadStr]
+                    ),
+                  2,
+                  1000
                 );
 
                 // 2. Incrementally update candle_datasets so PostgreSQL ALWAYS shows exact progress and candles count
-                await pool.query(
-                  `UPDATE candle_datasets 
-                   SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
-                       status = 'DOWNLOADING', updated_at = NOW()
-                   WHERE id = $6;`,
-                  [savedSymbolsCount, savedTotalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, datasetId]
+                await withDbRetry(
+                  () =>
+                    pool.query(
+                      `UPDATE candle_datasets 
+                       SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
+                           status = 'DOWNLOADING', updated_at = NOW()
+                       WHERE id = $6;`,
+                      [savedSymbolsCount, savedTotalCandles, symbolsListJson, dataSizeBytes, dataSizeFormatted, datasetId]
+                    ),
+                  2,
+                  1000
                 );
+                consecutiveDbChunkErrors = 0;
               } catch (err: any) {
-                console.warn('[Chunk & Dataset Save Warning]:', err.message);
-                isDbAvailable = false;
+                consecutiveDbChunkErrors++;
+                console.warn(`[Chunk & Dataset Save Warning #${consecutiveDbChunkErrors}]:`, err.message);
+                if (consecutiveDbChunkErrors >= 5) {
+                  isDbAvailable = false;
+                }
               }
             }
           }
@@ -4976,22 +5014,32 @@ async function runServerBacktestCycle(params: {
         skippedSymbols: serverBacktestState.skippedSymbols,
         requestedSymbolsCount: serverBacktestState.requestedSymbolsCount,
       });
-      const localStopChunks = readLocalDatasetChunks(datasetId);
-      if (localStopChunks.length > 0) {
-        finalizeLocalDatasetCompleteFlag(datasetId, localStopChunks.length);
-        upsertLocalDatasetMeta({
-          id: datasetId,
-          symbol_count: savedSymbolsCount,
-          total_candles: totalCandles,
-          symbols_list: symbolsListJson,
-          data_size_bytes: dataSizeBytes,
-          data_size_formatted: dataSizeFormatted,
-          status: 'COMPLETED',
-          results_json: stoppedResultsJson,
-          strategy_id: strategyId,
-          strategy_config_json: JSON.stringify(cfg),
-          chunk_count: localStopChunks.length,
-        });
+      const localStopChunkCount = countLocalDatasetChunks(datasetId);
+      if (localStopChunkCount > 0) {
+        // NEVER write _complete.flag on a stopped/partial scan — otherwise future runs would think only partial chunks exist!
+        if (forceRedownload) {
+          upsertLocalDatasetMeta({
+            id: datasetId,
+            symbol_count: savedSymbolsCount,
+            total_candles: totalCandles,
+            symbols_list: symbolsListJson,
+            data_size_bytes: dataSizeBytes,
+            data_size_formatted: dataSizeFormatted,
+            status: 'COMPLETED',
+            results_json: stoppedResultsJson,
+            strategy_id: strategyId,
+            strategy_config_json: JSON.stringify(cfg),
+            chunk_count: localStopChunkCount,
+          });
+        } else {
+          upsertLocalDatasetMeta({
+            id: datasetId,
+            status: 'COMPLETED',
+            results_json: stoppedResultsJson,
+            strategy_id: strategyId,
+            strategy_config_json: JSON.stringify(cfg),
+          });
+        }
       }
       if (isDbAvailable) {
         try {
@@ -5074,26 +5122,38 @@ async function runServerBacktestCycle(params: {
       requestedSymbolsCount: serverBacktestState.requestedSymbolsCount,
     });
 
-    const localFinalChunks = readLocalDatasetChunks(datasetId);
-    if (localFinalChunks.length > 0) {
-      finalizeLocalDatasetCompleteFlag(datasetId, localFinalChunks.length);
-      upsertLocalDatasetMeta({
-        id: datasetId,
-        timeframe,
-        exchange: effectiveExchange,
-        start_time: startTime ? String(startTime) : '0',
-        end_time: endTime ? String(endTime) : '0',
-        symbol_count: savedSymbolsCount,
-        total_candles: totalCandles,
-        symbols_list: symbolsListJson,
-        data_size_bytes: dataSizeBytes,
-        data_size_formatted: dataSizeFormatted,
-        status: 'COMPLETED',
-        results_json: resultsJson,
-        strategy_id: strategyId,
-        strategy_config_json: JSON.stringify(persistedCfg),
-        chunk_count: localFinalChunks.length,
-      });
+    const localFinalChunkCount = countLocalDatasetChunks(datasetId);
+    if (localFinalChunkCount > 0) {
+      // Only write _complete.flag here when this run freshly downloaded the full dataset;
+      // cached runs rely on ensureDatasetChunksCachedOnDisk's DB-verified chunk count so _complete.flag is never poisoned!
+      if (forceRedownload) {
+        finalizeLocalDatasetCompleteFlag(datasetId, localFinalChunkCount);
+        upsertLocalDatasetMeta({
+          id: datasetId,
+          timeframe,
+          exchange: effectiveExchange,
+          start_time: startTime ? String(startTime) : '0',
+          end_time: endTime ? String(endTime) : '0',
+          symbol_count: savedSymbolsCount,
+          total_candles: totalCandles,
+          symbols_list: symbolsListJson,
+          data_size_bytes: dataSizeBytes,
+          data_size_formatted: dataSizeFormatted,
+          status: 'COMPLETED',
+          results_json: resultsJson,
+          strategy_id: strategyId,
+          strategy_config_json: JSON.stringify(persistedCfg),
+          chunk_count: localFinalChunkCount,
+        });
+      } else {
+        upsertLocalDatasetMeta({
+          id: datasetId,
+          status: 'COMPLETED',
+          results_json: resultsJson,
+          strategy_id: strategyId,
+          strategy_config_json: JSON.stringify(persistedCfg),
+        });
+      }
     }
 
     // 4. Persist final results in PostgreSQL safely (non-blocking)
@@ -5233,8 +5293,8 @@ async function computeDatasetCoverage(
 
   const reqDays = (reqStart > 0 && reqEnd > reqStart)
     ? Math.round((reqEnd - reqStart) / ONE_DAY_MS)
-    : (dbEnd > dbStart ? Math.round((dbEnd - dbStart) / ONE_DAY_MS) : 90);
-  const dbDays = (dbStart > 0 && dbEnd > dbStart) ? Math.round((dbEnd - dbStart) / ONE_DAY_MS) : 90;
+    : (dbEnd > dbStart ? Math.round((dbEnd - dbStart) / ONE_DAY_MS) : 0);
+  const dbDays = (dbStart > 0 && dbEnd > dbStart) ? Math.round((dbEnd - dbStart) / ONE_DAY_MS) : 0;
 
   const formatFa = (ts: number) => {
     if (!ts || isNaN(ts) || ts <= 0) return '';
@@ -5362,33 +5422,130 @@ async function handleRangeStatusQuery(params: {
   const row = matchedRow;
   let datasetId = row.id;
 
-  // Self-healing: if dataset exists in PostgreSQL but total_candles is 0, auto-calculate from chunks!
-  if (!row.total_candles || Number(row.total_candles) === 0) {
+  const formatBytesHuman = (bytes: number): string => {
+    const b = Math.max(0, Number(bytes) || 0);
+    if (b >= 1073741824) return `${(b / 1073741824).toFixed(2)} GB`;
+    if (b >= 1048576) return `${(b / 1048576).toFixed(1)} MB`;
+    if (b >= 1024) return `${(b / 1024).toFixed(0)} KB`;
+    return `${b} B`;
+  };
+
+  // Always verify actual candle_chunks stats in PostgreSQL (fast indexed aggregate query)
+  let dbChunksCount = 0;
+  let dbChunkRowsCount = 0;
+  let dbRealBytes = 0;
+  let chunkStatsVerified = false;
+  const diskChunksCount = countLocalDatasetChunks(datasetId);
+
+  try {
+    const chStatRes = await pool.query(
+      `SELECT COUNT(DISTINCT chunk_index)::int AS db_chunks,
+              COUNT(*)::int AS db_chunk_rows,
+              COALESCE(SUM(length(items_json)), 0)::bigint AS db_json_bytes
+       FROM candle_chunks
+       WHERE dataset_id = $1;`,
+      [datasetId]
+    );
+    if (chStatRes.rows.length > 0) {
+      dbChunksCount = Number(chStatRes.rows[0].db_chunks || 0);
+      dbChunkRowsCount = Number(chStatRes.rows[0].db_chunk_rows || 0);
+      dbRealBytes = Number(chStatRes.rows[0].db_json_bytes || 0);
+      chunkStatsVerified = true;
+    }
+  } catch (statErr: any) {
+    console.warn('[Range-Status Chunk Stat Warning]:', statErr.message);
+  }
+
+  // Fallback to local disk chunk sizes if DB wasn't reachable
+  if (!chunkStatsVerified && diskChunksCount > 0) {
     try {
-      const chunksRes = await pool.query(`SELECT items_json FROM candle_chunks WHERE dataset_id = $1;`, [datasetId]);
-      if (chunksRes.rows.length > 0) {
-        let healedCandles = 0;
-        const healedSymbols = new Set<string>();
-        for (const cRow of chunksRes.rows) {
-          try {
-            const items = JSON.parse(cRow.items_json);
-            for (const it of items) {
-              if (it.symbol) healedSymbols.add(it.symbol);
-              if (Array.isArray(it.tuples)) healedCandles += it.tuples.length;
-            }
-          } catch {}
+      const dir = path.join(getCandleChunksBaseDir(), datasetId);
+      const files = fs.readdirSync(dir).filter((f) => f.startsWith('chunk_') && f.endsWith('.json'));
+      let localBytes = 0;
+      for (const f of files) {
+        try {
+          localBytes += fs.statSync(path.join(dir, f)).size;
+        } catch {}
+      }
+      dbChunksCount = diskChunksCount;
+      dbRealBytes = localBytes;
+    } catch {}
+  }
+
+  // Self-healing: if dataset exists in PostgreSQL with chunks, but total_candles or symbol_count is 0, auto-calculate in small safe batches (zero OOM)
+  if ((!row.total_candles || Number(row.total_candles) === 0 || !row.symbol_count || Number(row.symbol_count) === 0) && dbChunksCount > 0) {
+    try {
+      const idxRes = await pool.query(
+        `SELECT DISTINCT chunk_index FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC;`,
+        [datasetId]
+      );
+      const indices: number[] = idxRes.rows.map((r: any) => Number(r.chunk_index));
+      if (indices.length > 0) {
+        const healedSymbolCounts = new Map<string, number>();
+        let healedMinTs = Infinity;
+        let healedMaxTs = 0;
+        let healedJsonBytes = 0;
+        for (let b = 0; b < indices.length; b += 3) {
+          const slice = indices.slice(b, b + 3);
+          const chunksRes = await pool.query(
+            `SELECT DISTINCT ON (chunk_index) chunk_index, items_json, length(items_json) AS byte_len
+             FROM candle_chunks
+             WHERE dataset_id = $1 AND chunk_index = ANY($2::int[])
+             ORDER BY chunk_index ASC, id DESC;`,
+            [datasetId, slice]
+          );
+          for (const cRow of chunksRes.rows) {
+            healedJsonBytes += Number(cRow.byte_len || 0);
+            try {
+              const items = JSON.parse(cRow.items_json);
+              if (!Array.isArray(items)) continue;
+              for (const it of items) {
+                const sym = it?.symbol ? String(it.symbol).trim().toUpperCase() : '';
+                const tuples = Array.isArray(it?.tuples) ? it.tuples : [];
+                if (sym && tuples.length > 0) {
+                  const prev = healedSymbolCounts.get(sym) || 0;
+                  if (tuples.length > prev) healedSymbolCounts.set(sym, tuples.length);
+                  const firstT = Number(tuples[0]?.[0] || 0);
+                  const lastT = Number(tuples[tuples.length - 1]?.[0] || 0);
+                  const normFirst = firstT > 0 && firstT < 1e11 ? firstT * 1000 : firstT;
+                  const normLast = lastT > 0 && lastT < 1e11 ? lastT * 1000 : lastT;
+                  if (normFirst > 0 && normFirst < healedMinTs) healedMinTs = normFirst;
+                  if (normLast > healedMaxTs) healedMaxTs = normLast;
+                }
+              }
+            } catch {}
+          }
         }
+        let healedCandles = 0;
+        for (const c of healedSymbolCounts.values()) healedCandles += c;
         if (healedCandles > 0) {
           row.total_candles = healedCandles;
-          row.symbol_count = healedSymbols.size;
-          const dataSizeBytes = Math.round(healedCandles * 48);
-          row.data_size_formatted = dataSizeBytes > 1048576 ? `${(dataSizeBytes / 1048576).toFixed(1)} MB` : `${(dataSizeBytes / 1024).toFixed(0)} KB`;
-          row.symbols_list = JSON.stringify(Array.from(healedSymbols));
+          row.symbol_count = healedSymbolCounts.size;
+          const realBytes = healedJsonBytes > 0 ? healedJsonBytes : (dbRealBytes > 0 ? dbRealBytes : Math.round(healedCandles * 48));
+          dbRealBytes = realBytes;
+          row.data_size_bytes = realBytes;
+          row.data_size_formatted = formatBytesHuman(realBytes);
+          row.symbols_list = JSON.stringify(Array.from(healedSymbolCounts.keys()));
+          if (healedMinTs < Infinity && healedMaxTs > healedMinTs) {
+            row.start_time = String(healedMinTs);
+            row.end_time = String(healedMaxTs);
+          }
           await pool.query(
             `UPDATE candle_datasets 
-             SET total_candles = $1, symbol_count = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5, status = 'COMPLETED', updated_at = NOW() 
-             WHERE id = $6;`,
-            [healedCandles, healedSymbols.size, row.symbols_list, dataSizeBytes, row.data_size_formatted, datasetId]
+             SET total_candles = $1, symbol_count = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
+                 start_time = COALESCE(NULLIF($6::bigint, 0), start_time), end_time = COALESCE(NULLIF($7::bigint, 0), end_time),
+                 status = 'COMPLETED', updated_at = NOW() 
+             WHERE id = $8;`,
+            [
+              healedCandles,
+              healedSymbolCounts.size,
+              row.symbols_list,
+              realBytes,
+              row.data_size_formatted,
+              healedMinTs < Infinity ? healedMinTs : 0,
+              healedMaxTs > 0 ? healedMaxTs : 0,
+              datasetId,
+            ]
           ).catch(() => {});
         }
       }
@@ -5420,6 +5577,31 @@ async function handleRangeStatusQuery(params: {
 
   const coverage = await computeDatasetCoverage(row, exchange, rawSymbols, startTime, endTime);
 
+  const reportedSymbolCount = Number(row.symbol_count || 0);
+  const reportedTotalCandles = Number(row.total_candles || 0);
+  const lastResultsCount = Array.isArray(parsedResults) ? parsedResults.length : 0;
+  const dbRealSizeFormatted = dbRealBytes > 0 ? formatBytesHuman(dbRealBytes) : (row.data_size_formatted || '0 KB');
+
+  let integrityStatus: 'OK' | 'EMPTY_CHUNKS' | 'POSSIBLE_MISMATCH' = 'OK';
+  let integrityMessage = '';
+
+  if (chunkStatsVerified && dbChunksCount === 0 && (reportedSymbolCount > 0 || reportedTotalCandles > 0)) {
+    integrityStatus = 'EMPTY_CHUNKS';
+    integrityMessage = `هدر دیتابیس ${reportedSymbolCount} نماد و ${reportedTotalCandles.toLocaleString()} کندل نشان می‌دهد ولی جدول چانک‌های کندل (candle_chunks) خالی است (۰ چانک)! این دیتاست باید پاکسازی و دوباره دانلود شود.`;
+  } else if (chunkStatsVerified && dbChunksCount === 0 && diskChunksCount === 0) {
+    integrityStatus = 'EMPTY_CHUNKS';
+    integrityMessage = 'هیچ چانک کندلی در دیتابیس برای این بازه ذخیره نشده است.';
+  } else if (chunkStatsVerified && dbChunksCount > 0 && reportedSymbolCount > dbChunksCount * 12) {
+    integrityStatus = 'POSSIBLE_MISMATCH';
+    integrityMessage = `مغایرت احتمالی: هدر دیتابیس ${reportedSymbolCount} نماد ثبت کرده ولی فقط ${dbChunksCount} چانک (${dbRealSizeFormatted}) در PostgreSQL موجود است. دکمه «ممیزی واقعی چانک‌ها» را بزنید.`;
+  } else if (chunkStatsVerified && dbRealBytes > 0 && reportedTotalCandles > 50000 && dbRealBytes < reportedTotalCandles * 15) {
+    integrityStatus = 'POSSIBLE_MISMATCH';
+    integrityMessage = `حجم واقعی چانک‌های PostgreSQL (${dbRealSizeFormatted}) با تعداد کندل ثبت‌شده در هدر (${reportedTotalCandles.toLocaleString()}) همخوانی ندارد. ممیزی واقعی را اجرا کنید.`;
+  } else if (lastResultsCount > 0 && reportedSymbolCount > 20 && lastResultsCount < Math.floor(reportedSymbolCount * 0.85)) {
+    integrityStatus = 'POSSIBLE_MISMATCH';
+    integrityMessage = `در آخرین اسکن فقط ${lastResultsCount} نماد از ${reportedSymbolCount} نماد ثبت‌شده بررسی شده است (${dbChunksCount} چانک واقعی با حجم ${dbRealSizeFormatted} در دیتابیس موجود است). برای اطمینان از سلامت چانک‌ها ممیزی واقعی را اجرا کنید.`;
+  }
+
   return {
     success: true,
     exists: true,
@@ -5435,7 +5617,16 @@ async function handleRangeStatusQuery(params: {
       endTime: row.end_time,
       symbolCount: row.symbol_count,
       totalCandles: row.total_candles,
-      dataSizeFormatted: row.data_size_formatted,
+      dataSizeFormatted: dbRealBytes > 0 ? dbRealSizeFormatted : (row.data_size_formatted || '0 KB'),
+      headerSizeFormatted: row.data_size_formatted || '',
+      dbChunksCount,
+      dbChunkRowsCount,
+      diskChunksCount,
+      dbRealBytes,
+      dbRealSizeFormatted,
+      integrityStatus,
+      integrityMessage,
+      lastResultsCount,
       symbolsList: row.symbols_list ? (typeof row.symbols_list === 'string' ? JSON.parse(row.symbols_list) : row.symbols_list) : [],
       status: row.status,
       updatedAt: row.updated_at,
@@ -5573,7 +5764,10 @@ app.post('/api/backtest/reset', (_req, res) => {
 
 // 6.5.3 Get Current Server Backtest Status & Live Progress
 app.get('/api/backtest/status', (req, res) => {
-  const includeAllTrades = req.query.includeTrades === 'true' || (req.query.includeTrades !== 'false' && serverBacktestState.allTrades.length <= 500);
+  const includeAllTrades =
+    req.query.includeTrades === 'true' ||
+    (req.query.includeTrades !== 'false' && serverBacktestState.allTrades.length <= 2500) ||
+    (serverBacktestState.isScanning && serverBacktestState.allTrades.length <= 2500);
   res.json({
     success: true,
     state: {
@@ -5599,6 +5793,400 @@ app.get('/api/backtest/status', (req, res) => {
       skippedSymbols: serverBacktestState.skippedSymbols || [],
     },
   });
+});
+
+// 6.5.3.1 Dataset Integrity & Diagnostics Endpoint (verifies PostgreSQL chunks vs disk cache)
+app.get('/api/backtest/dataset-diagnostics', async (req, res) => {
+  try {
+    const requestedId = req.query.datasetId?.toString().trim() || serverBacktestState.datasetId || '';
+    const initRes = await ensureDatabaseInitialized();
+    const out: any = {
+      success: true,
+      dbAvailable: initRes.success,
+      requestedDatasetId: requestedId || null,
+      datasets: [] as any[],
+    };
+    if (initRes.success) {
+      const dsQuery = requestedId
+        ? await pool.query(
+            `SELECT id, name, exchange, timeframe, start_time, end_time, symbol_count, total_candles, data_size_formatted, status, strategy_id, length(results_json) as results_json_len, updated_at
+             FROM candle_datasets WHERE id = $1 LIMIT 1;`,
+            [requestedId]
+          )
+        : await pool.query(
+            `SELECT id, name, exchange, timeframe, start_time, end_time, symbol_count, total_candles, data_size_formatted, status, strategy_id, length(results_json) as results_json_len, updated_at
+             FROM candle_datasets ORDER BY updated_at DESC LIMIT 10;`
+          );
+      for (const row of dsQuery.rows) {
+        const chRes = await pool.query(
+          `SELECT COUNT(*)::int as db_chunks, COALESCE(SUM(length(items_json)), 0)::bigint as total_json_bytes,
+                  COALESCE(MAX(length(items_json)), 0)::int as max_chunk_bytes
+           FROM candle_chunks WHERE dataset_id = $1;`,
+          [row.id]
+        );
+        const diskDir = path.join(getCandleChunksBaseDir(), row.id);
+        const diskChunks = countLocalDatasetChunks(row.id);
+        const completeFlagExists = fs.existsSync(path.join(diskDir, '_complete.flag'));
+        const completeFlagVal = completeFlagExists ? fs.readFileSync(path.join(diskDir, '_complete.flag'), 'utf8').trim() : null;
+        out.datasets.push({
+          ...row,
+          dbChunks: chRes.rows[0]?.db_chunks || 0,
+          dbJsonBytes: Number(chRes.rows[0]?.total_json_bytes || 0),
+          maxChunkBytes: Number(chRes.rows[0]?.max_chunk_bytes || 0),
+          diskChunks,
+          completeFlagVal,
+          needsDiskResync: (chRes.rows[0]?.db_chunks || 0) > diskChunks,
+        });
+      }
+    }
+    res.json(out);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 6.5.3.2 Deep Streaming Audit & Auto-Repair of PostgreSQL candle_chunks (O(1) RAM, safe for 829MB+)
+app.post('/api/backtest/audit-dataset', async (req, res) => {
+  const startedAt = Date.now();
+  try {
+    const {
+      datasetId: requestedId,
+      exchange: rawExchange,
+      timeframe: rawTimeframe,
+      startTime: rawStartTime,
+      endTime: rawEndTime,
+    } = req.body || {};
+
+    const initRes = await ensureDatabaseInitialized();
+    if (!initRes.success) {
+      return res.status(503).json({
+        success: false,
+        dbAvailable: false,
+        error: 'اتصال به دیتابیس PostgreSQL برقرار نیست. لطفاً اتصال سرور دیتابیس را بررسی کنید.',
+      });
+    }
+
+    const exchange = (rawExchange || 'xt').toString().toLowerCase();
+    const timeframe = (rawTimeframe || '5m').toString();
+    const startTime = rawStartTime ? Number(rawStartTime) : null;
+    const endTime = rawEndTime ? Number(rawEndTime) : null;
+
+    let row: any = null;
+    if (requestedId && String(requestedId).trim()) {
+      const exactRes = await withDbRetry(
+        () => pool.query(`SELECT * FROM candle_datasets WHERE id = $1 LIMIT 1;`, [String(requestedId).trim()]),
+        3,
+        600
+      );
+      row = exactRes.rows[0] || null;
+    }
+    if (!row) {
+      row = await findBestMatchingDataset({
+        exchange,
+        timeframe,
+        startTime,
+        endTime,
+        explicitDatasetId: requestedId ? String(requestedId).trim() : null,
+      });
+    }
+
+    if (!row) {
+      return res.json({
+        success: true,
+        exists: false,
+        verdict: 'EMPTY',
+        needsCleanup: false,
+        repaired: false,
+        recommendation: 'هیچ دیتاستی برای این صرافی و بازه زمانی در دیتابیس PostgreSQL یافت نشد.',
+      });
+    }
+
+    const datasetId = String(row.id);
+    const formatBytesHuman = (bytes: number): string => {
+      const b = Math.max(0, Number(bytes) || 0);
+      if (b >= 1073741824) return `${(b / 1073741824).toFixed(2)} GB`;
+      if (b >= 1048576) return `${(b / 1048576).toFixed(1)} MB`;
+      if (b >= 1024) return `${(b / 1024).toFixed(0)} KB`;
+      return `${b} B`;
+    };
+    const formatFa = (ts: number): string => {
+      if (!ts || !Number.isFinite(ts) || ts <= 0) return '';
+      try {
+        return new Date(ts).toLocaleDateString('fa-IR');
+      } catch {
+        return '';
+      }
+    };
+
+    const reportedSymbolCount = Number(row.symbol_count || 0);
+    const reportedTotalCandles = Number(row.total_candles || 0);
+    const reportedStartTime = Number(row.start_time || 0);
+    const reportedEndTime = Number(row.end_time || 0);
+    const reportedDays = (reportedStartTime > 0 && reportedEndTime > reportedStartTime)
+      ? Math.round((reportedEndTime - reportedStartTime) / 86400000)
+      : 0;
+    const reportedSizeFormatted = String(row.data_size_formatted || '0 KB');
+
+    // Step 1: Count total rows & distinct chunk_index in candle_chunks
+    const metaChRes = await withDbRetry(
+      () =>
+        pool.query(
+          `SELECT COUNT(*)::int AS total_rows, COUNT(DISTINCT chunk_index)::int AS distinct_chunks
+           FROM candle_chunks WHERE dataset_id = $1;`,
+          [datasetId]
+        ),
+      3,
+      600
+    );
+    const dbTotalChunkRows = Number(metaChRes.rows[0]?.total_rows || 0);
+    const dbChunksCount = Number(metaChRes.rows[0]?.distinct_chunks || 0);
+    const duplicateChunkRows = Math.max(0, dbTotalChunkRows - dbChunksCount);
+
+    const idxRes = await withDbRetry(
+      () =>
+        pool.query(
+          `SELECT DISTINCT chunk_index FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC;`,
+          [datasetId]
+        ),
+      3,
+      600
+    );
+    const indices: number[] = idxRes.rows.map((r: any) => Number(r.chunk_index));
+
+    // Step 2: Stream 2 chunks at a time directly from PostgreSQL (zero OOM, caches valid chunks to disk atomically)
+    const symbolCandleCounts = new Map<string, number>();
+    let realJsonBytes = 0;
+    let corruptChunks = 0;
+    let emptyChunks = 0;
+    let duplicateSymbolsCount = 0;
+    let minCandleTimeMs = Infinity;
+    let maxCandleTimeMs = 0;
+    let cachedToDiskCount = 0;
+
+    const batchSize = 2;
+    for (let b = 0; b < indices.length; b += batchSize) {
+      const slice = indices.slice(b, b + batchSize);
+      const chunksRes = await withDbRetry(
+        () =>
+          pool.query(
+            `SELECT DISTINCT ON (chunk_index) chunk_index, items_json, length(items_json) AS byte_len
+             FROM candle_chunks
+             WHERE dataset_id = $1 AND chunk_index = ANY($2::int[])
+             ORDER BY chunk_index ASC, id DESC;`,
+            [datasetId, slice]
+          ),
+        3,
+        800
+      );
+
+      for (const cRow of chunksRes.rows) {
+        const cIdx = Number(cRow.chunk_index);
+        realJsonBytes += Number(cRow.byte_len || 0);
+        try {
+          const items = JSON.parse(cRow.items_json);
+          if (!Array.isArray(items)) {
+            corruptChunks++;
+            continue;
+          }
+          if (items.length === 0) {
+            emptyChunks++;
+            continue;
+          }
+
+          // Warm local disk cache atomically so subsequent cached backtest is instant
+          writeLocalDatasetChunk(datasetId, cIdx, items);
+          cachedToDiskCount++;
+
+          for (const it of items) {
+            const sym = it?.symbol ? String(it.symbol).trim().toUpperCase() : '';
+            const tuples = Array.isArray(it?.tuples) ? it.tuples : [];
+            if (!sym) continue;
+
+            if (symbolCandleCounts.has(sym)) {
+              duplicateSymbolsCount++;
+              const prev = symbolCandleCounts.get(sym) || 0;
+              if (tuples.length > prev) symbolCandleCounts.set(sym, tuples.length);
+            } else {
+              symbolCandleCounts.set(sym, tuples.length);
+            }
+
+            if (tuples.length > 0) {
+              const firstT = Number(tuples[0]?.[0] || 0);
+              const lastT = Number(tuples[tuples.length - 1]?.[0] || 0);
+              const normFirst = firstT > 0 && firstT < 1e11 ? firstT * 1000 : firstT;
+              const normLast = lastT > 0 && lastT < 1e11 ? lastT * 1000 : lastT;
+              if (normFirst > 0 && normFirst < minCandleTimeMs) minCandleTimeMs = normFirst;
+              if (normLast > maxCandleTimeMs) maxCandleTimeMs = normLast;
+            }
+          }
+        } catch {
+          corruptChunks++;
+        }
+      }
+    }
+
+    const validSymbolsList: string[] = [];
+    let realShortSymbols = 0;
+    let realTotalCandles = 0;
+    for (const [sym, cnt] of symbolCandleCounts.entries()) {
+      realTotalCandles += cnt;
+      if (cnt >= 50) {
+        validSymbolsList.push(sym);
+      } else {
+        realShortSymbols++;
+      }
+    }
+
+    const realUniqueSymbols = symbolCandleCounts.size;
+    const realValidSymbols = validSymbolsList.length;
+    const realSizeFormatted = formatBytesHuman(realJsonBytes);
+    const realStartTimeMs = minCandleTimeMs < Infinity ? minCandleTimeMs : 0;
+    const realEndTimeMs = maxCandleTimeMs > 0 ? maxCandleTimeMs : 0;
+    const realDays = (realStartTimeMs > 0 && realEndTimeMs > realStartTimeMs)
+      ? Math.max(1, Math.round((realEndTimeMs - realStartTimeMs) / 86400000))
+      : 0;
+
+    const realStartDateFormatted = formatFa(realStartTimeMs);
+    const realEndDateFormatted = formatFa(realEndTimeMs);
+
+    const startTimeDriftMs = (reportedStartTime > 0 && realStartTimeMs > 0) ? Math.abs(reportedStartTime - realStartTimeMs) : (reportedStartTime === 0 && realStartTimeMs > 0 ? 999999999 : 0);
+    const endTimeDriftMs = (reportedEndTime > 0 && realEndTimeMs > 0) ? Math.abs(reportedEndTime - realEndTimeMs) : (reportedEndTime === 0 && realEndTimeMs > 0 ? 999999999 : 0);
+
+    const hadMismatch =
+      reportedSymbolCount !== realValidSymbols ||
+      Math.abs(reportedTotalCandles - realTotalCandles) > Math.max(500, Math.round(realTotalCandles * 0.01)) ||
+      reportedSizeFormatted !== realSizeFormatted ||
+      startTimeDriftMs > 86400000 ||
+      endTimeDriftMs > 86400000;
+
+    let verdict: 'HEALTHY' | 'REPAIRED' | 'NEEDS_CLEANUP' = 'HEALTHY';
+    let needsCleanup = false;
+    let repaired = false;
+    let recommendation = '';
+
+    if (dbChunksCount === 0 || realValidSymbols === 0 || (dbChunksCount > 0 && corruptChunks >= Math.ceil(dbChunksCount * 0.25))) {
+      verdict = 'NEEDS_CLEANUP';
+      needsCleanup = true;
+      repaired = false;
+      recommendation =
+        dbChunksCount === 0
+          ? `جدول چانک‌های این بازه در PostgreSQL کاملاً خالی است (۰ چانک)، در حالی که هدر قبلاً ${reportedSymbolCount} نماد نشان می‌داد. حتماً دیتای این بازه را پاکسازی کرده و از نو دانلود کنید.`
+          : `دیتای چانک‌های این بازه خراب یا بدون کندل معتبر است (${realValidSymbols} نماد سالم، ${corruptChunks} چانک خراب از ${dbChunksCount}). پیشنهاد قطعی: پاکسازی کامل و دانلود مجدد از صفر.`;
+
+      // Prevent button[2] from continuing to show phantom numbers when chunks are empty
+      if (realValidSymbols === 0) {
+        await pool.query(
+          `UPDATE candle_datasets
+           SET symbol_count = 0, total_candles = 0, symbols_list = '[]', data_size_bytes = 0, data_size_formatted = '0 KB',
+               status = 'EMPTY', updated_at = NOW()
+           WHERE id = $1;`,
+          [datasetId]
+        ).catch(() => {});
+      }
+    } else if (reportedSymbolCount > 20 && realValidSymbols < Math.floor(reportedSymbolCount * 0.5)) {
+      verdict = 'NEEDS_CLEANUP';
+      needsCleanup = true;
+      repaired = true;
+      const symbolsListJson = JSON.stringify(validSymbolsList);
+      await pool.query(
+        `UPDATE candle_datasets
+         SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
+             start_time = COALESCE(NULLIF($6::bigint, 0), start_time), end_time = COALESCE(NULLIF($7::bigint, 0), end_time),
+             status = 'COMPLETED', updated_at = NOW()
+         WHERE id = $8;`,
+        [realValidSymbols, realTotalCandles, symbolsListJson, realJsonBytes, realSizeFormatted, realStartTimeMs, realEndTimeMs, datasetId]
+      ).catch(() => {});
+      if (cachedToDiskCount > 0 && cachedToDiskCount >= dbChunksCount - corruptChunks - emptyChunks) {
+        finalizeLocalDatasetCompleteFlag(datasetId, cachedToDiskCount);
+      }
+      recommendation = `مغایرت شدید کشف و هدر اصلاح شد: هدر دیتابیس قبلاً ${reportedSymbolCount} نماد نشان می‌داد ولی در چانک‌های واقعی PostgreSQL فقط ${realValidSymbols} نماد سالم (${realTotalCandles.toLocaleString()} کندل، ${realSizeFormatted}، ${realDays} روز) ذخیره شده است. پیشنهاد: یا «پاکسازی و دانلود مجدد» انجام دهید یا از «دانلود تکمیلی» برای تکمیل ارزهای کسری استفاده کنید.`;
+    } else if (hadMismatch) {
+      verdict = 'REPAIRED';
+      needsCleanup = false;
+      repaired = true;
+      const symbolsListJson = JSON.stringify(validSymbolsList);
+      await pool.query(
+        `UPDATE candle_datasets
+         SET symbol_count = $1, total_candles = $2, symbols_list = $3, data_size_bytes = $4, data_size_formatted = $5,
+             start_time = COALESCE(NULLIF($6::bigint, 0), start_time), end_time = COALESCE(NULLIF($7::bigint, 0), end_time),
+             status = 'COMPLETED', updated_at = NOW()
+         WHERE id = $8;`,
+        [realValidSymbols, realTotalCandles, symbolsListJson, realJsonBytes, realSizeFormatted, realStartTimeMs, realEndTimeMs, datasetId]
+      ).catch(() => {});
+      if (cachedToDiskCount > 0) {
+        finalizeLocalDatasetCompleteFlag(datasetId, cachedToDiskCount);
+      }
+      upsertLocalDatasetMeta({
+        id: datasetId,
+        timeframe: row.timeframe,
+        exchange: row.exchange,
+        start_time: String(realStartTimeMs || row.start_time || 0),
+        end_time: String(realEndTimeMs || row.end_time || 0),
+        symbol_count: realValidSymbols,
+        total_candles: realTotalCandles,
+        symbols_list: symbolsListJson,
+        data_size_bytes: realJsonBytes,
+        data_size_formatted: realSizeFormatted,
+        status: 'COMPLETED',
+        chunk_count: cachedToDiskCount,
+      });
+      recommendation = `داده‌های چانک‌ها سالم است و نیازی به پاکسازی نیست! آمار هدر با محتوای واقعی همگام‌سازی شد: ${realValidSymbols} نماد سالم، ${realTotalCandles.toLocaleString()} کندل، حجم واقعی ${realSizeFormatted} و بازه ${realDays} روزه (${realStartDateFormatted} تا ${realEndDateFormatted}). کش دیسک نیز با تمام ${cachedToDiskCount} چانک همگام شد؛ اکنون «اسکن سریع با دیتابیس» کل ${realValidSymbols} نماد را پردازش می‌کند.`;
+    } else {
+      verdict = 'HEALTHY';
+      needsCleanup = false;
+      repaired = false;
+      if (cachedToDiskCount > 0) {
+        finalizeLocalDatasetCompleteFlag(datasetId, cachedToDiskCount);
+      }
+      recommendation = `دیتابیس ۱۰۰٪ سالم و آمار نمایش‌داده‌شده کاملاً واقعی است: ${realValidSymbols} نماد سالم، ${realTotalCandles.toLocaleString()} کندل، حجم واقعی ${realSizeFormatted}، بازه ${realDays} روزه (${realStartDateFormatted} تا ${realEndDateFormatted}) در ${dbChunksCount} چانک. نیازی به پاکسازی نیست.`;
+    }
+
+    res.json({
+      success: true,
+      exists: true,
+      datasetId,
+      durationMs: Date.now() - startedAt,
+      verdict,
+      needsCleanup,
+      repaired,
+      hadMismatch,
+      recommendation,
+      reported: {
+        symbolCount: reportedSymbolCount,
+        totalCandles: reportedTotalCandles,
+        sizeFormatted: reportedSizeFormatted,
+        days: reportedDays,
+        startDateFormatted: formatFa(reportedStartTime),
+        endDateFormatted: formatFa(reportedEndTime),
+      },
+      verified: {
+        uniqueSymbols: realUniqueSymbols,
+        validSymbols: realValidSymbols,
+        shortSymbols: realShortSymbols,
+        totalCandles: realTotalCandles,
+        realJsonBytes,
+        sizeFormatted: realSizeFormatted,
+        startTimeMs: realStartTimeMs,
+        endTimeMs: realEndTimeMs,
+        days: realDays,
+        startDateFormatted: realStartDateFormatted,
+        endDateFormatted: realEndDateFormatted,
+        dbChunksCount,
+        dbTotalChunkRows,
+        duplicateChunkRows,
+        corruptChunks,
+        emptyChunks,
+        duplicateSymbolsCount,
+        diskChunksSynced: countLocalDatasetChunks(datasetId),
+      },
+    });
+  } catch (err: any) {
+    console.error('[Audit Dataset Error]:', err);
+    res.status(500).json({
+      success: false,
+      error: err?.message || 'خطا در ممیزی چانک‌های دیتابیس PostgreSQL',
+    });
+  }
 });
 
 // 6.5.4 Stop In-Flight Server Backtest Immediately
@@ -6398,7 +6986,8 @@ function processFilteredTrades(
 async function ensureDatasetChunksCachedOnDisk(
   datasetId: string,
   onProgress?: (msg: string) => void,
-  maxChunksToLoad: number = Infinity
+  maxChunksToLoad: number = Infinity,
+  checkStop?: () => boolean
 ): Promise<boolean> {
   const diskCacheDir = path.join('/tmp', 'candle_chunks', datasetId);
   const completeFlagPath = path.join(diskCacheDir, '_complete.flag');
@@ -6406,44 +6995,56 @@ async function ensureDatasetChunksCachedOnDisk(
     fs.mkdirSync(diskCacheDir, { recursive: true });
   } catch {}
 
-  if (fs.existsSync(completeFlagPath)) {
-    return true;
-  }
+  const isValidLocalChunkFile = (filePath: string): boolean => {
+    try {
+      if (!fs.existsSync(filePath)) return false;
+      const st = fs.statSync(filePath);
+      return st.size > 2;
+    } catch {
+      return false;
+    }
+  };
+
+  const writeChunkAtomically = (filePath: string, content: string) => {
+    const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 6)}.tmp`;
+    fs.writeFileSync(tmpPath, content);
+    fs.renameSync(tmpPath, filePath);
+  };
 
   const initRes = await ensureDatabaseInitialized();
   if (!initRes.success) {
-    const existingLocalChunks = fs.existsSync(diskCacheDir)
-      ? fs.readdirSync(diskCacheDir).filter((f) => f.startsWith('chunk_') && f.endsWith('.json'))
-      : [];
-    return existingLocalChunks.length > 0;
+    return countLocalDatasetChunks(datasetId) > 0;
   }
 
+  // Always verify lightweight chunk_index list against PostgreSQL (~10ms, integers only)
+  // so a stale or poisoned _complete.flag with 12/93 chunks can NEVER hide the remaining 700+ chunks!
   let allIndices: number[] = [];
   try {
-    const idxRes = await pool.query(
-      `SELECT chunk_index FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC;`,
-      [datasetId]
+    const idxRes = await withDbRetry(
+      () =>
+        pool.query(
+          `SELECT DISTINCT chunk_index FROM candle_chunks WHERE dataset_id = $1 ORDER BY chunk_index ASC;`,
+          [datasetId]
+        ),
+      2,
+      800
     );
     allIndices = idxRes.rows.map((r: any) => Number(r.chunk_index));
-  } catch {
-    const existingLocalChunks = fs.existsSync(diskCacheDir)
-      ? fs.readdirSync(diskCacheDir).filter((f) => f.startsWith('chunk_') && f.endsWith('.json'))
-      : [];
-    return existingLocalChunks.length > 0;
+  } catch (err: any) {
+    console.warn(`[Chunk Sync] Could not list chunk indices for ${datasetId}:`, err.message);
+    return countLocalDatasetChunks(datasetId) > 0;
   }
+
   const totalChunks = allIndices.length;
   if (totalChunks === 0) {
-    const existingLocalChunks = fs.existsSync(diskCacheDir)
-      ? fs.readdirSync(diskCacheDir).filter((f) => f.startsWith('chunk_') && f.endsWith('.json'))
-      : [];
-    return existingLocalChunks.length > 0;
+    return countLocalDatasetChunks(datasetId) > 0;
   }
 
   const targetIndices = Number.isFinite(maxChunksToLoad) ? allIndices.slice(0, maxChunksToLoad) : allIndices;
   const missingIndices: number[] = [];
   for (const idx of targetIndices) {
     const filePath = path.join(diskCacheDir, `chunk_${String(idx).padStart(5, '0')}.json`);
-    if (!fs.existsSync(filePath)) {
+    if (!isValidLocalChunkFile(filePath)) {
       missingIndices.push(idx);
     }
   }
@@ -6456,20 +7057,54 @@ async function ensureDatasetChunksCachedOnDisk(
     return true;
   }
 
+  // Stale _complete.flag detected (disk had fewer chunks than PostgreSQL) -> remove and heal missing chunks!
+  if (fs.existsSync(completeFlagPath)) {
+    console.log(`[Chunk Sync] 🔧 Self-healing ${datasetId}: disk had ${alreadyCached}/${totalChunks} chunks; syncing ${missingIndices.length} missing chunks from PostgreSQL...`);
+    try { fs.unlinkSync(completeFlagPath); } catch {}
+  }
+
   onProgress?.(`در حال آماده‌سازی و بارگذاری ${targetIndices.length} چانک دیتابیس (${alreadyCached}/${targetIndices.length})...`);
 
-  const batchSize = 15;
+  // Safe small batches (2 chunks ≈ 3-5MB per query) with 3 concurrent workers so 800MB+ datasets NEVER timeout or OOM!
+  const batchSize = 2;
   const batches: number[][] = [];
   for (let i = 0; i < missingIndices.length; i += batchSize) {
     batches.push(missingIndices.slice(i, i + batchSize));
   }
 
-  const concurrency = 4;
+  const concurrency = 3;
   const queue = [...batches];
   let completedChunks = alreadyCached;
+  const shouldAbort = () => (checkStop ? checkStop() : false);
+
+  const fetchSingleChunkWithRetry = async (chunkIdx: number): Promise<boolean> => {
+    const filePath = path.join(diskCacheDir, `chunk_${String(chunkIdx).padStart(5, '0')}.json`);
+    if (isValidLocalChunkFile(filePath)) return true;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (shouldAbort()) return false;
+      try {
+        const res = await pool.query(
+          `SELECT chunk_index, items_json FROM candle_chunks WHERE dataset_id = $1 AND chunk_index = $2 LIMIT 1;`,
+          [datasetId, chunkIdx]
+        );
+        if (res.rows.length > 0 && res.rows[0].items_json) {
+          writeChunkAtomically(filePath, res.rows[0].items_json);
+          return true;
+        }
+        return false;
+      } catch (err: any) {
+        if (attempt === 3) {
+          console.warn(`[Sync Chunk Failed] ${datasetId} chunk #${chunkIdx} after 3 attempts:`, err.message);
+        } else {
+          await sleep(attempt * 700);
+        }
+      }
+    }
+    return false;
+  };
 
   const worker = async () => {
-    while (queue.length > 0 && !serverOptimizerState.shouldStop && !serverBacktestState.shouldStop) {
+    while (queue.length > 0 && !shouldAbort()) {
       const batchIndices = queue.shift();
       if (!batchIndices || batchIndices.length === 0) break;
 
@@ -6478,26 +7113,54 @@ async function ensureDatasetChunksCachedOnDisk(
           `SELECT chunk_index, items_json FROM candle_chunks WHERE dataset_id = $1 AND chunk_index = ANY($2::int[]) ORDER BY chunk_index ASC;`,
           [datasetId, batchIndices]
         );
+        const fetchedSet = new Set<number>();
         for (const row of res.rows) {
-          const chunkFileName = `chunk_${String(row.chunk_index || 0).padStart(5, '0')}.json`;
+          const idx = Number(row.chunk_index || 0);
+          if (!row.items_json) continue;
+          const chunkFileName = `chunk_${String(idx).padStart(5, '0')}.json`;
           const filePath = path.join(diskCacheDir, chunkFileName);
-          if (!fs.existsSync(filePath)) {
-            fs.writeFileSync(filePath, row.items_json);
+          if (!isValidLocalChunkFile(filePath)) {
+            writeChunkAtomically(filePath, row.items_json);
           }
+          fetchedSet.add(idx);
           completedChunks++;
+        }
+        // Retry any chunk index missing from the batch response individually
+        for (const idx of batchIndices) {
+          if (!fetchedSet.has(idx) && !shouldAbort()) {
+            const ok = await fetchSingleChunkWithRetry(idx);
+            if (ok) completedChunks++;
+          }
         }
         const pct = Math.min(100, Math.round((completedChunks / targetIndices.length) * 100));
         onProgress?.(`در حال بارگذاری سریع داده‌ها (${completedChunks}/${targetIndices.length} چانک - ${pct}٪)...`);
       } catch (err: any) {
-        console.warn('[Sync Chunk Warning]:', err.message);
+        console.warn(`[Sync Batch Warning] ${datasetId} batch [${batchIndices.join(',')}]: ${err.message} — retrying individually...`);
+        for (const idx of batchIndices) {
+          if (shouldAbort()) break;
+          const ok = await fetchSingleChunkWithRetry(idx);
+          if (ok) {
+            completedChunks++;
+            const pct = Math.min(100, Math.round((completedChunks / targetIndices.length) * 100));
+            onProgress?.(`در حال بارگذاری سریع داده‌ها (${completedChunks}/${targetIndices.length} چانک - ${pct}٪)...`);
+          }
+        }
       }
     }
   };
 
   await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
-  const finalCachedCount = fs.readdirSync(diskCacheDir).filter((f) => f.endsWith('.json')).length;
-  if (finalCachedCount >= totalChunks) {
+  // Only write _complete.flag when 100% of PostgreSQL chunks are verified on disk
+  let verifiedAll = true;
+  for (const idx of allIndices) {
+    const filePath = path.join(diskCacheDir, `chunk_${String(idx).padStart(5, '0')}.json`);
+    if (!isValidLocalChunkFile(filePath)) {
+      verifiedAll = false;
+      break;
+    }
+  }
+  if (verifiedAll && !shouldAbort()) {
     try { fs.writeFileSync(completeFlagPath, String(totalChunks)); } catch {}
   }
   return true;
@@ -6515,52 +7178,86 @@ async function forEachDatasetChunkSymbol(
   },
   onSymbol: (pair: { symbol: string; baseAsset: string; quoteAsset: string }, candles: CandleData[]) => void | Promise<void>
 ): Promise<number> {
-  await ensureDatasetChunksCachedOnDisk(datasetId, options.onProgress, Infinity);
+  await ensureDatasetChunksCachedOnDisk(datasetId, options.onProgress, Infinity, options.checkStop);
   const diskCacheDir = path.join('/tmp', 'candle_chunks', datasetId);
   if (!fs.existsSync(diskCacheDir)) return 0;
 
-  const files = fs.readdirSync(diskCacheDir).filter((f) => f.endsWith('.json')).sort();
+  const files = fs.readdirSync(diskCacheDir).filter((f) => f.startsWith('chunk_') && f.endsWith('.json')).sort();
   const symbolsFilterSet = buildSymbolFilterSet(options.symbols);
   const maxSymbols = options.maxSymbols && options.maxSymbols > 0 ? options.maxSymbols : Infinity;
   const seen = new Set<string>();
   let processed = 0;
+  let totalItems = 0;
+  let skippedBySymbol = 0;
+  let skippedByDateRange = 0;
+  let skippedShortRaw = 0;
+  let skippedDuplicate = 0;
+  let corruptChunks = 0;
 
   for (let i = 0; i < files.length; i++) {
     if (options.checkStop?.()) break;
     if (processed >= maxSymbols) break;
+    const fullPath = path.join(diskCacheDir, files[i]);
+    let items: any[] | null = null;
     try {
-      const raw = fs.readFileSync(path.join(diskCacheDir, files[i]), 'utf8');
-      const items = JSON.parse(raw);
-      for (const item of items) {
-        if (options.checkStop?.()) break;
-        if (processed >= maxSymbols) break;
-        const cleanSym = (item.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-        if (!cleanSym || seen.has(cleanSym)) continue;
-        if (!isSymbolAllowedBySet(item.symbol, symbolsFilterSet)) continue;
-        seen.add(cleanSym);
+      const raw = fs.readFileSync(fullPath, 'utf8');
+      items = JSON.parse(raw);
+    } catch {
+      corruptChunks++;
+      // Self-heal corrupted disk chunk by deleting it so next sync re-fetches cleanly
+      try { fs.unlinkSync(fullPath); } catch {}
+      try { fs.unlinkSync(path.join(diskCacheDir, '_complete.flag')); } catch {}
+      continue;
+    }
 
-        let candles: CandleData[] = (item.tuples || []).map((t: any[]) => ({
-          time: t[0],
-          open: t[1],
-          high: t[2],
-          low: t[3],
-          close: t[4],
-          volume: t[5],
-        }));
-        candles = filterCandlesByMsRange(candles, options.startTime, options.endTime);
-        if (candles.length < 50) continue;
-
-        const baseAsset = item.baseAsset || (item.symbol?.includes('_') ? item.symbol.split('_')[0].toUpperCase() : 'CRYPTO');
-        await onSymbol(
-          { symbol: item.symbol, baseAsset, quoteAsset: item.quoteAsset || 'USDT' },
-          candles
-        );
-        processed++;
+    if (!Array.isArray(items)) continue;
+    for (const item of items) {
+      if (options.checkStop?.()) break;
+      if (processed >= maxSymbols) break;
+      totalItems++;
+      const cleanSym = (item.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (!cleanSym || seen.has(cleanSym)) {
+        skippedDuplicate++;
+        continue;
       }
-    } catch {}
+      if (!isSymbolAllowedBySet(item.symbol, symbolsFilterSet)) {
+        skippedBySymbol++;
+        continue;
+      }
+      seen.add(cleanSym);
+
+      const rawTuples = Array.isArray(item.tuples) ? item.tuples : [];
+      if (rawTuples.length < 50) {
+        skippedShortRaw++;
+        continue;
+      }
+      let candles: CandleData[] = rawTuples.map((t: any[]) => ({
+        time: t[0],
+        open: t[1],
+        high: t[2],
+        low: t[3],
+        close: t[4],
+        volume: t[5],
+      }));
+      candles = filterCandlesByMsRange(candles, options.startTime, options.endTime);
+      if (candles.length < 50) {
+        skippedByDateRange++;
+        continue;
+      }
+
+      const baseAsset = item.baseAsset || (item.symbol?.includes('_') ? item.symbol.split('_')[0].toUpperCase() : 'CRYPTO');
+      await onSymbol(
+        { symbol: item.symbol, baseAsset, quoteAsset: item.quoteAsset || 'USDT' },
+        candles
+      );
+      processed++;
+    }
     await new Promise((resolve) => setImmediate(resolve));
   }
 
+  console.log(
+    `[Dataset Stream] ${datasetId}: chunks=${files.length}, items=${totalItems}, processed=${processed}, skippedSymbol=${skippedBySymbol}, skippedDateRange=${skippedByDateRange}, skippedShortRaw=${skippedShortRaw}, skippedDup=${skippedDuplicate}, corruptChunks=${corruptChunks}`
+  );
   return processed;
 }
 
@@ -6846,9 +7543,14 @@ async function runServerOptimizerLoop(
 
   // 1. Ensure complete disk chunks exist once (~2-3s per trial streaming with <200MB RAM)
   serverOptimizerState.statusText = 'در حال آماده‌سازی کامل داده‌های کندل از PostgreSQL...';
-  await ensureDatasetChunksCachedOnDisk(datasetId, (statusMsg) => {
-    serverOptimizerState.statusText = statusMsg;
-  }, Infinity);
+  await ensureDatasetChunksCachedOnDisk(
+    datasetId,
+    (statusMsg) => {
+      serverOptimizerState.statusText = statusMsg;
+    },
+    Infinity,
+    () => serverOptimizerState.shouldStop
+  );
 
   if (serverOptimizerState.shouldStop) {
     serverOptimizerState.isOptimizing = false;

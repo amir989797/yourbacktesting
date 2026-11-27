@@ -1127,24 +1127,59 @@ export const ManualBacktestTab: React.FC<ManualBacktestTabProps> = ({
                       </span>
                     </button>
 
-                    {/* بج دیتابیس PostgreSQL دقیقاً مطابق با اسکرین‌شات کاربر (با کلیک، مودال تحلیل هوشمند و انتخاب شیوه اسکن باز می‌شود) */}
-                    {(rangeStatus?.exists || cachedCount > 0) && (
-                      <button
-                        type="button"
-                        onClick={onOpenRescanChoiceModal}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#0a1816]/95 hover:bg-[#0f2824] border border-emerald-500/60 hover:border-emerald-400 text-emerald-300 transition-all cursor-pointer shadow-sm text-xs font-mono font-medium hover:scale-[1.02] active:scale-[0.98]"
-                        title="مشاهده تحلیل هوشمند و انتخاب شیوه اسکن با دیتابیس PostgreSQL"
-                      >
-                        <Database className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                        <span className="font-sans font-bold text-emerald-300">دیتابیس PostgreSQL :</span>
-                        <span className="font-bold text-white font-mono">
-                          {rangeStatus?.dataset?.symbolCount || cachedCount} نماد
-                        </span>
-                        <span className="text-emerald-300 font-mono">
-                          ({(rangeStatus?.dataset?.totalCandles || 0).toLocaleString()} کندل{rangeStatus?.dataset?.dataSizeFormatted ? ` ${rangeStatus.dataset.dataSizeFormatted}` : ''})
-                        </span>
-                      </button>
-                    )}
+                    {/* بج دیتابیس PostgreSQL دقیقاً مطابق با اسکرین‌شات کاربر (با کلیک، مودال تحلیل هوشمند، ممیزی واقعی چانک‌ها و انتخاب شیوه اسکن باز می‌شود) */}
+                    {(rangeStatus?.exists || cachedCount > 0) && (() => {
+                      const ds = rangeStatus?.dataset;
+                      const cov = rangeStatus?.coverage;
+                      const integrityStatus = ds?.integrityStatus as ('OK' | 'EMPTY_CHUNKS' | 'POSSIBLE_MISMATCH' | undefined);
+                      const isCritical = integrityStatus === 'EMPTY_CHUNKS';
+                      const isWarning = integrityStatus === 'POSSIBLE_MISMATCH';
+                      const realSize = ds?.dbRealSizeFormatted || ds?.dataSizeFormatted || '';
+                      const dbDays = Number(cov?.dbDays || 0);
+                      const dbChunks = typeof ds?.dbChunksCount === 'number' ? ds.dbChunksCount : null;
+                      const displaySymbols = ds?.symbolCount !== undefined ? ds.symbolCount : cachedCount;
+                      const displayCandles = Number(ds?.totalCandles || 0);
+
+                      const btnClass = isCritical
+                        ? 'bg-rose-950/90 hover:bg-rose-900/90 border-rose-500/80 hover:border-rose-400 text-rose-200'
+                        : isWarning
+                          ? 'bg-amber-950/85 hover:bg-amber-900/85 border-amber-500/75 hover:border-amber-400 text-amber-200'
+                          : 'bg-[#0a1816]/95 hover:bg-[#0f2824] border-emerald-500/60 hover:border-emerald-400 text-emerald-300';
+
+                      return (
+                        <button
+                          type="button"
+                          onClick={onOpenRescanChoiceModal}
+                          className={`flex items-center flex-wrap gap-1.5 px-3 py-1.5 rounded-full border transition-all cursor-pointer shadow-sm text-xs font-mono font-medium hover:scale-[1.02] active:scale-[0.98] ${btnClass}`}
+                          title={ds?.integrityMessage || 'مشاهده آمار واقعی، ممیزی چانک‌ها و انتخاب شیوه اسکن با دیتابیس PostgreSQL'}
+                        >
+                          {isCheckingRange ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                          ) : isCritical || isWarning ? (
+                            <AlertTriangle className={`w-3.5 h-3.5 shrink-0 ${isCritical ? 'text-rose-400' : 'text-amber-400'}`} />
+                          ) : (
+                            <Database className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          )}
+                          <span className="font-sans font-bold">دیتابیس PostgreSQL :</span>
+                          <span className="font-bold text-white font-mono">
+                            {displaySymbols} نماد
+                          </span>
+                          <span className="font-mono opacity-95">
+                            ({displayCandles.toLocaleString()} کندل{realSize ? ` · ${realSize}` : ''}{dbDays > 0 ? ` · ${dbDays} روز` : ''}{dbChunks !== null ? ` · ${dbChunks} چانک` : ''})
+                          </span>
+                          {isCritical && (
+                            <span className="px-1.5 py-0.5 rounded bg-rose-500/30 border border-rose-400/50 text-rose-100 text-[10px] font-sans font-extrabold">
+                              ⚠️ خالی/نیاز به پاکسازی
+                            </span>
+                          )}
+                          {isWarning && (
+                            <span className="px-1.5 py-0.5 rounded bg-amber-500/25 border border-amber-400/50 text-amber-100 text-[10px] font-sans font-extrabold">
+                              ⚠️ نیاز به ممیزی
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })()}
 
                     {/* دکمه دانلود تکمیلی کسری‌ها در صورتی که کسری وجود داشته باشد */}
                     {rangeStatus?.exists && (rangeStatus.coverage?.missingSymbolsCount > 0 || (rangeStatus.coverage?.missingEarlierDays && rangeStatus.coverage.missingEarlierDays > 0)) && (
