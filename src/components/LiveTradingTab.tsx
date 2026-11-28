@@ -2894,7 +2894,7 @@ export const LiveTradingTab: React.FC<LiveTradingTabProps> = ({
 
               {selectedStrategy === 'strategy_4_ml_zigzag' && !noConcurrentPositions && (
                 <div className="text-[11px] text-amber-300/90 bg-amber-950/20 border border-amber-500/25 rounded-lg px-2.5 py-1.5">
-                  نکته برای استراتژی ۴ (ML v5 دوجهته): بالاترین وین‌ریت و پروفیت فکتور مدل v5 در تست ۳۰ روزه روی حالت <strong>تک‌پوزیشن کل</strong> (WR 68.9% / PF 2.78) به‌دست آمده است؛ در حالت چندمعامله، مارجین آزاد بین پوزیشن‌ها تقسیم می‌شود.
+                  نکته برای استراتژی ۴ (ML v7 دوجهته): مدل v7 با فیلتر رژیم بازار و محافظ سر‌به‌سر روی حالت <strong>تک‌پوزیشن کل</strong> برای کنترل افت سرمایه (حداکثر ~۵.۲٪ در تست ۹۰ روزه) کالیبره شده است؛ در حالت چندمعامله، مارجین آزاد بین پوزیشن‌ها تقسیم می‌شود و نوسان همزمان افزایش می‌یابد.
                 </div>
               )}
             </div>

@@ -1934,6 +1934,8 @@ export function runStrategy4MlBacktest(
   const minSlPct = baseMinSlPct * tfThresholdScale;
   const tpMult = model.tpAtrMult > 0 ? model.tpAtrMult : 6.75;
   const targetRR = model.targetRR && model.targetRR > 0 ? model.targetRR : tpMult / slMult;
+  const beTriggerR = model.beTriggerR && model.beTriggerR > 0 ? model.beTriggerR : 0;
+  const beLockR = model.beLockR ?? 0;
 
   let rollingCapital = config.capital;
   let lastTradeExitCandleIdx = -1;
@@ -2008,16 +2010,22 @@ export function runStrategy4MlBacktest(
     let exitTime: number | undefined = undefined;
     let exitCandleIdx: number | undefined = undefined;
     let reason = `ML Score ${score.toFixed(3)} • ${ev.patternLabelFa}`;
+    let currentStopLoss = stopLoss;
+    let beMoved = false;
 
     for (let k = entryCandleIdx + 1; k <= simEndIdx; k++) {
       const c = candles[k];
       if (direction === 'BUY') {
-        if (c.low <= stopLoss) {
-          status = 'LOSS';
-          exitPrice = stopLoss * (1 - slSlipRate);
+        if (c.low <= currentStopLoss) {
+          exitPrice = currentStopLoss * (1 - slSlipRate);
           exitTime = c.time;
           exitCandleIdx = k;
-          reason = `Stop Loss (${ev.patternLabelFa})`;
+          const grossSl = positionSize * (exitPrice - entryPrice);
+          const netSl = grossSl - (entryFee + positionSize * exitPrice * exitFeeRate);
+          status = beMoved && netSl > 0 ? 'WIN' : 'LOSS';
+          reason = beMoved
+            ? `Breakeven Protect (${ev.patternLabelFa})`
+            : `Stop Loss (${ev.patternLabelFa})`;
           break;
         }
         if (c.high >= takeProfit) {
@@ -2028,13 +2036,21 @@ export function runStrategy4MlBacktest(
           reason = `Take Profit (${ev.patternLabelFa})`;
           break;
         }
+        if (beTriggerR > 0 && !beMoved && c.high >= entryPrice + slDist * beTriggerR) {
+          beMoved = true;
+          currentStopLoss = entryPrice + slDist * beLockR;
+        }
       } else {
-        if (c.high >= stopLoss) {
-          status = 'LOSS';
-          exitPrice = stopLoss * (1 + slSlipRate);
+        if (c.high >= currentStopLoss) {
+          exitPrice = currentStopLoss * (1 + slSlipRate);
           exitTime = c.time;
           exitCandleIdx = k;
-          reason = `Stop Loss (${ev.patternLabelFa})`;
+          const grossSl = positionSize * (entryPrice - exitPrice);
+          const netSl = grossSl - (entryFee + positionSize * exitPrice * exitFeeRate);
+          status = beMoved && netSl > 0 ? 'WIN' : 'LOSS';
+          reason = beMoved
+            ? `Breakeven Protect (${ev.patternLabelFa})`
+            : `Stop Loss (${ev.patternLabelFa})`;
           break;
         }
         if (c.low <= takeProfit) {
@@ -2044,6 +2060,10 @@ export function runStrategy4MlBacktest(
           exitCandleIdx = k;
           reason = `Take Profit (${ev.patternLabelFa})`;
           break;
+        }
+        if (beTriggerR > 0 && !beMoved && c.low <= entryPrice - slDist * beTriggerR) {
+          beMoved = true;
+          currentStopLoss = entryPrice - slDist * beLockR;
         }
       }
 
@@ -2122,7 +2142,7 @@ export function runStrategy4MlBacktest(
       returnR: riskAmount > 0 ? parseFloat((netVal / riskAmount).toFixed(3)) : 0,
       capitalBeforeTrade,
       capitalAfterTrade: nextCap,
-      slSlippageApplied: status === 'LOSS' && reason !== 'TIME_STOP' ? slSlipRate * 100 : 0,
+      slSlippageApplied: reason.startsWith('Stop Loss') || reason.startsWith('Breakeven') ? slSlipRate * 100 : 0,
       entryNotional: parseFloat((positionSize * entryPrice).toFixed(4)),
       exitNotional: parseFloat((positionSize * actualExitPrice).toFixed(4)),
       score: Number(score.toFixed(6)),

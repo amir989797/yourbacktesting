@@ -5,6 +5,8 @@ export interface BacktestResultItem {
   pair: CryptoPair;
   stage?: string;
   candlesCount: number;
+  minTime?: number;
+  maxTime?: number;
   totalTrades: number;
   winTrades: number;
   lossTrades: number;

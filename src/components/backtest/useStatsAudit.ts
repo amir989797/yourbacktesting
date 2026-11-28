@@ -252,15 +252,35 @@ export function useStatsAudit(props: UseStatsAuditProps) {
             }
           }
         }
-      } else if (matchingResult && Array.isArray(matchingResult.trades)) {
-        for (const t of matchingResult.trades) {
-          const tTime = t.entryTime || t.timeF;
-          if (tTime) {
-            const tSec = toSec(tTime);
-            if (earliestTimestamp === null || tSec < earliestTimestamp) earliestTimestamp = tSec;
-            if (latestTimestamp === null || tSec > latestTimestamp) latestTimestamp = tSec;
-            if (tSec < assetMinTime) assetMinTime = tSec;
-            if (tSec > assetMaxTime) assetMaxTime = tSec;
+      } else if (matchingResult) {
+        if (matchingResult.minTime && matchingResult.maxTime) {
+          const minSec = toSec(matchingResult.minTime);
+          const maxSec = toSec(matchingResult.maxTime);
+          if (minSec > 0) {
+            if (earliestTimestamp === null || minSec < earliestTimestamp) earliestTimestamp = minSec;
+            if (minSec < assetMinTime) assetMinTime = minSec;
+          }
+          if (maxSec > 0) {
+            if (latestTimestamp === null || maxSec > latestTimestamp) latestTimestamp = maxSec;
+            if (maxSec > assetMaxTime) assetMaxTime = maxSec;
+          }
+        }
+        if (Array.isArray(matchingResult.trades)) {
+          for (const t of matchingResult.trades) {
+            const tTime = t.entryTime || t.timeF;
+            const xTime = t.exitTime || tTime;
+            if (tTime) {
+              const tSec = toSec(tTime);
+              if (earliestTimestamp === null || tSec < earliestTimestamp) earliestTimestamp = tSec;
+              if (latestTimestamp === null || tSec > latestTimestamp) latestTimestamp = tSec;
+              if (tSec < assetMinTime) assetMinTime = tSec;
+              if (tSec > assetMaxTime) assetMaxTime = tSec;
+            }
+            if (xTime) {
+              const xSec = toSec(xTime);
+              if (latestTimestamp === null || xSec > latestTimestamp) latestTimestamp = xSec;
+              if (xSec > assetMaxTime) assetMaxTime = xSec;
+            }
           }
         }
       }
@@ -275,6 +295,23 @@ export function useStatsAudit(props: UseStatsAuditProps) {
         hasMissingPrices: assetHasMissingPrices,
         hasDuplicates: assetHasDuplicates,
       });
+    }
+
+    // Fallback: if browser candle cache & per-asset trade lists lacked timestamps (e.g. server-side summary), scan auditedTrades
+    if (earliestTimestamp === null || latestTimestamp === null || latestTimestamp <= earliestTimestamp) {
+      for (const t of auditedTrades) {
+        const eRaw = t.entryTime || t.timeF;
+        const xRaw = t.exitTime || eRaw;
+        if (eRaw) {
+          const eSec = toSec(eRaw);
+          if (earliestTimestamp === null || eSec < earliestTimestamp) earliestTimestamp = eSec;
+          if (latestTimestamp === null || eSec > latestTimestamp) latestTimestamp = eSec;
+        }
+        if (xRaw) {
+          const xSec = toSec(xRaw);
+          if (latestTimestamp === null || xSec > latestTimestamp) latestTimestamp = xSec;
+        }
+      }
     }
 
     if (minCandles === Infinity) minCandles = 0;

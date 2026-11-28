@@ -825,6 +825,24 @@ export interface XtSymbolMeta {
 let xtSymbolsMetaCache: Map<string, XtSymbolMeta> = new Map();
 let xtSymbolsInfoCacheExpiry = 0;
 const unsupportedOpenApiXtSymbols = new Set<string>();
+const xtNonCryptoTradFiSymbols = new Set<string>();
+const XT_NON_CRYPTO_PLATES = new Set<number>([27, 31, 32, 37, 39, 41, 42]);
+const XT_NON_CRYPTO_LABEL_RE = /\b(STOCK|INDEX|FOREX|COMMODITY|METAL|PRE-M|ETF|EQUITY)\b/i;
+
+function normalizeXtSymbolKey(symbol: string): string {
+  const clean = (symbol || '').toLowerCase().replace(/[^a-z0-9_]/g, '');
+  if (!clean) return '';
+  if (clean.includes('_')) return clean;
+  if (clean.endsWith('usdt') && clean.length > 4) return `${clean.slice(0, -4)}_usdt`;
+  return clean;
+}
+
+function isXtNonCryptoOrExcludedSymbol(symbol: string): boolean {
+  if (isXtExcludedSymbol(symbol)) return true;
+  const key = normalizeXtSymbolKey(symbol);
+  if (!key) return true;
+  return xtNonCryptoTradFiSymbols.has(key);
+}
 
 async function getXtSymbolsOpenApiMap(): Promise<Map<string, XtSymbolMeta>> {
   if (xtSymbolsMetaCache.size > 0 && Date.now() < xtSymbolsInfoCacheExpiry) {
@@ -839,6 +857,7 @@ async function getXtSymbolsOpenApiMap(): Promise<Map<string, XtSymbolMeta>> {
     if (Array.isArray(symbols) && symbols.length > 0) {
       const map = new Map<string, XtSymbolMeta>();
       unsupportedOpenApiXtSymbols.clear();
+      xtNonCryptoTradFiSymbols.clear();
 
       for (const s of symbols) {
         const sym = (s.symbol || s.pair || '').toLowerCase();
@@ -848,6 +867,20 @@ async function getXtSymbolsOpenApiMap(): Promise<Map<string, XtSymbolMeta>> {
         const openSwitch = s.openSwitch !== false;
         const stateActive = s.state === 0 || s.state === undefined;
         const isApiSupported = isOpenApi && tradeSwitch && openSwitch && stateActive;
+
+        const rawLabels: string[] = [
+          ...(Array.isArray(s.labels) ? s.labels : []),
+          ...(Array.isArray(s.tags) ? s.tags : []),
+        ].map((v: any) => String(v || ''));
+        const rawPlates: number[] = Array.isArray(s.plates)
+          ? s.plates.map((p: any) => Number(p)).filter((n: number) => Number.isFinite(n))
+          : [];
+        const isTradFi =
+          rawLabels.some((lbl) => XT_NON_CRYPTO_LABEL_RE.test(lbl)) ||
+          rawPlates.some((pid) => XT_NON_CRYPTO_PLATES.has(pid));
+        if (isTradFi) {
+          xtNonCryptoTradFiSymbols.add(sym);
+        }
 
         const contractSize = parseFloat(s.contractSize || '1') || 1;
         const pricePrecision = parseInt(s.pricePrecision !== undefined ? s.pricePrecision : '3', 10);
@@ -882,7 +915,7 @@ async function getXtSymbolsOpenApiMap(): Promise<Map<string, XtSymbolMeta>> {
       }
       xtSymbolsMetaCache = map;
       xtSymbolsInfoCacheExpiry = Date.now() + 30 * 60 * 1000;
-      console.log(`[XT Symbols Metadata] Loaded ${map.size} symbols. OpenAPI-supported: ${map.size - unsupportedOpenApiXtSymbols.size}, Unsupported/Restricted: ${unsupportedOpenApiXtSymbols.size}`);
+      console.log(`[XT Symbols Metadata] Loaded ${map.size} symbols. Pure-Crypto: ${map.size - xtNonCryptoTradFiSymbols.size}, TradFi/Non-Crypto excluded: ${xtNonCryptoTradFiSymbols.size}, Restricted: ${unsupportedOpenApiXtSymbols.size}`);
       return map;
     }
   } catch (err: any) {
@@ -924,7 +957,7 @@ async function fetchXtServerPairs(): Promise<CryptoPair[]> {
 
   if (data?.result && Array.isArray(data.result)) {
     return data.result
-      .filter((item: any) => !isXtExcludedSymbol(item.s || ''))
+      .filter((item: any) => !isXtNonCryptoOrExcludedSymbol(item.s || ''))
       .map((item: any) => {
         const sym = (item.s || '').toLowerCase();
         const parts = sym.split('_');
@@ -4400,6 +4433,8 @@ async function runServerBacktestCycle(params: {
       pair,
       stage: 'RAW / PRE-FILTER',
       candlesCount: candles.length,
+      minTime: candles[0]?.time || 0,
+      maxTime: candles[candles.length - 1]?.time || 0,
       totalTrades: metrics.totalTrades,
       winTrades: metrics.winTrades,
       lossTrades: metrics.lossTrades,
@@ -4638,6 +4673,9 @@ async function runServerBacktestCycle(params: {
           let totalCandlesSum = 0;
 
           if (!isCancelled()) {
+            if (exchange === 'xt') {
+              await getXtSymbolsOpenApiMap();
+            }
             await forEachDatasetChunkSymbol(
               datasetId,
               {
@@ -4653,6 +4691,13 @@ async function runServerBacktestCycle(params: {
               },
               (pair, candles) => {
                 if (isCancelled()) return;
+                if (exchange === 'xt' && isXtNonCryptoOrExcludedSymbol(pair.symbol)) {
+                  skippedSymbols.push({
+                    symbol: pair.symbol,
+                    reason: 'نماد غیرکریپتویی/سهامی XT (حذف خودکار)',
+                  });
+                  return;
+                }
                 const calc = processSymbolStrategy(pair, candles);
                 if (isCancelled()) return;
                 if (calc) {
@@ -4714,6 +4759,9 @@ async function runServerBacktestCycle(params: {
           if (!entry || isCancelled()) break;
 
           try {
+            if (exchange === 'xt' && isXtNonCryptoOrExcludedSymbol(entry.pair.symbol)) {
+              continue;
+            }
             const activeCandles = filterCandlesByMsRange(entry.candles || [], startTime, endTime);
             if (activeCandles.length >= 50 && !isCancelled()) {
               const calculated = processSymbolStrategy(entry.pair, activeCandles);
@@ -8726,8 +8774,9 @@ setInterval(async () => {
 
   isTimeStopGuardianBusy = true;
   try {
-    const [posRes, activeDbTrades] = await Promise.all([
+    const [posRes, posDetailRes, activeDbTrades] = await Promise.all([
       requestXtApi('GET', '/future/user/v1/position/list', 'application/x-www-form-urlencoded').catch(() => null),
+      requestXtApi('GET', '/future/user/v1/position', 'application/x-www-form-urlencoded').catch(() => null),
       getActiveLiveTradesFromDb().catch(() => []),
     ]);
     if (!posRes || posRes.returnCode !== 0 || !Array.isArray(posRes.result)) return;
@@ -8737,10 +8786,13 @@ setInterval(async () => {
     );
     if (openPositions.length === 0) return;
 
+    const detailItems = Array.isArray(posDetailRes?.result) ? posDetailRes.result : [];
     const activeMl = getActiveMlModel();
     const mlTargetRR = activeMl.targetRR && activeMl.targetRR > 0
       ? activeMl.targetRR
-      : (activeMl.slAtrMult > 0 && activeMl.tpAtrMult > 0 ? activeMl.tpAtrMult / activeMl.slAtrMult : 1.5);
+      : (activeMl.slAtrMult > 0 && activeMl.tpAtrMult > 0 ? activeMl.tpAtrMult / activeMl.slAtrMult : 1.45);
+    const mlBeTriggerR = activeMl.beTriggerR && activeMl.beTriggerR > 0 ? activeMl.beTriggerR : 0;
+    const mlBeLockR = activeMl.beLockR ?? 0;
 
     let recentOrders: any[] | null = null;
     for (const pos of openPositions) {
@@ -8786,6 +8838,8 @@ setInterval(async () => {
       const entryP = parseFloat(pos.entryPrice || pos.openPrice || '0');
       const slP = parseFloat(pos.triggerStopPrice || matchEntryOrd?.triggerStopPrice || dbTrade?.stop_loss || '0');
       const tpP = parseFloat(pos.triggerProfitPrice || matchEntryOrd?.triggerProfitPrice || dbTrade?.take_profit || '0');
+      const matchDetail = detailItems.find((d: any) => d.symbol === pos.symbol && d.positionSide === posSide);
+      const markP = parseFloat(matchDetail?.calMarkPrice || pos.markPrice || '0');
       const posRR = entryP > 0 && slP > 0 && tpP > 0 && Math.abs(entryP - slP) > 0
         ? Math.abs(tpP - entryP) / Math.abs(entryP - slP)
         : 0;
@@ -8797,7 +8851,55 @@ setInterval(async () => {
         (!dbTrade?.strategy_name && cfg.strategyId === 'strategy_4_ml_zigzag') ||
         (posRR > 0 && Math.abs(posRR - mlTargetRR) <= 0.12 && posSlPct >= Math.max(2.0, (activeMl.minSlPct ?? 3.0) - 0.6));
 
-      const maxTsCandles = isMlPos ? (activeMl.timeStopCandles || 144) : (cfg.timeStopCandles || 80);
+      // Live Breakeven Protect parity for ML v7 (moves SL once when unrealized gain reaches beTriggerR)
+      if (isMlPos && mlBeTriggerR > 0 && entryP > 0 && tpP > 0 && markP > 0 && mlTargetRR > 0) {
+        try {
+          const initSlDist = Math.abs(tpP - entryP) / mlTargetRR;
+          if (initSlDist > 0) {
+            const curR = posSide === 'LONG' ? (markP - entryP) / initSlDist : (entryP - markP) / initSlDist;
+            if (curR >= mlBeTriggerR) {
+              const xtSym = toXtSymbol(pos.symbol);
+              const profRes = await requestXtApi('GET', '/future/trade/v1/entrust/profit-list', 'application/x-www-form-urlencoded', { ps: '20', symbol: xtSym }).catch(() => null);
+              const profItems = Array.isArray(profRes?.result?.items) ? profRes.result.items : [];
+              const activeProfit = profItems.find(
+                (p: any) =>
+                  p.symbol === xtSym &&
+                  p.positionSide === posSide &&
+                  p.state !== 'PLATFORM_REVOCATION' &&
+                  p.state !== 'TRIGGERED' &&
+                  p.state !== 'CANCELED' &&
+                  p.state !== 'REVOKED'
+              );
+              const liveSl = activeProfit?.triggerStopPrice ? parseFloat(activeProfit.triggerStopPrice) : slP;
+              const symMap = await getXtSymbolsOpenApiMap().catch(() => null);
+              const symMeta = symMap?.get(xtSym);
+              const rawBeSl = posSide === 'LONG' ? entryP + initSlDist * mlBeLockR : entryP - initSlDist * mlBeLockR;
+              const targetBeSl = symMeta ? quantizeXtPrice(rawBeSl, symMeta) : Number(rawBeSl.toPrecision(6));
+              const needsBeMove =
+                activeProfit?.profitId &&
+                targetBeSl > 0 &&
+                (posSide === 'LONG' ? (liveSl <= 0 || targetBeSl > liveSl) && targetBeSl < markP : (liveSl <= 0 || targetBeSl < liveSl) && targetBeSl > markP);
+              if (needsBeMove) {
+                const updRes = await requestXtApi('POST', '/future/trade/v1/entrust/update-profit-stop', 'application/json', {
+                  profitId: activeProfit.profitId,
+                  triggerProfitPrice: activeProfit.triggerProfitPrice ? Number(activeProfit.triggerProfitPrice) : tpP,
+                  triggerStopPrice: targetBeSl,
+                });
+                if (updRes && updRes.returnCode === 0) {
+                  addServerScannerLog(
+                    'trade',
+                    `🛡️ [محافظ سر‌به‌سر ML] حد ضرر ${xtSym.toUpperCase()} (${posSide}) به ${targetBeSl} (+${mlBeLockR}R) منتقل شد.`,
+                    pos.symbol,
+                    tf
+                  );
+                }
+              }
+            }
+          }
+        } catch {}
+      }
+
+      const maxTsCandles = isMlPos ? (activeMl.timeStopCandles || 150) : (cfg.timeStopCandles || 80);
       const candlesElapsed = Math.floor((Date.now() - openTimeMs) / getTimeframeMs(tf));
 
       if ((isMlPos || cfg.timeStopEnabled !== false) && candlesElapsed >= maxTsCandles) {
@@ -9204,7 +9306,7 @@ async function runServerScannerCycle(forceAllTimeframes: boolean = false) {
     ? cfg.symbols
     : ['btc_usdt', 'eth_usdt', 'sol_usdt', 'xrp_usdt', 'doge_usdt'];
 
-  let activeTargetSymbols = targetSymbols.filter((s) => !isXtExcludedSymbol(s));
+  let activeTargetSymbols = targetSymbols.filter((s) => !isXtNonCryptoOrExcludedSymbol(s));
   if (cfg.exchange === 'xt') {
     await getXtSymbolsOpenApiMap();
     activeTargetSymbols = activeTargetSymbols.filter((s) => !unsupportedOpenApiXtSymbols.has(toXtSymbol(s)));
@@ -11087,7 +11189,9 @@ async function hydrateActiveMlModelFromDatabase(): Promise<void> {
       id === 'pretrained_xt_5m_zigzag_gbdt_v1' ||
       id === 'pretrained_xt_5m_zigzag_gbdt_v2' ||
       id === 'pretrained_xt_5m_zigzag_gbdt_v3' ||
-      id === 'pretrained_xt_5m_zigzag_gbdt_v4';
+      id === 'pretrained_xt_5m_zigzag_gbdt_v4' ||
+      id === 'pretrained_xt_5m_zigzag_gbdt_v5' ||
+      id === 'pretrained_xt_5m_zigzag_gbdt_v6';
 
     if (!initRes.success) {
       if (localStore.activeModelId && !isLegacyPretrained(localStore.activeModelId)) {
@@ -11414,7 +11518,7 @@ app.post('/api/ml/train-start', async (req, res) => {
   const body = req.body || {};
   const fallbackDs = serverBacktestState.datasetId || listLocalDatasets()[0]?.id || 'server_buffer_active';
   const datasetId: string = String(body.datasetId || fallbackDs);
-  const modelName: string = String(body.modelName || `مدل XT ZigZag v5 دوجهته (${new Date().toLocaleDateString('fa-IR')})`).slice(0, 90);
+  const modelName: string = String(body.modelName || `مدل XT ZigZag v7 دوجهته (${new Date().toLocaleDateString('fa-IR')})`).slice(0, 90);
   const maxChunksToScan = Math.max(20, Math.min(1000, Number(body.maxChunks ?? 1000)));
   const zigzagParams: ZigZagMlParams = {
     atrPeriod: Math.max(5, Math.min(50, Number(body.atrPeriod ?? 17))),
@@ -11427,26 +11531,28 @@ app.post('/api/ml/train-start', async (req, res) => {
     maxBlueLegPercent: Math.max(50, Math.min(120, Number(body.maxBlueLegPercent ?? 95))),
     maxBreakoutAtrMultiplier: Math.max(1, Math.min(15, Number(body.maxBreakoutAtrMultiplier ?? 4))),
   };
-  const slAtrMult = Math.max(1.5, Math.min(10, Number(body.slAtrMult ?? 5.0)));
+  const slAtrMult = Math.max(1.5, Math.min(10, Number(body.slAtrMult ?? 5.5)));
   const minSlPct = Math.max(0.5, Math.min(12.0, Number(body.minSlPct ?? 3.5)));
   const hasExplicitRR = body.targetRR !== undefined && body.targetRR !== null && body.targetRR !== '' && !isNaN(Number(body.targetRR));
-  const rawTpAtrMult = Math.max(2.0, Math.min(40, Number(body.tpAtrMult ?? 7.5)));
+  const rawTpAtrMult = Math.max(2.0, Math.min(40, Number(body.tpAtrMult ?? 7.98)));
   const targetRR = hasExplicitRR
     ? Math.max(0.5, Math.min(10.0, Number(body.targetRR)))
-    : (slAtrMult > 0 ? Math.max(0.5, Math.min(10.0, rawTpAtrMult / slAtrMult)) : 1.5);
+    : (slAtrMult > 0 ? Math.max(0.5, Math.min(10.0, rawTpAtrMult / slAtrMult)) : 1.45);
   const tpAtrMult = hasExplicitRR ? Number((slAtrMult * targetRR).toFixed(2)) : rawTpAtrMult;
-  const timeStopCandles = Math.max(20, Math.min(400, Number(body.timeStopCandles ?? 144)));
-  const minAtrPct = Math.max(0.1, Math.min(2.0, Number(body.minAtrPct ?? 0.25)));
+  const beTriggerR = Math.max(0, Math.min(2.0, Number(body.beTriggerR ?? 0.75)));
+  const beLockR = Math.max(-0.5, Math.min(1.0, Number(body.beLockR ?? 0.20)));
+  const timeStopCandles = Math.max(20, Math.min(400, Number(body.timeStopCandles ?? 150)));
+  const minAtrPct = Math.max(0.1, Math.min(2.0, Number(body.minAtrPct ?? 0.30)));
   const minStretchPct = Math.max(0, Math.min(15.0, Number(body.minStretchPct ?? 0)));
-  const numTrees = Math.max(20, Math.min(250, Number(body.numTrees ?? 160)));
-  const learningRate = Math.max(0.01, Math.min(0.2, Number(body.learningRate ?? 0.035)));
-  const maxDepth = Math.max(1, Math.min(6, Number(body.maxDepth ?? 5)));
-  const l2Lambda = Math.max(50, Math.min(1200, Number(body.l2Lambda ?? 700)));
-  const topPercent = Math.max(1, Math.min(25, Number(body.topPercent ?? 5)));
+  const numTrees = Math.max(20, Math.min(120, Number(body.numTrees ?? 45)));
+  const learningRate = Math.max(0.01, Math.min(0.2, Number(body.learningRate ?? 0.025)));
+  const maxDepth = Math.max(1, Math.min(4, Number(body.maxDepth ?? 2)));
+  const l2Lambda = Math.max(100, Math.min(2000, Number(body.l2Lambda ?? 1000)));
+  const topPercent = Math.max(1, Math.min(25, Number(body.topPercent ?? 6)));
   const objective: 'blended' | 'expected_r' | 'win_prob' =
     body.objective === 'expected_r' || body.objective === 'blended' || body.objective === 'win_prob'
       ? body.objective
-      : 'win_prob';
+      : 'blended';
   // Strategy 4 trades are ALWAYS bidirectional (Long + Short)
   const sideFilter: 'BOTH' = 'BOTH';
   const activateAfterTrain = body.activateAfterTrain !== false;
@@ -11517,6 +11623,9 @@ app.post('/api/ml/train-start', async (req, res) => {
         throw new Error(`هیچ کندلی برای دیتاست ${datasetId} در PostgreSQL یا کش لوکال یافت نشد.`);
       }
 
+      if (exchange === 'xt') {
+        await getXtSymbolsOpenApiMap();
+      }
       const samples: MlTrainingSample[] = [];
       const MAX_SAMPLES = 115000;
 
@@ -11525,6 +11634,7 @@ app.post('/api/ml/train-start', async (req, res) => {
           mlTrainingState.symbolsProcessed++;
           if (!Array.isArray(item.tuples) || item.tuples.length < 110) continue;
           const symName = String(item.symbol || '');
+          if (exchange === 'xt' && isXtNonCryptoOrExcludedSymbol(symName)) continue;
           const candles = item.tuples.map((t: number[]) => ({
             time: t[0],
             open: t[1],
@@ -11549,7 +11659,9 @@ app.post('/api/ml/train-start', async (req, res) => {
               timeStopCandles,
               0.0006,
               0.0006,
-              exchange === 'xt' ? 0.0004 : 0
+              exchange === 'xt' ? 0.0004 : 0,
+              beTriggerR,
+              beLockR
             );
             samples.push({
               symbol: symName,
@@ -11571,7 +11683,7 @@ app.post('/api/ml/train-start', async (req, res) => {
           String(a.pair.symbol).localeCompare(String(b.pair.symbol))
         );
         mlTrainingState.totalSymbolsEstimate = entries.length;
-        mlTrainingState.stage = 'در حال استخراج ۵۸ ویژگی علّی زیگزاگ از حافظه اسکن...';
+        mlTrainingState.stage = 'در حال استخراج ۵۹ ویژگی علّی زیگزاگ از حافظه اسکن...';
         pushMlLog(`شروع پردازش ${entries.length} نماد (${timeframe}) از حافظه اسکن...`);
         for (let i = 0; i < entries.length; i++) {
           if (mlTrainingState.shouldStop) throw new Error('آموزش توسط کاربر متوقف شد.');
@@ -11611,7 +11723,7 @@ app.post('/api/ml/train-start', async (req, res) => {
           selectedChunks.length,
           Math.round((symbolCountEst || selectedChunks.length) * (selectedChunks.length / allChunkIndices.length))
         );
-        mlTrainingState.stage = 'در حال استخراج ۵۸ ویژگی علّی زیگزاگ (بدون نگاه به آینده)...';
+        mlTrainingState.stage = 'در حال استخراج ۵۹ ویژگی علّی زیگزاگ (بدون نگاه به آینده)...';
         pushMlLog(
           `تعداد ${selectedChunks.length} بسته از ${allChunkIndices.length} بسته کندل ${exchange.toUpperCase()} (${timeframe}) [${useLocalChunks ? 'کش سرور' : 'PostgreSQL'}] انتخاب شد.`
         );
@@ -11678,6 +11790,8 @@ app.post('/api/ml/train-start', async (req, res) => {
         minSlPct,
         tpAtrMult,
         targetRR,
+        beTriggerR,
+        beLockR,
         timeStopCandles,
         minAtrPct,
         minStretchPct,

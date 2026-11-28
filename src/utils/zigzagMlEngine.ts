@@ -87,6 +87,8 @@ export const ML_FEATURES_META: MlFeatureMeta[] = [
   { index: 55, key: 'trend_bar_ratio_48', labelFa: 'پایداری کندل‌های هم‌جهت (۴۸ کندل)', category: 'structure', descriptionFa: 'توازن تعداد کندل‌های صعودی و نزولی ۴۸ کندل اخیر در جهت ورود برای تشخیص مومنتوم واقعی' },
   { index: 56, key: 'pullback_vs_stretch', labelFa: 'امتیاز رژیم پولبک هم‌روند در برابر اشباع', category: 'structure', descriptionFa: 'ترکیب فاصله از EMA200 و کارایی روند برای تفکیک پولبک رونددار از فید کردن روند پرقدرت' },
   { index: 57, key: 'dist_from_ema50_signed_atr', labelFa: 'موقعیت ورود نسبت به EMA50 (واحد ATR)', category: 'structure', descriptionFa: 'فاصله جهت‌دار قیمت ورود تا EMA50 برحسب ATR جهت ورود نزدیک به ناحیه ارزش' },
+  // v7 Causal Microstructure Extension (index 58; 100% scale-invariant & backward-compatible)
+  { index: 58, key: 'dist_to_24h_extreme_atr', labelFa: 'فاصله پیوت P1 تا سقف/کف ۲۸۸×TF (ATR)', category: 'structure', descriptionFa: 'فاصله نقطه پیوت بازگشتی P1 تا اکسترمم ۲۴ ساعته برحسب ATR برای ورود دقیق در قله/دره ساختاری پیش از تخلیه کامل حرکت' },
 ];
 
 export const ML_FEATURE_NAMES = ML_FEATURES_META.map(m => m.key);
@@ -149,6 +151,8 @@ export interface ZigZagMlModel {
   minSlPct?: number;
   tpAtrMult: number;
   targetRR?: number;
+  beTriggerR?: number;
+  beLockR?: number;
   timeStopCandles: number;
   minAtrPct: number;
   minStretchPct?: number;
@@ -235,7 +239,7 @@ export function describeMatchedPattern(f: Float32Array, l1Color: string): string
   if (f[16] < 0.40) return 'ساختار هارمونیک در ناحیه اشباع';
   if ((f[18] < 0.75 || f[21] > 1.8) && f[22] === 1) return 'تخلیه/کلایمکس حجم + شکست P3';
   if (f[7] >= 3 && f[26] > 0) return 'توالی سفید + واگرایی RSI';
-  return 'ترکیب چندعاملی ZigZag ML v5';
+  return 'ترکیب چندعاملی ZigZag ML v7';
 }
 
 export function parseTimeframeMinutes(timeframe?: string): number {
@@ -652,6 +656,7 @@ export function extractCausalZigZagEvents(
     const trendBarRatio48 = dirBars48 / Math.max(1, i - er48Start + 1);
     const pullbackVsStretch = Math.max(-25, Math.min(25, (-ema200ExtAtr) * er48));
     const distFromEma50SignedAtr = Math.max(-25, Math.min(25, ((entry - ema50[i]) / atr) * revSide));
+    const distTo24hExtremeAtr = Math.min(20, (isBuy ? Math.abs(P1.value - lo24) : Math.abs(hi24 - P1.value)) / atr);
 
     const features = new Float32Array([
       atrPct,
@@ -712,6 +717,7 @@ export function extractCausalZigZagEvents(
       trendBarRatio48,
       pullbackVsStretch,
       distFromEma50SignedAtr,
+      distTo24hExtremeAtr,
     ]);
 
     events.push({
@@ -780,6 +786,8 @@ export interface MlTrainOptions {
   minSlPct?: number;
   tpAtrMult: number;
   targetRR?: number;
+  beTriggerR?: number;
+  beLockR?: number;
   timeStopCandles: number;
   minAtrPct: number;
   minStretchPct?: number;
@@ -981,17 +989,20 @@ export function simulateCausalOutcome(
   maxBars: number,
   feeEntry = 0.0006,
   feeExit = 0.0006,
-  slSlip = 0.0004
+  slSlip = 0.0004,
+  beTriggerR = 0,
+  beLockR = 0
 ): { rMultiple: number; exitTime: number } {
   const entry = candles[entryIdx].close;
   if (entry <= 0 || slDist <= 0 || tpDist <= 0) {
     return { rMultiple: 0, exitTime: candles[entryIdx].time };
   }
-  const sl = side === 1 ? entry - slDist : entry + slDist;
+  let sl = side === 1 ? entry - slDist : entry + slDist;
   const tp = side === 1 ? entry + tpDist : entry - tpDist;
   const endIdx = Math.min(candles.length - 1, entryIdx + maxBars);
   let exitPrice = candles[endIdx].close;
   let exitTime = candles[endIdx].time;
+  let beMoved = false;
 
   for (let k = entryIdx + 1; k <= endIdx; k++) {
     const c = candles[k];
@@ -1006,6 +1017,10 @@ export function simulateCausalOutcome(
         exitTime = c.time;
         break;
       }
+      if (beTriggerR > 0 && !beMoved && c.high >= entry + slDist * beTriggerR) {
+        beMoved = true;
+        sl = entry + slDist * beLockR;
+      }
     } else {
       if (c.high >= sl) {
         exitPrice = sl * (1 + slSlip);
@@ -1016,6 +1031,10 @@ export function simulateCausalOutcome(
         exitPrice = tp;
         exitTime = c.time;
         break;
+      }
+      if (beTriggerR > 0 && !beMoved && c.low <= entry - slDist * beTriggerR) {
+        beMoved = true;
+        sl = entry - slDist * beLockR;
       }
     }
   }
@@ -1079,7 +1098,8 @@ function trainSingleSideCore(
     }
   }
 
-  // Time-cluster de-weighting: 1 / sqrt(events in same hour) prevents market-wide flushes from dominating trees
+  // Exact 1-position time-cluster de-weighting: 1 / (events in same hour)
+  // Prevents simultaneous market-wide flushes (100 coins in 1 hour) from dominating trees when 1-Pos mode only takes 1 trade.
   const isMs = train[0].time > 1e12;
   const hourDiv = isMs ? 3600000 : 3600;
   const hourCounts = new Map<number, number>();
@@ -1092,20 +1112,20 @@ function trainSingleSideCore(
   const w = new Float64Array(n);
   let sumWY = 0;
   let sumW = 0;
-  const maxClipR = Math.max(1.8, targetRR * 1.15);
+  const maxClipR = Math.max(1.5, targetRR * 1.1);
   for (let i = 0; i < n; i++) {
     const h = Math.floor(train[i].time / hourDiv);
-    const wi = 1 / Math.sqrt(hourCounts.get(h) || 1);
+    const wi = 1 / (hourCounts.get(h) || 1);
     w[i] = wi;
     const r = train[i].rMultiple;
     if (objective === 'win_prob') {
-      y[i] = r > 0 ? 1 : 0;
+      y[i] = r >= 0.12 ? 1 : 0;
     } else if (objective === 'blended') {
-      const winFlag = r > 0 ? 1 : 0;
-      const clippedR = Math.max(-1.2, Math.min(maxClipR, r));
-      y[i] = 0.6 * winFlag + 0.4 * clippedR;
+      const qualityWin = r >= 0.12 ? 1 : 0;
+      const clippedR = Math.max(-1.15, Math.min(maxClipR, r));
+      y[i] = 0.4 * qualityWin + 0.6 * clippedR;
     } else {
-      y[i] = Math.max(-1.4, Math.min(Math.max(2.2, maxClipR), r));
+      y[i] = Math.max(-1.3, Math.min(Math.max(2.0, maxClipR), r));
     }
     sumWY += wi * y[i];
     sumW += wi;
@@ -1123,9 +1143,8 @@ function trainSingleSideCore(
   const featGain = new Float64Array(ML_NUM_FEATURES);
   const trees: MlTreeNode[] = [];
 
-  // Strict Validation-only Early Stopping tracker (never touches OOS)
+  // Strict Validation target array for sign-consistent feature stability filtering (zero OOS peeking)
   const valLen = val.length;
-  const valPreds = new Float64Array(valLen).fill(baseScore);
   const valTargets = new Float64Array(valLen);
   const valWeights = new Float64Array(valLen);
   const valHourCounts = new Map<number, number>();
@@ -1133,41 +1152,71 @@ function trainSingleSideCore(
     const h = Math.floor(val[i].time / hourDiv);
     valHourCounts.set(h, (valHourCounts.get(h) || 0) + 1);
   }
-  let valSumW = 0;
   for (let i = 0; i < valLen; i++) {
     const h = Math.floor(val[i].time / hourDiv);
-    const wi = 1 / Math.sqrt(valHourCounts.get(h) || 1);
-    valWeights[i] = wi;
-    valSumW += wi;
+    valWeights[i] = 1 / (valHourCounts.get(h) || 1);
     const r = val[i].rMultiple;
-    if (objective === 'win_prob') valTargets[i] = r > 0 ? 1 : 0;
-    else if (objective === 'blended') valTargets[i] = 0.6 * (r > 0 ? 1 : 0) + 0.4 * Math.max(-1.2, Math.min(maxClipR, r));
-    else valTargets[i] = Math.max(-1.4, Math.min(Math.max(2.2, maxClipR), r));
-  }
-  const minEarlyStopTrees = Math.min(numTrees, Math.max(25, Math.floor(numTrees * 0.25)));
-  let bestValScore = -Infinity;
-  let bestTreeCount = numTrees;
-  let bestFeatGainSnapshot = new Float64Array(ML_NUM_FEATURES);
-  let noImproveRounds = 0;
-  const earlyStopPatience = 22;
-  const valTopKCount = Math.max(25, Math.floor((valLen * topPercent) / 100));
-
-  let valMeanY = 0;
-  for (let j = 0; j < valLen; j++) valMeanY += valWeights[j] * valTargets[j];
-  valMeanY /= Math.max(1e-9, valSumW);
-  let valVarY = 0;
-  for (let j = 0; j < valLen; j++) {
-    const dy = valTargets[j] - valMeanY;
-    valVarY += valWeights[j] * dy * dy;
+    if (objective === 'win_prob') valTargets[i] = r >= 0.12 ? 1 : 0;
+    else if (objective === 'blended') valTargets[i] = 0.4 * (r >= 0.12 ? 1 : 0) + 0.6 * Math.max(-1.15, Math.min(maxClipR, r));
+    else valTargets[i] = Math.max(-1.3, Math.min(Math.max(2.0, maxClipR), r));
   }
 
+  const calcWeightedCorr = (arr: MlTrainingSample[], weights: Float64Array, targets: Float64Array, fIdx: number) => {
+    const len = arr.length;
+    if (len < 20) return 0;
+    let sw = 0, mx = 0, my = 0;
+    for (let i = 0; i < len; i++) {
+      const wi = weights[i];
+      const xv = fIdx < arr[i].features.length ? arr[i].features[fIdx] : 0;
+      sw += wi;
+      mx += wi * xv;
+      my += wi * targets[i];
+    }
+    if (sw <= 1e-9) return 0;
+    mx /= sw;
+    my /= sw;
+    let cov = 0, vx = 0, vy = 0;
+    for (let i = 0; i < len; i++) {
+      const wi = weights[i];
+      const xv = (fIdx < arr[i].features.length ? arr[i].features[fIdx] : 0) - mx;
+      const yv = targets[i] - my;
+      cov += wi * xv * yv;
+      vx += wi * xv * xv;
+      vy += wi * yv * yv;
+    }
+    return vx > 1e-12 && vy > 1e-12 ? cov / Math.sqrt(vx * vy) : 0;
+  };
+
+  const stableFeatures: number[] = [];
+  const scoredFeats: { f: number; prod: number }[] = [];
+  for (let f = 0; f < ML_NUM_FEATURES; f++) {
+    // Exclude f=42 (raw dollar_vol_log: XT contractSize varies 100,000x), f=41 (outer range gate), f=34 (routed at root)
+    if (f === 42 || f === 41 || f === 34) continue;
+    const cTr = calcWeightedCorr(train, w, y, f);
+    const cVa = calcWeightedCorr(val, valWeights, valTargets, f);
+    const prod = cTr * cVa;
+    scoredFeats.push({ f, prod });
+    if (prod > 0.0004) {
+      stableFeatures.push(f);
+    }
+  }
+  if (stableFeatures.length < 6) {
+    scoredFeats.sort((a, b) => b.prod - a.prod);
+    for (const item of scoredFeats) {
+      if (!stableFeatures.includes(item.f)) stableFeatures.push(item.f);
+      if (stableFeatures.length >= 8) break;
+    }
+  }
+
+  // Smooth regularized fixed-horizon boosting (eliminates noisy validation-spike early-stop variance across CV folds)
+  const effectiveNumTrees = Math.max(15, Math.min(80, numTrees));
   let rng = opts.seed >>> 0;
   const nextRand = () => {
     rng = (rng * 1664525 + 1013904223) >>> 0;
     return rng / 4294967296;
   };
 
-  for (let t = 0; t < numTrees; t++) {
+  for (let t = 0; t < effectiveNumTrees; t++) {
     for (let i = 0; i < n; i++) {
       if (isLogLoss) {
         const p = 1 / (1 + Math.exp(-Math.max(-15, Math.min(15, preds[i]))));
@@ -1179,13 +1228,11 @@ function trainSingleSideCore(
       }
     }
     const activeFeatures: number[] = [];
-    for (let f = 0; f < ML_NUM_FEATURES; f++) {
-      // Exclude feature 42 (raw dollar_vol_log: XT contractSize varies 100,000x across coins)
-      // Exclude feature 34 (raw isLong: handled cleanly via Dual-Side root routing without bull/bear drift memorization)
-      if (f === 42 || f === 34) continue;
+    for (let si = 0; si < stableFeatures.length; si++) {
+      const f = stableFeatures[si];
       if (colSample >= 0.999 || nextRand() < colSample) activeFeatures.push(f);
     }
-    if (activeFeatures.length === 0) activeFeatures.push(0);
+    if (activeFeatures.length === 0) activeFeatures.push(stableFeatures[0] ?? 0);
     const tree = buildHistogramTree(
       bx,
       grad,
@@ -1201,48 +1248,12 @@ function trainSingleSideCore(
     );
     trees.push(tree);
     for (let i = 0; i < n; i++) preds[i] += lr * predictTreeScore(tree, train[i].features);
-
-    let valMeanP = 0;
-    for (let j = 0; j < valLen; j++) {
-      valPreds[j] += lr * predictTreeScore(tree, val[j].features);
-      valMeanP += valWeights[j] * valPreds[j];
-    }
-    valMeanP /= Math.max(1e-9, valSumW);
-
-    if (t + 1 >= minEarlyStopTrees) {
-      let cov = 0;
-      let varP = 0;
-      for (let j = 0; j < valLen; j++) {
-        const dp = valPreds[j] - valMeanP;
-        const dy = valTargets[j] - valMeanY;
-        cov += valWeights[j] * dp * dy;
-        varP += valWeights[j] * dp * dp;
-      }
-      const corr = varP > 1e-12 && valVarY > 1e-12 ? cov / Math.sqrt(varP * valVarY) : 0;
-      const valIdxOrder = Array.from({ length: valLen }, (_, idx) => idx).sort((a, b) => valPreds[b] - valPreds[a]);
-      let topRSum = 0;
-      for (let k = 0; k < valTopKCount; k++) topRSum += val[valIdxOrder[k]].rMultiple;
-      const topAvgR = topRSum / Math.max(1, valTopKCount);
-      const valRankScore = corr + 0.35 * topAvgR;
-
-      if (valRankScore > bestValScore + 1e-5) {
-        bestValScore = valRankScore;
-        bestTreeCount = t + 1;
-        bestFeatGainSnapshot = new Float64Array(featGain);
-        noImproveRounds = 0;
-      } else {
-        noImproveRounds++;
-        if (noImproveRounds >= earlyStopPatience) {
-          break;
-        }
-      }
-    }
   }
 
   return {
     baseScore,
-    trees: bestTreeCount < trees.length ? trees.slice(0, bestTreeCount) : trees,
-    featGain: bestTreeCount < trees.length ? bestFeatGainSnapshot : featGain,
+    trees,
+    featGain,
   };
 }
 
@@ -1301,82 +1312,132 @@ export function trainZigZagMlModel(
     throw new Error(`تعداد نمونه‌های آموزش (${train.length}) یا اعتبارسنجی (${val.length}) کافی نیست.`);
   }
 
-  const numTrees = options.numTrees ?? 160;
-  const lr = options.learningRate ?? 0.035;
-  const maxDepth = options.maxDepth ?? 5;
-  const lambda = options.l2Lambda ?? 700;
-  const topPercent = options.topPercent ?? 5;
-  const objective = options.objective ?? 'win_prob';
-  const colSample = options.colSample ?? 0.72;
-  const targetRR = options.targetRR ?? (options.slAtrMult > 0 ? options.tpAtrMult / options.slAtrMult : 1.5);
+  const numTrees = options.numTrees ?? 45;
+  const lr = options.learningRate ?? 0.025;
+  const maxDepth = options.maxDepth ?? 2;
+  const lambda = options.l2Lambda ?? 1000;
+  const topPercent = options.topPercent ?? 6;
+  const objective = options.objective ?? 'blended';
+  const colSample = options.colSample ?? 0.65;
+  const targetRR = options.targetRR ?? (options.slAtrMult > 0 ? options.tpAtrMult / options.slAtrMult : 1.45);
+  const beTriggerR = options.beTriggerR ?? 0;
+  const beLockR = options.beLockR ?? 0;
   const isLogLoss = objective === 'win_prob';
-
-  const calcMinLeaf = (len: number) =>
-    options.minLeafSamples ?? Math.max(30, Math.min(140, Math.floor(len * 0.012)));
 
   let finalBaseScore = 0;
   let finalTrees: MlTreeNode[] = [];
+  let dualSideValThreshold: number | null = null;
   const finalFeatGain = new Float64Array(ML_NUM_FEATURES);
 
-  // Dual-Side Root-Routed GBDT (v5): train specialized Short and Stretched-Long sub-ensembles
-  // on the exact same global chronological Train/Val splits (zero OOS peeking) and route via root split on f=34 (isLong).
+  // Dual-Side Structural Microstructure Regime-Gated GBDT (v7):
+  // 1) Outer Active-Market Gate: f[41] (range_width_24h_pct) > 5.0 * tfVolScale
+  // 2) Short Blow-Off Exhaustion Gate: f[57] <= -3.2 (>= 3.2 ATR above EMA50) & f[44] <= 0.25 & f[58] <= 1.0 (fresh 24h peak)
+  // 3) Long Golden-Cross Pullback Gate: f[54] > 0.5*tfVolScale & f[27] > 1.0*tfVolScale & f[50] < 0 & f[58] <= 2.0 (uptrend pullback near 24h low)
   const tfVolScale = getTimeframeVolatilityScale(options.timeframe, '5m');
-  const trainS = train.filter((s) => s.side === -1);
-  const valS = val.filter((s) => s.side === -1);
+  const activeRangeGate = Number((5.0 * tfVolScale).toFixed(2));
+  const isActiveRange = (s: MlTrainingSample) => (s.features[41] ?? 0) > activeRangeGate;
 
-  let longStretchGate = (options.minStretchPct ?? 0) > 0 ? 0 : Number((4.5 * tfVolScale).toFixed(2));
-  let trainL = train.filter(
-    (s) => s.side === 1 && (longStretchGate <= 0 || s.features[28] >= longStretchGate || s.features[31] >= longStretchGate)
-  );
-  let valL = val.filter(
-    (s) => s.side === 1 && (longStretchGate <= 0 || s.features[28] >= longStretchGate || s.features[31] >= longStretchGate)
-  );
-  if (sideFilter === 'BOTH' && (trainL.length < 130 || valL.length < 40) && longStretchGate > 0) {
-    longStretchGate = Number((2.5 * tfVolScale).toFixed(2));
-    trainL = train.filter(
-      (s) => s.side === 1 && (s.features[28] >= longStretchGate || s.features[31] >= longStretchGate)
+  let shortGateLevel: 1 | 2 | 0 = 1;
+  let shortEma50DistMax = -3.2;
+  let shortReboundMax = 0.25;
+  let shortExt24Max = 1.0;
+  const testShortGate = (s: MlTrainingSample, lvl: 1 | 2 | 0) => {
+    if (s.side !== -1 || !isActiveRange(s)) return false;
+    if (lvl === 0) return true;
+    const d50Max = lvl === 1 ? -3.2 : -2.5;
+    const rebMax = lvl === 1 ? 0.25 : 0.35;
+    const extMax = lvl === 1 ? 1.0 : 1.5;
+    return (
+      (s.features[57] ?? 0) <= d50Max &&
+      (s.features[44] ?? 9) <= rebMax &&
+      (s.features[58] ?? 9) <= extMax
     );
-    valL = val.filter(
-      (s) => s.side === 1 && (s.features[28] >= longStretchGate || s.features[31] >= longStretchGate)
-    );
+  };
+  let trainS = train.filter((s) => testShortGate(s, 1));
+  let valS = val.filter((s) => testShortGate(s, 1));
+  if (sideFilter === 'BOTH' && (trainS.length < 80 || valS.length < 25)) {
+    shortGateLevel = 2;
+    shortEma50DistMax = -2.5;
+    shortReboundMax = 0.35;
+    shortExt24Max = 1.5;
+    trainS = train.filter((s) => testShortGate(s, 2));
+    valS = val.filter((s) => testShortGate(s, 2));
   }
-  if (sideFilter === 'BOTH' && (trainL.length < 130 || valL.length < 40)) {
-    longStretchGate = 0;
-    trainL = train.filter((s) => s.side === 1);
-    valL = val.filter((s) => s.side === 1);
+  if (sideFilter === 'BOTH' && (trainS.length < 80 || valS.length < 25)) {
+    shortGateLevel = 0;
+    trainS = train.filter((s) => testShortGate(s, 0));
+    valS = val.filter((s) => testShortGate(s, 0));
+  }
+
+  let longGateLevel: 1 | 2 | 0 = 1;
+  let longSlopeMin = Number((0.5 * tfVolScale).toFixed(3));
+  let longEma50ExtMin = Number((1.0 * tfVolScale).toFixed(3));
+  let longExt24Max = 2.0;
+  const testLongGate = (s: MlTrainingSample, lvl: 1 | 2 | 0) => {
+    if (s.side !== 1 || !isActiveRange(s)) return false;
+    if (lvl === 0) return true;
+    const slp = Number(((lvl === 1 ? 0.5 : 0.2) * tfVolScale).toFixed(3));
+    const extMin = Number(((lvl === 1 ? 1.0 : 0.5) * tfVolScale).toFixed(3));
+    const hasExt24 = lvl === 1 ? (s.features[58] ?? 9) <= 2.0 : true;
+    return (
+      (s.features[54] ?? 0) > slp &&
+      (s.features[27] ?? 0) > extMin &&
+      (s.features[50] ?? 9) < 0 &&
+      hasExt24
+    );
+  };
+  let trainL = train.filter((s) => testLongGate(s, 1));
+  let valL = val.filter((s) => testLongGate(s, 1));
+  if (sideFilter === 'BOTH' && (trainL.length < 25 || valL.length < 10)) {
+    longGateLevel = 2;
+    longSlopeMin = Number((0.2 * tfVolScale).toFixed(3));
+    longEma50ExtMin = Number((0.5 * tfVolScale).toFixed(3));
+    longExt24Max = 99;
+    trainL = train.filter((s) => testLongGate(s, 2));
+    valL = val.filter((s) => testLongGate(s, 2));
+  }
+  if (sideFilter === 'BOTH' && (trainL.length < 25 || valL.length < 10)) {
+    longGateLevel = 0;
+    trainL = train.filter((s) => testLongGate(s, 0));
+    valL = val.filter((s) => testLongGate(s, 0));
   }
 
   const useDualSide =
     sideFilter === 'BOTH' &&
-    trainS.length >= 130 &&
-    valS.length >= 40 &&
-    trainL.length >= 130 &&
-    valL.length >= 40;
+    trainS.length >= 60 &&
+    valS.length >= 20 &&
+    trainL.length >= 25 &&
+    valL.length >= 10;
 
   if (useDualSide) {
+    const shortTreesCount = Math.max(20, Math.min(80, numTrees));
+    const longTreesCount = Math.max(20, Math.min(60, Math.round(numTrees * 0.78)));
+    const shortMinLeaf = Math.min(40, Math.max(15, Math.floor(trainS.length * 0.08)));
+    const longMinLeaf = Math.min(20, Math.max(10, Math.floor(trainL.length * 0.12)));
+
     const resS = trainSingleSideCore(trainS, valS, {
-      numTrees,
+      numTrees: shortTreesCount,
       lr,
-      maxDepth,
-      minLeaf: calcMinLeaf(trainS.length),
-      lambda,
-      topPercent: Math.max(3, topPercent),
+      maxDepth: Math.max(1, Math.min(3, maxDepth)),
+      minLeaf: shortMinLeaf,
+      lambda: Math.max(lambda, 900),
+      topPercent,
       objective,
       targetRR,
       colSample,
-      seed: 20261121,
+      seed: 202,
     });
     const resL = trainSingleSideCore(trainL, valL, {
-      numTrees,
+      numTrees: longTreesCount,
       lr,
-      maxDepth,
-      minLeaf: Math.max(50, calcMinLeaf(trainL.length)),
-      lambda,
-      topPercent: Math.max(4, topPercent),
+      maxDepth: 1,
+      minLeaf: longMinLeaf,
+      lambda: Math.max(400, Math.round(lambda * 0.5)),
+      topPercent,
       objective,
       targetRR,
       colSample,
-      seed: 20261127,
+      seed: 101,
     });
 
     const evalCoreZ = (core: SingleSideCoreResult, x: Float32Array) => {
@@ -1384,54 +1445,103 @@ export function trainZigZagMlModel(
       for (let i = 0; i < core.trees.length; i++) s += lr * predictTreeScore(core.trees[i], x);
       return s;
     };
-    const logit = (p: number) => {
-      const pc = Math.max(0.05, Math.min(0.95, p));
-      return Math.log(pc / (1 - pc));
-    };
 
-    const zValS = valS.map((s) => evalCoreZ(resS, s.features));
-    const zValL = valL.map((s) => evalCoreZ(resL, s.features));
-    const empS = valS.filter((s) => s.rMultiple > 0).length / Math.max(1, valS.length);
-    const muS = zValS.reduce((a, b) => a + b, 0) / Math.max(1, zValS.length);
-    const shiftS = isLogLoss ? logit(empS) - muS : 0;
+    const valPairsS = valS.map((s) => ({ s, z: evalCoreZ(resS, s.features) })).sort((a, b) => b.z - a.z);
+    const valPairsL = valL.map((s) => ({ s, z: evalCoreZ(resL, s.features) })).sort((a, b) => b.z - a.z);
 
-    // Align elite Validation upper-tail quantiles (strictly Validation-only, zero OOS peeking)
-    // so elite stretched-Long bounces compete naturally alongside elite Shorts in every regime.
-    const sortedS = [...zValS].sort((a, b) => b - a);
-    const sortedL = [...zValL].sort((a, b) => b - a);
-    const qS5 = sortedS[Math.min(sortedS.length - 1, Math.floor(sortedS.length * 0.05))] ?? muS;
-    const longQuantile = longStretchGate > 0 ? 0.10 : 0.05;
-    const qL = sortedL[Math.min(sortedL.length - 1, Math.floor(sortedL.length * longQuantile))] ?? 0;
-    const shiftL = (qS5 + shiftS) - qL;
+    // Calibrate selection quantiles purely on Validation split (zero OOS peeking).
+    // With primary v7 structural gates (~1.3% of raw events), default topPercent=6 keeps top 60% Shorts & 75% Longs.
+    const gatedShortKeep = Math.max(0.25, Math.min(0.90, topPercent / 10));
+    const baseShortShare = shortGateLevel > 0 ? gatedShortKeep : Math.max(0.03, Math.min(0.20, topPercent / 100));
+    const effLongShare = longGateLevel > 0 ? Math.min(0.92, gatedShortKeep + 0.15) : Math.max(0.05, Math.min(0.35, (topPercent * 2) / 100));
+
+    const qS = valPairsS[Math.min(valPairsS.length - 1, Math.floor(valPairsS.length * baseShortShare))]?.z ?? 0;
+    const qL = valPairsL[Math.min(valPairsL.length - 1, Math.floor(valPairsL.length * effLongShare))]?.z ?? 0;
+    const shiftS = 0;
+    const shiftL = qS - qL;
+    dualSideValThreshold = isLogLoss ? 1 / (1 + Math.exp(-Math.max(-15, Math.min(15, qS)))) : qS;
 
     const shortBaseLeaf: MlTreeNode = { isLeaf: true, v: Number(((resS.baseScore + shiftS) / lr).toFixed(5)) };
     const longBaseLeaf: MlTreeNode = { isLeaf: true, v: Number(((resL.baseScore + shiftL) / lr).toFixed(5)) };
     const rejectLeaf: MlTreeNode = { isLeaf: true, v: Number((-20 / lr).toFixed(5)) };
 
+    // Short gate: f[57] <= shortEma50DistMax AND f[44] <= shortReboundMax AND f[58] <= shortExt24Max
+    const shortBranch: MlTreeNode = shortGateLevel > 0
+      ? {
+          isLeaf: false,
+          v: 0,
+          f: 57,
+          th: shortEma50DistMax,
+          l: {
+            isLeaf: false,
+            v: 0,
+            f: 44,
+            th: shortReboundMax,
+            l: {
+              isLeaf: false,
+              v: 0,
+              f: 58,
+              th: shortExt24Max,
+              l: shortBaseLeaf,
+              r: rejectLeaf,
+            },
+            r: rejectLeaf,
+          },
+          r: rejectLeaf,
+        }
+      : shortBaseLeaf;
+
+    // Long gate: f[54] > longSlopeMin AND f[27] > longEma50ExtMin AND f[50] < -1e-6 AND (lvl===1 -> f[58] <= 2.0)
+    const longInnerExt24: MlTreeNode = longGateLevel === 1
+      ? {
+          isLeaf: false,
+          v: 0,
+          f: 58,
+          th: longExt24Max,
+          l: longBaseLeaf,
+          r: rejectLeaf,
+        }
+      : longBaseLeaf;
+
+    const longBranch: MlTreeNode = longGateLevel > 0
+      ? {
+          isLeaf: false,
+          v: 0,
+          f: 54,
+          th: longSlopeMin,
+          l: rejectLeaf,
+          r: {
+            isLeaf: false,
+            v: 0,
+            f: 27,
+            th: longEma50ExtMin,
+            l: rejectLeaf,
+            r: {
+              isLeaf: false,
+              v: 0,
+              f: 50,
+              th: -1e-6,
+              l: longInnerExt24,
+              r: rejectLeaf,
+            },
+          },
+        }
+      : longBaseLeaf;
+
     const tree0: MlTreeNode = {
       isLeaf: false,
       v: 0,
-      f: 34,
-      th: 0.5,
-      l: shortBaseLeaf,
-      r:
-        longStretchGate > 0
-          ? {
-              isLeaf: false,
-              v: 0,
-              f: 28,
-              th: longStretchGate,
-              l: {
-                isLeaf: false,
-                v: 0,
-                f: 31,
-                th: longStretchGate,
-                l: rejectLeaf,
-                r: longBaseLeaf,
-              },
-              r: longBaseLeaf,
-            }
-          : longBaseLeaf,
+      f: 41,
+      th: activeRangeGate,
+      l: rejectLeaf,
+      r: {
+        isLeaf: false,
+        v: 0,
+        f: 34,
+        th: 0.5,
+        l: shortBranch,
+        r: longBranch,
+      },
     };
 
     const merged: MlTreeNode[] = [tree0];
@@ -1453,17 +1563,18 @@ export function trainZigZagMlModel(
       finalFeatGain[f] = resS.featGain[f] + resL.featGain[f];
     }
   } else {
+    const singleMinLeaf = options.minLeafSamples ?? Math.max(30, Math.min(80, Math.floor(train.length * 0.015)));
     const singleRes = trainSingleSideCore(train, val, {
       numTrees,
       lr,
       maxDepth,
-      minLeaf: calcMinLeaf(train.length),
+      minLeaf: singleMinLeaf,
       lambda,
       topPercent,
       objective,
       targetRR,
       colSample,
-      seed: 20261121,
+      seed: 202,
     });
     finalBaseScore = singleRes.baseScore;
     finalTrees = singleRes.trees;
@@ -1483,9 +1594,14 @@ export function trainZigZagMlModel(
 
   // Calibrate threshold STRICTLY on Validation set (never peeking at OOS!)
   const valScored = val.map((s) => ({ ...s, score: predictLocal(s.features) }));
-  const valScores = valScored.map((s) => s.score).sort((a, b) => b - a);
-  const cutIdx = Math.max(0, Math.min(valScores.length - 1, Math.floor((valScores.length * topPercent) / 100)));
-  const scoreThreshold = Math.floor((valScores[cutIdx] ?? 0.05) * 1e5) / 1e5;
+  let scoreThreshold: number;
+  if (useDualSide && dualSideValThreshold !== null && Number.isFinite(dualSideValThreshold)) {
+    scoreThreshold = Math.floor(dualSideValThreshold * 1e5) / 1e5;
+  } else {
+    const valScores = valScored.map((s) => s.score).sort((a, b) => b - a);
+    const cutIdx = Math.max(0, Math.min(valScores.length - 1, Math.floor((valScores.length * topPercent) / 100)));
+    scoreThreshold = Math.floor((valScores[cutIdx] ?? 0.05) * 1e5) / 1e5;
+  }
 
   const selTr = train.map((s) => ({ ...s, score: predictLocal(s.features) })).filter((s) => s.score >= scoreThreshold);
   const selVa = valScored.filter((s) => s.score >= scoreThreshold);
@@ -1502,12 +1618,12 @@ export function trainZigZagMlModel(
   })).sort((a, b) => b.gain - a.gain);
 
   const patDefs: { name: string; rule: string; category: MlFeatureCategory; test: (f: Float32Array) => boolean }[] = [
-    { name: 'پولبک هم‌جهت روند قدرتمند (رژیم رونددار ER+EMA200)', rule: 'EMA200 Ext < -1% & EMA200 Slope > 0 & ER48 ≥ 0.25', category: 'structure', test: f => f[28] < -1 && (f[54] ?? 0) > 0 && (f[52] ?? 0) >= 0.25 },
-    { name: 'بازگشت اشباع عمیق دوجهته (EMA200 / 4h Stretch ≥ 4.5%)', rule: 'EMA200 Ext ≥ 4.5% or 4h Stretch ≥ 4.5% & ML Score ≥ Threshold', category: 'structure', test: f => f[28] >= 4.5 || f[31] >= 4.5 },
-    { name: 'ساختار هارمونیک و نسبت L1<L2,L3 (تخلیه موج)', rule: 'r12 < 1.0 or r13 < 1.0 & Harmonic Error < 0.45', category: 'harmonic', test: f => f[11] < 1.0 || f[12] < 1.0 || f[16] < 0.45 },
-    { name: 'بازگشت لگ غول‌پیکر (سبز/قرمز) با فیلتر جهت', rule: 'L1 = Giant (Green/Red) & ML Score ≥ Threshold', category: 'legs', test: f => f[3] === 1 },
+    { name: 'شورت اوج انفجاری روی سقف ۲۴h (بدون برگشت زودرس)', rule: 'EMA50 ≥ +3.2 ATR & Rebound ≤ 0.25 & Dist 24h High ≤ 1.0 ATR', category: 'structure', test: f => f[34] === 0 && (f[57] ?? 0) <= -3.2 && (f[44] ?? 9) <= 0.25 && (f[58] ?? 9) <= 1.0 },
+    { name: 'لانگ پولبک هم‌روند گلدن‌کراس (EMA50>EMA200)', rule: 'EMA200 Slope > 0.5% & EMA50 > EMA200 & Pullback ≥ 1% & Near 24h Low', category: 'structure', test: f => f[34] === 1 && (f[54] ?? 0) > 0.5 && f[27] > 1.0 && (f[50] ?? 9) < 0 },
+    { name: 'ساختار هارمونیک و تخلیه موج (L1/L2 و L1/L3)', rule: 'r12 < 1.0 or r13 < 1.0 & Harmonic Error < 0.45', category: 'harmonic', test: f => f[11] < 1.0 || f[12] < 1.0 || f[16] < 0.45 },
+    { name: 'بازگشت لگ غول‌پیکر (سبز/قرمز) با فیلتر رژیم', rule: 'L1 = Giant (Green/Red) & ML Score ≥ Threshold', category: 'legs', test: f => f[3] === 1 },
     { name: 'بازگشت لگ آبی استراتژی ۲ (CD/EF) با استاپ ضداسویپ', rule: 'L1 = Blue/Dark-Blue (CD/EF) & Anti-Sweep SL', category: 'legs', test: f => f[3] === 2 || f[3] === 3 },
-    { name: 'کلایمکس یا تخلیه حجم لگ هم‌جهت + شکست کم‌عمق P3', rule: 'Vol(L1)/Vol(L3) < 0.85 or Climax > 1.8 & Sweep P3', category: 'volume', test: f => (f[18] < 0.85 || f[21] > 1.8) && f[22] === 1 },
+    { name: 'کلایمکس یا تخلیه حجم + شکست پیوت P3', rule: 'Vol(L1)/Vol(L3) < 0.85 or Climax > 1.8 & Sweep P3', category: 'volume', test: f => (f[18] < 0.85 || f[21] > 1.8) && f[22] === 1 },
   ];
 
   const discoveredPatterns: MlDiscoveredPattern[] = patDefs.map(pd => {
@@ -1533,7 +1649,7 @@ export function trainZigZagMlModel(
   return {
     id: `ml_zz_${Date.now()}`,
     name: options.modelName,
-    version: 5,
+    version: 7,
     exchange: options.exchange,
     timeframe: options.timeframe,
     datasetId: options.datasetId,
@@ -1543,6 +1659,8 @@ export function trainZigZagMlModel(
     minSlPct: options.minSlPct ?? 3.5,
     tpAtrMult: options.tpAtrMult,
     targetRR: Number(targetRR.toFixed(2)),
+    beTriggerR: Number(beTriggerR.toFixed(2)),
+    beLockR: Number(beLockR.toFixed(2)),
     timeStopCandles: options.timeStopCandles,
     minAtrPct: options.minAtrPct,
     minStretchPct: options.minStretchPct ?? 0,

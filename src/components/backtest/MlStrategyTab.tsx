@@ -239,19 +239,21 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
 
   // Training Studio form state (simplified high-impact controls; always BOTH directions)
   const [datasetId, setDatasetId] = useState('');
-  const [modelName, setModelName] = useState('مدل XT 5m ZigZag v5 دوجهته');
+  const [modelName, setModelName] = useState('مدل XT 5m ZigZag v7 دوجهته');
   const [minCandles, setMinCandles] = useState(4);
   const [atrMultiplier, setAtrMultiplier] = useState(3.5);
-  const [slAtrMult, setSlAtrMult] = useState(5.0);
+  const [slAtrMult, setSlAtrMult] = useState(5.5);
   const [minSlPct, setMinSlPct] = useState(3.5);
-  const [targetRR, setTargetRR] = useState(1.5);
-  const [tpAtrMult, setTpAtrMult] = useState(7.5);
-  const [timeStopCandles, setTimeStopCandles] = useState(144);
-  const [numTrees, setNumTrees] = useState(160);
-  const [maxDepth, setMaxDepth] = useState(5);
-  const [l2Lambda, setL2Lambda] = useState(700);
-  const [topPercent, setTopPercent] = useState(5);
-  const [objective, setObjective] = useState<'blended' | 'expected_r' | 'win_prob'>('win_prob');
+  const [targetRR, setTargetRR] = useState(1.45);
+  const [tpAtrMult, setTpAtrMult] = useState(7.98);
+  const [beTriggerR, setBeTriggerR] = useState(0.75);
+  const [beLockR, setBeLockR] = useState(0.20);
+  const [timeStopCandles, setTimeStopCandles] = useState(150);
+  const [numTrees, setNumTrees] = useState(45);
+  const [maxDepth, setMaxDepth] = useState(2);
+  const [l2Lambda, setL2Lambda] = useState(1000);
+  const [topPercent, setTopPercent] = useState(6);
+  const [objective, setObjective] = useState<'blended' | 'expected_r' | 'win_prob'>('blended');
   const [activateAfterTrain, setActivateAfterTrain] = useState(true);
 
   const [jobStatus, setJobStatus] = useState<TrainingJobStatus>({
@@ -279,11 +281,11 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
       setMinCandles(zp.minCandles ?? 4);
       setAtrMultiplier(zp.atrMultiplier ?? 3.5);
     }
-    const nextSl = model.slAtrMult ?? 5.0;
+    const nextSl = model.slAtrMult ?? 5.5;
     const nextRR =
       model.targetRR && model.targetRR > 0
         ? Number(model.targetRR.toFixed(2))
-        : (nextSl > 0 && model.tpAtrMult > 0 ? Number((model.tpAtrMult / nextSl).toFixed(2)) : 1.5);
+        : (nextSl > 0 && model.tpAtrMult > 0 ? Number((model.tpAtrMult / nextSl).toFixed(2)) : 1.45);
     const nextTp =
       model.tpAtrMult && model.tpAtrMult > 0
         ? Number(model.tpAtrMult.toFixed(2))
@@ -293,12 +295,14 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
     setMinSlPct(model.minSlPct ?? 3.5);
     setTargetRR(nextRR);
     setTpAtrMult(nextTp);
-    setTimeStopCandles(model.timeStopCandles ?? 144);
-    setNumTrees(Array.isArray(model.trees) && model.trees.length > 0 ? model.trees.length : 160);
+    setBeTriggerR(model.beTriggerR ?? 0);
+    setBeLockR(model.beLockR ?? 0);
+    setTimeStopCandles(model.timeStopCandles ?? 150);
+    setNumTrees(Array.isArray(model.trees) && model.trees.length > 0 ? Math.min(80, model.trees.length) : 45);
     setMaxDepth(inferModelMaxDepth(model));
-    setL2Lambda(model.l2Lambda ?? 700);
-    setTopPercent(model.topPercent ?? 5);
-    setObjective(model.objective ?? 'win_prob');
+    setL2Lambda(model.l2Lambda ?? 1000);
+    setTopPercent(model.topPercent ?? 6);
+    setObjective(model.objective ?? 'blended');
 
     const dsList = availableDatasets && availableDatasets.length > 0 ? availableDatasets : datasetsRef.current;
     if (preferredDsId && dsList.some((d) => d.id === preferredDsId)) {
@@ -431,11 +435,13 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
           minSlPct,
           targetRR,
           tpAtrMult,
+          beTriggerR,
+          beLockR,
           timeStopCandles,
-          minAtrPct: 0.25,
+          minAtrPct: 0.30,
           minStretchPct: 0,
           numTrees,
-          learningRate: 0.035,
+          learningRate: 0.025,
           maxDepth,
           l2Lambda,
           topPercent,
@@ -607,11 +613,14 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
             </div>
           </div>
           <div className="bg-[#0b0e14] rounded-lg px-3 py-2 border border-slate-800/70">
-            <div className="text-[10px] text-slate-500">حد ضرر ضداسویپ / تارگت</div>
+            <div className="text-[10px] text-slate-500">حد ضرر ضداسویپ / تارگت / BE</div>
             <div className="font-mono tabular-nums text-emerald-300 mt-0.5">
               {activeModel.minSlPct
-                ? `SL max(${activeModel.minSlPct}%, ${activeModel.slAtrMult}A) • ${(activeModel.targetRR || rrRatio).toFixed(1)}R`
+                ? `SL max(${activeModel.minSlPct}%, ${activeModel.slAtrMult}A) • ${(activeModel.targetRR || rrRatio).toFixed(2)}R`
                 : `SL ${activeModel.slAtrMult}A • TP ${activeModel.tpAtrMult}A (${rrRatio.toFixed(1)}R)`}
+              {activeModel.beTriggerR && activeModel.beTriggerR > 0
+                ? ` • BE ${activeModel.beTriggerR}→+${(activeModel.beLockR ?? 0).toFixed(2)}R`
+                : ''}
             </div>
           </div>
           <div className="bg-[#0b0e14] rounded-lg px-3 py-2 border border-slate-800/70">
@@ -623,7 +632,7 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
           <div className="bg-[#0b0e14] rounded-lg px-3 py-2 border border-slate-800/70">
             <div className="text-[10px] text-slate-500">ساختار درخت GBDT / جهت</div>
             <div className="font-mono tabular-nums text-slate-200 mt-0.5">
-              {activeModel.trees.length} درخت (عمق {inferModelMaxDepth(activeModel)} • {activeModel.featureNames?.length || 58} ویژگی) • دوجهته (لانگ+شورت) • آستانه {activeModel.scoreThreshold.toFixed(4)}
+              {activeModel.trees.length} درخت (عمق {inferModelMaxDepth(activeModel)} • {activeModel.featureNames?.length || 59} ویژگی) • دوجهته (لانگ+شورت) • آستانه {activeModel.scoreThreshold.toFixed(4)}
             </div>
           </div>
           <div className="bg-[#0b0e14] rounded-lg px-3 py-2 border border-slate-800/70">
@@ -949,6 +958,33 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
                 className="w-full rounded-lg bg-[#0b0e14] border border-emerald-500/50 px-2 py-1.5 font-mono text-emerald-300 font-semibold"
               />
             </div>
+            <div className="space-y-1">
+              <span className="text-[10px] text-slate-400">محافظ سر‌به‌سر (BE Trig / Lock R)</span>
+              <div className="grid grid-cols-2 gap-1">
+                <input
+                  type="number"
+                  step="0.05"
+                  min={0}
+                  max={2}
+                  value={beTriggerR}
+                  onChange={(e) => setBeTriggerR(Number(e.target.value))}
+                  disabled={jobStatus.isRunning}
+                  title="آستانه سود برحسب R برای انتقال SL (۰=غیرفعال)"
+                  className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-1.5 py-1.5 font-mono text-slate-100"
+                />
+                <input
+                  type="number"
+                  step="0.05"
+                  min={-0.5}
+                  max={1}
+                  value={beLockR}
+                  onChange={(e) => setBeLockR(Number(e.target.value))}
+                  disabled={jobStatus.isRunning}
+                  title="میزان سود قفل‌شده پس از BE (واحد R)"
+                  className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-1.5 py-1.5 font-mono text-slate-100"
+                />
+              </div>
+            </div>
             <label className="space-y-1">
               <span className="text-[10px] text-slate-400">Time-Stop (کندل)</span>
               <input
@@ -963,7 +999,7 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
             </label>
 
             <label className="space-y-1">
-              <span className="text-[10px] text-slate-400">فیلتر نخبگان (Top %)</span>
+              <span className="text-[10px] text-slate-400">فیلتر نخبگان (Top Ratio)</span>
               <input
                 type="number"
                 step="0.5"
@@ -980,7 +1016,7 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
               <input
                 type="number"
                 min={20}
-                max={250}
+                max={120}
                 value={numTrees}
                 onChange={(e) => setNumTrees(Number(e.target.value))}
                 disabled={jobStatus.isRunning}
@@ -992,7 +1028,7 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
               <input
                 type="number"
                 min={1}
-                max={6}
+                max={4}
                 value={maxDepth}
                 onChange={(e) => setMaxDepth(Number(e.target.value))}
                 disabled={jobStatus.isRunning}
@@ -1003,15 +1039,15 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
               <span className="text-[10px] text-slate-400">رگولاریزاسیون L2</span>
               <input
                 type="number"
-                min={50}
-                max={1200}
+                min={100}
+                max={2000}
                 value={l2Lambda}
                 onChange={(e) => setL2Lambda(Number(e.target.value))}
                 disabled={jobStatus.isRunning}
                 className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-2 py-1.5 font-mono text-slate-100"
               />
             </label>
-            <label className="space-y-1">
+            <label className="space-y-1 sm:col-span-2 lg:col-span-1">
               <span className="text-[10px] text-slate-400">تابع هدف (Objective)</span>
               <select
                 value={objective}
@@ -1019,8 +1055,8 @@ export const MlStrategyTab: React.FC<MlStrategyTabProps> = ({
                 disabled={jobStatus.isRunning}
                 className="w-full rounded-lg bg-[#0b0e14] border border-slate-700/80 px-2 py-1.5 text-xs text-slate-100"
               >
-                <option value="win_prob">احتمال برد (Win Prob)</option>
                 <option value="blended">ترکیبی (WR + Expected R)</option>
+                <option value="win_prob">احتمال برد (Win Prob)</option>
                 <option value="expected_r">میانگین سود (Expected R)</option>
               </select>
             </label>

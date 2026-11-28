@@ -1803,7 +1803,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         const eTime = t.entryTime || t.timeF || 0;
         const xTime = t.exitTime || eTime;
         const symLastExit = lastExitBySymbol.get(symKey) || 0;
-        if (!symKey || eTime >= symLastExit) {
+        if (!symKey || symLastExit === 0 || eTime > symLastExit) {
           accepted.push(t);
           if (symKey) lastExitBySymbol.set(symKey, Math.max(symLastExit, xTime));
         } else {
@@ -1827,7 +1827,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
         const eTime = t.entryTime || t.timeF || 0;
         const xTime = t.exitTime || eTime;
 
-        if (eTime >= lastExitTime) {
+        if (lastExitTime === 0 || eTime > lastExitTime) {
           accepted.push(t);
           lastExitTime = Math.max(lastExitTime, xTime);
           currentActiveTrade = t;
@@ -3317,7 +3317,7 @@ export const BacktestScannerModal: React.FC<BacktestScannerModalProps> = ({
       for (const t of sorted) {
         const eTime = t.entryTime || t.timeF || 0;
         const xTime = t.exitTime || eTime;
-        if (eTime >= lastExitTime) {
+        if (lastExitTime === 0 || eTime > lastExitTime) {
           effectiveTrades.push(t);
           lastExitTime = Math.max(lastExitTime, xTime);
         }
